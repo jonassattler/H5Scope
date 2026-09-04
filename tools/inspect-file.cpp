@@ -231,6 +231,7 @@ int main(int argc, char** argv)
     if (!controller.hasFile()) {
         out() << "open failed: " << controller.errorText() << "\n";
         out().flush();
+        gui::H5Thread::shutdown();
         return 1;
     }
 
@@ -280,5 +281,8 @@ int main(int argc, char** argv)
     }
 
     out().flush();
+    // Before the application goes: closing the file and handing back the claim
+    // are jobs, and a job needs the event loop that is about to be torn down.
+    gui::H5Thread::shutdown();
     return 0;
 }

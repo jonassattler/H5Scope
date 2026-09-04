@@ -149,8 +149,17 @@ TEST_CASE("opening files through the controller", "[controller]")
 
     SECTION("a file that is not HDF5 fails cleanly")
     {
-        REQUIRE_FALSE(h5test::openFileAndSettle(controller, QStringLiteral("/etc/hostname")));
+        QSignalSpy opened(&controller, &gui::AppController::fileOpened);
+        REQUIRE_FALSE(
+            h5test::openFileAndSettle(controller, QStringLiteral("/etc/hostname")));
         REQUIRE_FALSE(controller.errorText().isEmpty());
+
+        // openFile() only says the open was *started*; whether it worked comes
+        // back on this signal, and it is what puts the error dialog in front of
+        // the reader. Nothing else would -- the call returned true.
+        REQUIRE(opened.count() == 1);
+        CHECK_FALSE(opened.front().at(0).toBool());
+        CHECK(opened.front().at(1).toString() == QStringLiteral("/etc/hostname"));
     }
 }
 

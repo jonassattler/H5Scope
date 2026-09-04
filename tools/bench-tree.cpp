@@ -449,10 +449,12 @@ int main(int argc, char** argv)
         phase(rows, "path", [&] { (void)model.indexForPath(target); }, none, "");
 
         report(rows);
+        gui::H5Thread::shutdown();
         return 0;
     }
     catch (const std::exception& error) {
         std::fprintf(stderr, "bench-tree: %s\n", error.what());
+        gui::H5Thread::shutdown();
         return 1;
     }
 }
