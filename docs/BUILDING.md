@@ -58,6 +58,39 @@ deliberately left out: they bind to the GPU driver, the running X server and the
 compositor, and a bundled copy of any of them breaks the machines it was
 supposed to help. The script's header lists what is excluded and why.
 
+### The one library that could not be left to the host
+
+Bundling and the glibc floor between them cover almost everything, but not
+`libxcb-cursor`. Qt 6.5 and newer link the xcb platform plugin against it
+unconditionally — it is in `PUBLIC_LIBRARIES` in qtbase's
+`src/plugins/platforms/xcb/CMakeLists.txt` with no feature guarding it, and the
+`xcb` feature's own configure test includes `<xcb/xcb_cursor.h>` — while RHEL 8
+ships it in neither BaseOS nor AppStream. It is in EPEL and nowhere else.
+
+That made the bare executable unusable on a stock RHEL 8 desktop: not a missing
+platform plugin, but the dynamic loader refusing the binary before `main`,
+naming a library the user has no ordinary way to get. Stubbing the three
+symbols involved is not an out either — `QXcbCursor::createFontCursor()` starts
+`if (!m_cursorContext) return XCB_NONE;`, so a context that fails to initialise
+does not fall back to the glyph cursors below it, and the application would run
+with no mouse cursor at all.
+
+So the library is built statically and linked in, like Qt and HDF5:
+
+- `ports/xcb-util-cursor` is an overlay port that builds `libxcb-cursor.a`.
+  `CMakePresets.json` sets `VCPKG_OVERLAY_PORTS` so every preset finds it.
+- The root `CMakeLists.txt` sets `USE_XCB_CURSOR_STATIC` before
+  `find_package(Qt6)`. Qt does not record where it found the xcb libraries —
+  its exported dependencies file re-runs `find_package(XCB COMPONENTS CURSOR)`
+  at *this* project's configure time — so that switch is what decides which
+  file `XCB::CURSOR` resolves to. It then asserts the answer was an archive.
+- `tools/ci/verify-binary.sh` fails the build if `libxcb-cursor.so.0` ever
+  reappears in the executable's `NEEDED` list.
+
+`tools/ci/el8.Dockerfile` still enables EPEL, and that is not a contradiction:
+`xcb-util-cursor-devel` is needed there for *qtbase's own* configure test at
+build time. Nothing in the published binary depends on it.
+
 `tools/check-glibc-floor.sh` is what makes "runs on RHEL 8" checkable rather
 than asserted, and it works on any ELF:
 
@@ -68,9 +101,10 @@ tools/check-glibc-floor.sh 2.28 build/release/bin/H5Scope
 ## Building from the source bundle
 
 The bundle attached to each release contains everything needed to rebuild that
-release without contacting any network: this repository at the released commit,
-the upstream source archive of every library linked into the binary, and the
-vcpkg `ports/` tree at the pinned baseline, which carries vcpkg's patches.
+release without contacting any network: this repository at the released commit
+— `ports/` included — the upstream source archive of every library linked into
+the binary, and the vcpkg `ports/` tree at the pinned baseline, which carries
+vcpkg's patches.
 
 ```sh
 tar --zstd -xf H5Scope-<version>-source.tar.zst
@@ -78,8 +112,10 @@ cd H5Scope-<version>-source
 ./build-from-bundle.sh
 ```
 
-The script points vcpkg at the bundled `downloads/` and `ports/` directories and
-runs the ordinary release preset. Because the bundle omits `.git`, it carries
+The script points vcpkg at the bundled `vcpkg-downloads/` directory and at two
+overlay port trees — the repository's own `ports/` first, then `vcpkg-ports/`,
+the registry at the pinned baseline — and then runs the ordinary release
+preset. Because the bundle omits `.git`, it carries
 the version it was cut at in `cmake/BundleVersion.cmake`, which
 `cmake/Version.cmake` reads when there is no history to count.
 

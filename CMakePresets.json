@@ -14,6 +14,7 @@
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-linux",
         "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/ports",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },

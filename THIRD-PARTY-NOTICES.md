@@ -3,8 +3,8 @@
 H5Scope links every dependency statically, so a single executable contains
 the code of everything listed here. This file is the *inventory* of what is in
 that executable and under which licence. It is compiled from the link line of
-the release binary, not from the dependency manifest: `vcpkg.json` names five
-packages, and those five pull in everything below.
+the release binary, not from the dependency manifest: `vcpkg.json` names six
+packages, and those six pull in everything below.
 
 An inventory is not the notice most of these licences ask for. BSD-3, MIT,
 Zlib, libpng and bzip2 each require the copyright notice, the list of
@@ -98,6 +98,25 @@ dual-licensed, the option H5Scope relies on is marked.
 | libb2 | 0.98.1 | CC0-1.0 |
 | md4c | 0.5.3 | MIT |
 | meshoptimizer | 1.2 | MIT |
+| xcb-util-cursor | 0.1.5 | MIT (X11-style) |
+
+xcb-util-cursor appears in that table rather than in *System libraries*
+below, and the move is the whole point of it being there. Qt 6.5 and newer
+link the xcb platform plugin against `libxcb-cursor` unconditionally, and
+RHEL 8 — the oldest system this project supports — ships that library in
+neither BaseOS nor AppStream, only in EPEL. A binary that asked the host for it
+did not start on a stock RHEL 8 desktop: the loader refused it before `main`.
+`ports/xcb-util-cursor` builds it statically, so it is now inside the
+executable like everything else in the table, and the release asks nothing of a
+third-party repository. See that port's `portfile.cmake`.
+
+Its licence is MIT with the X11 no-advertising clause appended — beyond the
+usual MIT terms it adds that "the names of the authors or their institutions
+shall not be used in advertising or otherwise to promote the sale, use or other
+dealings in this Software without prior written authorization from the
+authors". H5Scope names them in no promotional material. The full text, which
+the licence requires to accompany the binary, is reproduced in
+THIRD-PARTY-LICENSES.txt like every other entry above.
 
 FreeType is used under the FreeType Licence, which requires the following
 acknowledgement:
@@ -139,8 +158,10 @@ summary of it:
   compiler, which GPLv3 section 1 names as a Major Component in terms
   ("a compiler used to produce the work"), rather than by the same route as the
   rest of this list.
-- **X11** — `libX11`, `libX11-xcb`, the libxcb family, `libSM`, `libICE`,
-  `libXau`, `libXdmcp`.
+- **X11** — `libX11`, `libX11-xcb`, the libxcb family, the xcb-util family
+  (`libxcb-icccm`, `libxcb-image`, `libxcb-keysyms`, `libxcb-render-util`,
+  `libxcb-util`), `libSM`, `libICE`, `libXau`, `libXdmcp`. `libxcb-cursor` was
+  in this list until it moved inside the binary; it is in the table above now.
 - **Wayland** — `libwayland-client`, `libwayland-cursor`, `libwayland-egl`.
 - **Keyboard handling** — `libxkbcommon`, `libxkbcommon-x11`.
 - **Graphics** — `libGLX`, `libEGL`, `libOpenGL`, `libGLdispatch`, and the GPU
@@ -191,9 +212,11 @@ once — Graphs directly, and the `qtquick3d` build along with it.
 ## Corresponding Source
 
 Every release attaches a source bundle containing the complete Corresponding
-Source for the binary released with it: this repository at the released commit,
-the upstream source archive of every library above, and the vcpkg `ports/` tree
-at the pinned baseline, which carries the patches vcpkg applies (23 to
-`qtbase`, 2 to `qtquick3d`, 5 to `hdf5`) and the scripts that apply them.
+Source for the binary released with it: this repository at the released commit
+— `ports/` included, which is where the overlay ports this project carries
+itself live — the upstream source archive of every library above, and the vcpkg
+`ports/` tree at the pinned baseline, which carries the patches vcpkg applies
+(23 to `qtbase`, 2 to `qtquick3d`, 5 to `hdf5`) and the scripts that apply
+them.
 
 See the *Building from the source bundle* section of the README.

@@ -7,16 +7,7 @@
 # Why there is anything to do at all. Qt, HDF5 and the fonts are already inside
 # the executable, so this is not the usual Qt deployment problem: there are no
 # plugins to copy, no qml directory, no qt.conf, and linuxdeploy's Qt plugin
-# would have nothing to find. What is left is a much smaller list, and it is
-# the reason an AppImage earns its place here rather than being ceremony on top
-# of a binary that already runs:
-#
-#   * libxcb-cursor. Qt 6.5 and newer load it from the xcb platform plugin and
-#     abort with "could not load the Qt platform plugin xcb" when it is absent.
-#     RHEL 8 does not ship it in BaseOS or AppStream at all -- it is EPEL only
-#     -- so on a stock RHEL 8 desktop the plain executable fails at startup and
-#     the AppImage is what makes it run. That single library is most of the
-#     argument.
+# would have nothing to find. What is left is a much smaller list:
 #
 #   * The xcb-util family, libSM/libICE and libxkbcommon. Present on RHEL 8,
 #     but old, and bundling costs about a megabyte.
@@ -24,6 +15,16 @@
 #   * A .desktop file and an icon, so the thing has a name, an icon and an
 #     association with .h5 files instead of being an anonymous blob in
 #     ~/Downloads.
+#
+# libxcb-cursor was once the first and largest item on that list, and it is
+# worth saying where it went. Qt 6.5 and newer link the xcb platform plugin
+# against it unconditionally, and RHEL 8 ships it in neither BaseOS nor
+# AppStream -- EPEL only -- so the bare executable did not start on a stock
+# RHEL 8 desktop and the AppImage was what made it run. That single library was
+# most of the argument for this script existing. It is now built static by
+# ports/xcb-util-cursor and linked into the executable, so both artefacts stand
+# on their own and this one is down to convenience and a desktop entry. The
+# walk below no longer sees it at all: it is not in the binary's NEEDED list.
 #
 # What is deliberately NOT bundled is more important than what is. The GL and
 # EGL entry points are glvnd: they dispatch to the installed GPU driver, and a
@@ -59,8 +60,8 @@ RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 
 # --- the exclusion list ----------------------------------------------------
 # Matched against the soname, anchored at both ends, so that libxcb.so.1 is
-# excluded without also excluding libxcb-cursor.so.0 -- which is the whole
-# point of the exercise and would be silently lost by a prefix match.
+# excluded without also excluding libxcb-image.so.0 and the rest of the
+# xcb-util family, which a prefix match would silently take with it.
 readonly -a HOST_LIBRARIES=(
     # glibc and the loader. Bundling any of these breaks NSS, dlopen and
     # eventually the process.

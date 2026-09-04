@@ -13,7 +13,10 @@
 #
 # What lands in the bundle:
 #
-#   .                     this repository at the released commit
+#   .                     this repository at the released commit, `ports/`
+#                         included -- the overlay ports this project carries
+#                         itself are as much a part of what built the binary
+#                         as vcpkg's own
 #   cmake/BundleVersion.cmake   the version that commit builds as, since a
 #                               bundle has no .git to count
 #   vcpkg-downloads/      every upstream source archive vcpkg fetched
@@ -121,9 +124,15 @@ echo "$baseline" > "$staging/vcpkg-ports/BASELINE"
 # minutes rather than the hours a real Qt build costs. The plan it prints on the
 # way is kept: it is the list of what this binary is made of, and the next step
 # checks the downloads against it.
+#
+# --overlay-ports because one of the manifest's dependencies is not in the
+# registry: ports/xcb-util-cursor is this project's own, and without the flag
+# vcpkg cannot resolve the manifest at all, let alone download its source.
+# CMakePresets.json passes the same directory during an ordinary build.
 echo "fetching upstream sources..."
 "$VCPKG_ROOT/vcpkg" install \
   --x-manifest-root="$repo_root" \
+  --overlay-ports="$repo_root/ports" \
   --triplet=x64-linux \
   --only-downloads \
   --downloads-root="$staging/vcpkg-downloads" \
@@ -162,11 +171,27 @@ fi
 # no bundle at all, so the archives are fetched here from the URL and verified
 # against the SHA512 that the port itself records, and anything still missing at
 # the end is a hard failure rather than a smaller tarball.
+#
+# Two places to look, because two trees of ports built this binary: vcpkg's, and
+# this project's own overlay in `ports/`. ports/xcb-util-cursor writes its
+# port.data.cmake in the same shape vcpkg's Qt ports use, precisely so that both
+# the fetch below and the completeness check after it treat it like any other
+# dependency rather than needing a special case.
+port_data() {
+  local pkg="$1" candidate
+  for candidate in "$staging/vcpkg-ports/$pkg" "$staging/ports/$pkg"; do
+    if [ -f "$candidate/port.data.cmake" ]; then
+      printf '%s\n' "$candidate/port.data.cmake"
+      return 0
+    fi
+  done
+  return 1
+}
+
 echo "checking the plan against the downloads..."
 fetched=0
 for pkg in "${planned[@]}"; do
-  data="$staging/vcpkg-ports/$pkg/port.data.cmake"
-  [ -f "$data" ] || continue          # not a port that records its source here
+  data="$(port_data "$pkg")" || continue   # not a port that records its source
   fname=$(sed -n "s/^set(${pkg}_FILENAME \"\(.*\)\")\$/\1/p" "$data")
   hash=$(sed -n "s/^set(${pkg}_HASH \"\(.*\)\")\$/\1/p" "$data")
   urls=$(sed -n "s/^set(${pkg}_URL \"\(.*\)\")\$/\1/p" "$data")
@@ -196,8 +221,7 @@ echo "fetched $fetched archive(s) the download step could not"
 # This is the check the first attempt did not have.
 absent=0
 for pkg in "${planned[@]}"; do
-  data="$staging/vcpkg-ports/$pkg/port.data.cmake"
-  [ -f "$data" ] || continue
+  data="$(port_data "$pkg")" || continue
   fname=$(sed -n "s/^set(${pkg}_FILENAME \"\(.*\)\")\$/\1/p" "$data")
   [ -n "$fname" ] || continue
   if [ ! -f "$staging/vcpkg-downloads/$fname" ]; then
@@ -243,12 +267,19 @@ if [[ -z "${VCPKG_ROOT:-}" || ! -x "$VCPKG_ROOT/vcpkg" ]]; then
 fi
 
 export VCPKG_DOWNLOADS="$here/vcpkg-downloads"
-export VCPKG_OVERLAY_PORTS="$here/vcpkg-ports"
 
 # The presets resolve their binary directory relative to the source tree, so
 # this runs where CMakePresets.json is rather than wherever it was invoked.
 cd "$here"
-cmake --preset release
+
+# Two overlay directories, passed as one CMake list rather than through the
+# environment. `ports/` is this project's own -- CMakePresets.json already
+# points at it, and naming it again here keeps that true whatever the preset
+# says later. `vcpkg-ports/` is the whole registry at the pinned baseline,
+# overlaid so the build uses the patches this release was made with instead of
+# whatever the checkout in VCPKG_ROOT happens to be at. `ports/` comes first so
+# that it still wins if the registry ever grows a port of the same name.
+cmake --preset release -DVCPKG_OVERLAY_PORTS="$here/ports;$here/vcpkg-ports"
 cmake --build --preset release
 ctest --preset release
 
@@ -271,6 +302,7 @@ alongside it, as GPL-3.0-only section 6 requires. It was cut from commit
 | Path | What it is |
 |---|---|
 | \`.\` | the H5Scope repository at \`${commit}\` |
+| \`ports/\` | the overlay ports H5Scope carries itself, inside the repository above |
 | \`vcpkg-downloads/\` | the upstream source archive of every library linked into the binary |
 | \`vcpkg-ports/\` | the vcpkg ports tree at baseline \`${baseline}\` — the patches applied to those archives, and the scripts that apply them |
 | \`build-from-bundle.sh\` | rebuilds the release from the two above |

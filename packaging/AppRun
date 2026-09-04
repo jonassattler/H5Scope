@@ -8,9 +8,11 @@
 # plugin directories to point at and no qt.conf to write.
 #
 # What does have to happen is the library path. tools/make-appimage.sh bundles
-# the handful of libraries RHEL 8 either does not ship or ships only through
-# EPEL -- libxcb-cursor above all, which Qt 6.5 and newer refuse to start
-# without -- and they live in usr/lib next to nothing else.
+# the handful of libraries RHEL 8 ships only in versions older than the build
+# machine's -- the xcb-util family, libSM/libICE, libxkbcommon -- and they live
+# in usr/lib next to nothing else. (libxcb-cursor, which RHEL 8 does not ship
+# outside EPEL at all, used to be the important one here; it is linked into the
+# executable now. See ports/xcb-util-cursor.)
 #
 # POSIX sh rather than bash: this runs before anything is known about the host,
 # and /bin/sh is the one interpreter that is always there.

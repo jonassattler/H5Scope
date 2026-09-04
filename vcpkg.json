@@ -38,7 +38,11 @@
     "qtdeclarative",
     "qtgraphs",
     "hdf5",
-    "catch2"
+    "catch2",
+    {
+      "name": "xcb-util-cursor",
+      "platform": "linux"
+    }
   ],
   "overrides": [
     {
