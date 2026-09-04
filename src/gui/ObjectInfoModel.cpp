@@ -13,6 +13,12 @@
 namespace gui {
 namespace {
 
+/// How many of a group's members this panel names before it stops and says how
+/// many are left. A flat group of thousands is a shape real files have, and
+/// naming every one of them is both a freeze on the click that selects the
+/// group and a table no reader gets to the bottom of.
+constexpr std::size_t kMaxListedMembers = 200;
+
 QString formatShape(const std::vector<hsize_t>& shape)
 {
     if (shape.empty()) {
@@ -168,17 +174,25 @@ QVariantList ObjectInfoModel::sections() const
     return panels;
 }
 
-void ObjectInfoModel::beginSection(QString name, QString meta, bool accent,
-                                   QString emptyText)
+void ObjectInfoModel::Content::beginSection(QString name, QString meta, bool accent,
+                                            QString emptyText)
 {
-    currentSection_ = name;
-    sections_.push_back(
+    currentSection = name;
+    sections.push_back(
         Section{std::move(name), std::move(meta), accent, std::move(emptyText)});
 }
 
-void ObjectInfoModel::add(QString label, QString value, bool warning)
+void ObjectInfoModel::Content::add(QString label, QString value, bool warning)
 {
-    rows_.push_back(Row{std::move(label), std::move(value), warning, currentSection_});
+    rows.push_back(Row{std::move(label), std::move(value), warning, currentSection});
+}
+
+void ObjectInfoModel::showContent(Content content)
+{
+    beginResetModel();
+    rows_ = std::move(content.rows);
+    sections_ = std::move(content.sections);
+    endResetModel();
 }
 
 void ObjectInfoModel::clear()
@@ -186,34 +200,27 @@ void ObjectInfoModel::clear()
     beginResetModel();
     rows_.clear();
     sections_.clear();
-    currentSection_.clear();
     endResetModel();
 }
 
-void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
-                                 const QString& path)
+ObjectInfoModel::Content ObjectInfoModel::gather(h5core::File& file, const QString& path)
 {
-    beginResetModel();
-    rows_.clear();
-    sections_.clear();
-    currentSection_.clear();
-
-    if (!file || path.isEmpty()) {
-        endResetModel();
-        return;
+    Content content;
+    if (path.isEmpty()) {
+        return content;
     }
 
     try {
-        const auto node = file->nodeInfo(path.toStdString());
+        const auto node = file.nodeInfo(path.toStdString());
         const QString kindText = QString::fromStdString(h5core::toString(node.kind));
 
         // The panels below, and their order, are the Information tab's layout.
         // Exactly one panel carries the accent rule, per the design system.
-        beginSection(QStringLiteral("object"), kindText.toLower(), true);
-        add(QStringLiteral("Path"), QString::fromStdString(node.path));
-        add(QStringLiteral("Name"), QString::fromStdString(node.name));
-        add(QStringLiteral("Kind"), kindText);
-        add(QStringLiteral("Parent"), parentPath(QString::fromStdString(node.path)));
+        content.beginSection(QStringLiteral("object"), kindText.toLower(), true);
+        content.add(QStringLiteral("Path"), QString::fromStdString(node.path));
+        content.add(QStringLiteral("Name"), QString::fromStdString(node.name));
+        content.add(QStringLiteral("Kind"), kindText);
+        content.add(QStringLiteral("Parent"), parentPath(QString::fromStdString(node.path)));
 
         // A soft or external link stores a path, and that path is the whole
         // reason the name is there. It is worth stating whether or not it
@@ -221,16 +228,16 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
         if (node.link != h5core::LinkType::Hard) {
             const QString linkText =
                 QString::fromStdString(h5core::toString(node.link));
-            beginSection(QStringLiteral("link"), linkText.toLower());
-            add(QStringLiteral("Link"), linkText);
+            content.beginSection(QStringLiteral("link"), linkText.toLower());
+            content.add(QStringLiteral("Link"), linkText);
             if (!node.linkFile.empty()) {
-                add(QStringLiteral("File"), QString::fromStdString(node.linkFile));
+                content.add(QStringLiteral("File"), QString::fromStdString(node.linkFile));
             }
-            add(QStringLiteral("Target"), QString::fromStdString(node.linkTarget));
+            content.add(QStringLiteral("Target"), QString::fromStdString(node.linkTarget));
             if (node.resolves()) {
-                add(QStringLiteral("Resolves to"), kindText);
+                content.add(QStringLiteral("Resolves to"), kindText);
             } else {
-                add(QStringLiteral("Resolves to"),
+                content.add(QStringLiteral("Resolves to"),
                     node.link == h5core::LinkType::External
                         ? QStringLiteral("nothing: the file or the object is missing")
                         : QStringLiteral("nothing: no object at that path"),
@@ -240,54 +247,53 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
 
         if (!node.resolves()) {
             // Nothing further can be read: there is no object to read it from.
-            endResetModel();
-            return;
+            return content;
         }
 
         if (node.kind == h5core::NodeKind::NamedDataType) {
-            const auto type = file->namedType(path.toStdString());
-            beginSection(QStringLiteral("datatype"),
+            const auto type = file.namedType(path.toStdString());
+            content.beginSection(QStringLiteral("datatype"),
                          QString::fromStdString(type.description));
-            add(QStringLiteral("Type"), QString::fromStdString(type.description));
-            add(QStringLiteral("Class"),
+            content.add(QStringLiteral("Type"), QString::fromStdString(type.description));
+            content.add(QStringLiteral("Class"),
                 QString::fromStdString(h5core::toString(type.cls)));
-            add(QStringLiteral("Element size"),
+            content.add(QStringLiteral("Element size"),
                 type.isVariableLength ? QStringLiteral("variable")
                                       : formatBytes(type.size));
             if (!type.memberNames.empty()) {
-                add(QStringLiteral("Members"), joinStrings(type.memberNames));
+                content.add(QStringLiteral("Members"), joinStrings(type.memberNames));
             }
         }
 
         const int attributeCount =
-            static_cast<int>(file->attributeCount(path.toStdString()));
+            static_cast<int>(file.attributeCount(path.toStdString()));
 
         if (node.kind == h5core::NodeKind::Dataset) {
-            const h5core::Dataset dataset(*file, path.toStdString());
+            const h5core::Dataset dataset(file, path.toStdString());
             const auto& info = dataset.info();
 
-            beginSection(QStringLiteral("dataspace"), formatExtent(info));
-            add(QStringLiteral("Dataspace"),
+            content.beginSection(QStringLiteral("dataspace"), formatExtent(info));
+            content.add(QStringLiteral("Dataspace"),
                 QString::fromStdString(h5core::toString(info.space)));
-            add(QStringLiteral("Rank"), QString::number(info.rank()));
-            add(QStringLiteral("Shape"), formatExtent(info));
+            content.add(QStringLiteral("Rank"), QString::number(info.rank()));
+            content.add(QStringLiteral("Shape"), formatExtent(info));
             if (!info.isNull()) {
-                add(QStringLiteral("Max shape"), formatMaxShape(info.maxShape));
+                content.add(QStringLiteral("Max shape"), formatMaxShape(info.maxShape));
             }
-            add(QStringLiteral("Elements"),
+            content.add(QStringLiteral("Elements"),
                 QLocale::system().toString(
                     static_cast<qulonglong>(info.elementCount())));
 
-            beginSection(QStringLiteral("datatype"),
+            content.beginSection(QStringLiteral("datatype"),
                          QString::fromStdString(info.type.description));
-            add(QStringLiteral("Type"), QString::fromStdString(info.type.description));
-            add(QStringLiteral("Class"),
+            content.add(QStringLiteral("Type"), QString::fromStdString(info.type.description));
+            content.add(QStringLiteral("Class"),
                 QString::fromStdString(h5core::toString(info.type.cls)));
-            add(QStringLiteral("Element size"),
+            content.add(QStringLiteral("Element size"),
                 info.type.isVariableLength ? QStringLiteral("variable")
                                             : formatBytes(info.type.size));
             if (!info.type.memberNames.empty()) {
-                add(QStringLiteral("Members"), joinStrings(info.type.memberNames));
+                content.add(QStringLiteral("Members"), joinStrings(info.type.memberNames));
             }
 
             // What the file says it is a picture of, and what that made the
@@ -297,28 +303,28 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
                 const auto& image = *info.image;
                 const QString subclass =
                     QString::fromStdString(h5core::toString(image.subclass));
-                beginSection(QStringLiteral("image"), subclass.toLower());
-                add(QStringLiteral("Subclass"), subclass);
+                content.beginSection(QStringLiteral("image"), subclass.toLower());
+                content.add(QStringLiteral("Subclass"), subclass);
                 if (image.subclass == h5core::ImageSubclass::Truecolor) {
-                    add(QStringLiteral("Interlace"),
+                    content.add(QStringLiteral("Interlace"),
                         QString::fromStdString(h5core::toString(image.interlace)));
                 }
                 if (!image.version.empty()) {
-                    add(QStringLiteral("Spec version"),
+                    content.add(QStringLiteral("Spec version"),
                         QString::fromStdString(image.version));
                 }
                 if (image.shapeMatches) {
-                    add(QStringLiteral("Rows"),
+                    content.add(QStringLiteral("Rows"),
                         QStringLiteral("dimension %1").arg(image.rowDim));
-                    add(QStringLiteral("Columns"),
+                    content.add(QStringLiteral("Columns"),
                         QStringLiteral("dimension %1").arg(image.columnDim));
                     if (image.channelDim.has_value()) {
-                        add(QStringLiteral("Channels"),
+                        content.add(QStringLiteral("Channels"),
                             QStringLiteral("dimension %1, one at a time")
                                 .arg(*image.channelDim));
                     }
                 } else {
-                    add(QStringLiteral("Warning"),
+                    content.add(QStringLiteral("Warning"),
                         QStringLiteral("The attributes say %1, which this shape "
                                        "cannot be; the slice is left as it would "
                                        "be for any dataset")
@@ -326,16 +332,16 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
                         true);
                 }
                 if (image.minimum.has_value()) {
-                    add(QStringLiteral("Display range"),
+                    content.add(QStringLiteral("Display range"),
                         QStringLiteral("%1 to %2")
                             .arg(*image.minimum)
                             .arg(*image.maximum));
                 }
                 if (image.whiteIsZero) {
-                    add(QStringLiteral("Polarity"), QStringLiteral("white is zero"));
+                    content.add(QStringLiteral("Polarity"), QStringLiteral("white is zero"));
                 }
                 if (!image.originHonoured) {
-                    add(QStringLiteral("Warning"),
+                    content.add(QStringLiteral("Warning"),
                         QStringLiteral("Origin is %1; this viewer draws from the "
                                        "upper left, so the raster is not flipped "
                                        "to match")
@@ -344,29 +350,29 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
                 }
             }
 
-            beginSection(QStringLiteral("storage"),
+            content.beginSection(QStringLiteral("storage"),
                          QLocale::system().formattedDataSize(
                              static_cast<qint64>(info.storageSize)));
-            add(QStringLiteral("Layout"),
+            content.add(QStringLiteral("Layout"),
                 QString::fromStdString(h5core::toString(info.layout)));
             if (!info.chunk.empty()) {
-                add(QStringLiteral("Chunk"), formatShape(info.chunk));
+                content.add(QStringLiteral("Chunk"), formatShape(info.chunk));
             }
             if (!info.filters.empty()) {
-                add(QStringLiteral("Filters"), joinStrings(info.filters));
+                content.add(QStringLiteral("Filters"), joinStrings(info.filters));
             }
             // Where the bytes actually are, when they are not in this file.
             for (const auto& external : info.externalFiles) {
-                add(QStringLiteral("External file"), QString::fromStdString(external));
+                content.add(QStringLiteral("External file"), QString::fromStdString(external));
             }
             for (const auto& source : info.virtualSources) {
-                add(QStringLiteral("Source"), QString::fromStdString(source));
+                content.add(QStringLiteral("Source"), QString::fromStdString(source));
             }
-            add(QStringLiteral("Storage size"),
+            content.add(QStringLiteral("Storage size"),
                 QLocale::system().formattedDataSize(
                     static_cast<qint64>(info.storageSize)));
             if (!info.readable()) {
-                add(QStringLiteral("Warning"),
+                content.add(QStringLiteral("Warning"),
                     QStringLiteral("Data cannot be read: %1")
                         .arg(QString::fromStdString(info.unreadableReason())),
                     true);
@@ -374,19 +380,38 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
                 // Optional and absent: HDF5 skipped it on writing and skips it
                 // again on reading, so the values are exactly right. Saying so
                 // is better than either a warning or silence.
-                add(QStringLiteral("Note"),
+                content.add(QStringLiteral("Note"),
                     QStringLiteral("Optional filter not in this build, and not "
                                    "needed to read the data: %1")
                         .arg(joinStrings(info.unavailableFilters)));
             }
         } else if (node.kind == h5core::NodeKind::Group) {
-            const auto children = file->children(path.toStdString());
-            beginSection(QStringLiteral("members"),
-                         QStringLiteral("%1 direct").arg(children.size()));
-            add(QStringLiteral("Children"), QString::number(children.size()));
-            for (const auto& child : children) {
-                add(QString::fromStdString(h5core::toString(child.kind)).toLower(),
-                    QString::fromStdString(child.name));
+            // The count comes out of the group's own header rather than out of
+            // the length of a listing, so a group of eight thousand members
+            // costs the same to describe as one of eight.
+            const auto members = file.memberCount(path.toStdString());
+            content.beginSection(QStringLiteral("members"),
+                         QStringLiteral("%1 direct").arg(members));
+            content.add(QStringLiteral("Children"), QString::number(members));
+
+            // Then the names, up to a limit. Every one of them is a link to
+            // follow and an object header to read, and this panel is built
+            // synchronously on the click that selects the group -- so listing
+            // all of a flat group of thousands would freeze the window to
+            // print a table nobody reads to the end of. The tree beside it is
+            // the surface for going through them, and it is lazy.
+            auto children = file.children(path.toStdString(),
+                                           h5core::File::Resolve::Links);
+            const std::size_t shown = std::min(children.size(), kMaxListedMembers);
+            for (std::size_t i = 0; i < shown; ++i) {
+                file.resolve(children[i]);
+                content.add(QString::fromStdString(h5core::toString(children[i].kind)).toLower(),
+                    QString::fromStdString(children[i].name));
+            }
+            if (children.size() > shown) {
+                content.add(QStringLiteral("More"),
+                    QStringLiteral("%1 further members, listed in the tree")
+                        .arg(children.size() - shown));
             }
         }
 
@@ -401,16 +426,17 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
         // instead; a row still has to be added, or sections() would drop the
         // panel for having none.
         const bool none = attributeCount == 0;
-        beginSection(QStringLiteral("attributes"),
+        content.beginSection(QStringLiteral("attributes"),
                      none ? QString{} : QStringLiteral("%1 total").arg(attributeCount),
                      false, none ? tr("No attributes on this object.") : QString{});
-        add(QStringLiteral("Attributes"), QString::number(attributeCount));
+        content.add(QStringLiteral("Attributes"), QString::number(attributeCount));
     } catch (const h5core::H5Error& error) {
-        beginSection(QStringLiteral("error"), {}, true);
-        add(QStringLiteral("Error"), QString::fromStdString(error.summary()), true);
+        content.beginSection(QStringLiteral("error"), {}, true);
+        content.add(QStringLiteral("Error"), QString::fromStdString(error.summary()),
+                    true);
     }
 
-    endResetModel();
+    return content;
 }
 
 } // namespace gui

@@ -102,20 +102,10 @@ void AttributeTableModel::clear()
     endResetModel();
 }
 
-void AttributeTableModel::showObject(const std::shared_ptr<h5core::File>& file,
-                                     const QString& path)
+void AttributeTableModel::setAttributes(std::vector<h5core::AttributeInfo> attributes)
 {
     beginResetModel();
-    attributes_.clear();
-
-    if (file && !path.isEmpty()) {
-        try {
-            attributes_ = h5core::readAttributes(*file, path.toStdString());
-        } catch (const h5core::H5Error&) {
-            attributes_.clear();
-        }
-    }
-
+    attributes_ = std::move(attributes);
     endResetModel();
 }
 

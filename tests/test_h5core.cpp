@@ -119,6 +119,116 @@ TEST_CASE_METHOD(Fixture, "walking the hierarchy", "[h5core][file]")
     }
 }
 
+TEST_CASE_METHOD(Fixture, "listing without opening", "[h5core][file]")
+{
+    // Resolve::Links is what makes a wide group cheap to expand: the names and
+    // the link types come out of one structure, and what each name points at
+    // is asked for later, per row that is actually shown.
+    const h5core::File file(temp.path());
+
+    SECTION("the same names come back either way, in the same order")
+    {
+        REQUIRE(childNames(file.children("/", h5core::File::Resolve::Links))
+                == childNames(file.children("/", h5core::File::Resolve::Objects)));
+    }
+
+    SECTION("link information is there, object information is not yet")
+    {
+        const auto links = file.children("/", h5core::File::Resolve::Links);
+        const auto* soft = findChild(links, "soft_to_matrix");
+        REQUIRE(soft != nullptr);
+        REQUIRE(soft->link == h5core::LinkType::Soft);
+        REQUIRE(soft->linkTarget == "/matrix");
+        // Not followed, so nothing is known about what is on the other end.
+        REQUIRE(soft->kind == h5core::NodeKind::Unknown);
+    }
+
+    SECTION("a hard link still carries its object's identity")
+    {
+        // The link table holds the token itself, so cycle detection costs
+        // nothing even in a listing that opens nothing.
+        const auto links = file.children("/", h5core::File::Resolve::Links);
+        const auto* target = findChild(links, "matrix");
+        const auto* link = findChild(links, "link_to_matrix");
+        REQUIRE(target->address.has_value());
+        REQUIRE(link->address == target->address);
+        REQUIRE(link->fileNumber == target->fileNumber);
+    }
+
+    SECTION("resolving one afterwards gives what listing objects would have")
+    {
+        auto links = file.children("/", h5core::File::Resolve::Links);
+        auto* group = const_cast<h5core::NodeInfo*>(findChild(links, "group"));
+        REQUIRE(group != nullptr);
+        file.resolve(*group);
+        REQUIRE(group->kind == h5core::NodeKind::Group);
+
+        const auto objects = file.children("/", h5core::File::Resolve::Objects);
+        const auto* eager = findChild(objects, "group");
+        REQUIRE(group->kind == eager->kind);
+        REQUIRE(group->address == eager->address);
+        REQUIRE(group->attributeCount == eager->attributeCount);
+    }
+
+    SECTION("a link that leads nowhere resolves to Unresolved, not to a throw")
+    {
+        auto links = file.children("/", h5core::File::Resolve::Links);
+        auto* dangling = const_cast<h5core::NodeInfo*>(findChild(links, "dangling"));
+        REQUIRE(dangling != nullptr);
+        file.resolve(*dangling);
+        REQUIRE(dangling->kind == h5core::NodeKind::Unresolved);
+        REQUIRE_FALSE(dangling->resolves());
+    }
+}
+
+TEST_CASE_METHOD(Fixture, "asking a group its size without listing it",
+                 "[h5core][file]")
+{
+    const h5core::File file(temp.path());
+
+    SECTION("the count matches the listing")
+    {
+        REQUIRE(file.memberCount("/") == file.children("/").size());
+        REQUIRE(file.memberCount("/group/nested") == 1);
+    }
+
+    SECTION("a dataset is not a group and says so")
+    {
+        REQUIRE_THROWS_AS(file.memberCount("/matrix"), h5core::H5Error);
+    }
+}
+
+TEST_CASE_METHOD(Fixture, "the outline of a dataset", "[h5core][file]")
+{
+    // What a tree row needs, and deliberately no more: everything else in
+    // DatasetInfo is further reads that no row shows.
+    const h5core::File file(temp.path());
+
+    SECTION("shape and dataspace agree with the full read")
+    {
+        for (const char* path : {"/matrix", "/scalar_int", "/empty", "/cube"}) {
+            const auto outline = file.datasetOutline(path);
+            const h5core::Dataset dataset(file, path);
+            INFO(path);
+            REQUIRE(outline.shape == dataset.info().shape);
+            REQUIRE(outline.space == dataset.info().space);
+        }
+    }
+
+    SECTION("nothing here claims to be an image")
+    {
+        REQUIRE_FALSE(file.datasetOutline("/matrix").image);
+        // And the probe can be skipped outright when the object header has
+        // already said there are no attributes to probe.
+        REQUIRE_FALSE(file.datasetOutline("/matrix", false).image);
+    }
+
+    SECTION("a group is not a dataset and says so")
+    {
+        REQUIRE_THROWS_AS(file.datasetOutline("/group"), h5core::H5Error);
+    }
+}
+
 TEST_CASE_METHOD(Fixture, "dataset metadata", "[h5core][dataset]")
 {
     const h5core::File file(temp.path());

@@ -130,14 +130,8 @@ ApplicationWindow {
         treeTagsVisible: window.treeTagsVisible
 
         onOpenRequested: filePicker.open()
-        onRecentRequested: (path) => {
-            if (!AppController.openFile(path))
-                errorDialog.open()
-        }
-        onReloadRequested: {
-            if (!AppController.openFile(AppController.filePath))
-                errorDialog.open()
-        }
+        onRecentRequested: (path) => AppController.openFile(path)
+        onReloadRequested: AppController.openFile(AppController.filePath)
         onCloseRequested: AppController.closeFile()
         onExpandRequested: objectTree.expandToDepth(2)
         onCollapseRequested: objectTree.collapseAll()
@@ -357,6 +351,23 @@ ApplicationWindow {
         id: aboutDialog
     }
 
+    // Whether a file opened is no longer something openFile() can return.
+    //
+    // It is opened on the thread that owns HDF5 and answered a moment later --
+    // which is the whole point, because a large file on a network share takes
+    // long enough that finding out here would freeze the window on the click
+    // that asked. The three places that open one therefore just ask, and this
+    // is where the answer arrives. `errorText` is already bound to the dialog's
+    // body, so all that is left is to put it in front of the reader.
+    Connections {
+        target: AppController
+
+        function onFileOpened(ok, path) {
+            if (!ok)
+                errorDialog.open()
+        }
+    }
+
     // The file picker is the application's own, not the platform's: a native
     // dialog would arrive in the host's palette and typeface, which is the one
     // window in this program that would not look like the program. See
@@ -364,9 +375,6 @@ ApplicationWindow {
     FilePicker {
         id: filePicker
 
-        onFileChosen: (path) => {
-            if (!AppController.openFile(path))
-                errorDialog.open()
-        }
+        onFileChosen: (path) => AppController.openFile(path)
     }
 }

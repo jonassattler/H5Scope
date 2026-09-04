@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include "H5Thread.hpp"
 #include "DatasetImage.hpp"
 #include "DatasetPlot.hpp"
+#include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/File.hpp"
@@ -71,6 +73,8 @@ class AppController : public QObject
     Q_PROPERTY(gui::DatasetImage* datasetImage READ datasetImage CONSTANT)
 
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
+
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString filePath READ filePath NOTIFY fileChanged)
     Q_PROPERTY(QString fileName READ fileName NOTIFY fileChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY errorTextChanged)
@@ -154,7 +158,15 @@ public:
     [[nodiscard]] DatasetPlot* datasetPlot() const;
     [[nodiscard]] DatasetImage* datasetImage() const;
 
-    [[nodiscard]] bool hasFile() const { return file_ != nullptr; }
+    [[nodiscard]] bool hasFile() const { return fileOpen_; }
+    /// Whether the file is being read right now.
+    ///
+    /// Everything this application asks of HDF5 is asked of one other thread
+    /// and answered a moment later, so there is always a moment in which the
+    /// window is showing less than it is about to. This is that moment, and it
+    /// is what the chrome puts an indicator on -- the alternative to a
+    /// progress bar is a window that looks finished when it is not.
+    [[nodiscard]] bool busy() const;
     [[nodiscard]] QString filePath() const { return filePath_; }
     [[nodiscard]] QString fileName() const;
     [[nodiscard]] QString errorText() const { return errorText_; }
@@ -222,6 +234,11 @@ public:
 
 signals:
     void fileChanged();
+    void busyChanged();
+    /// The answer to openFile(), which only says that an open was started.
+    /// `ok` is false when the path turned out not to be a readable HDF5 file,
+    /// and `errorText` then says why.
+    void fileOpened(bool ok, const QString& path);
     void recentFilesChanged();
     /// The selection is about to move to another object, and `currentPath`
     /// still names the one being left. This is when a view writes down what it
@@ -266,7 +283,9 @@ private:
     /// all three views draw whatever it resolves to, so there is one of it.
     QHash<QString, QString> slices_;
 
-    std::shared_ptr<h5core::File> file_;
+    /// Whether the session has a file open. The file itself lives on the HDF5
+    /// thread and is deliberately not reachable from here -- see H5Session.
+    bool fileOpen_ = false;
     QString filePath_;
     QString currentPath_;
     QString errorText_;
@@ -291,10 +310,48 @@ private:
     DatasetPlot* datasetPlot_ = nullptr;
     DatasetImage* datasetImage_ = nullptr;
 
-    /// The dataset itself, kept rather than handed straight to the table:
-    /// with a pipeline running, what the table gets is a computed array, and
-    /// re-running the pipeline must not mean re-opening the dataset.
-    std::shared_ptr<h5core::Dataset> dataset_;
+    /// What the selected dataset is, as plain data. The dataset itself is held
+    /// open by the session on the HDF5 thread -- so that re-running a pipeline
+    /// does not re-open it -- and this is the description of it that everything
+    /// on this side reasons about.
+    bool hasDataset_ = false;
+    h5core::DatasetInfo datasetInfo_;
+
+    /// Everything asked of the HDF5 thread on behalf of a selection. Reset
+    /// whenever the selection moves, so an answer about the last object is
+    /// never applied to this one.
+    H5Requests requests_;
+    /// ...and for the file itself, which outlives any one selection.
+    H5Requests fileRequests_;
+    /// ...and for what the views draw, which changes more often than the
+    /// selection does -- every rearrangement of the table and every edit of the
+    /// pipeline. Its own ticket, so that disowning a superseded pipeline run
+    /// does not also disown the selection that is still being described.
+    H5Requests sourceRequests_;
+
+    /// Everything one selection needs to know, read in a single round trip.
+    ///
+    /// The whole of what describing a selected object costs -- its kind, its
+    /// attribute count, its full description if it is a dataset, its attributes,
+    /// and the Information tab's panels -- gathered on the HDF5 thread and
+    /// handed back as plain data. One job rather than the eight separate reads
+    /// this used to make from the GUI thread, which is both why it no longer
+    /// blocks and why it is no longer eight round trips.
+    struct SelectionFacts {
+        bool described = false;
+        QString message;
+        bool isDataset = false;
+        bool hasAttributes = false;
+        bool datasetOpened = false;
+        h5core::DatasetInfo info;
+        QString datasetMessage;
+        ObjectInfoModel::Content panels;
+        std::vector<h5core::AttributeInfo> attributes;
+    };
+
+    /// Apply what refreshSelection() asked for. Runs on this thread, with the
+    /// selection it was asked about already checked against the current one.
+    void applySelection(SelectionFacts facts);
 
     /// Hand the table what it should be drawing -- the file's own dataset, or
     /// the result of the pipeline over it -- along with the layout that goes

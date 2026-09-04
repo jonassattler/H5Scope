@@ -1471,6 +1471,49 @@ void writeStress(hid_t file)
         }
     }
 
+    // More again, past the point where HDF5 switches a group from compact
+    // link storage to a fractal heap. Expanding this one node is the operation
+    // a large file is most likely to be slow at, and 512 is not enough of a
+    // difference from 8 to show it: at 4096 a listing that opens every member
+    // costs four thousand object headers before a single row can be drawn,
+    // and one that does not costs a couple of hundred reads of the link table.
+    {
+        const Id many = makeGroup(group, "many_children_4096");
+        stringAttribute(many, "note",
+                        "Wide enough that listing it and opening it are "
+                        "different orders of cost");
+        const std::int32_t value = 1;
+        for (int i = 0; i < 4096; ++i) {
+            char name[32] = {};
+            std::snprintf(name, sizeof(name), "item_%04d", i);
+            writeDataset(many, name, H5T_NATIVE_INT32, {}, &value);
+        }
+    }
+
+    // Groups of groups: the shape an acquisition writes, and the one a tree
+    // gets quadratically wrong. A row that says how many members its group
+    // has, arrived at by counting them, costs the whole of the level below for
+    // every row of the level above -- so listing these sixteen names is a
+    // thousand link resolutions unless the count is read from the group header
+    // where HDF5 already keeps it.
+    {
+        const Id nested = makeGroup(group, "nested_16x64");
+        stringAttribute(nested, "note",
+                        "Sixteen groups of sixty-four: a member count taken by "
+                        "counting is quadratic here");
+        const std::int32_t value = 1;
+        for (int g = 0; g < 16; ++g) {
+            char groupName[32] = {};
+            std::snprintf(groupName, sizeof(groupName), "block_%02d", g);
+            const Id block = makeGroup(nested, groupName);
+            for (int i = 0; i < 64; ++i) {
+                char name[32] = {};
+                std::snprintf(name, sizeof(name), "frame_%02d", i);
+                writeDataset(block, name, H5T_NATIVE_INT32, {}, &value);
+            }
+        }
+    }
+
     // Deeper than any layout has indentation for.
     {
         std::vector<Id> levels;
@@ -1671,6 +1714,170 @@ void writeRootReferenceAttribute(hid_t file)
     must(H5Rdestroy(&reference), "release reference");
 }
 
+
+// --- the scale file: thousands of each, rather than one of everything ------
+//
+// Written by writeScaleFile() into a file of its own. What is exercised here
+// is the *hierarchy*: how long it takes to list a group, to walk a subtree,
+// and to say something true about every row of a listing. None of that is
+// about what the datasets contain, so the contents are the dullest thing that
+// still puts real bytes between the objects -- which is the half of the
+// problem a sparse file would quietly remove.
+
+/// A name like "run_0007". snprintf into a fixed buffer, because this is
+/// called tens of thousands of times and a std::format per link name is the
+/// generator's own bottleneck.
+struct Name
+{
+    char text[64] = {};
+    Name(const char* pattern, int index) { std::snprintf(text, sizeof(text), pattern, index); }
+    operator const char*() const { return text; } // NOLINT(google-explicit-constructor)
+};
+
+/// One channel's worth of data, computed once and written to every channel.
+///
+/// Every dataset holding the same bytes is not a shortcoming here: nothing in
+/// the tree reads an element, and what the file is for is the cost of walking
+/// past a great many objects that each have real storage behind them.
+std::vector<float> scaleFrame(const ScaleSpec& spec)
+{
+    std::vector<float> values(spec.frames * spec.rows * spec.columns);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const double t = static_cast<double>(i) / 512.0;
+        values[i] = static_cast<float>(std::sin(t) + 0.25 * std::sin(t * 11.0));
+    }
+    return values;
+}
+
+/// The settings a run carries: scalars in a group of their own, so a walk of
+/// the file meets a level whose objects are all metadata and no data.
+void writeScaleSettings(hid_t run, const ScaleSpec& spec)
+{
+    const Id settings = makeGroup(run, "settings");
+    for (int i = 0; i < spec.settingsPerRun; ++i) {
+        const double value = 0.5 * static_cast<double>(i);
+        writeDataset(settings, Name("setting_%02d", i), H5T_NATIVE_DOUBLE, {}, &value);
+    }
+}
+
+void writeScaleChannels(hid_t detector, const ScaleSpec& spec,
+                        const std::vector<float>& frame, hid_t createProps)
+{
+    const std::vector<hsize_t> dims{static_cast<hsize_t>(spec.frames),
+                                    static_cast<hsize_t>(spec.rows),
+                                    static_cast<hsize_t>(spec.columns)};
+    for (int c = 0; c < spec.channelsPerDetector; ++c) {
+        const Name name("channel_%02d", c);
+        writeDataset(detector, name, H5T_NATIVE_FLOAT, dims, frame.data(), createProps);
+        if (spec.attributesPerChannel <= 0) {
+            continue;
+        }
+        const Id dataset(H5Dopen2(detector, name, H5P_DEFAULT), &H5Dclose,
+                         "reopen channel");
+        // The four a real acquisition writes, then filler. A tree that tags
+        // rows carrying attributes has to ask every row, and the answer here
+        // is always yes -- which is the expensive shape, not the easy one.
+        for (int a = 0; a < spec.attributesPerChannel; ++a) {
+            switch (a) {
+            case 0:  stringAttribute(dataset, "units", "counts"); break;
+            case 1:  doubleAttribute(dataset, "scale", 1.0 + 0.001 * c); break;
+            case 2:  doubleAttribute(dataset, "offset", -0.5); break;
+            case 3:  intAttribute(dataset, "channel", c); break;
+            default: intAttribute(dataset, Name("extra_%02d", a), a); break;
+            }
+        }
+    }
+}
+
+void writeScaleContents(hid_t file, const ScaleSpec& spec)
+{
+    stringAttribute(file, "purpose",
+                    "Scale rather than variety: thousands of objects, "
+                    "gigabytes of storage, nothing exotic");
+    stringAttribute(file, "generator", "H5Scope make-example-file --scale");
+
+    const std::vector<float> frame = scaleFrame(spec);
+
+    // Chunked along whole frames: the layout a detector writer produces, and
+    // the one that puts a chunk index in every dataset's header for a tree
+    // walk to trip over.
+    Id createProps = chunked({1, static_cast<hsize_t>(spec.rows),
+                              static_cast<hsize_t>(spec.columns)});
+    if (spec.compress) {
+        must(H5Pset_shuffle(createProps), "shuffle");
+        must(H5Pset_deflate(createProps, 1), "deflate");
+    }
+
+    {
+        const Id runs = makeGroup(file, "runs");
+        stringAttribute(runs, "note", "One group per acquisition");
+        for (int r = 0; r < spec.runs; ++r) {
+            const Id run = makeGroup(runs, Name("run_%04d", r));
+            intAttribute(run, "run_id", r);
+            stringAttribute(run, "operator", "unattended");
+            doubleAttribute(run, "duration_s", 60.0 + r);
+
+            const Id detectors = makeGroup(run, "detectors");
+            for (int d = 0; d < spec.detectorsPerRun; ++d) {
+                const Id detector = makeGroup(detectors, Name("det_%02d", d));
+                stringAttribute(detector, "serial",
+                                std::string(Name("SN-%05d", r * 16 + d)));
+                writeScaleChannels(detector, spec, frame, createProps);
+            }
+            writeScaleSettings(run, spec);
+        }
+    }
+
+    // Many groups, each with many members. Expanding /sessions shows 256
+    // rows; saying how many frames each of them holds, by counting them, is
+    // 16384 link resolutions for a listing of 256 -- which is what makes a
+    // tree feel slow in a way no viewport limit rescues, because the work is
+    // proportional to the level *below* the one on screen.
+    {
+        const Id sessions = makeGroup(file, "sessions");
+        stringAttribute(sessions, "note", "Groups of groups: the quadratic case");
+        const std::int32_t value = 1;
+        for (int s = 0; s < spec.sessions; ++s) {
+            const Id session = makeGroup(sessions, Name("session_%03d", s));
+            intAttribute(session, "index", s);
+            for (int f = 0; f < spec.framesPerSession; ++f) {
+                writeDataset(session, Name("frame_%03d", f), H5T_NATIVE_INT32, {},
+                             &value);
+            }
+        }
+    }
+
+    // The widest listing in the file. Expanding this one node is the single
+    // operation a tree is most likely to be slow at, and it is the reason the
+    // group is here rather than the same count spread over a subtree.
+    {
+        const Id flat = makeGroup(file, "flat");
+        stringAttribute(flat, "note", "One group, many thousands of members");
+        const std::int32_t value = 1;
+        for (int i = 0; i < spec.flatChildren; ++i) {
+            writeDataset(flat, Name("item_%05d", i), H5T_NATIVE_INT32, {}, &value);
+        }
+    }
+
+    // Soft links across the file, so a walk meets names that have to be
+    // resolved rather than merely read. A tenth of the runs is enough to make
+    // the path visible in a profile without changing what the file is about.
+    {
+        const Id aliases = makeGroup(file, "aliases");
+        stringAttribute(aliases, "note", "Soft links into /runs, plus one that leads nowhere");
+        for (int r = 0; r < spec.runs; r += 10) {
+            char target[64] = {};
+            std::snprintf(target, sizeof(target), "/runs/run_%04d", r);
+            must(H5Lcreate_soft(target, aliases, Name("alias_%04d", r), H5P_DEFAULT,
+                                H5P_DEFAULT),
+                 "create alias");
+        }
+        must(H5Lcreate_soft("/runs/run_999999", aliases, "broken", H5P_DEFAULT,
+                            H5P_DEFAULT),
+             "create broken alias");
+    }
+}
+
 } // namespace
 
 void writeExampleFiles(const std::filesystem::path& directory)
@@ -1713,6 +1920,31 @@ void writeExampleFiles(const std::filesystem::path& directory)
     // other: filter 32004 is absent, and /filters/unavailable_mandatory
     // cannot be decoded.
     must(H5Zunregister(kPretendLz4.id), "unregister the stand-in filter");
+}
+
+
+std::size_t writeScaleFile(const std::filesystem::path& path, const ScaleSpec& spec)
+{
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+
+    {
+        // Default file-creation and access properties throughout, deliberately.
+        // A bigger metadata block would cluster the object headers and make the
+        // file quicker to walk than the ones this is meant to stand in for:
+        // an acquisition writes a header, then its data, then the next header,
+        // so the metadata a tree reads is scattered through the gigabytes it
+        // does not. Tuning that away here would tune away the measurement.
+        const Id file(H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT,
+                                H5P_DEFAULT),
+                      &H5Fclose, "create the scale file");
+        writeScaleContents(file, spec);
+    }
+
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? 0U : static_cast<std::size_t>(size);
 }
 
 } // namespace h5example

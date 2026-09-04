@@ -22,17 +22,43 @@ TestCase {
     height: 600
 
     readonly property string fixture: TestFixture.path
+
+    /// Open the fixture and wait for it.
+    ///
+    /// Opening is asked of the HDF5 thread and answered a moment later, so a
+    /// test that asserts on what is in the file has to say when it wants the
+    /// answer. `tryVerify` is Qt Quick Test's way of doing that: it runs the
+    /// event loop until the condition holds or the deadline passes, which is
+    /// exactly what the window does while it waits.
+    function openFixture() {
+        verify(AppController.openFile(fixture), "the fixture must be accepted")
+        tryVerify(() => AppController.hasFile && !AppController.busy, 10000,
+                  "the fixture must finish opening")
+        return AppController.hasFile
+    }
+
+    /// Select an object and wait for everything the selection rebuilds.
+    /// Describing the object is one round trip; installing what the views draw
+    /// is the next, so this settles twice.
+    function select(path) {
+        verify(AppController.selectPath(path))
+        tryVerify(() => AppController.currentPath === path && !AppController.busy,
+                  10000, "selecting " + path)
+        wait(0)
+        tryVerify(() => !AppController.busy, 10000, "settling after " + path)
+        return true
+    }
     readonly property var pipeline: AppController.postprocessModel
 
     function initTestCase() {
-        verify(AppController.openFile(fixture), "fixture must open")
+        openFixture()
     }
 
     /// Every test starts on a file nobody has been at yet, so a pipeline left
     /// running by one of them is not inherited by the next.
     function init() {
         AppController.closeFile()
-        verify(AppController.openFile(fixture), "fixture must re-open")
+        verify(openFixture(), "fixture must re-open")
     }
 
     function cleanupTestCase() {
@@ -87,7 +113,7 @@ TestCase {
     }
 
     function test_the_panel_opens_on_the_two_ends_and_nothing_between() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = openPanel()
 
         // The input, the slice and the output: in the beginning they are the
@@ -99,7 +125,7 @@ TestCase {
     }
 
     function test_the_switch_greys_everything_below_it() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = openPanel()
 
         const box = findChild(win.contentItem, "enablePostprocessing")
@@ -119,7 +145,7 @@ TestCase {
     }
 
     function test_a_row_is_added_by_the_button_and_removed_by_the_x() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         const win = openPanel()
 
@@ -162,7 +188,7 @@ TestCase {
     function test_the_add_row_sits_in_the_chain_above_the_output() {
         // Where postprocessing.md draws it: a row of the chain, with the same
         // gutter as the steps, rather than a strip below the panel.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         const win = openPanel()
 
@@ -189,7 +215,7 @@ TestCase {
     }
 
     function test_the_shape_column_states_what_each_step_leaves() {
-        verify(AppController.selectPath("/cube")) // 2 x 3 x 4
+        verify(select("/cube")) // 2 x 3 x 4
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.setArgument(2, "0")
@@ -217,7 +243,7 @@ TestCase {
     }
 
     function test_a_step_that_cannot_run_says_so_where_it_happened() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         pipeline.addStep("transpose")
         pipeline.setArgument(2, "7, 7")
@@ -234,7 +260,7 @@ TestCase {
     }
 
     function test_clicking_a_row_greys_the_ones_after_it() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.setArgument(2, "0")
@@ -259,7 +285,7 @@ TestCase {
     }
 
     function test_the_bar_says_when_a_pipeline_is_running() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -280,7 +306,7 @@ TestCase {
     }
 
     function test_the_button_opens_the_panel_and_widens_the_rail() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -306,7 +332,7 @@ TestCase {
     }
 
     function test_the_slice_row_is_the_slice_above_the_table() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         openPanel()
 
@@ -324,7 +350,7 @@ TestCase {
     function test_each_row_says_what_its_argument_is() {
         // "axis" and "shape" are not interchangeable and neither is guessable
         // from the operation's name, so the box says which one it wants.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.addStep("abs")
@@ -353,7 +379,7 @@ TestCase {
         // so the two rows that take an argument in the same way looked like
         // two different kinds of control, and no two boxes in the panel began
         // at the same x.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.addStep("reshape")
@@ -376,7 +402,7 @@ TestCase {
         // nothing on screen used to say which of the two states it was in --
         // the shape beside it and the numbers in the view were still the
         // previous argument's.
-        verify(AppController.selectPath("/cube")) // 2 x 3 x 4
+        verify(select("/cube")) // 2 x 3 x 4
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.setArgument(2, "0")
@@ -422,7 +448,7 @@ TestCase {
         // codebase had no precedent for. Driven with real presses rather than
         // by calling moveStep, because what is being tested is the arithmetic
         // that turns a drop position into a destination row.
-        verify(AppController.selectPath("/hypercube")) // 2 x 3 x 4 x 5
+        verify(select("/hypercube")) // 2 x 3 x 4 x 5
         pipeline.enabled = true
         pipeline.addStep("max")
         pipeline.setArgument(2, "0")
@@ -484,7 +510,7 @@ TestCase {
         // The output array is a new array with its own rank, so an axis
         // assignment made about the dataset cannot be carried onto it. The
         // control says so instead of accepting clicks that change nothing.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -507,7 +533,7 @@ TestCase {
     }
 
     function test_a_dataset_with_no_numbers_says_why_it_cannot() {
-        verify(AppController.selectPath("/str_vlen"))
+        verify(select("/str_vlen"))
         const win = openPanel()
 
         // The switch is still there to set; what changes is that setting it
