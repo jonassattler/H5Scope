@@ -54,6 +54,28 @@ fi
 echo "OK: no Qt or HDF5 runtime dependency"
 echo
 
+# --- nor libxcb-cursor, which is the one X library RHEL 8 lacks ------------
+# Qt 6.5 and newer link the xcb platform plugin against libxcb-cursor
+# unconditionally, and RHEL 8 ships it in neither BaseOS nor AppStream -- EPEL
+# only. A binary that needs it does not start on a stock RHEL 8 desktop at all:
+# the loader refuses it before main. ports/xcb-util-cursor builds the library
+# static so it travels inside the executable instead, and this is what proves
+# it stayed that way.
+#
+# objdump rather than ldd, deliberately: ldd on a machine that does have the
+# library reports it resolved and says nothing about whether it was needed.
+# The NEEDED entry is the fact being checked.
+echo "== no libxcb-cursor runtime dependency"
+if objdump -p "$binary" | grep -q 'NEEDED.*libxcb-cursor'; then
+    echo "::error::binary needs libxcb-cursor.so.0, which RHEL 8 has only"\
+         "through EPEL. XCB::CURSOR must resolve to the static archive from"\
+         "ports/xcb-util-cursor; the root CMakeLists asserts that at configure"\
+         "time, so reaching here means something bypassed it."
+    exit 1
+fi
+echo "OK: libxcb-cursor is inside the binary, not asked of the host"
+echo
+
 # --- it will start on RHEL 8 -----------------------------------------------
 echo "== the RHEL 8 glibc floor"
 bash "$repo_root/tools/check-glibc-floor.sh" 2.28 "$binary"

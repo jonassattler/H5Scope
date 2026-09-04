@@ -46,6 +46,7 @@ set(H5SCOPE_LINKED_PORTS
   qtquick3d
   qtshadertools
   qtsvg
+  xcb-util-cursor
   zlib
   zstd
 )

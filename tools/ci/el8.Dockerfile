@@ -28,10 +28,18 @@ FROM almalinux:8
 # Two repositories have to be turned on before anything can be installed.
 #
 #   EPEL        carries xcb-util-cursor-devel, and nothing else this build
-#               wants. Qt 6.5 and newer will not start without libxcb-cursor,
-#               and RHEL 8 ships it in neither BaseOS nor AppStream. That is
-#               also why the AppImage bundles the library: a stock RHEL 8
-#               desktop does not have it either.
+#               wants. Qt 6.5 and newer link the xcb platform plugin against
+#               libxcb-cursor unconditionally, and the `xcb` feature's own
+#               configure test includes <xcb/xcb_cursor.h> -- so without the
+#               header here, vcpkg's Qt builds with no xcb plugin at all.
+#
+#               Note what this is and is not. It is a *build-time* requirement,
+#               and only qtbase's. The release binary asks nothing of EPEL: it
+#               links the library statically, from ports/xcb-util-cursor, which
+#               is exactly because a stock RHEL 8 desktop does not have it and
+#               a user cannot be told to enable a third-party repository to
+#               open a file. If Qt ever stops needing the header at configure
+#               time, this line goes and nothing downstream notices.
 #   PowerTools  carries autoconf-archive and ninja-build.
 #
 # Then, in one layer because a half-installed build environment is not worth

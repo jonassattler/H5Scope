@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "xcb-util-cursor",
+  "version": "0.1.5",
+  "description": "XCB cursor library, built static so it travels inside the binary rather than being asked of the host.",
+  "homepage": "https://gitlab.freedesktop.org/xorg/lib/libxcb-cursor",
+  "license": "MIT",
+  "supports": "linux",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

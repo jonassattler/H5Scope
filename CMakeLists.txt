@@ -68,6 +68,39 @@ if(PROJECT_IS_TOP_LEVEL)
   set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 endif()
 
+# --- libxcb-cursor travels inside the binary too ----------------------------
+# Qt does not record where it found the xcb libraries. Its exported
+# Qt6XcbQpaPrivateDependencies.cmake re-runs find_package(XCB COMPONENTS CURSOR
+# ...) here, at *this* project's configure time, through the copy of ECM's
+# FindXCB.cmake that Qt installs -- so XCB::CURSOR is resolved by a
+# find_library run from here, not by whatever the Qt build happened to see.
+# That is the hook this uses.
+#
+# It matters because libxcb-cursor is the one X library RHEL 8 does not have.
+# Qt 6.5 and newer link the xcb platform plugin against it unconditionally, and
+# RHEL 8 ships it in neither BaseOS nor AppStream -- EPEL only. A binary that
+# needs it does not start on a stock RHEL 8 desktop: not "no platform plugin",
+# but the dynamic loader refusing the executable before main, naming a library
+# the user has no obvious way to get.
+#
+# USE_XCB_CURSOR_STATIC is ECM's own switch for this. It makes FindXCB search
+# for the literal name libxcb-cursor.a, which the system copy is not and
+# ports/xcb-util-cursor is -- so there is nothing to get wrong about search
+# order, and no way to end up with the shared library by accident. Set before
+# find_package(Qt6), because that is what triggers the find.
+set(USE_XCB_CURSOR_STATIC ON)
+
+# find_library caches, and a tree configured before this port existed cached
+# the shared library. Nothing above would dislodge it -- the variable is
+# already set, so the find is skipped and the old answer stands. Dropping a
+# non-archive answer here lets the find run again, which turns "your build
+# directory predates the fix" from a wrong binary into a non-event. A genuinely
+# missing archive still fails, below.
+if(DEFINED CACHE{XCB_CURSOR_LIBRARY} AND NOT XCB_CURSOR_LIBRARY MATCHES "\\.a$")
+  message(STATUS "Discarding cached XCB_CURSOR_LIBRARY=${XCB_CURSOR_LIBRARY}")
+  unset(XCB_CURSOR_LIBRARY CACHE)
+endif()
+
 # --- dependencies ----------------------------------------------------------
 # Graphs rather than Charts for the Data Viewer's plot: Charts is the
 # QGraphicsView-era module -- its ChartView wraps a QGraphicsWidget and asserts
@@ -77,6 +110,47 @@ endif()
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickTest Test
                                            LabsFolderListModel Graphs QuickShapes
                                            QuickDialogs2)
+
+# What has to be true afterwards, asserted rather than assumed: every failure
+# here is a silent one, and every one of them is next visible on the user's
+# machine rather than on this one.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # The find above ran at all. Without the target there is no xcb platform
+  # plugin either, and the failure would otherwise surface much later, in
+  # src/CMakeLists' qt_import_plugins, as a name that does not resolve.
+  if(NOT TARGET XCB::CURSOR)
+    message(FATAL_ERROR
+      "Qt was found but XCB::CURSOR was not, so this Qt has no xcb platform "
+      "plugin. Check that the X development headers are installed; see the "
+      "Building section of README.md.")
+  endif()
+
+  # An archive is what was found. Anything else -- the system's shared library,
+  # or nothing -- means ports/xcb-util-cursor did not reach the link, and the
+  # binary is back to needing a library RHEL 8 has only through EPEL.
+  if(NOT XCB_CURSOR_LIBRARY MATCHES "\\.a$")
+    message(FATAL_ERROR
+      "XCB::CURSOR resolved to '${XCB_CURSOR_LIBRARY}', which is not a static "
+      "archive. The release must not depend on libxcb-cursor.so.0: RHEL 8 has "
+      "it only through EPEL, and the binary would not start there.\n"
+      "libxcb-cursor.a comes from ports/xcb-util-cursor, which reaches vcpkg "
+      "through VCPKG_OVERLAY_PORTS -- set by every preset in "
+      "CMakePresets.json. A configure that bypasses the presets has to pass "
+      "it itself.")
+  endif()
+
+  # And the link order. ECM tells CMake that XCB::CURSOR depends on XCB::XCB
+  # and stops there, which was true enough while it was a shared library: the
+  # loader resolved the rest. An archive is pulled in member by member to
+  # satisfy symbols already undefined where the linker reaches it, so the
+  # libraries answering xcb-util-cursor's own references have to be known as
+  # its dependencies rather than merely present somewhere on the line. Stating
+  # them is what lets CMake order the link, and costs nothing if the order was
+  # already right.
+  set_property(TARGET XCB::CURSOR APPEND PROPERTY
+    INTERFACE_LINK_LIBRARIES XCB::RENDER XCB::RENDERUTIL XCB::IMAGE)
+endif()
+
 # Module mode is deliberate: vcpkg's hdf5 wrapper hooks find_package(HDF5) to
 # set HDF5_USE_STATIC_LIBRARIES and define H5_BUILT_AS_STATIC_LIB for us.
 find_package(HDF5 REQUIRED COMPONENTS C)

@@ -60,14 +60,25 @@ echo "== what it bundles"
 ls squashfs-root/usr/lib
 echo
 
-# libxcb-cursor is the whole reason this AppImage earns its place. RHEL 8 ships
-# it in neither BaseOS nor AppStream -- it is EPEL only -- and Qt 6.5 and newer
-# abort at startup without it. If it ever stops being bundled, a stock RHEL 8
-# desktop stops being able to run this at all, so it is asserted rather than
-# assumed.
-echo "== the library RHEL 8 does not have"
-test -e squashfs-root/usr/lib/libxcb-cursor.so.0
-echo "OK: libxcb-cursor.so.0 travels with the AppImage"
+# libxcb-cursor used to be bundled here, and used to be most of the reason this
+# AppImage existed: RHEL 8 ships it in neither BaseOS nor AppStream, only EPEL.
+# It is now linked into the executable instead (ports/xcb-util-cursor), so the
+# bare binary needs it from nowhere and the AppImage has nothing to carry. The
+# check is therefore inverted rather than deleted -- if the dependency ever
+# comes back, it comes back in both artefacts at once, and the payload is where
+# it can be seen.
+echo "== the library RHEL 8 does not have is not asked for"
+if objdump -p squashfs-root/usr/bin/H5Scope-* | grep -q 'NEEDED.*libxcb-cursor'; then
+    echo "::error::the payload needs libxcb-cursor.so.0; it must be linked"\
+         "statically from ports/xcb-util-cursor. See verify-binary.sh."
+    exit 1
+fi
+if ls squashfs-root/usr/lib/libxcb-cursor.so* >/dev/null 2>&1; then
+    echo "::error::libxcb-cursor is bundled but nothing needs it; the payload"\
+         "should be linking it statically."
+    exit 1
+fi
+echo "OK: libxcb-cursor is inside the payload, neither bundled nor asked for"
 echo
 
 # The mirror image of the check above: bundling any of these would override the
