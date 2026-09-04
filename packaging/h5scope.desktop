@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=H5Scope
+GenericName=HDF5 Viewer
+Comment=Inspect and visualise HDF5 files
+Exec=H5Scope %f
+TryExec=H5Scope
+Icon=h5scope
+Terminal=false
+Categories=Science;Utility;Viewer;DataVisualization;
+MimeType=application/x-hdf;application/x-hdf5;
+Keywords=HDF5;HDF;h5;hdf5;dataset;array;scientific;data;plot;
+StartupNotify=true
+StartupWMClass=H5Scope

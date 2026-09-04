@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Jonas Sattler
+  SPDX-License-Identifier: GPL-3.0-only
+
+  The application icon, and the only drawing in the project.
+
+  It is built out of the interface's own vocabulary rather than a generic
+  file-or-magnifier: the amber brackets are the slice syntax the Data Viewer
+  puts on screen, the grid behind them is a dataset, and the cyan polyline is
+  the plot drawn through it. The palette is Theme.qml's, so the icon and the
+  window it launches are the same two accents on the same near-black ground.
+
+  Authored at 256x256 because that is the size AppImage and the hicolor theme
+  want; every raster below it is scaled from this file by tools/make-icons.sh.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Ground: Theme.n2 with a Theme.n5 rim, so the icon keeps an edge on a
+       dark desktop background instead of dissolving into it. -->
+  <rect x="3" y="3" width="250" height="250" rx="56" fill="#0E1012"/>
+  <rect x="3" y="3" width="250" height="250" rx="56" fill="none" stroke="#282D31" stroke-width="6"/>
+
+  <!-- The dataset: a faint lattice, clipped to the plotting area so it reads
+       as a grid the line is drawn on rather than as a texture. -->
+  <g stroke="#3A4045" stroke-width="3" opacity="0.85">
+    <path d="M76 88 H180 M76 128 H180 M76 168 H180"/>
+    <path d="M102 78 V178 M128 78 V178 M154 78 V178"/>
+  </g>
+
+  <!-- The plot. Round joins because the polyline in PlotSurface has them. -->
+  <polyline points="72,158 98,112 124,140 150,74 176,104"
+            fill="none" stroke="#4DE1FF" stroke-width="13"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- The slice brackets, the one piece of syntax the whole UI is built
+       around. Amber is Theme.amber500. -->
+  <g fill="none" stroke="#FFB000" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M62 58 H40 V198 H62"/>
+    <path d="M194 58 H216 V198 H194"/>
+  </g>
+</svg>

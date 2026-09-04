@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# The AppImage entry point. Kept to the three things it actually has to do,
+# because everything else about this application is already inside the
+# executable: Qt, HDF5 and the fonts are linked statically, so there are no
+# plugin directories to point at and no qt.conf to write.
+#
+# What does have to happen is the library path. tools/make-appimage.sh bundles
+# the handful of libraries RHEL 8 either does not ship or ships only through
+# EPEL -- libxcb-cursor above all, which Qt 6.5 and newer refuse to start
+# without -- and they live in usr/lib next to nothing else.
+#
+# POSIX sh rather than bash: this runs before anything is known about the host,
+# and /bin/sh is the one interpreter that is always there.
+
+APPDIR="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# The binary is named for its version, so the AppDir carries an unversioned
+# symlink beside it and this never has to know which release it is in.
+exec "$APPDIR/usr/bin/H5Scope" "$@"

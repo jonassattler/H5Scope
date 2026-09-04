@@ -1,0 +1,514 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: CI
+
+# Every commit, on every branch, plus pull requests from forks -- which is what
+# "on each commit" has to mean for a project whose whole build is reproducible
+# from a manifest. `workflow_dispatch` is for re-running a job after a flake
+# without having to push an empty commit.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref. Pushing three times in a minute should not leave two doomed
+# Qt builds occupying runners for the next half hour.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Seconds, and no build at all: the two design-system checks are shell over
+  # the QML tree. They run as part of ctest too, but a violation should not have
+  # to wait out a Qt build to be reported.
+  checks:
+    name: Design checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: No raw colours, pixels or font families outside Theme.qml
+        run: bash tools/check-design-tokens.sh src/qml
+
+      - name: Nothing elides without a tooltip to read it in full
+        run: bash tools/check-elided-text.sh src/qml
+
+  build:
+    name: Build and test (release, RHEL 8 floor)
+    runs-on: ubuntu-latest
+    # A cold cache builds Qt from source. The default job limit is six hours;
+    # this states it rather than relying on it.
+    timeout-minutes: 360
+
+    # The runner is Ubuntu, but nothing is compiled on it. Every step that
+    # touches a compiler goes through tools/ci/el8.sh into an AlmaLinux 8
+    # container, because the oldest system this project supports is RHEL 8 and
+    # a binary's glibc floor is fixed by the machine that linked it. See
+    # tools/ci/el8.Dockerfile for the whole argument.
+    #
+    # The checkout, the caches and the artefact uploads stay on the host, where
+    # the actions' own Node runtime lives -- keeping them out of the container
+    # is what makes the container free to be as old as it needs to be.
+    env:
+      H5SCOPE_EL8_IMAGE: h5scope-el8
+
+    steps:
+      # The whole history and the tags with it, not the default single commit:
+      # the patch number is how many release tags this commit descends from,
+      # and a shallow clone answers that about the commits it was given rather
+      # than the commits there are. cmake/Version.cmake refuses to version a
+      # shallow build rather than reporting a wrong number, so without this
+      # every CI build would call itself unversioned.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # A from-source Qt needs more room than a runner ships with, and the
+      # image is mostly toolchains this build has no use for. Reclaiming them
+      # is the difference between finishing and dying halfway through a
+      # translation unit with "No space left on device".
+      #
+      # This now has a second job: the build container's layers land in
+      # /var/lib/docker on this same disk, so the headroom is shared.
+      #
+      # What this job is actually running on is recorded rather than inferred:
+      # vcpkg's "-j3" was the only evidence of the core count for several runs,
+      # and how long a from-source Qt takes is entirely a function of it.
+      - name: Free disk space
+        run: |
+          echo "cores: $(nproc)"
+          free -g
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      /usr/local/.ghcup /usr/share/swift
+          sudo apt-get clean
+          docker image prune -af || true
+          df -h
+
+      # A private HOME for the container, on the runner's disk and at a path
+      # that is the same inside and out. vcpkg's binary cache lives under it,
+      # which is what the cache steps below save and restore.
+      - name: Point the container's HOME somewhere cacheable
+        run: |
+          echo "H5SCOPE_EL8_HOME=$HOME/el8-home" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/el8-home"
+
+      # Its own step so its cost shows up in the timing rather than hiding
+      # inside the first build step, and so a broken package list fails here --
+      # in four minutes, with dnf's own error -- instead of somewhere less
+      # obvious. The Dockerfile ends with assertions about the compiler and the
+      # glibc, so reaching the end of this step is already proof that the floor
+      # is what it claims to be.
+      - name: Build the RHEL 8 build environment
+        run: |
+          docker build -t "$H5SCOPE_EL8_IMAGE" \
+            -f tools/ci/el8.Dockerfile tools/ci
+          df -h
+
+      # Pinned to the manifest's own builtin-baseline, so the registry CI reads
+      # is exactly the one vcpkg.json names. Cloning the tip instead would make
+      # every run depend on whatever upstream landed that morning, which is the
+      # opposite of what pinning the dependencies was for.
+      #
+      # Cloned on the host and bootstrapped in the container: the tool that
+      # bootstrap downloads has to run against glibc 2.28, not the runner's.
+      - name: Set up vcpkg
+        run: |
+          BASELINE=$(python3 -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          git -C "$HOME/vcpkg" checkout --detach "$BASELINE"
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Bootstrap vcpkg against the target glibc
+        run: tools/ci/el8.sh "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      # On the host, because this is only fetching files and the runner's curl
+      # is as good as the container's. See the script for why any of it is
+      # needed: ftpmirror.gnu.org kept routing to a mirror returning 502 and
+      # took two runs down at gperf. Warnings only -- vcpkg still has the
+      # port's own URLs, and a mirror wobble should not be a red run.
+      - name: Seed sources whose upstream mirror is unreliable
+        run: tools/ci/seed-downloads.sh
+
+      # Qt from source dominates the time here, so the cache has to accumulate
+      # rather than merely exist.
+      #
+      # The run id in the key is what makes that work. A key that is only the
+      # manifest hash is written once and then hits forever, and a save
+      # conditioned on it missing never runs again -- so the first partial
+      # cache is the last one, and every run afterwards rebuilds everything it
+      # did not cover and discards it. That is exactly what happened here: the
+      # cache sat at 179 MB of small packages while four consecutive runs each
+      # spent hours rebuilding Qt from scratch.
+      #
+      # With the run id the key never hits, the restore-keys below fall back to
+      # the newest cache for this manifest, and the save at the end writes a
+      # superset. Each run therefore starts where the last one got to, whether
+      # or not the last one passed.
+      #
+      # `el8` is in the key because moving the build onto RHEL 8 changed the
+      # compiler, and vcpkg hashes the compiler into every package's ABI tag.
+      # Nothing built on Ubuntu can be reused, and a key that did not say so
+      # would restore a cache whose every entry misses.
+      #
+      # The run *attempt* is in the key as well, and without it the whole
+      # strategy quietly stops working exactly when it is being relied on. Re-
+      # running a timed-out job keeps the same run id, and a cache key that
+      # already exists cannot be written again -- the save step still reports
+      # success, so nothing looks wrong. That happened here: the first run on
+      # main banked 96 MB, timed out, and its re-run went on to build the whole
+      # of Qt and could save none of it. The next run started from 96 MB again.
+      #
+      # With the attempt in the key each attempt writes its own entry, the
+      # restore-keys below still find the newest by prefix, and "re-run the
+      # failed job to carry on from where it got to" means what it says.
+      - name: Restore vcpkg binaries
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/el8-home/.cache/vcpkg/archives
+          key: vcpkg-el8-${{ hashFiles('vcpkg.json', 'tools/ci/el8.Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-el8-${{ hashFiles('vcpkg.json', 'tools/ci/el8.Dockerfile') }}-
+            vcpkg-el8-
+
+      # Three things about this line, all about disk.
+      #
+      # The overlay triplet builds Qt release-only. vcpkg builds both
+      # configurations of every port by default, so this job would otherwise
+      # pay for a full debug Qt it never links. The presets still name plain
+      # x64-linux, so a local tree is unaffected and the debug preset works.
+      #
+      # It has to be set for the *host* triplet too, and that was missed the
+      # first time round. Qt's ports declare host dependencies -- moc, rcc,
+      # qmltyperegistrar, the whole tool chain -- and those default to the
+      # native triplet, so 36 of the 58 packages were still building both
+      # configurations. That is where `buildtrees/qtdeclarative/x64-linux-dbg`
+      # came from, and with it the disk exhaustion that killed the build and
+      # then the cache save along with it.
+      #
+      # The clean options are what make it fit at all. vcpkg keeps every port's
+      # buildtree for the whole run; by the time qtbase starts, eighty other
+      # ports' intermediate files are still on the disk, and qtbase then wants
+      # more than what is left -- 32 GB free was not enough. Cleaning each port
+      # once it has built keeps only the installed artefacts, which are what
+      # the next port actually needs. Failed ports keep their logs either way,
+      # so this costs nothing when something breaks.
+      #
+      # Two hours, and the number is measured rather than reasoned.
+      #
+      # The accumulating cache only helps if the job survives to write it, and
+      # this runner does not survive long. Two attempts were reclaimed
+      # mid-compile -- at 2h28m and at 3h33m -- with the save step never
+      # reached, so the cache stayed at 179 MB while each of them spent hours
+      # rebuilding Qt and lost the lot. A cap set against the job's own
+      # six-hour limit was worthless, because nothing here lives that long.
+      #
+      # Capping the step at two hours puts it comfortably inside what the
+      # runner has actually managed, so the step ends on its own terms and the
+      # rest of the job -- save included -- runs normally. A build that runs
+      # out of time now banks its progress, which is the entire property the
+      # strategy depends on and the one thing it has never had.
+      #
+      # Nothing finished is discarded: vcpkg writes each package's archive as
+      # that package completes, so only the port in flight is lost.
+      - name: Configure
+        timeout-minutes: 120
+        run: |
+          tools/ci/el8.sh cmake --preset release \
+            -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-release \
+            -DVCPKG_HOST_TRIPLET=x64-linux-release \
+            "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build;--clean-downloads-after-build"
+          df -h
+
+      - name: Build
+        run: tools/ci/el8.sh cmake --build --preset release
+
+      # Every suite: h5core, the models, the example file read back through the
+      # whole stack, the Qt Quick Test QML suite, the QML-root load test, and
+      # the two design checks again. The preset forces the offscreen platform,
+      # so this needs no display.
+      - name: Test
+        run: tools/ci/el8.sh ctest --preset release
+
+      # The load-bearing check for the whole point of this job, and the one
+      # thing a successful build does not establish on its own. A binary that
+      # references a glibc symbol version RHEL 8 never defined compiles, links,
+      # passes every test here, and then fails on the user's machine at
+      # startup with "version `GLIBC_2.34' not found". The only place to catch
+      # that is in the ELF, so this reads the versions back out and compares
+      # them against 2.28.
+      #
+      # It covers the tools as well as the application: inspect-file is
+      # published to nobody, but it is built by the same toolchain and a
+      # regression would show up in it just as clearly.
+      - name: Everything starts on RHEL 8's glibc
+        run: |
+          tools/ci/el8.sh bash tools/check-glibc-floor.sh 2.28 \
+            build/release/bin/H5Scope \
+            build/release/bin/inspect-file
+
+      # It runs, it asks nothing of the host's Qt or HDF5, it starts on RHEL 8,
+      # and it carries the licences it is conveyed under. Run inside the
+      # container because that is where the X11 and GL libraries the binary
+      # does legitimately need actually exist -- the runner's Ubuntu has no
+      # libxcb-cursor, so the loader would refuse it there for a reason that
+      # has nothing to do with what is being checked.
+      - name: The binary is fit to publish
+        run: |
+          tools/ci/el8.sh bash tools/ci/verify-binary.sh \
+            build/release/bin/H5Scope
+
+      # Built on every commit rather than only on a release, because the point
+      # of packaging is that it either works or it does not, and finding out at
+      # tag time is finding out too late. Assembled inside the container so
+      # that the libraries it bundles are RHEL 8's -- an AppImage filled with
+      # Ubuntu 24.04 libraries would carry the glibc floor straight back in
+      # through the side door.
+      - name: Build the AppImage
+        run: |
+          tools/ci/el8.sh bash tools/make-appimage.sh \
+            "$(readlink -f build/release/bin/H5Scope)" dist
+
+      # It runs, it bundles the library RHEL 8 lacks, it bundles nothing that
+      # would override the host's driver stack, and the payload inside it faces
+      # the same glibc floor as the bare binary -- the whole exercise would be
+      # worthless if the thing inside the wrapper had been built too high.
+      - name: The AppImage is fit to publish
+        run: |
+          tools/ci/el8.sh bash tools/ci/verify-appimage.sh \
+            "$(ls dist/H5Scope-*-x86_64.AppImage)"
+
+      # Saved whatever happened, and deliberately. Building Qt on a four-core
+      # runner takes hours; discarding the packages that did build because a
+      # later one did not -- or because the runner was reclaimed mid-compile,
+      # which has happened -- makes every attempt pay the whole cost again.
+      # The archives are whole packages or nothing, so a partial cache is only
+      # a smaller one, and the next run picks up from it.
+      #
+      # Before the save, and for the save. The binary cache being written lives
+      # under the container's HOME; the buildtrees are intermediate files no
+      # longer needed, and they are what filled the disk -- the last save died
+      # with "zstd: No space left on device" and lost an hour and a half of
+      # work that had otherwise completed. Clearing them guarantees the tar has
+      # somewhere to go. sudo because the container writes them as root.
+      - name: Make room for the cache
+        if: always()
+        run: |
+          sudo rm -rf "$VCPKG_ROOT/buildtrees" "$VCPKG_ROOT/packages" \
+                      "$VCPKG_ROOT/downloads" || true
+          df -h /
+
+      - name: Save vcpkg binaries
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ~/el8-home/.cache/vcpkg/archives
+          key: vcpkg-el8-${{ hashFiles('vcpkg.json', 'tools/ci/el8.Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # A binary is conveyed object code even when it is only a CI artefact, so
+      # it does not travel without a way to reach its source. The bundle itself
+      # is a release's job -- assembling three hundred megabytes on every push
+      # to main would be absurd -- but the directions cost nothing, and anyone
+      # who can reach this artefact can reach the repository it names.
+      - name: Write the source pointer
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" build/release/bin dist
+          cat > build/release/bin/SOURCE.md <<EOF
+          # H5Scope — where this binary's source is
+
+          This build is GPL-3.0-only. It links Qt, HDF5 and about twenty
+          further libraries statically. LICENSE, THIRD-PARTY-NOTICES.md and
+          THIRD-PARTY-LICENSES.txt are beside this file: the licence, the
+          inventory of what is inside the executable, and the notices those
+          libraries require. The binary carries all three itself as well --
+          run it with \`--license\` or \`--notices\`.
+
+          It is compiled on AlmaLinux 8 with gcc-toolset-13, so it links
+          against glibc 2.28 and runs on RHEL 8 and anything newer. See
+          tools/ci/el8.Dockerfile.
+
+          Built from: ${{ github.repository }} at commit ${{ github.sha }}
+          Repository: ${{ github.server_url }}/${{ github.repository }}
+          This run:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The dependency sources are pinned by vcpkg.json's builtin-baseline,
+          and vcpkg patches several of them -- the patches are part of the
+          Corresponding Source. Tagged releases attach a bundle containing all
+          of it; \`tools/make-source-bundle.sh\` is what assembles that bundle
+          and will assemble one for this commit too.
+          EOF
+
+      # From the default branch and from tags. A self-contained binary is worth
+      # keeping, but one per push on every branch is a lot of storage for
+      # something rebuildable from the manifest. Tags need it because the
+      # release job below publishes exactly this file rather than building a
+      # second, differently-timestamped one.
+      - name: Upload the binary and the AppImage
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: H5Scope-linux-x64
+          # The versioned files, not the symlink: a download that has left the
+          # page it came from still says what it is.
+          path: |
+            build/release/bin/H5Scope-*
+            dist/H5Scope-*-x86_64.AppImage
+            build/release/bin/SOURCE.md
+            build/release/bin/LICENSE
+            build/release/bin/THIRD-PARTY-NOTICES.md
+            build/release/bin/THIRD-PARTY-LICENSES.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # A release is a tag, not a push. `main` is always releasable and every push
+  # to it is built, tested and kept as a short-retention artefact -- but that is
+  # a convenience, not a distribution. Publishing one per commit would produce a
+  # release list nobody can read, and would assemble three hundred megabytes of
+  # Corresponding Source for each of them.
+  #
+  # So: `git tag v0.2.0 && git push origin v0.2.0`, and this runs.
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job here that writes anything back. Scoped to this job rather
+    # than the workflow so a build cannot, whatever it runs.
+    permissions:
+      contents: write
+
+    steps:
+      # Full history, and the tags with it: make-source-bundle.sh counts the
+      # release tags to name the bundle, and records the answer for a tree that
+      # will have no tags at all.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The binary the build job already produced and tested. Rebuilding it
+      # here would take hours and would publish a different file than the one
+      # the tests passed against. It is downloaded before the tag is checked,
+      # because the binary is what the check is against.
+      - name: Download the tested binary
+        uses: actions/download-artifact@v7
+        with:
+          name: H5Scope-linux-x64
+          path: release-assets
+
+      # The upload preserved the two directories it came from; the release
+      # publishes a flat list, so flatten it.
+      - name: Flatten the download
+        run: |
+          find release-assets -mindepth 2 -type f -exec mv -t release-assets {} +
+          find release-assets -mindepth 1 -type d -empty -delete
+          ls -la release-assets
+
+      # The version is not recomputed here. cmake/Version.cmake worked it out
+      # from the release tags during the build, and the executable is named
+      # with the answer -- so the file on disk is the authority, and a third
+      # implementation of the counting rule is one that can disagree with the
+      # other two.
+      #
+      # A tag that disagrees with it would publish "v0.2.1" containing a binary
+      # calling itself 0.2.0: two different answers to what this release is.
+      # Since the patch number *is* the number of releases in this series, the
+      # tag to push is never a guess -- it is whatever the build already said.
+      #
+      # The AppImage is excluded from the search rather than matched loosely:
+      # it is named for the same version and would otherwise be a second
+      # answer to "which file is the binary".
+      - name: The tag must match the binary the build produced
+        run: |
+          binary=$(find release-assets -maxdepth 1 -type f -name 'H5Scope-*' \
+                     ! -name '*.AppImage')
+          if [ "$(printf '%s\n' "$binary" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected exactly one H5Scope-* binary, found:"
+            printf '%s\n' "$binary"
+            exit 1
+          fi
+          built="${binary##*/H5Scope-}"
+          tagged="${GITHUB_REF_NAME#v}"
+          echo "tag: $tagged   binary: $built"
+          if [ "$built" != "$tagged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the binary the"\
+                 "build produced (H5Scope-$built). The patch number counts"\
+                 "the releases in this series, so tag v$built -- or bump"\
+                 "H5SCOPE_VERSION_MINOR in cmake/Version.cmake first."
+            exit 1
+          fi
+          echo "VERSION=$built" >> "$GITHUB_ENV"
+
+      # The AppImage is published beside the binary, so it has to be there.
+      - name: The AppImage must be there, and match
+        run: |
+          appimage="release-assets/H5Scope-$VERSION-x86_64.AppImage"
+          test -f "$appimage" || {
+            echo "::error::no AppImage for $VERSION in the build's artefacts"
+            ls -la release-assets
+            exit 1
+          }
+          chmod +x "$appimage"
+          echo "appimage: $appimage"
+
+      # Only the tool: the ports this bundle ships come from the baseline, and
+      # tools/make-source-bundle.sh extracts them itself.
+      - name: Set up vcpkg
+        run: |
+          BASELINE=$(python3 -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          git -C "$HOME/vcpkg" checkout --detach "$BASELINE"
+          "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
+
+      # Downloads every dependency's source and builds none of them, so this is
+      # minutes rather than the hours a Qt build costs. See the script's header
+      # for what goes in and what the GPL lets stay out.
+      - name: Assemble the Corresponding Source bundle
+        run: |
+          tools/make-source-bundle.sh release-assets
+          ls -la release-assets
+
+      # Everything published, not only the two big files: a licence text that
+      # nobody can check is a licence text nobody has to be given honestly.
+      - name: Checksums
+        working-directory: release-assets
+        run: |
+          sha256sum H5Scope-* LICENSE THIRD-PARTY-NOTICES.md \
+                    THIRD-PARTY-LICENSES.txt > SHA256SUMS
+          cat SHA256SUMS
+
+      # gh rather than a third-party action: it is preinstalled, and publishing
+      # is the one step here with write access. The notes go through a file
+      # rather than a pipe -- a heredoc nested in a YAML block scalar feeding a
+      # flag that reads stdin is three quoting rules deep, and this step is the
+      # last place worth being clever.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: release-assets
+        run: |
+          cat > notes.md <<EOF
+          Linux on x86-64, self-contained: Qt and HDF5 are linked statically,
+          and both files are compiled against glibc 2.28, so they run on RHEL 8
+          and anything newer. Take the AppImage if you are unsure.
+
+          GPL-3.0-only. \`H5Scope-$VERSION-source.tar.zst\` is the complete
+          Corresponding Source for the executables above; \`LICENSE\` and
+          \`THIRD-PARTY-NOTICES.md\` are the licence and the inventory of
+          everything else inside them, and the binary prints both itself with
+          \`--license\` and \`--notices\`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            --title "H5Scope $VERSION" \
+            --notes-file notes.md \
+            "H5Scope-$VERSION" \
+            "H5Scope-$VERSION-x86_64.AppImage" \
+            "H5Scope-$VERSION-source.tar.zst" \
+            LICENSE \
+            THIRD-PARTY-NOTICES.md \
+            THIRD-PARTY-LICENSES.txt \
+            SHA256SUMS
