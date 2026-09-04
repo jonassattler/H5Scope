@@ -101,6 +101,15 @@ ImageSubclass subclassFrom(const std::optional<std::string>& text)
 
 } // namespace
 
+std::optional<ImageSubclass> readImageOutline(hid_t dataset)
+{
+    const auto declaredClass = stringAttribute(dataset, "CLASS");
+    if (!declaredClass.has_value() || *declaredClass != "IMAGE") {
+        return std::nullopt;
+    }
+    return subclassFrom(stringAttribute(dataset, "IMAGE_SUBCLASS"));
+}
+
 std::optional<ImageInfo> readImageInfo(hid_t dataset, const std::vector<hsize_t>& shape)
 {
     // CLASS is the one required attribute, and its absence is the common case

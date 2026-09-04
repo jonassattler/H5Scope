@@ -24,3 +24,9 @@ qt_import_plugins(inspect-file INCLUDE Qt6::QOffscreenIntegrationPlugin)
 # Neither of these is a Qt type; the moc pass over them is pure cost.
 set_target_properties(example_file make-example-file
                       PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
+# What the object tree costs, measured through the models the window binds to.
+# Qt Core only: nothing here draws, and the numbers are about the model.
+qt_add_executable(bench-tree bench-tree.cpp)
+target_link_libraries(bench-tree PRIVATE gui Qt6::Core)
+qt_import_plugins(bench-tree INCLUDE Qt6::QOffscreenIntegrationPlugin)

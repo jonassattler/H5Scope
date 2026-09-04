@@ -27,4 +27,14 @@ namespace h5core {
 [[nodiscard]] std::optional<ImageInfo> readImageInfo(hid_t dataset,
                                                      const std::vector<hsize_t>& shape);
 
+/// Just the two attributes a tree row needs: whether the dataset says it is an
+/// image at all, and which kind it says it is. Nothing else about the
+/// specification is read.
+///
+/// Separate from readImageInfo() because it is asked of every dataset row a
+/// viewport passes over, and the rest of that function reads four more
+/// attributes and checks them against the shape -- work that only the Data
+/// Viewer, opening one picture, has any use for.
+[[nodiscard]] std::optional<ImageSubclass> readImageOutline(hid_t dataset);
+
 } // namespace h5core

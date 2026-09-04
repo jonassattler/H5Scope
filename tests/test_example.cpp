@@ -32,6 +32,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 
@@ -85,6 +87,30 @@ const h5core::NodeInfo* find(const std::vector<h5core::NodeInfo>& nodes,
     const auto it = std::find_if(nodes.begin(), nodes.end(),
                                  [&](const auto& node) { return node.name == name; });
     return (it == nodes.end()) ? nullptr : &*it;
+}
+
+/// Read syscalls this process has made so far, from /proc/self/io's `syscr`,
+/// or nothing where that file does not exist.
+///
+/// The unit the tree's cost is actually measured in. A duration would be a
+/// test of the machine it runs on -- these reads are microseconds against a
+/// page cache and milliseconds against a network filesystem, which is where
+/// large HDF5 files live and where this pane was found to be unusable. A count
+/// is the same number everywhere.
+std::optional<long long> readSyscalls()
+{
+    std::ifstream io("/proc/self/io");
+    if (!io) {
+        return std::nullopt;
+    }
+    std::string key;
+    long long value = 0;
+    while (io >> key >> value) {
+        if (key == "syscr:") {
+            return value;
+        }
+    }
+    return std::nullopt;
 }
 
 /// The child of `parent` with this link name, or an invalid index.
@@ -1161,6 +1187,54 @@ TEST_CASE("the hierarchy survives its own awkward shapes", "[example][tree]")
     SECTION("a group with many children lists them all")
     {
         CHECK(file.children("/stress/many_children_512").size() == 512);
+        CHECK(file.children("/stress/many_children_4096").size() == 4096);
+    }
+
+    SECTION("a group's size is the same whether it is counted or listed")
+    {
+        for (const char* path : {"/stress/many_children_4096", "/stress/nested_16x64",
+                                 "/stress/empty_group", "/"}) {
+            INFO(path);
+            CHECK(file.memberCount(path) == file.children(path).size());
+        }
+    }
+}
+
+TEST_CASE("a loop in the file is shown once and never followed", "[example][tree]")
+{
+    // Both ways a name can lead back to where it came from. Neither may be
+    // expandable, or the tree recurses until it runs out of memory.
+    auto file = std::make_shared<h5core::File>(example().path());
+    gui::H5TreeModel tree;
+    tree.setFile(file);
+
+    const QModelIndex links = indexForName(&tree, QModelIndex{}, QStringLiteral("links"));
+    REQUIRE(links.isValid());
+
+    SECTION("a soft link pointing at its own container")
+    {
+        // The case that has no identity at all until the link is followed,
+        // which is why this is settled when a row is identified and not when
+        // its parent is listed.
+        const QModelIndex self =
+            indexForName(&tree, links, QStringLiteral("soft_to_self"));
+        REQUIRE(self.isValid());
+        CHECK(tree.data(self, gui::H5TreeModel::IsCyclicRole).toBool());
+        CHECK_FALSE(tree.hasChildren(self));
+        CHECK(tree.rowCount(self) == 0);
+    }
+
+    SECTION("a hard link from a subgroup back to its ancestor")
+    {
+        const QModelIndex loop = indexForName(&tree, links, QStringLiteral("loop"));
+        REQUIRE(loop.isValid());
+        const QModelIndex back =
+            indexForName(&tree, loop, QStringLiteral("back_to_links"));
+        REQUIRE(back.isValid());
+        CHECK(tree.data(back, gui::H5TreeModel::IsCyclicRole).toBool());
+        CHECK_FALSE(tree.hasChildren(back));
+        CHECK(tree.data(back, gui::H5TreeModel::MetaRole).toString()
+              == QStringLiteral("cycle"));
     }
 }
 
@@ -1179,5 +1253,110 @@ TEST_CASE("no HDF5 error stack reaches a reader", "[example][errors]")
         CHECK_FALSE(message.isEmpty());
         CHECK_FALSE(message.contains(QStringLiteral("#0:")));
         CHECK_FALSE(message.contains(QLatin1Char('\n')));
+    }
+}
+
+TEST_CASE("the tree costs what is on screen, not what is in the file",
+          "[example][tree][cost]")
+{
+    // The property the whole design of H5TreeModel rests on, asserted in the
+    // one unit that means the same thing on every machine: read syscalls.
+    //
+    // Every figure below used to be proportional to the size of the level
+    // being looked at rather than to the size of the viewport, which is what
+    // made a file of a few thousand datasets unusable. The thresholds are
+    // deliberately loose -- an order of magnitude of headroom either side --
+    // because what is being defended is the shape of the cost, not a number.
+    const auto baseline = readSyscalls();
+    if (!baseline.has_value()) {
+        SKIP("/proc/self/io is not available on this platform");
+    }
+
+    auto file = std::make_shared<h5core::File>(example().path());
+    gui::H5TreeModel tree;
+    tree.setFile(file);
+
+    const QModelIndex stress =
+        indexForName(&tree, QModelIndex{}, QStringLiteral("stress"));
+    REQUIRE(stress.isValid());
+
+    SECTION("expanding a group of four thousand does not open four thousand objects")
+    {
+        const QModelIndex wide =
+            indexForName(&tree, stress, QStringLiteral("many_children_4096"));
+        REQUIRE(wide.isValid());
+
+        const long long before = *readSyscalls();
+        const int rows = tree.rowCount(wide); // what the click costs
+        const long long spent = *readSyscalls() - before;
+
+        CHECK(rows == 4096);
+        INFO("reads to list 4096 members: " << spent);
+        // Reading the link table. Opening every member, which is what this
+        // used to do, is 4096 reads and more.
+        CHECK(spent < rows / 4);
+    }
+
+    SECTION("drawing a screenful of it costs a screenful, not a group")
+    {
+        const QModelIndex wide =
+            indexForName(&tree, stress, QStringLiteral("many_children_4096"));
+        REQUIRE(tree.rowCount(wide) == 4096);
+
+        constexpr int kViewport = 40;
+        const long long before = *readSyscalls();
+        for (int row = 0; row < kViewport; ++row) {
+            const QModelIndex index = tree.index(row, 0, wide);
+            (void)tree.data(index, gui::H5TreeModel::IsGroupRole);
+            (void)tree.data(index, gui::H5TreeModel::HasAttributesRole);
+            (void)tree.data(index, gui::H5TreeModel::MetaRole);
+        }
+        const long long spent = *readSyscalls() - before;
+
+        INFO("reads to draw 40 of 4096 rows: " << spent);
+        CHECK(spent < 4 * kViewport);
+    }
+
+    SECTION("a member count beside a group row is not taken by counting")
+    {
+        // Sixteen groups of sixty-four. Saying how many members each one holds
+        // by listing it costs 1024 link resolutions to draw 16 rows, which is
+        // quadratic in the shape acquisition files actually have.
+        const QModelIndex nested =
+            indexForName(&tree, stress, QStringLiteral("nested_16x64"));
+        REQUIRE(nested.isValid());
+        const int rows = tree.rowCount(nested);
+        REQUIRE(rows == 16);
+
+        const long long before = *readSyscalls();
+        for (int row = 0; row < rows; ++row) {
+            (void)tree.data(tree.index(row, 0, nested), gui::H5TreeModel::MetaRole);
+        }
+        const long long spent = *readSyscalls() - before;
+
+        INFO("reads to draw 16 member counts: " << spent);
+        CHECK(spent < 4 * rows);
+        // ...and the counts are right.
+        CHECK(tree.data(tree.index(0, 0, nested), gui::H5TreeModel::MetaRole).toString()
+              == QStringLiteral("64 items"));
+    }
+
+    SECTION("a row that has already been drawn is free the second time")
+    {
+        const QModelIndex wide =
+            indexForName(&tree, stress, QStringLiteral("many_children_4096"));
+        REQUIRE(tree.rowCount(wide) == 4096);
+        const QModelIndex first = tree.index(0, 0, wide);
+        (void)tree.data(first, gui::H5TreeModel::MetaRole);
+
+        const long long before = *readSyscalls();
+        for (int i = 0; i < 100; ++i) {
+            (void)tree.data(first, gui::H5TreeModel::MetaRole);
+            (void)tree.data(first, gui::H5TreeModel::AttributeCountRole);
+            (void)tree.data(first, gui::H5TreeModel::IsImageRole);
+        }
+        // Scrolling back over ground already seen reads nothing at all; the
+        // readout is computed once per node and kept.
+        CHECK(*readSyscalls() - before <= 2);
     }
 }

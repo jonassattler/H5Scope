@@ -93,6 +93,10 @@ struct NodeInfo {
     /// Absent for links that do not resolve to an object.
     std::optional<unsigned long> fileNumber;
     std::optional<haddr_t> address;
+    /// How many attributes the object carries. Filled by the same object-header
+    /// read that settles `kind`, because it is in the same header: asking for
+    /// it separately is a second read of bytes already in hand.
+    std::size_t attributeCount = 0;
 
     /// True when the name resolves to something that can be opened.
     [[nodiscard]] bool resolves() const { return kind != NodeKind::Unresolved; }
@@ -202,6 +206,24 @@ struct DatasetInfo {
     /// same thing.
     [[nodiscard]] std::string unreadableReason() const;
     [[nodiscard]] bool isNumeric() const { return h5core::isNumeric(type.cls); }
+};
+
+/// The least a tree row needs to know about a dataset: what shape it is, and
+/// whether the file calls it a picture.
+///
+/// Deliberately not DatasetInfo. That one carries the datatype description, the
+/// storage layout, the filter pipeline and every external source -- four more
+/// reads of the object header and its messages, none of which any row shows.
+/// A file with thousands of datasets pays that difference once per visible row,
+/// which is the difference between a tree that scrolls and one that does not.
+struct DatasetOutline {
+    Dataspace space = Dataspace::Simple;
+    std::vector<hsize_t> shape;
+    /// Whether the dataset declares itself an image, and which kind. Probed
+    /// only when the object header says it has attributes at all, so a plain
+    /// dataset never pays for the question.
+    bool image = false;
+    ImageSubclass subclass = ImageSubclass::Indexed;
 };
 
 /// One member of a compound element, already rendered.

@@ -28,6 +28,23 @@ namespace gui {
 /// fetch-based model renders every group as empty in QML. Populating in
 /// rowCount() is safe here because a given parent's count is computed once and
 /// is stable forever after; the view never observes it change.
+///
+/// Laziness has three stages here, not one, and the reason is that expanding a
+/// group of eight thousand members must not cost eight thousand reads before
+/// the first forty rows can be drawn:
+///
+///   1. *listed*   -- the parent's link table, read whole on expand. Names,
+///                    link types, link targets and (for hard links) object
+///                    identity, all out of one structure. No object is opened.
+///   2. *identified* -- what one name actually points at: group, dataset or
+///                    nothing, and how many attributes it has. One object
+///                    header, read the first time that row is asked about.
+///   3. *readout*  -- the shape or the member count beside the name. One more
+///                    read, and only for a row that is on screen.
+///
+/// Stages 2 and 3 are per *visible* row and are cached forever after; stage 1
+/// is per expanded group. Nothing in the model is proportional to the size of
+/// the file, which is the property that makes a large one usable at all.
 class H5TreeModel : public QAbstractItemModel
 {
     Q_OBJECT
@@ -47,8 +64,8 @@ public:
         /// False when that link leads nowhere. Meaningless for a hard link,
         /// which always resolves.
         LinkResolvesRole,
-        /// True when the object carries at least one HDF5 attribute. One
-        /// metadata call per node, folded into the same read as the rest.
+        /// True when the object carries at least one HDF5 attribute. Comes out
+        /// of the same object-header read that settles the node's kind.
         HasAttributesRole,
         /// How many of them. The tag is a claim that there are some; what a
         /// reader wants next is how many, and that is one number already in
@@ -114,34 +131,47 @@ signals:
 
 private:
     struct Node {
-        h5core::NodeInfo info;
+        /// Mutable because two of its fields -- `kind` and `attributeCount` --
+        /// are not filled in by the listing that created the node but by
+        /// ensureIdentity(), which the const data() path calls. Everything
+        /// else in it is set once, when the node is made.
+        mutable h5core::NodeInfo info;
         Node* parent = nullptr;
         std::vector<std::unique_ptr<Node>> children;
         int rowInParent = 0;
         bool populated = false;
         /// True when this node repeats an ancestor's object identity. Such a
-        /// node is shown but never expanded, otherwise a hard-linked loop
-        /// would recurse forever.
-        bool cyclic = false;
+        /// node is shown but never expanded, otherwise a loop would recurse
+        /// forever. Settled by ensureIdentity(), because a soft link's
+        /// identity is not known until the link has been followed.
+        mutable bool cyclic = false;
+        /// Whether `info.kind` and `info.attributeCount` have been read yet.
+        /// False for every row that a listing produced and nothing has since
+        /// asked about -- see the class note. Mutable because settling it is
+        /// what the const data() path does first.
+        mutable bool identified = false;
         /// MetaRole's value, computed the first time the view asks. Mutable so
         /// data(), which Qt makes const, can fill it in.
         mutable std::optional<QString> meta;
         /// IsImageRole's value, filled at the same time: both answers come out
         /// of the one dataset open, so neither pays for the other.
         mutable bool image = false;
-        /// AttributeCountRole's value, filled at the same time -- and
-        /// HasAttributesRole's, which is this being above zero. One
-        /// H5Oget_info_by_name3 asking for the attribute count alone, which is
-        /// the same order of cost as the shape read beside it.
-        mutable int attributes = 0;
         /// ImageSubclassRole's value, out of the same dataset open as `image`.
         mutable QString imageSubclass;
     };
 
-    /// Fill in the row's readout, its image flag and its attribute flag, once
-    /// per node. All three come out of the same metadata reads -- never
-    /// element data -- and none of them populates the node, so scrolling the
-    /// tree stays cheap and no answer pays for another.
+    /// Settle what this node's name points at: group, dataset, named type or
+    /// nothing, plus how many attributes it carries, out of one object-header
+    /// read. Idempotent, and the precondition of everything below.
+    ///
+    /// Separate from populate() because a listing produces names in their
+    /// thousands and a viewport shows forty of them. Separate from
+    /// ensureReadout() because three roles need only this much and the view
+    /// asks for them on rows it is merely measuring.
+    void ensureIdentity(const Node* node) const;
+    /// Fill in the row's readout and its image flag, once per node. Both come
+    /// out of metadata reads -- never element data -- and neither populates
+    /// the node, so scrolling the tree stays cheap.
     void ensureReadout(const Node* node) const;
     /// A dataset's shape or a group's member count, as the tree row shows it.
     [[nodiscard]] QString metaFor(const Node* node) const;

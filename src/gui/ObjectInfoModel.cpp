@@ -13,6 +13,12 @@
 namespace gui {
 namespace {
 
+/// How many of a group's members this panel names before it stops and says how
+/// many are left. A flat group of thousands is a shape real files have, and
+/// naming every one of them is both a freeze on the click that selects the
+/// group and a table no reader gets to the bottom of.
+constexpr std::size_t kMaxListedMembers = 200;
+
 QString formatShape(const std::vector<hsize_t>& shape)
 {
     if (shape.empty()) {
@@ -380,13 +386,32 @@ void ObjectInfoModel::showObject(const std::shared_ptr<h5core::File>& file,
                         .arg(joinStrings(info.unavailableFilters)));
             }
         } else if (node.kind == h5core::NodeKind::Group) {
-            const auto children = file->children(path.toStdString());
+            // The count comes out of the group's own header rather than out of
+            // the length of a listing, so a group of eight thousand members
+            // costs the same to describe as one of eight.
+            const auto members = file->memberCount(path.toStdString());
             beginSection(QStringLiteral("members"),
-                         QStringLiteral("%1 direct").arg(children.size()));
-            add(QStringLiteral("Children"), QString::number(children.size()));
-            for (const auto& child : children) {
-                add(QString::fromStdString(h5core::toString(child.kind)).toLower(),
-                    QString::fromStdString(child.name));
+                         QStringLiteral("%1 direct").arg(members));
+            add(QStringLiteral("Children"), QString::number(members));
+
+            // Then the names, up to a limit. Every one of them is a link to
+            // follow and an object header to read, and this panel is built
+            // synchronously on the click that selects the group -- so listing
+            // all of a flat group of thousands would freeze the window to
+            // print a table nobody reads to the end of. The tree beside it is
+            // the surface for going through them, and it is lazy.
+            auto children = file->children(path.toStdString(),
+                                           h5core::File::Resolve::Links);
+            const std::size_t shown = std::min(children.size(), kMaxListedMembers);
+            for (std::size_t i = 0; i < shown; ++i) {
+                file->resolve(children[i]);
+                add(QString::fromStdString(h5core::toString(children[i].kind)).toLower(),
+                    QString::fromStdString(children[i].name));
+            }
+            if (children.size() > shown) {
+                add(QStringLiteral("More"),
+                    QStringLiteral("%1 further members, listed in the tree")
+                        .arg(children.size() - shown));
             }
         }
 
