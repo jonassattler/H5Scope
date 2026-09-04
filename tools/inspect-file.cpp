@@ -15,6 +15,7 @@
 #include "gui/AppController.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
+#include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
 
 #include <QAbstractItemModel>
@@ -26,6 +27,41 @@
 #include <cstdio>
 
 namespace {
+
+/// Wait until the HDF5 thread has answered everything asked of it.
+///
+/// This program prints what the window would show, and the window is filled in
+/// from another thread a moment after it asks. A dump that did not wait would
+/// be a dump of the instant before the file answered, which is to say of
+/// nothing at all.
+void settle()
+{
+    gui::H5Thread::instance().drain();
+}
+
+/// A row count, waited for: asking is what starts the read.
+int settledRowCount(QAbstractItemModel* model, const QModelIndex& parent = {})
+{
+    int previous = -1;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const int count = model->rowCount(parent);
+        settle();
+        if (count == previous) {
+            break;
+        }
+        previous = count;
+    }
+    return model->rowCount(parent);
+}
+
+/// A role, waited for.
+QVariant settledData(const QAbstractItemModel* model, const QModelIndex& index, int role)
+{
+    (void)model->data(index, role);
+    settle();
+    return model->data(index, role);
+}
+
 
 QTextStream& out()
 {
@@ -39,7 +75,7 @@ QString roleString(const QAbstractItemModel* model, const QModelIndex& index,
     const auto roles = model->roleNames();
     for (auto it = roles.constBegin(); it != roles.constEnd(); ++it) {
         if (it.value() == role) {
-            return model->data(index, it.key()).toString();
+            return settledData(model, index, it.key()).toString();
         }
     }
     return {};
@@ -48,7 +84,7 @@ QString roleString(const QAbstractItemModel* model, const QModelIndex& index,
 /// Every path in the file, in the order the tree would show them.
 void collectPaths(QAbstractItemModel* tree, const QModelIndex& parent, QStringList& paths)
 {
-    const int rows = tree->rowCount(parent);
+    const int rows = settledRowCount(tree, parent);
     for (int row = 0; row < rows; ++row) {
         const QModelIndex index = tree->index(row, 0, parent);
         paths << roleString(tree, index, "path");
@@ -60,7 +96,7 @@ void collectPaths(QAbstractItemModel* tree, const QModelIndex& parent, QStringLi
 
 void printTree(QAbstractItemModel* tree, const QModelIndex& parent, int depth)
 {
-    const int rows = tree->rowCount(parent);
+    const int rows = settledRowCount(tree, parent);
     for (int row = 0; row < rows; ++row) {
         const QModelIndex index = tree->index(row, 0, parent);
         out() << QString(depth * 2, u' ') << roleString(tree, index, "name") << "  ["
@@ -69,10 +105,10 @@ void printTree(QAbstractItemModel* tree, const QModelIndex& parent, int depth)
         if (!meta.isEmpty()) {
             out() << "  " << meta;
         }
-        if (tree->data(index, gui::H5TreeModel::IsImageRole).toBool()) {
+        if (settledData(tree, index, gui::H5TreeModel::IsImageRole).toBool()) {
             out() << "  [img]";
         }
-        if (tree->data(index, gui::H5TreeModel::IsCyclicRole).toBool()) {
+        if (settledData(tree, index, gui::H5TreeModel::IsCyclicRole).toBool()) {
             out() << "  <cyclic>";
         }
         out() << "\n";
@@ -97,7 +133,7 @@ void printPanels(const gui::AppController& controller)
 
 void printAttributes(QAbstractItemModel* model)
 {
-    const int rows = model->rowCount();
+    const int rows = settledRowCount(model);
     if (rows == 0) {
         return;
     }
@@ -114,7 +150,7 @@ void printAttributes(QAbstractItemModel* model)
 void printTable(gui::AppController& controller)
 {
     QAbstractItemModel* table = controller.datasetModel();
-    const int rows = table->rowCount();
+    const int rows = settledRowCount(table);
     const int columns = table->columnCount();
     out() << "  table: " << rows << " rows x " << columns
           << " cols   slice: " << controller.sliceExpression() << "\n";
@@ -124,7 +160,9 @@ void printTable(gui::AppController& controller)
     for (int row = 0; row < shownRows; ++row) {
         QStringList cells;
         for (int column = 0; column < shownColumns; ++column) {
-            cells << table->data(table->index(row, column)).toString().left(40);
+            cells << settledData(table, table->index(row, column), Qt::DisplayRole)
+                         .toString()
+                         .left(40);
         }
         if (columns > shownColumns) {
             cells << QStringLiteral("...");
@@ -184,7 +222,13 @@ int main(int argc, char** argv)
     const QString prefix = (argc > 2) ? QString::fromUtf8(argv[2]) : QString{};
 
     gui::AppController controller;
-    if (!controller.openFile(QString::fromUtf8(argv[1]))) {
+    // Opening is asked of the HDF5 thread and answered a moment later, so
+    // whether it worked is `hasFile` once it has answered rather than what the
+    // call returned.
+    controller.openFile(QString::fromUtf8(argv[1]));
+    settle();
+    settle();
+    if (!controller.hasFile()) {
         out() << "open failed: " << controller.errorText() << "\n";
         out().flush();
         return 1;
@@ -206,7 +250,12 @@ int main(int argc, char** argv)
             continue;
         }
         out() << "\n--- " << path << "\n";
-        if (!controller.selectPath(path)) {
+        controller.selectPath(path);
+        // Twice: describing the object is one round trip, and installing what
+        // the views draw is the next.
+        settle();
+        settle();
+        if (controller.currentPath() != path) {
             out() << "  selectPath refused this path\n";
             continue;
         }

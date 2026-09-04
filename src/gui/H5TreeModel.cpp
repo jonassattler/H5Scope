@@ -4,10 +4,14 @@
 #include "H5TreeModel.hpp"
 
 #include "h5core/Error.hpp"
+#include "h5core/File.hpp"
 
 #include <QLocale>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantList>
+
+#include <algorithm>
 
 namespace gui {
 namespace {
@@ -20,9 +24,6 @@ namespace {
 /// pointer and this is what it points at. Broken links say so and say which
 /// half is missing -- an external link has two things that can be absent and
 /// they are not the same problem.
-///
-/// Takes no read: everything here came out of the link traversal that listed
-/// the row in the first place.
 QString linkDescription(const h5core::NodeInfo& info)
 {
     if (info.link == h5core::LinkType::Hard) {
@@ -47,28 +48,107 @@ QString linkDescription(const h5core::NodeInfo& info)
 
 } // namespace
 
+H5TreeModel::RowFacts H5TreeModel::readFacts(h5core::File& file,
+                                             const std::string& path,
+                                             h5core::LinkType link, bool readout)
+{
+    H5TreeModel::RowFacts facts;
+    facts.path = path;
+
+    h5core::NodeInfo node;
+    node.path = path;
+    node.link = link;
+    file.resolve(node);
+
+    facts.read = true;
+    facts.kind = node.kind;
+    facts.fileNumber = node.fileNumber;
+    facts.address = node.address;
+    facts.attributeCount = node.attributeCount;
+    facts.readout = readout;
+
+    if (!readout) {
+        // The kind and the attribute count, out of one object header, and
+        // nothing further. This is what expanding a level costs when the level
+        // is not on screen.
+        return facts;
+    }
+
+    if (link != h5core::LinkType::Hard || !node.resolves()) {
+        // A link's readout is where it points, which the link table already
+        // gave us, and a name that resolves to nothing has no object to ask.
+        return facts;
+    }
+
+    try {
+        switch (node.kind) {
+        case h5core::NodeKind::Group:
+            facts.members = file.memberCount(path);
+            break;
+        case h5core::NodeKind::Dataset: {
+            const auto outline = file.datasetOutline(path, node.attributeCount > 0);
+            facts.space = outline.space;
+            facts.shape = outline.shape;
+            facts.image = outline.image;
+            facts.subclass = outline.subclass;
+            break;
+        }
+        case h5core::NodeKind::NamedDataType:
+            facts.typeDescription = file.namedType(path).description;
+            break;
+        default:
+            break;
+        }
+    } catch (const h5core::H5Error&) {
+        // The kind is known and the rest is not. `read` stays true -- the row
+        // is describable, just not fully -- and readoutFor() says so.
+        facts.read = false;
+    }
+    return facts;
+}
+
 H5TreeModel::H5TreeModel(QObject* parent) : QAbstractItemModel(parent) {}
 
 H5TreeModel::~H5TreeModel() = default;
 
-void H5TreeModel::setFile(std::shared_ptr<h5core::File> file)
+void H5TreeModel::open()
 {
     beginResetModel();
-    file_ = std::move(file);
-    root_.reset();
-
-    if (file_) {
-        root_ = std::make_unique<Node>();
-        try {
-            root_->info = file_->nodeInfo("/");
-        } catch (const h5core::H5Error&) {
-            root_->info.path = "/";
-            root_->info.kind = h5core::NodeKind::Group;
-        }
-        root_->info.name = "/";
-        root_->identified = true;
-    }
+    requests_.reset(); // disown anything still coming for the last file
+    pending_.clear();
+    inFlight_ = 0;
+    root_ = std::make_unique<Node>();
+    root_->info.path = "/";
+    root_->info.name = "/";
+    root_->info.kind = h5core::NodeKind::Group;
+    root_->known = true;
     endResetModel();
+
+    // The root's own record -- its attribute count, mostly -- and then its
+    // children, which is what the pane shows the moment a file is opened.
+    requestListing(root_.get());
+    emit loadingChanged();
+}
+
+void H5TreeModel::close()
+{
+    beginResetModel();
+    requests_.reset();
+    pending_.clear();
+    inFlight_ = 0;
+    root_.reset();
+    endResetModel();
+    emit loadingChanged();
+}
+
+bool H5TreeModel::loading() const
+{
+    return inFlight_ > 0 || !pending_.empty();
+}
+
+void H5TreeModel::noteActivity()
+{
+    emit loadingChanged();
 }
 
 H5TreeModel::Node* H5TreeModel::nodeFor(const QModelIndex& index) const
@@ -79,103 +159,354 @@ H5TreeModel::Node* H5TreeModel::nodeFor(const QModelIndex& index) const
     return static_cast<Node*>(index.internalPointer());
 }
 
-bool H5TreeModel::isExpandable(const Node* node) const
+QModelIndex H5TreeModel::indexFor(Node* node) const
+{
+    if (node == nullptr || node == root_.get() || node->parent == nullptr) {
+        return {};
+    }
+    return createIndex(node->rowInParent, 0, node);
+}
+
+// --- listing ---------------------------------------------------------------
+
+void H5TreeModel::runWaiters(Node* node) const
+{
+    std::vector<std::function<void()>> waiters;
+    waiters.swap(node->waiters);
+    for (auto& waiter : waiters) {
+        waiter();
+    }
+}
+
+void H5TreeModel::whenListed(Node* node, std::function<void()> then) const
 {
     if (node == nullptr) {
-        return false;
+        then();
+        return;
     }
-    ensureIdentity(node);
-    return !node->cyclic && node->info.kind == h5core::NodeKind::Group;
+    if (node->listed) {
+        then();
+        return;
+    }
+    node->waiters.push_back(std::move(then));
+    requestListing(node);
 }
 
-void H5TreeModel::ensureIdentity(const Node* node) const
+void H5TreeModel::requestListing(Node* node) const
 {
-    if (node->identified) {
+    if (node == nullptr || node->listed || node->listing) {
         return;
     }
-    node->identified = true;
-    if (!file_) {
+    // A node whose kind is not known cannot be listed yet -- it may not be a
+    // group at all. Find out first, and let the facts start the listing when
+    // they land; that is what `listAfterFacts` is.
+    if (node != root_.get() && !node->known) {
+        node->listAfterFacts = true;
+        requestFacts(node, false);
         return;
     }
-    try {
-        file_->resolve(node->info);
-    } catch (const h5core::H5Error&) {
-        // A name that will not resolve is a state of the file, and the row
-        // says so rather than disappearing. Nothing here can throw out to the
-        // view: data() is called from the render loop.
-        node->info.kind = h5core::NodeKind::Unresolved;
+    // A node that is not a group, or one that closes a loop, has no children
+    // and never will. Settling that here rather than leaving it unlisted is
+    // what lets anything waiting on the listing stop waiting.
+    if (node != root_.get()
+        && (node->cyclic || node->info.kind != h5core::NodeKind::Group)) {
+        node->listed = true;
+        runWaiters(node);
+        return;
     }
 
-    // A name repeating an ancestor's object identity closes a loop; show it,
-    // but never descend into it, or a hard-linked cycle recurses forever.
-    //
-    // Here rather than in populate(), which is where it used to be, because
-    // populate() no longer opens anything: a *soft* link back to an ancestor
-    // has no identity until it is followed, and following it is what this
-    // function does. The test needs no kind of its own -- every ancestor is a
-    // group, and only a group can carry a group's identity.
-    if (!node->info.address.has_value()) {
+    node->listing = true;
+    ++inFlight_;
+    auto* self = const_cast<H5TreeModel*>(this);
+    const std::string path = node->info.path;
+
+    struct Listing {
+        std::vector<h5core::NodeInfo> children;
+        std::string error;
+    };
+
+    H5Thread::instance().submit(
+        requests_,
+        [path](H5Session& session) {
+            Listing listing;
+            if (session.file() == nullptr) {
+                return listing;
+            }
+            try {
+                listing.children =
+                    session.file()->children(path, h5core::File::Resolve::Links);
+            } catch (const h5core::H5Error& error) {
+                listing.error = error.summary();
+            }
+            return listing;
+        },
+        [self, node, path](Listing listing) {
+            node->listing = false;
+            node->listed = true;
+            --self->inFlight_;
+
+            if (!listing.error.empty()) {
+                emit self->loadFailed(
+                    QStringLiteral("Could not list '%1': %2")
+                        .arg(QString::fromStdString(path),
+                             QString::fromStdString(listing.error)));
+                self->runWaiters(node);
+                self->noteActivity();
+                return;
+            }
+            if (listing.children.empty()) {
+                self->runWaiters(node);
+                self->noteActivity();
+                return;
+            }
+
+            const QModelIndex parent = self->indexFor(node);
+            self->beginInsertRows(parent, 0,
+                                  static_cast<int>(listing.children.size()) - 1);
+            node->children.reserve(listing.children.size());
+            int row = 0;
+            for (auto& info : listing.children) {
+                auto child = std::make_unique<Node>();
+                child->parent = node;
+                child->rowInParent = row++;
+                child->info = std::move(info);
+                node->children.push_back(std::move(child));
+            }
+            self->endInsertRows();
+            self->runWaiters(node);
+            self->noteActivity();
+        });
+}
+
+// --- the per-row facts, batched --------------------------------------------
+
+void H5TreeModel::requestFacts(Node* node, bool readout) const
+{
+    if (node == nullptr || node == root_.get()) {
         return;
     }
-    for (const Node* ancestor = node->parent; ancestor != nullptr;
-         ancestor = ancestor->parent) {
-        if (ancestor->info.address == node->info.address
-            && ancestor->info.fileNumber == node->info.fileNumber) {
-            node->cyclic = true;
-            return;
+    if (node->known && (!readout || node->readoutKnown)) {
+        return;
+    }
+    if (node->asking) {
+        // Already on its way. If this asks for more than that one does, say so
+        // -- the batch has not been sent yet, and one job that answers both is
+        // better than a second job for the half that was left out.
+        node->askingReadout = node->askingReadout || readout;
+        return;
+    }
+    node->asking = true;
+    node->askingReadout = readout;
+    pending_.push_back(node);
+
+    if (flushScheduled_) {
+        return;
+    }
+    flushScheduled_ = true;
+    // Zero-delay, so everything the view asks for in one layout pass becomes
+    // one job. Forty rows scrolling into view are forty questions and one
+    // round trip.
+    QTimer::singleShot(0, const_cast<H5TreeModel*>(this), [this] {
+        const_cast<H5TreeModel*>(this)->flushFacts();
+    });
+}
+
+void H5TreeModel::flushFacts()
+{
+    flushScheduled_ = false;
+    if (pending_.empty()) {
+        return;
+    }
+
+    std::vector<Node*> batch;
+    batch.swap(pending_);
+
+    struct Request {
+        std::string path;
+        h5core::LinkType link;
+        bool readout;
+    };
+    std::vector<Request> asked;
+    asked.reserve(batch.size());
+    for (const Node* node : batch) {
+        asked.push_back({node->info.path, node->info.link, node->askingReadout});
+    }
+
+    ++inFlight_;
+    H5Thread::instance().submit(
+        requests_,
+        [asked = std::move(asked)](H5Session& session) {
+            std::vector<RowFacts> facts;
+            facts.reserve(asked.size());
+            for (const Request& request : asked) {
+                if (session.file() == nullptr) {
+                    facts.emplace_back();
+                    continue;
+                }
+                try {
+                    facts.push_back(readFacts(*session.file(), request.path,
+                                              request.link, request.readout));
+                } catch (const h5core::H5Error&) {
+                    RowFacts failed;
+                    failed.path = request.path;
+                    facts.push_back(std::move(failed));
+                }
+            }
+            return facts;
+        },
+        [this, batch = std::move(batch)](std::vector<RowFacts> facts) {
+            --inFlight_;
+            const std::size_t count = std::min(batch.size(), facts.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                applyFacts(batch[i], facts[i]);
+            }
+            // A listing that was asked for before the node's kind was known
+            // starts here, now that it is.
+            for (std::size_t i = 0; i < count; ++i) {
+                if (batch[i]->listAfterFacts) {
+                    batch[i]->listAfterFacts = false;
+                    requestListing(batch[i]);
+                }
+            }
+            // One dataChanged per row rather than one for the range: the rows
+            // in a batch are not contiguous and rarely share a parent.
+            for (std::size_t i = 0; i < count; ++i) {
+                const QModelIndex index = indexFor(batch[i]);
+                if (index.isValid()) {
+                    emit dataChanged(index, index);
+                }
+            }
+            noteActivity();
+        });
+}
+
+void H5TreeModel::applyFacts(Node* node, const RowFacts& facts)
+{
+    node->asking = false;
+    node->askingReadout = false;
+    node->known = true;
+    node->info.kind = facts.kind;
+    node->info.fileNumber = facts.fileNumber;
+    node->info.address = facts.address;
+    node->info.attributeCount = facts.attributeCount;
+    node->image = facts.image;
+    if (facts.image) {
+        node->imageSubclass = QString::fromStdString(h5core::toString(facts.subclass));
+    }
+
+    // A name repeating an ancestor's object identity closes a loop. Settled
+    // here rather than when the parent was listed, because a soft link back to
+    // an ancestor has no identity until it has been followed -- and the test
+    // needs no kind of its own, since every ancestor is a group and only a
+    // group can carry a group's identity.
+    if (node->info.address.has_value()) {
+        for (const Node* ancestor = node->parent; ancestor != nullptr;
+             ancestor = ancestor->parent) {
+            if (ancestor->info.address == node->info.address
+                && ancestor->info.fileNumber == node->info.fileNumber) {
+                node->cyclic = true;
+                break;
+            }
         }
     }
+
+    if (facts.readout) {
+        node->readoutKnown = true;
+        node->meta = readoutFor(node, facts);
+    } else if (node->info.link != h5core::LinkType::Hard || node->cyclic
+               || !node->info.resolves()) {
+        // Three readouts that need no second read: a link says where it points,
+        // a loop says it is one, and a name that resolves to nothing has
+        // nothing further to say. They come free with the kind.
+        node->readoutKnown = true;
+        node->meta = readoutFor(node, facts);
+    }
 }
 
-void H5TreeModel::populate(Node* node) const
+QString H5TreeModel::readoutFor(const Node* node, const RowFacts& facts) const
 {
-    if (node == nullptr || node->populated) {
-        return;
-    }
-    node->populated = true;
+    QString meta;
 
-    if (!file_ || !isExpandable(node)) {
-        return;
-    }
-
-    std::vector<h5core::NodeInfo> children;
-    try {
-        // The link table and nothing else. What each name points at is settled
-        // per row, by ensureIdentity(), because the view will ask about forty
-        // of these and expanding must not wait on all of them.
-        children = file_->children(node->info.path, h5core::File::Resolve::Links);
-    } catch (const h5core::H5Error& error) {
-        emit const_cast<H5TreeModel*>(this)->loadFailed(
-            QStringLiteral("Could not list '%1': %2")
-                .arg(QString::fromStdString(node->info.path),
-                     QString::fromUtf8(error.what())));
-        return;
+    // Where a link points is what distinguishes it from the object it names,
+    // so that is what the readout says -- for a broken one it is the only
+    // thing there is to say. Costs no read: the target came out of the link
+    // table with the name.
+    if (node->info.link != h5core::LinkType::Hard) {
+        meta = QStringLiteral("→ ");
+        if (!node->info.linkFile.empty()) {
+            meta += QStringLiteral("%1:").arg(
+                QString::fromStdString(node->info.linkFile));
+        }
+        meta += QString::fromStdString(node->info.linkTarget);
+        if (!node->info.resolves()) {
+            meta += QStringLiteral("  (missing)");
+        }
+        return meta;
     }
 
-    node->children.reserve(children.size());
-    int row = 0;
-    for (auto& info : children) {
-        auto child = std::make_unique<Node>();
-        child->parent = node;
-        child->rowInParent = row++;
-        child->info = std::move(info);
-        node->children.push_back(std::move(child));
+    if (node->cyclic) {
+        // The same object under a second name, so there is no target path to
+        // print and no count to take -- what the row has to say is that it
+        // closes a loop.
+        return QStringLiteral("cycle");
     }
+
+    if (!facts.read) {
+        // A node whose metadata will not read still lists, and says so: blank
+        // would read as "nothing to report" about an object that has something
+        // to report and could not be asked.
+        return tr("unreadable");
+    }
+
+    switch (facts.kind) {
+    case h5core::NodeKind::Group:
+        // Singular when there is one of them: the readout is a phrase the
+        // reader reads, not a count with a fixed noun stapled to it, and
+        // "1 items" is not a phrase.
+        return facts.members == 1
+                   ? QStringLiteral("1 item")
+                   : QStringLiteral("%1 items").arg(facts.members);
+    case h5core::NodeKind::Dataset:
+        if (facts.space == h5core::Dataspace::Null) {
+            return QStringLiteral("null");
+        }
+        if (facts.shape.empty()) {
+            return QStringLiteral("scalar");
+        }
+        {
+            QStringList parts;
+            parts.reserve(static_cast<int>(facts.shape.size()));
+            for (const hsize_t dim : facts.shape) {
+                parts << QLocale::system().toString(static_cast<qulonglong>(dim));
+            }
+            return QStringLiteral("(%1)").arg(parts.join(QStringLiteral(" × ")));
+        }
+    case h5core::NodeKind::NamedDataType:
+        // A committed type has no shape and no children, so what it is *of* is
+        // the whole of what the row has to say about it.
+        return QString::fromStdString(facts.typeDescription);
+    default:
+        break;
+    }
+
+    // The readout column carries a fact about every row or it is not a column.
+    // This is the floor under everything above, for the kinds that have nothing
+    // more -- an unresolved link, or an object of a kind this build does not
+    // know.
+    return QString::fromStdString(h5core::toString(facts.kind)).toLower();
 }
+
+// --- QAbstractItemModel ----------------------------------------------------
 
 QModelIndex H5TreeModel::index(int row, int column, const QModelIndex& parent) const
 {
     if (!hasIndex(row, column, parent)) {
         return {};
     }
-
     Node* parentNode = nodeFor(parent);
-    if (parentNode == nullptr) {
-        return {};
-    }
-    populate(parentNode);
-
-    if (row < 0 || static_cast<std::size_t>(row) >= parentNode->children.size()) {
+    if (parentNode == nullptr
+        || row < 0
+        || static_cast<std::size_t>(row) >= parentNode->children.size()) {
         return {};
     }
     return createIndex(row, column,
@@ -188,11 +519,7 @@ QModelIndex H5TreeModel::parent(const QModelIndex& child) const
     if (node == nullptr || node == root_.get() || node->parent == nullptr) {
         return {};
     }
-    Node* parentNode = node->parent;
-    if (parentNode == root_.get()) {
-        return {};
-    }
-    return createIndex(parentNode->rowInParent, 0, parentNode);
+    return indexFor(node->parent);
 }
 
 int H5TreeModel::rowCount(const QModelIndex& parent) const
@@ -204,7 +531,10 @@ int H5TreeModel::rowCount(const QModelIndex& parent) const
     if (node == nullptr) {
         return 0;
     }
-    populate(node);
+    // What is known now, plus a request for the rest. The view is told about
+    // the rest through rowsInserted rather than by waiting here, which is the
+    // whole difference between this and the version that blocked.
+    requestListing(node);
     return static_cast<int>(node->children.size());
 }
 
@@ -219,13 +549,20 @@ bool H5TreeModel::hasChildren(const QModelIndex& parent) const
     if (node == nullptr) {
         return false;
     }
-    // Claim children for any unread group so the expander appears without us
-    // having to read the group first -- that read is the whole point of being
-    // lazy.
-    if (!node->populated) {
-        return isExpandable(node);
+    if (!node->children.empty()) {
+        return true;
     }
-    return !node->children.empty();
+    if (node->listed) {
+        return false;
+    }
+    if (!node->known) {
+        // Not known yet to be a group. Claim nothing for now and ask; the
+        // expander appears a frame later, which is honest -- the file has not
+        // said yet.
+        requestFacts(node, false);
+        return node == root_.get();
+    }
+    return !node->cyclic && node->info.kind == h5core::NodeKind::Group;
 }
 
 QHash<int, QByteArray> H5TreeModel::roleNames() const
@@ -244,6 +581,7 @@ QHash<int, QByteArray> H5TreeModel::roleNames() const
         {MetaRole, "meta"},
         {IsLastChildRole, "isLastChild"},
         {AncestorLinesRole, "ancestorLines"},
+        {IsResolvedRole, "isResolved"},
         {Qt::DisplayRole, "display"},
     };
 }
@@ -256,68 +594,18 @@ QVariant H5TreeModel::data(const QModelIndex& index, int role) const
     }
 
     switch (role) {
+    // --- out of the link table: known the moment the row exists ------------
     case Qt::DisplayRole:
     case NameRole:
         return QString::fromStdString(node->info.name);
     case PathRole:
         return QString::fromStdString(node->info.path);
-    case KindRole:
-        ensureIdentity(node);
-        return static_cast<int>(node->info.kind);
-    case KindTextRole:
-        ensureIdentity(node);
-        return (node->info.link == h5core::LinkType::Hard)
-                   ? QString::fromStdString(h5core::toString(node->info.kind))
-                   : QStringLiteral("%1 \u2192 %2")
-                         .arg(QString::fromStdString(
-                                  h5core::toString(node->info.link)),
-                              QString::fromStdString(h5core::toString(node->info.kind)));
-    case IsGroupRole:
-        ensureIdentity(node);
-        return node->info.kind == h5core::NodeKind::Group;
-    case IsDatasetRole:
-        ensureIdentity(node);
-        return node->info.kind == h5core::NodeKind::Dataset;
-    case IsCyclicRole:
-        ensureIdentity(node);
-        return node->cyclic;
     case IsLinkRole:
-        // Out of the link table, so no object need be opened to answer it.
         return node->info.link != h5core::LinkType::Hard;
-    case LinkResolvesRole:
-        // A hard link always resolves and the link table says it is one, so
-        // only the other two are worth an object-header read.
-        if (node->info.link != h5core::LinkType::Hard) {
-            ensureIdentity(node);
-        }
-        return node->info.resolves();
-    case HasAttributesRole:
-        ensureIdentity(node);
-        return node->info.attributeCount > 0;
-    case AttributeCountRole:
-        ensureIdentity(node);
-        return static_cast<int>(node->info.attributeCount);
-    case IsImageRole:
-        ensureReadout(node);
-        return node->image;
-    case ImageSubclassRole:
-        ensureReadout(node);
-        return node->imageSubclass;
-    case LinkDescriptionRole:
-        // Only a link has one, and whether it *leads* anywhere is part of the
-        // sentence -- so this is the one text role that has to resolve.
-        if (node->info.link == h5core::LinkType::Hard) {
-            return QString{};
-        }
-        ensureIdentity(node);
-        return linkDescription(node->info);
-    case MetaRole:
-        return metaFor(node);
     case IsLastChildRole: {
         const Node* parent = node->parent;
         return parent == nullptr
-               || node->rowInParent
-                      == static_cast<int>(parent->children.size()) - 1;
+               || node->rowInParent == static_cast<int>(parent->children.size()) - 1;
     }
     case AncestorLinesRole: {
         // Walk to the root collecting each ancestor's "has a later sibling",
@@ -334,121 +622,69 @@ QVariant H5TreeModel::data(const QModelIndex& index, int role) const
         }
         return lines;
     }
+    case IsResolvedRole:
+        return node->known;
+
+    // --- out of the object header: asked for, and filled in when it lands --
+    case KindRole:
+        requestFacts(node, false);
+        return static_cast<int>(node->info.kind);
+    case KindTextRole:
+        requestFacts(node, false);
+        return (node->info.link == h5core::LinkType::Hard)
+                   ? QString::fromStdString(h5core::toString(node->info.kind))
+                   : QStringLiteral("%1 → %2")
+                         .arg(QString::fromStdString(h5core::toString(node->info.link)),
+                              QString::fromStdString(h5core::toString(node->info.kind)));
+    case IsGroupRole:
+        requestFacts(node, false);
+        return node->info.kind == h5core::NodeKind::Group;
+    case IsDatasetRole:
+        requestFacts(node, false);
+        return node->info.kind == h5core::NodeKind::Dataset;
+    case IsCyclicRole:
+        requestFacts(node, false);
+        return node->cyclic;
+    case LinkResolvesRole:
+        // A hard link always resolves and the link table says it is one, so
+        // only the other two are worth an object-header read.
+        if (node->info.link == h5core::LinkType::Hard) {
+            return true;
+        }
+        requestFacts(node, false);
+        return node->known && node->info.resolves();
+    case HasAttributesRole:
+        requestFacts(node, false);
+        return node->info.attributeCount > 0;
+    case AttributeCountRole:
+        requestFacts(node, false);
+        return static_cast<int>(node->info.attributeCount);
+    case IsImageRole:
+        requestFacts(node, true);
+        return node->image;
+    case ImageSubclassRole:
+        requestFacts(node, true);
+        return node->imageSubclass;
+    case LinkDescriptionRole:
+        if (node->info.link == h5core::LinkType::Hard) {
+            return QString{};
+        }
+        requestFacts(node, false);
+        return node->known ? linkDescription(node->info) : QString{};
+    case MetaRole:
+        requestFacts(node, true);
+        return node->meta;
     default:
         return {};
     }
 }
 
-QString H5TreeModel::metaFor(const Node* node) const
-{
-    ensureReadout(node);
-    return *node->meta;
-}
-
-void H5TreeModel::ensureReadout(const Node* node) const
-{
-    if (node->meta.has_value()) {
-        return;
-    }
-    ensureIdentity(node);
-
-    QString meta;
-    if (file_ != nullptr) {
-        try {
-            // Where a link points is what distinguishes it from the object it
-            // names, so that is what the readout says -- for a broken one it
-            // is the only thing there is to say. Costs no read at all: the
-            // target came out of the link table with the name.
-            if (node->info.link != h5core::LinkType::Hard) {
-                meta = QStringLiteral("\u2192 ");
-                if (!node->info.linkFile.empty()) {
-                    meta += QStringLiteral("%1:")
-                                .arg(QString::fromStdString(node->info.linkFile));
-                }
-                meta += QString::fromStdString(node->info.linkTarget);
-                if (!node->info.resolves()) {
-                    meta += QStringLiteral("  (missing)");
-                }
-            } else if (node->info.kind == h5core::NodeKind::Dataset) {
-                // The dataspace and the image tag, and nothing else. The full
-                // DatasetInfo -- datatype, layout, filter pipeline, external
-                // sources -- is four more reads per row and the tree shows
-                // none of it; the Info panel reads it for the one object that
-                // is selected. And the image probe is skipped outright unless
-                // the object header said there are attributes to probe.
-                const auto outline = file_->datasetOutline(
-                    node->info.path, node->info.attributeCount > 0);
-                node->image = outline.image;
-                if (node->image) {
-                    node->imageSubclass =
-                        QString::fromStdString(h5core::toString(outline.subclass));
-                }
-                if (outline.space == h5core::Dataspace::Null) {
-                    meta = QStringLiteral("null");
-                } else if (outline.shape.empty()) {
-                    meta = QStringLiteral("scalar");
-                } else {
-                    QStringList parts;
-                    parts.reserve(static_cast<int>(outline.shape.size()));
-                    for (const hsize_t dim : outline.shape) {
-                        parts << QLocale::system().toString(
-                            static_cast<qulonglong>(dim));
-                    }
-                    meta = QStringLiteral("(%1)")
-                               .arg(parts.join(QStringLiteral(" \u00d7 ")));
-                }
-            } else if (node->cyclic) {
-                // A hard link back to an ancestor. It is the same object under
-                // a second name, so there is no target path to print and no
-                // count to take -- what the row has to say is that it closes a
-                // loop.
-                meta = QStringLiteral("cycle");
-            } else if (node->info.kind == h5core::NodeKind::Group) {
-                // H5Gget_info, which reads the count out of the group's own
-                // header. Listing the group and taking the size of the list --
-                // which is what this used to do -- resolves every link in it,
-                // so drawing a member count beside 256 group rows cost a walk
-                // of the whole level below them. That is quadratic in the
-                // shape real acquisition files have, and it is the single
-                // reason this pane was slow.
-                //
-                // Singular when there is one of them: the readout is a phrase
-                // the reader reads, not a count with a fixed noun stapled to
-                // it, and "1 items" is not a phrase.
-                const auto members = file_->memberCount(node->info.path);
-                meta = members == 1
-                           ? QStringLiteral("1 item")
-                           : QStringLiteral("%1 items").arg(members);
-            } else if (node->info.kind == h5core::NodeKind::NamedDataType) {
-                // A committed type has no shape and no children, so what it is
-                // *of* is the whole of what the row has to say about it.
-                // Opening it reads the datatype and nothing else.
-                meta = QString::fromStdString(
-                    file_->namedType(node->info.path).description);
-            }
-        } catch (const h5core::H5Error&) {
-            // A node whose metadata will not read still lists, and says so:
-            // blank would read as "nothing to report" about an object that has
-            // something to report and could not be asked.
-            meta = tr("unreadable");
-        }
-    }
-
-    // The readout column carries a fact about every row or it is not a column.
-    // Everything above states the most specific thing there is to say; this is
-    // the floor under it, for the kinds that have nothing more -- an
-    // unresolved link, or an object of a kind this build does not know.
-    if (meta.isEmpty()) {
-        meta = QString::fromStdString(h5core::toString(node->info.kind)).toLower();
-    }
-
-    node->meta = meta;
-}
+// --- paths -----------------------------------------------------------------
 
 bool H5TreeModel::isPopulated(const QModelIndex& index) const
 {
     const Node* node = nodeFor(index);
-    return node != nullptr && node->populated;
+    return node != nullptr && node->listed;
 }
 
 QString H5TreeModel::pathAt(const QModelIndex& index) const
@@ -460,32 +696,28 @@ QString H5TreeModel::pathAt(const QModelIndex& index) const
 h5core::NodeKind H5TreeModel::kindAt(const QModelIndex& index) const
 {
     Node* node = nodeFor(index);
-    if (node == nullptr) {
-        return h5core::NodeKind::Unknown;
-    }
-    ensureIdentity(node);
-    return node->info.kind;
+    return (node == nullptr) ? h5core::NodeKind::Unknown : node->info.kind;
 }
 
-QModelIndex H5TreeModel::indexForPath(const QString& path)
+QModelIndex H5TreeModel::indexForPath(const QString& path) const
 {
-    if (!file_ || path.isEmpty()) {
+    if (root_ == nullptr || path.isEmpty()) {
         return {};
     }
-
     QModelIndex current;
     for (const QString& part : path.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
-        bool found = false;
-        const int rows = rowCount(current); // populates as it descends
+        Node* parent = nodeFor(current);
+        if (parent == nullptr || !parent->listed) {
+            return {};
+        }
         const std::string name = part.toStdString();
-        for (int row = 0; row < rows; ++row) {
-            const QModelIndex child = index(row, 0, current);
+        bool found = false;
+        for (const auto& child : parent->children) {
             // Against the node's own name rather than through data(), which
             // would build a QString and a QVariant for every member of every
-            // group on the way down. A path into a file with flat groups of
-            // several thousand walks all of them.
-            if (nodeFor(child)->info.name == name) {
-                current = child;
+            // group on the way down.
+            if (child->info.name == name) {
+                current = createIndex(child->rowInParent, 0, child.get());
                 found = true;
                 break;
             }
@@ -495,6 +727,65 @@ QModelIndex H5TreeModel::indexForPath(const QString& path)
         }
     }
     return current;
+}
+
+void H5TreeModel::revealPath(const QString& path)
+{
+    if (root_ == nullptr) {
+        emit pathRevealed(QModelIndex{}, path);
+        return;
+    }
+    continueReveal(root_.get(), path.split(QLatin1Char('/'), Qt::SkipEmptyParts), path);
+}
+
+void H5TreeModel::continueReveal(Node* parent, QStringList remaining,
+                                 const QString& whole)
+{
+    if (parent == nullptr) {
+        emit pathRevealed(QModelIndex{}, whole);
+        return;
+    }
+    if (remaining.isEmpty()) {
+        emit pathRevealed(indexFor(parent), whole);
+        return;
+    }
+
+    // One level per round trip, each one waiting on the last. A path twelve
+    // groups deep into a file nobody has expanded is twelve listings, which is
+    // exactly why this is a signal and not a return value.
+    whenListed(parent, [this, parent, remaining, whole]() mutable {
+        if (!parent->listed) {
+            emit pathRevealed(QModelIndex{}, whole);
+            return;
+        }
+        const std::string name = remaining.front().toStdString();
+        for (const auto& child : parent->children) {
+            if (child->info.name != name) {
+                continue;
+            }
+            Node* next = child.get();
+            remaining.pop_front();
+            if (remaining.isEmpty()) {
+                // Describe the row before announcing it: every caller asks
+                // something about the object it just revealed.
+                if (next->known) {
+                    emit pathRevealed(indexFor(next), whole);
+                } else {
+                    requestFacts(next, true);
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, next, whole] {
+                            emit pathRevealed(indexFor(next), whole);
+                        },
+                        Qt::QueuedConnection);
+                }
+                return;
+            }
+            continueReveal(next, remaining, whole);
+            return;
+        }
+        emit pathRevealed(QModelIndex{}, whole);
+    });
 }
 
 } // namespace gui

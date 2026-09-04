@@ -16,20 +16,27 @@ namespace gui {
 
 DatasetTableModel::DatasetTableModel(QObject* parent) : QAbstractTableModel(parent) {}
 
-void DatasetTableModel::setDataset(std::shared_ptr<const h5core::DataSource> dataset)
+void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QString path)
 {
     beginResetModel();
-    dataset_ = std::move(dataset);
+    // Anything still on its way describes the last dataset. Disowning it here
+    // is what stops a block of the previous selection arriving a frame later
+    // and being painted into this one's grid.
+    requests_.reset();
+    askedRowOrigin_ = -1;
+    askedColumnOrigin_ = -1;
+
+    present_ = present;
+    info_ = std::move(info);
+    sourcePath_ = std::move(path);
     block_ = {};
     errorText_.clear();
 
-    rebuild(dataset_ ? defaultLayout(dataset_->info().shape, dataset_->info().image)
-                     : TableLayout{});
+    rebuild(present_ ? defaultLayout(info_.shape, info_.image) : TableLayout{});
 
-    if (dataset_ && !dataset_->info().readable()) {
+    if (present_ && !info_.readable()) {
         errorText_ = tr("This dataset cannot be read: %1")
-                         .arg(QString::fromStdString(
-                             dataset_->info().unreadableReason()));
+                         .arg(QString::fromStdString(info_.unreadableReason()));
     }
     endResetModel();
     emit datasetChanged();
@@ -37,7 +44,7 @@ void DatasetTableModel::setDataset(std::shared_ptr<const h5core::DataSource> dat
 
 void DatasetTableModel::setLayout(const TableLayout& layout)
 {
-    if (!dataset_ || layout.rank() != dataset_->info().rank()
+    if (!present_ || layout.rank() != info_.rank()
         || layout.onX.size() != layout.indices.size()) {
         return;
     }
@@ -50,9 +57,10 @@ void DatasetTableModel::rebuild(TableLayout layout)
 {
     // A null dataspace holds no elements at all, and the empty product over the
     // axes would otherwise make a one-cell table out of nothing.
-    axes_ = TableAxes(std::move(layout),
-                      !dataset_ || dataset_->info().isNull());
+    axes_ = TableAxes(std::move(layout), !present_ || info_.isNull());
     block_ = {};
+    askedRowOrigin_ = -1;
+    askedColumnOrigin_ = -1;
     // A different table has a different extent, and a colour ramp stretched
     // between the old one would be reading the new numbers on the old scale.
     extent_.reset();
@@ -60,7 +68,7 @@ void DatasetTableModel::rebuild(TableLayout layout)
 
 int DatasetTableModel::rowCount(const QModelIndex& parent) const
 {
-    if (parent.isValid() || !dataset_ || !errorText_.isEmpty()) {
+    if (parent.isValid() || !present_ || !errorText_.isEmpty()) {
         return 0;
     }
     return static_cast<int>(axes_.rows());
@@ -68,10 +76,55 @@ int DatasetTableModel::rowCount(const QModelIndex& parent) const
 
 int DatasetTableModel::columnCount(const QModelIndex& parent) const
 {
-    if (parent.isValid() || !dataset_ || !errorText_.isEmpty()) {
+    if (parent.isValid() || !present_ || !errorText_.isEmpty()) {
         return 0;
     }
     return static_cast<int>(axes_.columns());
+}
+
+DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& source,
+                                                      const TableAxes& axes,
+                                                      Block block, QString& error)
+{
+    // On the HDF5 thread. One job per block rather than one per read: a block
+    // is a hundred rows of runs, and paying a round trip for each of them would
+    // be slower than the synchronous version it replaced.
+    block.cells.assign(static_cast<std::size_t>(block.rows) * block.columns, QString{});
+
+    const bool hasX = !axes.xDims().empty();
+    const std::size_t lastX = hasX ? axes.xDims().back() : 0;
+
+    try {
+        for (int r = 0; r < block.rows; ++r) {
+            int c = 0;
+            while (c < block.columns) {
+                const int column0 = block.columnOrigin + c;
+                const int run = axes.runLength(column0, block.columns - c);
+
+                std::vector<hsize_t> offset =
+                    axes.coordinates(block.rowOrigin + r, column0);
+                std::vector<hsize_t> count(axes.rank(), 1);
+                if (hasX) {
+                    count[lastX] = static_cast<hsize_t>(run);
+                }
+
+                const h5core::DataWindow window = source.readWindow(offset, count);
+                for (int i = 0; i < run && i < static_cast<int>(window.cells.size());
+                     ++i) {
+                    block.cells[static_cast<std::size_t>(r) * block.columns + c + i] =
+                        QString::fromStdString(
+                            window.cells[static_cast<std::size_t>(i)]);
+                }
+                c += run;
+            }
+        }
+    } catch (const h5core::H5Error& failure) {
+        error = QString::fromStdString(failure.summary());
+        return {};
+    }
+
+    block.valid = true;
+    return block;
 }
 
 void DatasetTableModel::ensureBlock(int row, int column) const
@@ -90,47 +143,62 @@ void DatasetTableModel::ensureBlock(int row, int column) const
     block.columns = static_cast<int>(
         std::min<qint64>(kBlockColumns, axes_.columns() - block.columnOrigin));
     if (block.rows <= 0 || block.columns <= 0) {
-        block_ = {};
         return;
     }
-    block.cells.assign(static_cast<std::size_t>(block.rows) * block.columns, QString{});
 
-    const bool hasX = !axes_.xDims().empty();
-    const std::size_t lastX = hasX ? axes_.xDims().back() : 0;
+    // One request per block, however many cells of it the view asks about
+    // before the answer lands. Without this the first paint of a screenful
+    // would queue a hundred identical reads.
+    if (askedRowOrigin_ == block.rowOrigin && askedColumnOrigin_ == block.columnOrigin) {
+        return;
+    }
+    askedRowOrigin_ = block.rowOrigin;
+    askedColumnOrigin_ = block.columnOrigin;
 
-    try {
-        for (int r = 0; r < block.rows; ++r) {
-            int c = 0;
-            while (c < block.columns) {
-                const int column0 = block.columnOrigin + c;
-                const int run = axes_.runLength(column0, block.columns - c);
+    auto* self = const_cast<DatasetTableModel*>(this);
+    struct Read {
+        Block block;
+        QString error;
+    };
 
-                std::vector<hsize_t> offset =
-                    axes_.coordinates(block.rowOrigin + r, column0);
-                std::vector<hsize_t> count(axes_.rank(), 1);
-                if (hasX) {
-                    count[lastX] = static_cast<hsize_t>(run);
-                }
-
-                const h5core::DataWindow window = dataset_->readWindow(offset, count);
-                for (int i = 0; i < run && i < static_cast<int>(window.cells.size());
-                     ++i) {
-                    block.cells[static_cast<std::size_t>(r) * block.columns + c + i] =
-                        QString::fromStdString(
-                            window.cells[static_cast<std::size_t>(i)]);
-                }
-                c += run;
+    H5Thread::instance().submit(
+        requests_,
+        [axes = axes_, block](H5Session& session) {
+            Read read;
+            const h5core::DataSource* source = session.source();
+            if (source == nullptr) {
+                return read;
             }
-        }
-    } catch (const h5core::H5Error& error) {
-        block_ = {};
-        errorText_ = QString::fromStdString(error.summary());
-        return;
-    }
-
-    block.valid = true;
-    block_ = std::move(block);
-    errorText_.clear();
+            read.block = readBlock(*source, axes, block, read.error);
+            return read;
+        },
+        [self](Read read) {
+            self->askedRowOrigin_ = -1;
+            self->askedColumnOrigin_ = -1;
+            if (!read.error.isEmpty()) {
+                self->block_ = {};
+                self->errorText_ = read.error;
+                emit self->dataChanged(self->index(0, 0),
+                                       self->index(std::max(0, self->rowCount() - 1),
+                                                   std::max(0, self->columnCount() - 1)));
+                return;
+            }
+            if (!read.block.valid) {
+                return;
+            }
+            self->block_ = std::move(read.block);
+            self->errorText_.clear();
+            // Only the block that arrived. The rest of the table is either
+            // already painted or is waiting on a request of its own.
+            const QModelIndex topLeft =
+                self->index(self->block_.rowOrigin, self->block_.columnOrigin);
+            const QModelIndex bottomRight =
+                self->index(self->block_.rowOrigin + self->block_.rows - 1,
+                            self->block_.columnOrigin + self->block_.columns - 1);
+            if (topLeft.isValid() && bottomRight.isValid()) {
+                emit self->dataChanged(topLeft, bottomRight);
+            }
+        });
 }
 
 double DatasetTableModel::NumericGrid::at(int row, int column) const
@@ -143,7 +211,7 @@ double DatasetTableModel::NumericGrid::at(int row, int column) const
 
 bool DatasetTableModel::numeric() const
 {
-    return dataset_ && dataset_->info().isNumeric() && dataset_->info().readable();
+    return present_ && info_.isNumeric() && info_.readable();
 }
 
 DatasetTableModel::NumericGrid
@@ -156,23 +224,14 @@ DatasetTableModel::sampleValues(int firstRow, int rowSpan, int maxRows,
 }
 
 DatasetTableModel::NumericGrid
-DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan,
-                                int maxRows, int firstColumn, int columnSpan,
-                                int maxColumns) const
+DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes& axes,
+                              int firstRow, int rowSpan, int maxRows, int firstColumn,
+                              int columnSpan, int maxColumns)
 {
+    // On the HDF5 thread. Everything above this -- whether there is a source at
+    // all, whether its type has numbers in it -- was settled on the other side
+    // out of the description, which is why none of it appears here.
     NumericGrid grid;
-    if (!dataset_) {
-        return grid;
-    }
-    if (!numeric()) {
-        grid.error = errorText_.isEmpty()
-                         ? tr("%1 holds %2, which has no numeric value.")
-                               .arg(QString::fromStdString(dataset_->path()),
-                                    QString::fromStdString(
-                                        dataset_->info().type.description))
-                         : errorText_;
-        return grid;
-    }
 
     // A span below zero means "to the end", so a caller that only wants a cap
     // does not have to know how big the table is first.
@@ -232,7 +291,7 @@ DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan
                     count[lastX] = static_cast<hsize_t>(run);
                 }
                 const h5core::NumericWindow window =
-                    dataset_->readNumericWindow(offset, count);
+                    source.readNumericWindow(offset, count);
 
                 // Every sampled column this run happens to cover. Reading
                 // starts on a wanted column by construction, so a full run
@@ -273,9 +332,72 @@ DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan
     return grid;
 }
 
+/// Whether there is anything to sample, and what to say when there is not.
+/// Shared by the blocking and the asked-for forms, because the answer has
+/// nothing to do with which of them is being used.
+bool DatasetTableModel::sampleable(NumericGrid& grid) const
+{
+    if (!present_) {
+        return false;
+    }
+    if (!numeric()) {
+        grid.error = errorText_.isEmpty()
+                         ? tr("%1 holds %2, which has no numeric value.")
+                               .arg(sourcePath_,
+                                    QString::fromStdString(info_.type.description))
+                         : errorText_;
+        return false;
+    }
+    return true;
+}
+
+DatasetTableModel::NumericGrid
+DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan,
+                                int maxRows, int firstColumn, int columnSpan,
+                                int maxColumns) const
+{
+    NumericGrid grid;
+    if (!sampleable(grid)) {
+        return grid;
+    }
+    return H5Thread::instance().invoke([&](H5Session& session) {
+        const h5core::DataSource* source = session.source();
+        return (source == nullptr)
+                   ? NumericGrid{}
+                   : sampleFrom(*source, axes, firstRow, rowSpan, maxRows, firstColumn,
+                                columnSpan, maxColumns);
+    });
+}
+
+void DatasetTableModel::requestSamples(const TableAxes& axes, int firstRow, int rowSpan,
+                                       int maxRows, int firstColumn, int columnSpan,
+                                       int maxColumns,
+                                       std::function<void(NumericGrid)> then)
+{
+    NumericGrid grid;
+    if (!sampleable(grid)) {
+        // Answered here rather than across the thread: nothing is going to be
+        // read, and a caller that got its answer a frame later for no reason
+        // would flicker for no reason.
+        then(std::move(grid));
+        return;
+    }
+    H5Thread::instance().submit(
+        requests_,
+        [axes, firstRow, rowSpan, maxRows, firstColumn, columnSpan,
+         maxColumns](H5Session& session) {
+            const h5core::DataSource* source = session.source();
+            return (source == nullptr)
+                       ? NumericGrid{}
+                       : sampleFrom(*source, axes, firstRow, rowSpan, maxRows,
+                                    firstColumn, columnSpan, maxColumns);
+        },
+        std::move(then));
+}
+
 QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || !dataset_) {
+    if (!index.isValid() || !present_) {
         return {};
     }
     if (role != Qt::DisplayRole && role != Qt::ToolTipRole && role != Number) {
@@ -338,9 +460,9 @@ QVariantMap DatasetTableModel::valueExtent() const
 
 bool DatasetTableModel::floats() const
 {
-    return dataset_ != nullptr
-           && dataset_->info().type.cls == h5core::TypeClass::Float
-           && dataset_->info().readable();
+    return present_
+           && info_.type.cls == h5core::TypeClass::Float
+           && info_.readable();
 }
 
 void DatasetTableModel::setFloatFormat(FloatFormat format)
@@ -395,7 +517,7 @@ QString DatasetTableModel::formatted(const QString& text) const
 int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
                                   int columns) const
 {
-    if (!dataset_ || rows <= 0 || columns <= 0) {
+    if (!present_ || rows <= 0 || columns <= 0) {
         return 0;
     }
     // One block covers what a screen shows several times over, so the rectangle
@@ -429,17 +551,38 @@ int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
 
 QVariantMap DatasetTableModel::elementAt(int row, int column) const
 {
-    if (!dataset_ || row < 0 || column < 0 || row >= axes_.rows()
+    if (!present_ || row < 0 || column < 0 || row >= axes_.rows()
         || column >= axes_.columns()) {
         return {};
     }
 
-    h5core::ElementValue element;
-    try {
-        element = dataset_->readElement(axes_.coordinates(row, column));
-    } catch (const h5core::H5Error& error) {
-        return {{QStringLiteral("error"), QString::fromStdString(error.summary())}};
+    // The one read in this class that is still waited for. It is a single
+    // element, asked for by a click on the cell already on screen, and QML
+    // calls it as a function with a return value -- so making it asked-for
+    // would mean a property, a signal and a pane that is briefly blank, to
+    // save a wait of one object read. See DEVLOG: this is the remaining
+    // synchronous point and it is deliberate.
+    struct Read {
+        h5core::ElementValue value;
+        QString error;
+    };
+    const Read read = H5Thread::instance().invoke([&](H5Session& session) {
+        Read result;
+        const h5core::DataSource* source = session.source();
+        if (source == nullptr) {
+            return result;
+        }
+        try {
+            result.value = source->readElement(axes_.coordinates(row, column));
+        } catch (const h5core::H5Error& error) {
+            result.error = QString::fromStdString(error.summary());
+        }
+        return result;
+    });
+    if (!read.error.isEmpty()) {
+        return {{QStringLiteral("error"), read.error}};
     }
+    const h5core::ElementValue& element = read.value;
 
     QVariantList fields;
     fields.reserve(static_cast<qsizetype>(element.fields.size()));
@@ -462,7 +605,7 @@ QVariantMap DatasetTableModel::elementAt(int row, int column) const
 QString DatasetTableModel::labelFor(int row, int column, bool showX, bool showY) const
 {
     const std::size_t rank = axes_.rank();
-    if (rank == 0 || !dataset_) {
+    if (rank == 0 || !present_) {
         return {};
     }
 

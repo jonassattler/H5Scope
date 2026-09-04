@@ -34,7 +34,48 @@ public:
 
     explicit ObjectInfoModel(QObject* parent = nullptr);
 
-    void showObject(const std::shared_ptr<h5core::File>& file, const QString& path);
+    struct Row {
+        QString label;
+        QString value;
+        bool warning = false;
+        QString section;
+    };
+
+    /// One panel: its rows are every Row carrying the matching section name.
+    /// Kept ordered and separate from the rows so a panel can hold a summary
+    /// (`meta`) that is not itself one of the label/value rows.
+    struct Section {
+        QString name;
+        QString meta;
+        bool accent = false;
+        /// What the panel says instead of its rows when it has nothing to
+        /// list. Empty for every panel that always has something.
+        QString emptyText;
+    };
+
+    /// The panels for one object, built and finished.
+    ///
+    /// The whole of what describing an object produces, separated from the
+    /// model that shows it so that the describing can happen somewhere else --
+    /// which it must, because it is a dozen HDF5 reads and HDF5 belongs to one
+    /// thread that is not this one. gather() runs there; showContent() runs
+    /// here.
+    struct Content {
+        std::vector<Row> rows;
+        std::vector<Section> sections;
+        QString currentSection;
+
+        void beginSection(QString name, QString meta = {}, bool accent = false,
+                          QString emptyText = {});
+        void add(QString label, QString value, bool warning = false);
+    };
+
+    /// Describe the object at `path`. Reads HDF5, so it runs on the thread that
+    /// owns it; everything it returns is plain data.
+    [[nodiscard]] static Content gather(h5core::File& file, const QString& path);
+
+    /// Show what gather() produced.
+    void showContent(Content content);
     void clear();
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
@@ -50,32 +91,8 @@ public:
     [[nodiscard]] QVariantList sections() const;
 
 private:
-    struct Row {
-        QString label;
-        QString value;
-        bool warning = false;
-        QString section;
-    };
-
-    /// One panel: its rows are every Row carrying the matching section name.
-    /// Kept ordered and separate from rows_ so a panel can hold a summary
-    /// (`meta`) that is not itself one of the label/value rows.
-    struct Section {
-        QString name;
-        QString meta;
-        bool accent = false;
-        /// What the panel says instead of its rows when it has nothing to
-        /// list. Empty for every panel that always has something.
-        QString emptyText;
-    };
-
-    void beginSection(QString name, QString meta = {}, bool accent = false,
-                      QString emptyText = {});
-    void add(QString label, QString value, bool warning = false);
-
     std::vector<Row> rows_;
     std::vector<Section> sections_;
-    QString currentSection_;
 };
 
 } // namespace gui

@@ -5,6 +5,12 @@ add_library(test_support STATIC support/TestFile.cpp)
 target_include_directories(test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(test_support PUBLIC HDF5::HDF5)
 
+# The entry point for the suites that reach HDF5 through the application. See
+# the header of CatchMain.cpp: the HDF5 thread runs an event loop, and an event
+# loop needs a QCoreApplication to run in.
+add_library(test_main STATIC support/CatchMain.cpp)
+target_link_libraries(test_main PUBLIC gui Catch2::Catch2 Qt6::Core)
+
 include(Catch)
 
 # --- backend: pure C++, no Qt --------------------------------------------
@@ -22,9 +28,18 @@ target_link_libraries(test_postprocess PRIVATE postproc Catch2::Catch2WithMain
                                               Qt6::Core)
 catch_discover_tests(test_postprocess)
 
+# --- the HDF5 thread: the rule that HDF5 is touched from one thread only ---
+# Its own binary, and deliberately so. This suite asserts what is true before
+# any file is open and what is true of a process where nothing has claimed the
+# library yet, and both of those stop being observable the moment another suite
+# in the same binary has started the thread.
+add_executable(test_h5thread test_h5thread.cpp)
+target_link_libraries(test_h5thread PRIVATE gui test_support test_main)
+catch_discover_tests(test_h5thread)
+
 # --- models and controller: Qt types, still no QML engine -----------------
 add_executable(test_models test_models.cpp)
-target_link_libraries(test_models PRIVATE gui test_support Catch2::Catch2WithMain Qt6::Test)
+target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
 # --- the example file, read back through the application's own stack -------
@@ -32,7 +47,7 @@ catch_discover_tests(test_models)
 # against exactly the file that program writes rather than a second copy of it.
 add_executable(test_example test_example.cpp)
 target_link_libraries(test_example PRIVATE
-  gui example_file Catch2::Catch2WithMain Qt6::Test
+  gui example_file test_support test_main Qt6::Test
 )
 catch_discover_tests(test_example)
 

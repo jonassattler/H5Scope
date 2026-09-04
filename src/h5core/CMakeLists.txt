@@ -5,6 +5,7 @@
 # whole layer can be unit-tested headless.
 add_library(h5core STATIC
   Types.cpp
+  Thread.cpp
   Error.cpp
   DataType.cpp
   File.cpp

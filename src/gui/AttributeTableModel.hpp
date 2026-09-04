@@ -35,7 +35,13 @@ public:
 
     explicit AttributeTableModel(QObject* parent = nullptr);
 
-    void showObject(const std::shared_ptr<h5core::File>& file, const QString& path);
+    /// Show attributes that have already been read.
+    ///
+    /// It used to take the file and the path and read them itself, which meant
+    /// reading HDF5 from whatever thread happened to be selecting an object.
+    /// The read belongs on the one thread that owns the library; what arrives
+    /// here is the plain data it produced.
+    void setAttributes(std::vector<h5core::AttributeInfo> attributes);
     void clear();
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;

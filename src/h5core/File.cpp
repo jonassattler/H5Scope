@@ -6,6 +6,7 @@
 #include "DataType.hpp"
 #include "Error.hpp"
 #include "Image.hpp"
+#include "Thread.hpp"
 
 #include <cstring>
 #include <format>
@@ -156,6 +157,7 @@ std::string joinPath(const std::string& parent, const std::string& name)
 
 bool File::isHDF5(const std::string& path)
 {
+    thread::check(__func__);
     const htri_t result = H5Fis_accessible(path.c_str(), H5P_DEFAULT);
     if (result < 0) {
         H5Eclear2(H5E_DEFAULT);
@@ -166,6 +168,7 @@ bool File::isHDF5(const std::string& path)
 
 File::File(const std::string& path) : path_(path)
 {
+    thread::check("File::File");
     initErrorHandling();
 
     file_ = Handle(H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), &H5Fclose);
@@ -183,6 +186,7 @@ File::File(const std::string& path) : path_(path)
 
 bool File::exists(const std::string& path) const
 {
+    thread::check(__func__);
     if (path == "/") {
         return true;
     }
@@ -196,6 +200,7 @@ bool File::exists(const std::string& path) const
 
 std::vector<NodeInfo> File::children(const std::string& path, Resolve resolve) const
 {
+    thread::check(__func__);
     Handle group(H5Gopen2(file_.get(), path.c_str(), H5P_DEFAULT), &H5Gclose);
     if (!group.valid()) {
         throwError(std::format("Cannot open group '{}'", path));
@@ -226,11 +231,13 @@ std::vector<NodeInfo> File::children(const std::string& path, Resolve resolve) c
 
 void File::resolve(NodeInfo& node) const
 {
+    thread::check(__func__);
     resolveObject(file_.get(), node.path.c_str(), node);
 }
 
 hsize_t File::memberCount(const std::string& path) const
 {
+    thread::check(__func__);
     H5G_info_t info{};
     if (H5Gget_info_by_name(file_.get(), path.c_str(), &info, H5P_DEFAULT) < 0) {
         throwError(std::format("Cannot count the members of '{}'", path));
@@ -240,6 +247,7 @@ hsize_t File::memberCount(const std::string& path) const
 
 DatasetOutline File::datasetOutline(const std::string& path, bool mayBeImage) const
 {
+    thread::check(__func__);
     Handle dataset(H5Dopen2(file_.get(), path.c_str(), H5P_DEFAULT), &H5Dclose);
     if (!dataset.valid()) {
         throwError(std::format("Cannot open dataset '{}'", path));
@@ -280,6 +288,7 @@ DatasetOutline File::datasetOutline(const std::string& path, bool mayBeImage) co
 
 bool File::hasLink(const std::string& path) const
 {
+    thread::check(__func__);
     if (path == "/") {
         return true;
     }
@@ -293,6 +302,7 @@ bool File::hasLink(const std::string& path) const
 
 NodeInfo File::nodeInfo(const std::string& path) const
 {
+    thread::check(__func__);
     NodeInfo node;
     node.path = path;
 
@@ -321,6 +331,7 @@ NodeInfo File::nodeInfo(const std::string& path) const
 
 TypeInfo File::namedType(const std::string& path) const
 {
+    thread::check(__func__);
     Handle type(H5Topen2(file_.get(), path.c_str(), H5P_DEFAULT), &H5Tclose);
     if (!type.valid()) {
         throwError(std::format("Cannot open named datatype '{}'", path));
@@ -330,6 +341,7 @@ TypeInfo File::namedType(const std::string& path) const
 
 std::size_t File::attributeCount(const std::string& path) const
 {
+    thread::check(__func__);
     H5O_info2_t info{};
     if (H5Oget_info_by_name3(file_.get(), path.c_str(), &info, H5O_INFO_NUM_ATTRS,
                              H5P_DEFAULT) < 0) {

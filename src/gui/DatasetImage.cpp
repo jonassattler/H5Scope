@@ -101,9 +101,8 @@ DatasetImage::DatasetImage(DatasetTableModel* table, QObject* parent)
 
 void DatasetImage::applyImageDefaults()
 {
-    const h5core::DataSource* dataset = table_->dataset();
-    const auto& info =
-        (dataset != nullptr) ? dataset->info().image : std::optional<h5core::ImageInfo>{};
+    const auto& info = table_->present() ? table_->info().image
+                                         : std::optional<h5core::ImageInfo>{};
 
     // Set directly rather than through the setters: setAutoRange seeds the two
     // boxes from whatever was last on screen, which is the right thing when a
@@ -115,11 +114,11 @@ void DatasetImage::applyImageDefaults()
         autoRange_ = false;
         rangeMinimum_ = *info->minimum;
         rangeMaximum_ = *info->maximum;
-    } else if (info.has_value() && dataset != nullptr) {
+    } else if (info.has_value() && table_->present()) {
         // It says it is a picture but not what its levels run between, so the
         // datatype answers: a byte raster is drawn against 0 to 255 whatever
         // this particular frame happens to reach.
-        if (const auto span = fullTypeRange(dataset->info().type); span.has_value()) {
+        if (const auto span = fullTypeRange(table_->info().type); span.has_value()) {
             autoRange_ = false;
             rangeMinimum_ = span->first;
             rangeMaximum_ = span->second;
@@ -156,11 +155,10 @@ void DatasetImage::applyImageDefaults()
 
 int DatasetImage::channelExtent() const
 {
-    const h5core::DataSource* dataset = table_->dataset();
-    if (dataset == nullptr || channelDimension_ < 0) {
+    if (!table_->present() || channelDimension_ < 0) {
         return 0;
     }
-    const auto& shape = dataset->info().shape;
+    const auto& shape = table_->info().shape;
     if (static_cast<std::size_t>(channelDimension_) >= shape.size()) {
         return 0;
     }
@@ -171,8 +169,7 @@ int DatasetImage::channelCount() const { return channelExtent(); }
 
 bool DatasetImage::channelSelectable() const
 {
-    const h5core::DataSource* dataset = table_->dataset();
-    return dataset != nullptr && dataset->info().rank() >= kMinimumRankForChannels;
+    return table_->present() && table_->info().rank() >= kMinimumRankForChannels;
 }
 
 QVariantList DatasetImage::channelChoices() const
@@ -180,11 +177,10 @@ QVariantList DatasetImage::channelChoices() const
     QVariantList choices;
     choices.append(QVariantMap{{QStringLiteral("label"), tr("none")},
                                {QStringLiteral("dimension"), -1}});
-    const h5core::DataSource* dataset = table_->dataset();
-    if (dataset == nullptr || !channelSelectable()) {
+    if (!table_->present() || !channelSelectable()) {
         return choices;
     }
-    const auto& shape = dataset->info().shape;
+    const auto& shape = table_->info().shape;
     for (std::size_t d = 0; d < shape.size(); ++d) {
         choices.append(QVariantMap{
             {QStringLiteral("label"),
@@ -253,8 +249,8 @@ void DatasetImage::setColorMode(ColorMode mode)
 
 void DatasetImage::setChannelDimension(int dimension)
 {
-    const h5core::DataSource* dataset = table_->dataset();
-    const auto rank = (dataset != nullptr) ? static_cast<int>(dataset->info().rank()) : 0;
+    const auto rank =
+        table_->present() ? static_cast<int>(table_->info().rank()) : 0;
     const int wanted = (dimension >= 0 && dimension < rank && channelSelectable())
                            ? dimension
                            : -1;

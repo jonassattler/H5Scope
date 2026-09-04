@@ -3,6 +3,8 @@
 
 qt_add_library(gui STATIC
   AppController.cpp
+  H5Thread.cpp
+  H5Session.cpp
   H5TreeModel.cpp
   DatasetTableModel.cpp
   AttributeTableModel.cpp

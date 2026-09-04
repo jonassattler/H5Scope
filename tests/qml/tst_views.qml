@@ -18,12 +18,52 @@ TestCase {
 
     readonly property string fixture: TestFixture.path
 
+    /// Wait for the tree to have finished describing what it is showing.
+    ///
+    /// Rows appear before their readouts do: the model answers with the link
+    /// table straight away and asks the HDF5 thread what each name actually is,
+    /// so a shape or a tag is one round trip behind the row it belongs to. Two
+    /// passes, because the first settles the listing and the second the rows
+    /// that listing produced.
+    function settleTree(win) {
+        for (let pass = 0; pass < 2; ++pass) {
+            tryVerify(() => !AppController.busy, 10000, "the tree must settle")
+            waitForRendering(win.tree)
+        }
+    }
+
+    /// Open the fixture and wait for it.
+    ///
+    /// Opening is asked of the HDF5 thread and answered a moment later, so a
+    /// test that asserts on what is in the file has to say when it wants the
+    /// answer. `tryVerify` is Qt Quick Test's way of doing that: it runs the
+    /// event loop until the condition holds or the deadline passes, which is
+    /// exactly what the window does while it waits.
+    function openFixture() {
+        verify(AppController.openFile(fixture), "the fixture must be accepted")
+        tryVerify(() => AppController.hasFile && !AppController.busy, 10000,
+                  "the fixture must finish opening")
+        return AppController.hasFile
+    }
+
+    /// Select an object and wait for everything the selection rebuilds.
+    /// Describing the object is one round trip; installing what the views draw
+    /// is the next, so this settles twice.
+    function select(path) {
+        verify(AppController.selectPath(path))
+        tryVerify(() => AppController.currentPath === path && !AppController.busy,
+                  10000, "selecting " + path)
+        wait(0)
+        tryVerify(() => !AppController.busy, 10000, "settling after " + path)
+        return true
+    }
+
     /// Views are created at a real size: a zero-sized ListView builds no
     /// delegates, and a delegate that never runs cannot fail a test.
     readonly property var viewSize: ({ width: 800, height: 600 })
 
     function initTestCase() {
-        verify(AppController.openFile(fixture), "fixture must open")
+        openFixture()
     }
 
     /// Every test starts on a file nobody has been at yet.
@@ -36,7 +76,7 @@ TestCase {
     /// test that assumes one should do.
     function init() {
         AppController.closeFile()
-        verify(AppController.openFile(fixture), "fixture must re-open")
+        verify(openFixture(), "fixture must re-open")
     }
 
     function cleanupTestCase() {
@@ -392,7 +432,7 @@ TestCase {
     /// not an x axis for the next one, and is still there when the reader comes
     /// back to the one it was stated for.
     function test_a_view_s_settings_belong_to_the_dataset_they_were_set_on() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -411,7 +451,7 @@ TestCase {
 
         // Another dataset opens on the defaults rather than on the last
         // dataset's answers.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         waitForRendering(view)
         compare(plot.locks.length, 0)
         compare(plot.resolved.start, 0)
@@ -420,7 +460,7 @@ TestCase {
         compare(plot.colorMode, "same")
 
         // ...and coming back finds what was left there.
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         waitForRendering(view)
         compare(plot.locks.length, 2)
         compare(plot.resolved.start, 10)
@@ -432,7 +472,7 @@ TestCase {
     /// The same, for the table: a column width fitted to one dataset is a guess
     /// about the next.
     function test_the_grid_s_own_settings_are_per_dataset_as_well() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const table = findChild(view, "tableSurface")
@@ -442,12 +482,12 @@ TestCase {
         table.columnWidth = Theme.s13
         table.gridLines = false
 
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         waitForRendering(view)
         compare(table.autoWidth, true)
         compare(table.gridLines, true)
 
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         waitForRendering(view)
         compare(table.autoWidth, false)
         compare(table.columnWidth, Theme.s13)
@@ -457,7 +497,7 @@ TestCase {
     /// The picture's ground follows the theme until somebody chooses one for a
     /// particular dataset, and then it is that dataset's and no other's.
     function test_the_image_ground_follows_the_theme_until_it_is_chosen() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("image")
@@ -480,12 +520,12 @@ TestCase {
         Theme.dark = !Theme.dark
 
         // A chosen ground is a statement about this dataset and no other.
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         waitForRendering(view)
         verify(!image.backgroundCustom)
         compare(String(image.ground), String(Theme.imageGround))
 
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         waitForRendering(view)
         verify(image.backgroundCustom)
         compare(String(image.ground), String(Qt.color("#336699")))
@@ -499,7 +539,7 @@ TestCase {
     /// the three colours open on the first three channels rather than all on
     /// the first one.
     function test_the_image_panel_offers_rgba_where_there_is_a_fourth_plane() {
-        verify(AppController.selectPath("/hypercube")) // 2 x 3 x 4 x 5
+        verify(select("/hypercube")) // 2 x 3 x 4 x 5
         const panel = createTemporaryObject(imageSettingsComponent, testCase,
                                             { width: Theme.railWidth, height: 700 })
         verify(panel, "the image settings panel must instantiate")
@@ -610,6 +650,7 @@ TestCase {
         // somewhere else.
         const win = createTemporaryObject(treeWindowComponent, testCase)
         waitForRendering(win.tree)
+        settleTree(win)
         const row = findTreeRow(win.tree, "cube")
         verify(row, "the tree must draw a row for the dataset")
         verify(!row.current, "...and this test needs one that is not selected")
@@ -641,7 +682,7 @@ TestCase {
         verify(whole(Theme.hairline), "and so must a rule")
         verify(Theme.snap(61) >= 61, "snapping never loses a pixel")
 
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const grid = findChild(view, "valueGrid")
@@ -669,7 +710,7 @@ TestCase {
     }
 
     function test_info_view_instantiates_and_lists_rows() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(infoComponent, testCase)
         verify(view, "InfoView must instantiate")
         // Path, Name, Kind, Type, Shape, Elements, Layout, Storage, Attributes
@@ -681,7 +722,7 @@ TestCase {
     /// not taken, which for a path or a filter name is the difference between
     /// using the answer and typing it back in by hand.
     function test_every_string_on_the_information_tab_can_be_copied() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(infoComponent, testCase, viewSize)
         waitForRendering(view)
 
@@ -708,7 +749,7 @@ TestCase {
     /// A rule under the last row of a panel is the panel's own border drawn a
     /// second time, one hairline above itself.
     function test_a_panel_rules_between_its_rows_and_not_under_them() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const win = createTemporaryObject(infoWindowComponent, testCase)
         verify(win, "the information window must instantiate")
         const view = win.info
@@ -768,7 +809,7 @@ TestCase {
         compare(win.tabs.map((tab) => tab.id).join(","), "info,table,plot,image")
         compare(win.currentTabId, "info")
 
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         for (const id of ["table", "plot", "image", "info"]) {
             win.selectTab(id)
             waitForRendering(win.contentItem)
@@ -782,7 +823,7 @@ TestCase {
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
 
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         for (const id of ["info", "table", "plot", "image"])
             verify(win.tabAvailable(id), id + " must be offered for a matrix")
 
@@ -791,7 +832,7 @@ TestCase {
         // marking a tab that is showing nothing.
         win.selectTab("plot")
         compare(win.currentTabId, "plot")
-        verify(AppController.selectPath("/str_vlen"))
+        verify(select("/str_vlen"))
         waitForRendering(win.contentItem)
         compare(win.currentTabId, "table")
         verify(win.tabAvailable("table"))
@@ -805,7 +846,7 @@ TestCase {
     /// The slice line is the fastest way to say which elements to show, and
     /// the only one that does not go through the panel.
     function test_the_slice_line_can_be_typed_into() {
-        verify(AppController.selectPath("/hypercube")) // 2 x 3 x 4 x 5
+        verify(select("/hypercube")) // 2 x 3 x 4 x 5
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -850,7 +891,7 @@ TestCase {
     /// it. It also added a fixed 112 pixels of slack to its own width, which is
     /// the dead space that used to sit at the end of the bar on every slice.
     function test_the_slice_box_keeps_room_to_type_and_takes_the_whole_well() {
-        verify(AppController.selectPath("/hypercube"))
+        verify(select("/hypercube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -922,7 +963,7 @@ TestCase {
     function test_every_part_of_the_line_is_drawn_whole() {
         const lines = ["/cube", "/vec_int", "/group/nested/leaf", "/hypercube"]
         for (const path of lines) {
-            verify(AppController.selectPath(path))
+            verify(select(path))
             const win = createTemporaryObject(windowComponent, testCase)
             waitForRendering(win.contentItem)
             win.selectTab("table")
@@ -955,7 +996,7 @@ TestCase {
     /// A long slice makes the well longer, rather than scrolling inside a well
     /// that has stopped growing while the bar still has room.
     function test_the_slice_well_grows_with_the_line_in_it() {
-        verify(AppController.selectPath("/hypercube")) // 2 x 3 x 4 x 5
+        verify(select("/hypercube")) // 2 x 3 x 4 x 5
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -999,7 +1040,7 @@ TestCase {
     /// buttons a hundred and twenty pixels past the right-hand end of the
     /// window.
     function test_a_bar_too_narrow_for_the_line_gives_the_path_away_first() {
-        verify(AppController.selectPath("/hypercube")) // 2 x 3 x 4 x 5
+        verify(select("/hypercube")) // 2 x 3 x 4 x 5
         const win = createTemporaryObject(windowComponent, testCase)
         win.width = win.minimumWidth
         waitForRendering(win.contentItem)
@@ -1088,7 +1129,7 @@ TestCase {
     /// A line that does not read is left on screen with the reason beside it,
     /// and the table keeps the selection that did read.
     function test_a_slice_that_does_not_read_says_so_and_changes_nothing() {
-        verify(AppController.selectPath("/cube")) // 2 x 3 x 4
+        verify(select("/cube")) // 2 x 3 x 4
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -1122,7 +1163,7 @@ TestCase {
     /// a slice typed and not committed left the bar describing one set of
     /// elements above a table drawn from another.
     function test_a_slice_typed_and_not_applied_says_so() {
-        verify(AppController.selectPath("/cube")) // 2 x 3 x 4
+        verify(select("/cube")) // 2 x 3 x 4
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
@@ -1163,7 +1204,7 @@ TestCase {
     /// The legend opens over the left of the plot, so its button is at the
     /// left end of the bar.
     function test_the_legend_button_leads_the_bar() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("plot")
@@ -1187,7 +1228,7 @@ TestCase {
     /// Data settings answer the one question all three data views share, so
     /// the panel stays open across them -- and the view's own panel does not.
     function test_the_data_settings_panel_is_shared_by_the_three_views() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         const view = findChild(win.contentItem, "dataView")
@@ -1213,7 +1254,7 @@ TestCase {
     }
 
     function test_data_view_shows_numbers_as_a_grid() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         verify(view, "DataView must instantiate")
         waitForRendering(view)
@@ -1224,7 +1265,7 @@ TestCase {
     function test_data_view_shows_one_string_as_a_text_pane() {
         // A scalar string is a document, not a cell: the Data Viewer has to
         // hand the whole thing over rather than elide it into a grid.
-        verify(AppController.selectPath("/str_scalar"))
+        verify(select("/str_scalar"))
         verify(AppController.datasetIsString)
         compare(AppController.datasetElementCount, 1)
 
@@ -1240,7 +1281,7 @@ TestCase {
     }
 
     function test_data_view_stacks_many_strings_under_a_grid() {
-        verify(AppController.selectPath("/str_vlen"))
+        verify(select("/str_vlen"))
         verify(AppController.datasetIsString)
         compare(AppController.datasetElementCount, 3)
 
@@ -1250,14 +1291,17 @@ TestCase {
 
         const strings = AppController.datasetStringModel
         compare(strings.rowCount(), 3)
-        compare(strings.data(strings.index(2, 0)), "five five five")
+        // The list is a reading of the table, and the table's cells arrive from
+        // the file a moment after they are asked for.
+        tryVerify(() => strings.data(strings.index(2, 0)) === "five five five",
+                  10000, "the strings must arrive")
     }
 
     function test_data_view_opens_a_compound_out_under_the_grid() {
         // A struct in a grid cell is the whole struct elided, which for a
         // struct is the same as nothing. The tab has to hand over the picked
         // one whole -- named members, and the same element as JSON.
-        verify(AppController.selectPath("/compound"))
+        verify(select("/compound"))
         verify(AppController.datasetIsCompound)
         verify(!AppController.datasetIsNumeric)
 
@@ -1284,7 +1328,7 @@ TestCase {
 
     function test_string_elements_are_labelled_by_subscript() {
         // Rank 2, so a single index would be ambiguous.
-        verify(AppController.selectPath("/str_grid"))
+        verify(select("/str_grid"))
         const strings = AppController.datasetStringModel
         compare(strings.rowCount(), 4)
         compare(strings.indexOfCell(1, 0), 2)
@@ -1292,7 +1336,7 @@ TestCase {
     }
 
     function test_table_setup_panel_instantiates_against_the_real_model() {
-        verify(AppController.selectPath("/hypercube"))
+        verify(select("/hypercube"))
         compare(AppController.tableSetupModel.rowCount(), 4)
 
         const panel = createTemporaryObject(setupComponent, testCase,
@@ -1302,7 +1346,7 @@ TestCase {
     }
 
     function test_the_data_settings_sidebar_opens_for_anything_with_a_dimension() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         verify(!view.setupVisible, "it starts closed")
@@ -1313,13 +1357,13 @@ TestCase {
 
         // A scalar is one cell; there is nothing to set up about it, and the
         // sidebar stays away whatever the reader asked for.
-        verify(AppController.selectPath("/scalar_int"))
+        verify(select("/scalar_int"))
         waitForRendering(view)
         verify(!view.setupVisible)
     }
 
     function test_the_rail_shows_one_panel_at_a_time() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         compare(view.rail, "")
@@ -1336,7 +1380,7 @@ TestCase {
     }
 
     function test_a_view_s_own_settings_close_when_the_view_changes() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
 
@@ -1354,7 +1398,7 @@ TestCase {
     }
 
     function test_plot_and_image_are_for_numbers_only() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         verify(AppController.datasetIsNumeric)
 
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
@@ -1364,14 +1408,14 @@ TestCase {
 
         // Text can be read but not plotted, and the view must not stay on a
         // mode that cannot show what was just selected.
-        verify(AppController.selectPath("/str_vlen"))
+        verify(select("/str_vlen"))
         verify(!AppController.datasetIsNumeric)
         waitForRendering(view)
         compare(view.viewMode, "table")
     }
 
     function test_the_plot_draws_one_line_per_row() {
-        verify(AppController.selectPath("/cube")) // 2x3x4 -> 6 rows, 4 columns
+        verify(select("/cube")) // 2x3x4 -> 6 rows, 4 columns
         const plot = AppController.datasetPlot
         verify(plot.seriesFromRows)
         compare(plot.seriesCount, 6)
@@ -1387,7 +1431,7 @@ TestCase {
         // defaultOnX keeps a rank-1 dimension on the row axis, so /long_vec is
         // a 1000x1 table. "One line per row" there would be a thousand lines
         // of one point each, which is a plot of nothing.
-        verify(AppController.selectPath("/long_vec"))
+        verify(select("/long_vec"))
         const plot = AppController.datasetPlot
         verify(!plot.seriesFromRows, "it must transpose itself for a vector")
         compare(plot.seriesCount, 1)
@@ -1400,7 +1444,7 @@ TestCase {
     }
 
     function test_the_image_follows_the_same_slice_as_the_grid() {
-        verify(AppController.selectPath("/hypercube")) // 2x3x4x5
+        verify(select("/hypercube")) // 2x3x4x5
         const image = AppController.datasetImage
         const table = AppController.datasetModel
         compare(image.width, table.columnCount())
@@ -1424,7 +1468,7 @@ TestCase {
     }
 
     function test_each_view_carries_its_own_footer() {
-        verify(AppController.selectPath("/matrix")) // 4x3
+        verify(select("/matrix")) // 4x3
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
 
@@ -1451,7 +1495,7 @@ TestCase {
         // Qt Charts asserts without a QApplication, and a provider that is
         // never installed yields a broken image -- passes every assertion
         // about counts and still shows an empty frame.
-        verify(AppController.selectPath("/compressed")) // 100x100, a real picture
+        verify(select("/compressed")) // 100x100, a real picture
 
         const win = createTemporaryObject(viewWindowComponent, testCase)
         verify(win, "the window must instantiate")
@@ -1493,7 +1537,7 @@ TestCase {
         // And the rank-1 case, which is the one the transpose exists for: a
         // vector must arrive as one line across the view, not as a thousand
         // one-point lines -- which would draw almost nothing at all.
-        verify(AppController.selectPath("/long_vec"))
+        verify(select("/long_vec"))
         waitForRendering(win.view)
         waitForRendering(win.view)
         compare(AppController.datasetPlot.seriesCount, 1)
@@ -1529,7 +1573,7 @@ TestCase {
     /// i sits at start + i x step -- and not a window onto the plot, so the
     /// default is what a reader would write for data with no x of its own.
     function test_two_of_the_three_x_values_describe_the_axis() {
-        verify(AppController.selectPath("/matrix")) // 4 rows x 3 columns
+        verify(select("/matrix")) // 4 rows x 3 columns
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1598,7 +1642,7 @@ TestCase {
     }
 
     function test_a_third_lock_releases_the_oldest() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1629,7 +1673,7 @@ TestCase {
     // data-provider function for a test of the name without it, so a test
     // named that way is silently never run.
     function test_a_range_that_is_not_an_axis_falls_back() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1657,7 +1701,7 @@ TestCase {
     /// closer at part of the axis already, and a second way to say the same
     /// thing went stale the moment the selection moved.
     function test_the_y_axis_is_the_extent_of_the_values() {
-        verify(AppController.selectPath("/matrix")) // 0 .. 32, by tens and ones
+        verify(select("/matrix")) // 0 .. 32, by tens and ones
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1677,7 +1721,7 @@ TestCase {
     }
 
     function test_a_reversed_cycle_runs_the_other_way() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1703,7 +1747,7 @@ TestCase {
     /// numbers are -- but it is the same control answering the same question
     /// the image and the table put over their values.
     function test_the_colour_map_spans_the_slice_the_reader_set() {
-        verify(AppController.selectPath("/cube")) // 6 rows
+        verify(select("/cube")) // 6 rows
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1737,7 +1781,7 @@ TestCase {
     }
 
     function test_the_legend_lists_every_line_and_ticks_them() {
-        verify(AppController.selectPath("/cube")) // 6 rows
+        verify(select("/cube")) // 6 rows
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1775,7 +1819,7 @@ TestCase {
     }
 
     function test_a_colour_cycle_gives_the_lines_different_colours() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         view.show("plot")
@@ -1830,7 +1874,7 @@ TestCase {
     /// computes it. Everything this application paints is a neutral, so a
     /// coloured pixel on the plot can only have come from a series.
     function test_a_colour_cycle_reaches_the_drawn_lines() {
-        verify(AppController.selectPath("/compressed")) // 100x100
+        verify(select("/compressed")) // 100x100
 
         const win = createTemporaryObject(viewWindowComponent, testCase)
         waitForRendering(win.view)
@@ -1857,7 +1901,7 @@ TestCase {
     }
 
     function test_the_legend_covers_the_left_of_the_plot_when_open() {
-        verify(AppController.selectPath("/compressed"))
+        verify(select("/compressed"))
 
         const win = createTemporaryObject(viewWindowComponent, testCase)
         waitForRendering(win.view)
@@ -1922,6 +1966,7 @@ TestCase {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
         waitForRendering(win.tree)
+        settleTree(win)
 
         const shapes = {}
         const visit = (item) => {
@@ -1950,6 +1995,7 @@ TestCase {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
         waitForRendering(win.tree)
+        settleTree(win)
 
         // scalar_int carries one attribute and nothing else, so its row has
         // exactly one tag on it.
@@ -1978,6 +2024,7 @@ TestCase {
         // View -> Tree Tags still takes them away.
         win.tree.tagsVisible = false
         waitForRendering(win.tree)
+        settleTree(win)
         compare(badgesIn(findTreeRow(win.tree, "scalar_int")).length, 0)
         win.tree.tagsVisible = true
     }
@@ -2000,6 +2047,7 @@ TestCase {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
         waitForRendering(win.tree)
+        settleTree(win)
 
         let row = findTreeRow(win.tree, "group")
         verify(row, "the tree must draw a row for the group")
@@ -2010,6 +2058,7 @@ TestCase {
         // than on the one control that already toggles it.
         doubleClickOn(row)
         waitForRendering(win.tree)
+        settleTree(win)
         row = findTreeRow(win.tree, "group")
         verify(row.expanded, "a double click must open a group")
         verify(findTreeRow(win.tree, "nested"),
@@ -2017,6 +2066,7 @@ TestCase {
 
         doubleClickOn(row)
         waitForRendering(win.tree)
+        settleTree(win)
         row = findTreeRow(win.tree, "group")
         verify(!row.expanded, "and a second one must close it again")
 
@@ -2031,6 +2081,7 @@ TestCase {
         win.tree.objectSelected.connect(path => picked.push(path))
         doubleClickOn(leaf)
         waitForRendering(win.tree)
+        settleTree(win)
         // Once, not twice: the second press of a double click is the double
         // click, and selecting the same object again on the way to it was
         // never anything the reader asked for.
@@ -2044,6 +2095,7 @@ TestCase {
     function test_a_link_that_leads_nowhere_is_marked_in_red() {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         waitForRendering(win.tree)
+        settleTree(win)
 
         const broken = badgesIn(findTreeRow(win.tree, "dangling"))
         compare(broken.length, 1)
@@ -2102,7 +2154,7 @@ TestCase {
     }
 
     function test_the_grid_heads_its_columns_with_index_tuples() {
-        verify(AppController.selectPath("/cube")) // 2x3x4
+        verify(select("/cube")) // 2x3x4
         const table = AppController.datasetModel
         // Two dimensions down the rows, one across: a position alone would
         // name nothing here.
@@ -2121,7 +2173,7 @@ TestCase {
     /// TableView never re-ran its columnWidthProvider, because calling
     /// forceLayout() closed a binding loop and so was never called.
     function test_setting_the_column_width_moves_the_columns() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
 
@@ -2144,7 +2196,7 @@ TestCase {
     }
 
     function test_a_fitted_column_is_as_wide_as_its_widest_value() {
-        verify(AppController.selectPath("/matrix")) // 4x3 float64, 0..32
+        verify(select("/matrix")) // 4x3 float64, 0..32
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const surface = findChild(view, "tableSurface")
@@ -2187,7 +2239,7 @@ TestCase {
     /// Cells filled by what is in them: the image's reading of a table, put
     /// back over the table itself.
     function test_cells_can_be_filled_from_their_own_value() {
-        verify(AppController.selectPath("/matrix")) // 4x3 float64, 0 .. 32
+        verify(select("/matrix")) // 4x3 float64, 0 .. 32
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const surface = findChild(view, "tableSurface")
@@ -2291,7 +2343,7 @@ TestCase {
     /// The image and the table are asking the same question about the same
     /// numbers, so they ask it with the same control.
     function test_the_image_and_the_table_ask_for_a_range_the_same_way() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const surface = findChild(view, "tableSurface")
@@ -2364,7 +2416,7 @@ TestCase {
     /// answered the second question twice and the first not at all -- a reader
     /// wanting the dark half of a ramp had no way to ask for it.
     function test_the_colour_range_and_the_value_range_are_two_questions() {
-        verify(AppController.selectPath("/matrix")) // float64, 0 … 32
+        verify(select("/matrix")) // float64, 0 … 32
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
         waitForRendering(view)
         const surface = findChild(view, "tableSurface")
@@ -2413,14 +2465,14 @@ TestCase {
         waitForRendering(view)
         const surface = findChild(view, "tableSurface")
 
-        verify(AppController.selectPath("/matrix")) // float64
+        verify(select("/matrix")) // float64
         const table = createTemporaryObject(tableSettingsComponent, testCase,
                                             { target: surface })
         const range = findRangeSetting(table)
         verify(range, "the table settings must carry the range control")
         verify(!range.integer, "a float dataset takes a fractional range")
 
-        verify(AppController.selectPath("/cube")) // int32
+        verify(select("/cube")) // int32
         verify(range.integer, "an integer dataset does not")
     }
 
@@ -2479,7 +2531,7 @@ TestCase {
         // The whole point of Index mode is moving through a dimension one
         // plane at a time; a slider that only reports the number the box
         // already shows would be decoration.
-        verify(AppController.selectPath("/hypercube")) // 2x3x4x5
+        verify(select("/hypercube")) // 2x3x4x5
         const setup = AppController.tableSetupModel
         setup.setMode(2, TableSetupModel.Index) // extent 4, so indices 0..3
         setup.setIndex(2, 0)
@@ -2506,7 +2558,7 @@ TestCase {
     }
 
     function test_a_custom_expression_reports_where_it_went_wrong() {
-        verify(AppController.selectPath("/cube"))
+        verify(select("/cube"))
         const setup = AppController.tableSetupModel
         const row = setup.index(2, 0)
 
@@ -2538,7 +2590,7 @@ TestCase {
     function test_attributes_surface_as_an_info_panel() {
         // The Metadata tab is gone; its rows are the Information tab's last
         // panel now, spliced in by AppController.
-        verify(AppController.selectPath("/group"))
+        verify(select("/group"))
         compare(AppController.attributeModel.rowCount(), 2)
 
         const panels = AppController.infoPanels
@@ -2548,7 +2600,7 @@ TestCase {
     }
 
     function test_info_panels_describe_a_dataset() {
-        verify(AppController.selectPath("/matrix"))
+        verify(select("/matrix"))
         const titles = AppController.infoPanels.map(p => p.title)
         verify(titles.indexOf("object") !== -1)
         verify(titles.indexOf("dataspace") !== -1)
@@ -2742,6 +2794,7 @@ TestCase {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the window must instantiate")
         waitForRendering(win.tree)
+        settleTree(win)
 
         const filter = findChild(win.tree, "treeFilter")
         verify(filter, "the tree must carry its own filter")

@@ -3,6 +3,8 @@
 
 #include "DataType.hpp"
 
+#include "Thread.hpp"
+
 #include "Error.hpp"
 #include "Handle.hpp"
 
@@ -247,6 +249,7 @@ std::string formatBytes(const void* data, std::size_t size)
 
 TypeInfo describeType(hid_t type)
 {
+    thread::check(__func__);
     TypeInfo info;
     info.size = H5Tget_size(type);
     info.cls = classOf(H5Tget_class(type));
@@ -373,6 +376,7 @@ TypeInfo describeType(hid_t type)
 
 std::string formatElement(hid_t type, const void* data)
 {
+    thread::check(__func__);
     switch (classOf(H5Tget_class(type))) {
     case TypeClass::Integer:
         return formatInteger(type, data);
@@ -470,6 +474,7 @@ std::string formatElement(hid_t type, const void* data)
 
 std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
 {
+    thread::check(__func__);
     std::vector<FieldValue> fields;
     if (classOf(H5Tget_class(type)) != TypeClass::Compound) {
         H5Eclear2(H5E_DEFAULT);
@@ -501,6 +506,7 @@ std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
 
 std::string toJson(hid_t type, const void* data)
 {
+    thread::check(__func__);
     switch (classOf(H5Tget_class(type))) {
     case TypeClass::Integer:
         // Straight through: an integer is already a JSON number, and putting

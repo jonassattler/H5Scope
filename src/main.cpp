@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "gui/AppController.hpp"
+#include "gui/H5Thread.hpp"
 #include "h5scope/Version.hpp"
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
@@ -149,5 +150,13 @@ int main(int argc, char* argv[])
         }
     }
 
-    return app.exec();
+    const int result = app.exec();
+
+    // Before the engine and the application go. The HDF5 thread closes the file
+    // and hands back its claim as jobs of its own, and a job needs the event
+    // loop that is about to be torn down; leaving it to static destruction
+    // would call H5Fclose from the wrong thread on the way out of a program
+    // that did everything else right.
+    gui::H5Thread::shutdown();
+    return result;
 }

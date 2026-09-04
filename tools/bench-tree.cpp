@@ -26,6 +26,7 @@
 //   make-example-file /tmp/h5bench --scale
 //   bench-tree /tmp/h5bench/example_scale.h5
 
+#include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "h5core/Error.hpp"
@@ -45,6 +46,7 @@
 #include <cstring>
 #include <exception>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -98,7 +100,8 @@ long long readSyscalls()
 struct Row
 {
     const char* name;
-    double milliseconds;
+    double milliseconds;  ///< wall clock, waiting for the file included
+    double blocking;      ///< of which was spent inside a call on this thread
     long long reads;
     long long units;
     const char* unitName;
@@ -106,27 +109,34 @@ struct Row
 
 void report(const std::vector<Row>& rows)
 {
-    std::printf("\n%-10s %10s %12s %10s %9s   %s\n", "phase", "ms", "reads",
-                "count", "reads/ea", "unit");
-    std::printf("%-10s %10s %12s %10s %9s   %s\n", "----------", "----------",
-                "------------", "----------", "---------",
+    // Two durations, and the second is the one the complaint was about. `ms` is
+    // how long the operation took; `ui ms` is how much of that the calling
+    // thread spent inside a model call and could not have been drawing a frame.
+    // On the synchronous version they were the same number.
+    std::printf("\n%-10s %10s %10s %12s %10s %9s   %s\n", "phase", "ms", "ui ms",
+                "reads", "count", "reads/ea", "unit");
+    std::printf("%-10s %10s %10s %12s %10s %9s   %s\n", "----------", "----------",
+                "----------", "------------", "----------", "---------",
                 "------------------------");
     long long totalReads = 0;
     double totalMs = 0.0;
+    double totalBlocking = 0.0;
     for (const Row& row : rows) {
         totalReads += row.reads;
         totalMs += row.milliseconds;
+        totalBlocking += row.blocking;
         if (row.units > 0) {
-            std::printf("%-10s %10.1f %12lld %10lld %9.2f   %s\n", row.name,
-                        row.milliseconds, row.reads, row.units,
+            std::printf("%-10s %10.1f %10.1f %12lld %10lld %9.2f   %s\n", row.name,
+                        row.milliseconds, row.blocking, row.reads, row.units,
                         static_cast<double>(row.reads) / static_cast<double>(row.units),
                         row.unitName);
         } else {
-            std::printf("%-10s %10.1f %12lld %10s %9s   %s\n", row.name,
-                        row.milliseconds, row.reads, "-", "-", "");
+            std::printf("%-10s %10.1f %10.1f %12lld %10s %9s   %s\n", row.name,
+                        row.milliseconds, row.blocking, row.reads, "-", "-", "");
         }
     }
-    std::printf("%-10s %10.1f %12lld\n\n", "total", totalMs, totalReads);
+    std::printf("%-10s %10.1f %10.1f %12lld\n\n", "total", totalMs, totalBlocking,
+                totalReads);
 }
 
 /// One measured phase: how long it took and how many read syscalls it cost.
@@ -145,12 +155,39 @@ std::pair<double, long long> measure(F&& body)
 
 /// `rows.push_back({name, ...measure(body)..., units, unit})` without writing
 /// the structured binding out seven times.
+/// How much of a phase was spent inside a call on this thread. Accumulated by
+/// blocking() below, which every model call in the benchmark is wrapped in.
+double blockingMilliseconds = 0.0;
+
+/// Time one call on this thread and add it to the phase's blocking total. What
+/// is being counted is the part a frame would have had to wait for.
+template<typename F>
+auto blocking(F&& body) -> decltype(body())
+{
+    const auto start = std::chrono::steady_clock::now();
+    if constexpr (std::is_void_v<decltype(body())>) {
+        body();
+        blockingMilliseconds +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start)
+                .count();
+    } else {
+        auto result = body();
+        blockingMilliseconds +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start)
+                .count();
+        return result;
+    }
+}
+
 template<typename F>
 void phase(std::vector<Row>& rows, const char* name, F&& body, long long& units,
            const char* unitName)
 {
+    blockingMilliseconds = 0.0;
     const auto [milliseconds, reads] = measure(std::forward<F>(body));
-    rows.push_back({name, milliseconds, reads, units, unitName});
+    rows.push_back({name, milliseconds, blockingMilliseconds, reads, units, unitName});
 }
 
 /// Every role the tree delegate declares as a required property, asked of one
@@ -168,9 +205,11 @@ constexpr int kDelegateRoles[] = {
 
 void askEveryRole(const gui::H5TreeModel& model, const QModelIndex& index)
 {
-    for (const int role : kDelegateRoles) {
-        (void)model.data(index, role);
-    }
+    blocking([&] {
+        for (const int role : kDelegateRoles) {
+            (void)model.data(index, role);
+        }
+    });
 }
 
 /// Populate every group down to `depth`, counting the rows that appear. This
@@ -178,13 +217,32 @@ void askEveryRole(const gui::H5TreeModel& model, const QModelIndex& index)
 /// runs and what a reader does by hand on the way to anything.
 long long expand(gui::H5TreeModel& model, const QModelIndex& parent, int depth)
 {
-    if (depth < 0) {
-        return 0;
-    }
-    const int rows = model.rowCount(parent);
-    long long total = rows;
-    for (int row = 0; row < rows; ++row) {
-        total += expand(model, model.index(row, 0, parent), depth - 1);
+    // Level by level rather than depth-first, which is both how the view's own
+    // expandRecursively() walks and the only way to measure the model honestly:
+    // asking about a whole level and then letting the file answer is what turns
+    // a thousand questions into one job. A depth-first walk that waited after
+    // every node would measure a thousand round trips and call the batching a
+    // failure.
+    auto& h5 = gui::H5Thread::instance();
+    std::vector<QModelIndex> level{parent};
+    long long total = 0;
+
+    for (int step = 0; step <= depth && !level.empty(); ++step) {
+        for (const QModelIndex& node : level) {
+            blocking([&] { (void)model.rowCount(node); });
+        }
+        h5.drain();
+
+        std::vector<QModelIndex> next;
+        for (const QModelIndex& node : level) {
+            const int rows = blocking([&] { return model.rowCount(node); });
+            total += rows;
+            for (int row = 0; row < rows; ++row) {
+                next.push_back(model.index(row, 0, node));
+            }
+        }
+        h5.drain();
+        level = std::move(next);
     }
     return total;
 }
@@ -281,15 +339,24 @@ int main(int argc, char** argv)
         std::vector<Row> rows;
         long long none = 0;
 
-        std::shared_ptr<h5core::File> file;
-        phase(rows, "open", [&] { file = std::make_shared<h5core::File>(path); },
-              none, "");
+        auto& h5 = gui::H5Thread::instance();
+        phase(rows, "open", [&] {
+            h5.invoke([&](gui::H5Session& session) {
+                session.open(path);
+                return 0;
+            });
+        }, none, "");
 
         gui::H5TreeModel model;
         long long topLevel = 0;
         phase(rows, "root", [&] {
-            model.setFile(file);
+            model.open();
+            // The model reads asynchronously now, so every phase below settles
+            // the queue before it stops the clock. What is being measured is
+            // the same work; it is simply no longer being done on this thread.
+            h5.drain();
             topLevel = model.rowCount({});
+            h5.drain();
         }, topLevel, "");
         rows.back().units = topLevel;
         rows.back().unitName = "top-level rows";
@@ -308,6 +375,7 @@ int main(int argc, char** argv)
             for (const QModelIndex& index : visited) {
                 askEveryRole(model, index);
             }
+            gui::H5Thread::instance().drain();
         }, rendered, "rows rendered, cold");
 
         // A second pass over one screenful, on rows whose readout is now
@@ -334,15 +402,29 @@ int main(int argc, char** argv)
         if (wide.isValid()) {
             const QString widePath = model.pathAt(wide);
             gui::H5TreeModel cold;
-            cold.setFile(file);
+            cold.open();
+            h5.drain();
+            cold.revealPath(widePath);
+            h5.drain();
             const QModelIndex again = cold.indexForPath(widePath);
             long long listed = 0;
-            phase(rows, "listing", [&] { listed = cold.rowCount(again); }, listed,
-                  "members listed on expand");
+            phase(rows, "listing", [&] {
+                // The click, and then the answer. `ui ms` on this row is what
+                // the click itself cost the window.
+                (void)blocking([&] { return cold.rowCount(again); });
+                gui::H5Thread::instance().drain();
+                listed = blocking([&] { return cold.rowCount(again); });
+            }, listed, "members listed on expand");
             rows.back().units = listed;
 
             long long shownRows = std::min<long long>(viewport, listed);
             phase(rows, "screenful", [&] {
+                // One layout pass of forty rows, which the model turns into one
+                // job, and then the frame in which the answers land.
+                for (long long row = 0; row < shownRows; ++row) {
+                    askEveryRole(cold, cold.index(static_cast<int>(row), 0, again));
+                }
+                gui::H5Thread::instance().drain();
                 for (long long row = 0; row < shownRows; ++row) {
                     askEveryRole(cold, cold.index(static_cast<int>(row), 0, again));
                 }

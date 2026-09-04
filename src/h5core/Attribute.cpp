@@ -5,6 +5,7 @@
 
 #include "DataType.hpp"
 #include "Error.hpp"
+#include "Thread.hpp"
 #include "Handle.hpp"
 
 #include <format>
@@ -126,6 +127,7 @@ herr_t attributeCallback(hid_t location, const char* name, const H5A_info_t* /*i
 std::vector<AttributeInfo> readAttributes(const File& file, const std::string& path,
                                           std::size_t maxElements)
 {
+    thread::check(__func__);
     Handle object(H5Oopen(file.id(), path.c_str(), H5P_DEFAULT), &H5Oclose);
     if (!object.valid()) {
         throwError(std::format("Cannot open object '{}'", path));

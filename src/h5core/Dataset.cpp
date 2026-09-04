@@ -6,6 +6,7 @@
 #include "DataType.hpp"
 #include "Error.hpp"
 #include "Image.hpp"
+#include "Thread.hpp"
 
 #include <algorithm>
 #include <format>
@@ -165,6 +166,7 @@ const std::string& DataWindow::at(hsize_t row, hsize_t column) const
 
 Dataset::Dataset(const File& file, const std::string& path) : path_(path)
 {
+    thread::check("Dataset::Dataset");
     dataset_ = Handle(H5Dopen2(file.id(), path.c_str(), H5P_DEFAULT), &H5Dclose);
     if (!dataset_.valid()) {
         throwError(std::format("Cannot open dataset '{}'", path));
@@ -293,6 +295,7 @@ Dataset::Selection Dataset::selectWindow(const std::vector<hsize_t>& offset,
 DataWindow Dataset::readWindow(const std::vector<hsize_t>& offset,
                                const std::vector<hsize_t>& count) const
 {
+    thread::check(__func__);
     const Selection selection = selectWindow(offset, count);
 
     DataWindow window;
@@ -342,6 +345,7 @@ DataWindow Dataset::readWindow(const std::vector<hsize_t>& offset,
 NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
                                          const std::vector<hsize_t>& count) const
 {
+    thread::check(__func__);
     // Checked before the hyperslab rather than after the read: H5Dread would
     // report a conversion failure, and "no conversion path" is a far worse
     // account of a text dataset than saying it is not numeric.
@@ -373,6 +377,7 @@ NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
 
 ElementValue Dataset::readElement(const std::vector<hsize_t>& offset) const
 {
+    thread::check(__func__);
     ElementValue element;
     element.offset = offset;
 
@@ -412,6 +417,7 @@ ElementValue Dataset::readElement(const std::vector<hsize_t>& offset) const
 
 DataWindow Dataset::readAll(hsize_t maxElements) const
 {
+    thread::check(__func__);
     const hsize_t total = info_.elementCount();
     if (total > maxElements) {
         throw H5Error(std::format(

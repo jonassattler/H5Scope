@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "H5Thread.hpp"
 #include "TableLayout.hpp"
 #include "h5core/DataSource.hpp"
 
@@ -12,6 +13,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -96,15 +98,19 @@ public:
 
     explicit DatasetTableModel(QObject* parent = nullptr);
 
-    /// Show `dataset`, or clear when null. Resets the layout to the default
-    /// for the new shape, so the model is coherent on its own.
-    void setDataset(std::shared_ptr<const h5core::DataSource> dataset);
+    /// Show whatever `H5Session::source()` now holds, described by `info` and
+    /// called `path`. `present` false clears the table.
+    ///
+    /// The source itself stays on the HDF5 thread and is never handed over:
+    /// what this model keeps is a copy of its description, which is plain data,
+    /// and every actual read goes back across as a job. That is why this takes
+    /// a DatasetInfo where it used to take a shared_ptr<DataSource>.
+    void setSource(bool present, h5core::DatasetInfo info, QString path);
 
-    /// The dataset currently shown, or nullptr. Used to size the setup panel.
-    [[nodiscard]] const h5core::DataSource* dataset() const
-    {
-        return dataset_.get();
-    }
+    /// What is being shown, or a default-constructed description when nothing
+    /// is. `present()` is the question "is there anything".
+    [[nodiscard]] const h5core::DatasetInfo& info() const { return info_; }
+    [[nodiscard]] bool present() const { return present_; }
 
     /// Choose which indices appear and on which axis. Ignored when its rank
     /// does not match the dataset's.
@@ -199,9 +205,21 @@ public:
     /// presentation uses it to take one colour channel at a time out of a
     /// dimension the grid has spread along an axis; `axes` must describe the
     /// same dataset, which is what starting from axes() and pinning guarantees.
+    ///
+    /// Blocking: it waits for the HDF5 thread. Nothing on the drawing path may
+    /// call it -- the plot and the image ask through requestSamples() below --
+    /// and it is kept because a test that has to spin an event loop to read
+    /// four numbers is a test about the event loop.
     [[nodiscard]] NumericGrid sampleValues(const TableAxes& axes, int firstRow,
                                            int rowSpan, int maxRows, int firstColumn,
                                            int columnSpan, int maxColumns) const;
+
+    /// The same sampling, asked for rather than waited on. `then` runs on this
+    /// thread when the numbers arrive, and not at all if the source has changed
+    /// in the meantime.
+    void requestSamples(const TableAxes& axes, int firstRow, int rowSpan, int maxRows,
+                        int firstColumn, int columnSpan, int maxColumns,
+                        std::function<void(NumericGrid)> then);
 
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
@@ -221,16 +239,34 @@ private:
     /// Rebuild the table's geometry from `layout`, which the caller has already
     /// checked against the dataset.
     void rebuild(TableLayout layout);
-    /// Ensure the cached block covers (row, column).
+    /// Ensure the cached block covers (row, column), asking for it if not.
     void ensureBlock(int row, int column) const;
+    /// The sampling itself, on the HDF5 thread.
+    [[nodiscard]] static NumericGrid sampleFrom(const h5core::DataSource& source,
+                                                const TableAxes& axes, int firstRow,
+                                                int rowSpan, int maxRows,
+                                                int firstColumn, int columnSpan,
+                                                int maxColumns);
+    /// Whether there is anything to sample, and what to say when there is not.
+    [[nodiscard]] bool sampleable(NumericGrid& grid) const;
     [[nodiscard]] QString labelFor(int row, int column, bool showX, bool showY) const;
 
-    /// What is being drawn: the file's own dataset, or the result of a
-    /// postprocessing pipeline over it. Nothing below this line knows or
-    /// needs to know which, because a DataSource answers the same five
-    /// questions either way.
-    std::shared_ptr<const h5core::DataSource> dataset_;
+    /// A description of what is being drawn -- the file's own dataset, or the
+    /// result of a postprocessing pipeline over it. Nothing here knows or needs
+    /// to know which; the HDF5 thread holds whichever it is and answers the
+    /// same five questions either way.
+    bool present_ = false;
+    h5core::DatasetInfo info_;
+    QString sourcePath_;
     TableAxes axes_;
+
+    /// Requests in flight, disowned whenever the source changes so a block
+    /// read of the last dataset cannot be painted over this one.
+    mutable H5Requests requests_;
+    /// The block a read is on its way for, so the same one is not asked for
+    /// once per cell of it.
+    mutable int askedRowOrigin_ = -1;
+    mutable int askedColumnOrigin_ = -1;
 
     /// One rectangle of the *table*, not of the dataset: with a scattered
     /// selection the two are no longer the same shape.
@@ -242,6 +278,13 @@ private:
         std::vector<QString> cells; ///< row-major, size == rows * columns
         bool valid = false;
     };
+
+    /// Fill `block` from `source`. Runs on the HDF5 thread, so it is static and
+    /// takes everything it needs; `error` is set instead of an exception being
+    /// let out across the queue.
+    [[nodiscard]] static Block readBlock(const h5core::DataSource& source,
+                                         const TableAxes& axes, Block block,
+                                         QString& error);
 
     // Mutable: data() is const by Qt's contract but must be able to slide the
     // cached block. Nothing observable outside the model changes.
