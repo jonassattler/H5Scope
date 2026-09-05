@@ -2814,6 +2814,146 @@ TestCase {
         compare(filter.text, "")
     }
 
+    /// Type into the tree's filter box a key at a time, the way a reader does.
+    /// Assigning to AppController.filterText would skip the box, and the box is
+    /// where the pane writes down what was open before the search.
+    function typeIntoFilter(win, text) {
+        const filter = findChild(win.tree, "treeFilter")
+        verify(filter, "the tree must carry its own filter")
+        filter.forceActiveFocus()
+        for (let i = 0; i < text.length; ++i) {
+            keyClick(text[i])
+        }
+        tryVerify(() => AppController.filterText === text, 5000,
+                  "what was typed must reach the controller")
+        return filter
+    }
+
+    /// Backspace over whatever is in the box, one key at a time.
+    function clearFilter() {
+        for (let i = AppController.filterText.length; i > 0; --i) {
+            keyClick(Qt.Key_Backspace)
+        }
+        tryVerify(() => AppController.filterText === "", 5000,
+                  "the box must empty")
+    }
+
+    /// A tree with `/group/nested/leaf` read but nothing open: the filter can
+    /// see two levels down, and none of it is on screen.
+    function treeWithGroupRead() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        // Reading is a round trip per level, so this takes more than one pass.
+        for (let pass = 0; pass < 4; ++pass) {
+            win.tree.expandToDepth(2)
+            settleTree(win)
+        }
+        verify(AppController.filteredTreeModel.indexForPath("/group/nested/leaf").valid,
+               "the fixture's nested group must have been read")
+        win.tree.collapseAll()
+        waitForRendering(win.tree)
+        return win
+    }
+
+    function test_the_filter_opens_the_tree_to_what_it_found() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        const leaf = model.indexForPath("/group/nested/leaf")
+        compare(view.rowAtIndex(leaf), -1,
+                "nothing is open, so the leaf starts off screen")
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => view.rowAtIndex(leaf) >= 0, 5000,
+                  "the filter must open the tree far enough to show what it found")
+
+        // The branches above it, and only those: a hit is a result, not a
+        // request for its contents.
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))))
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group/nested"))))
+
+        clearFilter()
+    }
+
+    function test_a_matched_group_is_not_poured_out() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        // Everything under `/group` matches `group`, because the filter reads
+        // paths. Opening it would answer a search for the group with its whole
+        // contents, when the row the reader wanted is the group itself.
+        typeIntoFilter(win, "group")
+        const row = view.rowAtIndex(model.indexForPath("/group"))
+        verify(row >= 0, "the group itself must be on screen")
+        verify(!view.isExpanded(row), "...and must be left closed")
+
+        clearFilter()
+    }
+
+    function test_clearing_the_filter_puts_the_reader_s_branches_back() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        // One branch open, chosen by the reader.
+        view.expand(view.rowAtIndex(model.indexForPath("/group")))
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))))
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => view.isExpanded(
+                      view.rowAtIndex(model.indexForPath("/group/nested"))),
+                  5000, "the search must open the way to the leaf")
+
+        clearFilter()
+        waitForRendering(win.tree)
+
+        // What the search opened is closed again; what the reader opened is not.
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "the reader's own branch must survive the search")
+        verify(!view.isExpanded(view.rowAtIndex(model.indexForPath("/group/nested"))),
+               "...and the search's must not")
+
+        win.tree.collapseAll()
+    }
+
+    function test_the_filter_marks_the_letters_it_matched() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        typeIntoFilter(win, "trix")
+        waitForRendering(win.tree)
+
+        const row = view.itemAtIndex(model.indexForPath("/matrix"))
+        verify(row, "the matched row must be on screen")
+        compare(row.mark.start, 2, "`trix` begins two characters into `matrix`")
+        compare(row.mark.length, 4)
+
+        const mark = findChild(row, "matchMark")
+        verify(mark, "the row must carry a mark for what was matched")
+        verify(mark.visible, "...and it must be drawn")
+        verify(mark.width > 0)
+
+        // It stands over the tail of the name, not over the whole of it.
+        verify(mark.x > 0, "the mark must start where the match does")
+
+        clearFilter()
+        waitForRendering(win.tree)
+        verify(!findChild(view.itemAtIndex(model.indexForPath("/matrix")),
+                          "matchMark").visible,
+               "an empty box marks nothing")
+    }
+
     function test_theme_tokens_are_defined() {
         // The Theme singleton is the single source of truth for the look; if
         // a token disappears every view silently loses its styling.

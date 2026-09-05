@@ -7,7 +7,8 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
 ## Features
 
 - Inspect the structure of HDF5 files, including metadata and attributes
-- Search through complex HDF5 files with wildcards
+- Search through complex HDF5 files with wildcards, with the matched
+  characters marked and the tree opened to what was found
 - Visualize datasets as spreadsheets, plots or images
 - View images, which are automatically detected based on the HDF5 specification
 - Work with high dimensional arrays by utilizing powerful slicing tools

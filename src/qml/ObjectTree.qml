@@ -29,6 +29,16 @@ Rectangle {
     /// noise on others, so which it is stays the reader's call.
     property bool tagsVisible: true
 
+    /// Whether a filter is in force. Kept rather than read off the controller
+    /// each time because what the pane does when the box is cleared depends on
+    /// whether it was searching a moment ago.
+    property bool filtering: false
+    /// The branches the reader had open when a search began, by path. Put back
+    /// when it ends: a search opens the tree wherever its results are, and a
+    /// reader who clears the box asked for their file back, not for whatever
+    /// shape the last search left it in.
+    property var branchesBeforeFilter: []
+
     /// Expand to a bounded depth only. The model reads a group's children the
     /// first time its row count is asked for, so a truly recursive expand
     /// would walk -- and read -- the entire file, which is exactly what the
@@ -39,6 +49,59 @@ Rectangle {
 
     function collapseAll() {
         tree.collapseRecursively()
+    }
+
+    /// Open the tree down to every row the filter picked out.
+    ///
+    /// Nothing here reads from the file. What the filter leaves on screen is
+    /// the hits and the branches above them, and a branch is only above a hit
+    /// because something already read below it matched -- so every group this
+    /// opens has been listed already. That is the one property that makes
+    /// opening the results affordable at all on a file the lazy tree has
+    /// deliberately not walked.
+    ///
+    /// The hits themselves are left as the reader had them. Everything under a
+    /// hit is a hit too -- the filter reads paths, so all of `/run` matches
+    /// `run` -- and opening them would answer a search for a group by pouring
+    /// out its contents, when the row the reader was looking for is the group.
+    function revealMatches() {
+        const found = AppController.filteredTreeModel.matchIndexes()
+        for (let i = 0; i < found.length; ++i) {
+            tree.expandToIndex(found[i])
+        }
+    }
+
+    /// Which branches are open, by path, in tree order.
+    function openBranches() {
+        const model = AppController.filteredTreeModel
+        const paths = []
+        for (let row = 0; row < tree.rows; ++row) {
+            if (tree.isExpanded(row)) {
+                paths.push(model.pathAt(tree.index(row, 0)))
+            }
+        }
+        return paths
+    }
+
+    /// Close everything and open `paths` again.
+    ///
+    /// Shallowest first, which is the order openBranches() collected them in:
+    /// a row cannot be opened before the row above it has been, and it has no
+    /// row at all until then.
+    function restoreBranches(paths) {
+        tree.collapseRecursively()
+        const model = AppController.filteredTreeModel
+        for (let i = 0; i < paths.length; ++i) {
+            const branch = model.indexForPath(paths[i])
+            if (!branch.valid) {
+                continue // the file was closed, or the branch never read
+            }
+            tree.expandToIndex(branch)
+            const row = tree.rowAtIndex(branch)
+            if (row >= 0) {
+                tree.expand(row)
+            }
+        }
     }
 
     color: Theme.surface
@@ -85,6 +148,8 @@ Rectangle {
     TreeView {
         id: tree
 
+        objectName: "objectTreeView"
+
         anchors.top: headerStrip.bottom
         anchors.left: parent.left
         anchors.right: parent.right
@@ -120,6 +185,22 @@ Rectangle {
             required property string meta
             required property bool isLastChild
             required property var ancestorLines
+            /// Where the filter bit into this row's name, as `start` and
+            /// `length` -- see TreeFilterProxyModel::matchIn. A start of -1
+            /// means there is nothing in the name to mark, which is not the
+            /// same as a row that did not match: the filter reads the path as
+            /// well, so a row can be here for where it sits rather than for
+            /// what it is called, and so can every row above a hit.
+            ///
+            /// The empty case is written out here rather than left to the
+            /// proxy so that the binding names `AppController.filterText` and
+            /// is therefore re-run as the box is typed in. The proxy holds
+            /// that text; a binding that mentioned only the name would never
+            /// hear that it had changed.
+            readonly property var mark:
+                AppController.filterText === ""
+                ? ({ start: -1, length: 0 })
+                : AppController.filteredTreeModel.matchIn(node.name)
 
             readonly property bool current: root.currentPath === node.path
             /// One colour for every row's guides, selected or not.
@@ -354,6 +435,48 @@ Rectangle {
                         text: node.meta
                     }
 
+                    // The name up to the match, and up to the end of it. Their
+                    // difference is where the mark goes -- measured in the
+                    // label's own face rather than counted in characters,
+                    // because this is a proportional one and `il` is not `WM`.
+                    TextMetrics {
+                        id: beforeMatch
+                        font: nameLabel.font
+                        text: node.mark.length > 0
+                              ? node.name.substring(0, node.mark.start) : ""
+                    }
+
+                    TextMetrics {
+                        id: throughMatch
+                        font: nameLabel.font
+                        text: node.mark.length > 0
+                              ? node.name.substring(0, node.mark.start
+                                                       + node.mark.length)
+                              : ""
+                    }
+
+                    // What the filter matched, marked on the ground behind the
+                    // name. Declared before the name so it is drawn under it.
+                    //
+                    // Cut off at the label's right edge rather than at the end
+                    // of the run: a name with less of the row than it wants is
+                    // elided, and a match out in the part that was dropped has
+                    // no letters left to stand under. Eliding takes the tail,
+                    // so everything still on screen is still where this says
+                    // it is.
+                    Rectangle {
+                        objectName: "matchMark"
+
+                        x: nameLabel.x + beforeMatch.advanceWidth - Theme.s1
+                        width: Math.min(throughMatch.advanceWidth, nameLabel.width)
+                               - beforeMatch.advanceWidth + Theme.s2
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: nameMetrics.height + Theme.s2
+                        visible: node.mark.length > 0 && width > Theme.s2
+                        radius: Theme.radiusS
+                        color: Theme.surfaceMatch
+                    }
+
                     // Groups carry the weight, datasets the plain face. Signal
                     // white is rationed, so neither gets a colour of its own.
                     Text {
@@ -545,7 +668,53 @@ Rectangle {
             enabled: AppController.hasFile
             placeholderText: qsTr("filter by name or path")
             text: AppController.filterText
-            onTextEdited: AppController.filterText = text
+            // Written down here rather than in onFilterTextChanged, because by
+            // the time that runs the filter has been applied and half the
+            // branches this is asking about are no longer on screen to ask.
+            onTextEdited: {
+                if (!root.filtering) {
+                    root.branchesBeforeFilter = root.openBranches()
+                }
+                AppController.filterText = text
+            }
         }
+    }
+
+    // --- opening the tree to what the filter found -------------------------
+    Connections {
+        target: AppController
+
+        function onFilterTextChanged() {
+            const searching = AppController.filterText !== ""
+            if (root.filtering && !searching) {
+                root.restoreBranches(root.branchesBeforeFilter)
+                root.branchesBeforeFilter = []
+            }
+            root.filtering = searching
+            if (searching) {
+                reveal.restart()
+            }
+        }
+    }
+
+    // A group listed while a filter is in force brings rows with it, and some
+    // of them are hits that nothing has opened the way to yet.
+    Connections {
+        target: AppController.filteredTreeModel
+        enabled: root.filtering
+
+        function onRowsInserted(parent, first, last) {
+            reveal.restart()
+        }
+    }
+
+    /// One pass at the end of the turn rather than one per keystroke and per
+    /// batch of rows: a search that is still being typed would otherwise open
+    /// the tree to the results of every prefix on the way.
+    Timer {
+        id: reveal
+
+        interval: 0
+        onTriggered: root.revealMatches()
     }
 }

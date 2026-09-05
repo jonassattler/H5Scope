@@ -406,6 +406,126 @@ TEST_CASE_METHOD(ControllerFixture, "the tree filter narrows the pane", "[tree]"
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture, "the filter says what it matched", "[tree]")
+{
+    auto* filtered = qobject_cast<gui::TreeFilterProxyModel*>(
+        controller.filteredTreeModel());
+    REQUIRE(filtered != nullptr);
+
+    /// The top-level row called `name`, once the filter has run.
+    const auto rowFor = [&](const QString& name) {
+        for (int row = 0; row < filtered->rowCount({}); ++row) {
+            const QModelIndex index = filtered->index(row, 0, {});
+            if (index.data(gui::H5TreeModel::NameRole).toString() == name) {
+                return index;
+            }
+        }
+        return QModelIndex{};
+    };
+    /// Where the filter bit into a name, as (start, length).
+    const auto markOn = [&](const QString& name) {
+        const QVariantMap mark = filtered->matchIn(name);
+        return std::pair{mark.value(QStringLiteral("start")).toInt(),
+                         mark.value(QStringLiteral("length")).toInt()};
+    };
+    /// The names of the rows the tree would be opened to.
+    const auto reached = [&] {
+        QStringList names;
+        for (const QVariant& index : filtered->matchIndexes()) {
+            names << index.toModelIndex()
+                         .data(gui::H5TreeModel::NameRole)
+                         .toString();
+        }
+        names.sort();
+        return names;
+    };
+
+    SECTION("the run of characters, wherever in the name it falls")
+    {
+        controller.setFilterText(QStringLiteral("trix"));
+        CHECK(markOn(QStringLiteral("matrix")) == std::pair{2, 4});
+    }
+
+    SECTION("...found however it was capitalised, and marked as it was typed")
+    {
+        controller.setFilterText(QStringLiteral("MaTrIx"));
+        CHECK(markOn(QStringLiteral("matrix")) == std::pair{0, 6});
+    }
+
+    SECTION("a pattern takes the whole name, because it is anchored")
+    {
+        controller.setFilterText(QStringLiteral("str_*"));
+        CHECK(markOn(QStringLiteral("str_vlen")) == std::pair{0, 8});
+        CHECK(markOn(QStringLiteral("str_fixed")) == std::pair{0, 9});
+    }
+
+    SECTION("nothing typed marks nothing")
+    {
+        controller.setFilterText(QString{});
+        CHECK(markOn(QStringLiteral("matrix")) == std::pair{-1, 0});
+    }
+
+    SECTION("a row that is here because of its path has nothing to mark")
+    {
+        // `nested` is on screen for a filter of `group` because it sits under
+        // one, and there is no such run of characters in the word itself.
+        REQUIRE(h5test::reveal(*tree(), QStringLiteral("/group/nested")).isValid());
+        controller.setFilterText(QStringLiteral("group"));
+
+        const QModelIndex group = rowFor(QStringLiteral("group"));
+        REQUIRE(group.isValid());
+        REQUIRE(h5test::settledRowCount(filtered, group) > 0);
+        const QModelIndex nested = filtered->index(0, 0, group);
+        REQUIRE(nested.data(gui::H5TreeModel::NameRole).toString()
+                == QStringLiteral("nested"));
+        CHECK(markOn(QStringLiteral("nested")) == std::pair{-1, 0});
+    }
+
+    SECTION("the rows to open the tree to are the hits themselves")
+    {
+        controller.setFilterText(QStringLiteral("matrix"));
+        CHECK(reached() == QStringList{QStringLiteral("link_to_matrix"),
+                                       QStringLiteral("matrix"),
+                                       QStringLiteral("soft_to_matrix")});
+    }
+
+    SECTION("...and the walk stops at the topmost of them")
+    {
+        // Everything under a hit is a hit as well, because the filter reads
+        // paths. Handing all of those back would open a matched group's whole
+        // contents, which is not what a search for the group asked for.
+        REQUIRE(h5test::reveal(*tree(), QStringLiteral("/group/nested/leaf")).isValid());
+        controller.setFilterText(QStringLiteral("group"));
+        CHECK(reached() == QStringList{QStringLiteral("group")});
+    }
+
+    SECTION("...and it reaches a hit the reader had to open the way to")
+    {
+        REQUIRE(h5test::reveal(*tree(), QStringLiteral("/group/nested/leaf")).isValid());
+        controller.setFilterText(QStringLiteral("leaf"));
+        CHECK(reached() == QStringList{QStringLiteral("leaf")});
+    }
+
+    SECTION("nothing typed is nothing to open the tree to")
+    {
+        controller.setFilterText(QString{});
+        CHECK(filtered->matchIndexes().isEmpty());
+    }
+
+    SECTION("a row's path, and the row for a path, are the same row")
+    {
+        REQUIRE(h5test::reveal(*tree(), QStringLiteral("/group/nested")).isValid());
+        const QModelIndex nested =
+            filtered->indexForPath(QStringLiteral("/group/nested"));
+        REQUIRE(nested.isValid());
+        CHECK(nested.data(gui::H5TreeModel::NameRole).toString()
+              == QStringLiteral("nested"));
+        CHECK(filtered->pathAt(nested) == QStringLiteral("/group/nested"));
+        CHECK_FALSE(
+            filtered->indexForPath(QStringLiteral("/no/such/thing")).isValid());
+    }
+}
+
 TEST_CASE_METHOD(ControllerFixture, "tab visibility follows the selection", "[controller]")
 {
     SECTION("a group with attributes: Metadata yes, Dataset no")

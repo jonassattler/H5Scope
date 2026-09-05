@@ -156,6 +156,25 @@ QtObject {
     /// distance in both scopes -- the inset is true black in one and pure
     /// white in the other, and the accent is the opposite of it in each.
     readonly property color surfacePending: mix(surfaceInset, accent, 0.1)
+    /// The ground under the run of characters the tree's filter matched.
+    ///
+    /// This project's own as well, and for the same reason: the system has no
+    /// token for it because it has no list that is searched. A filter that
+    /// only hides the misses leaves the reader to find the letters again by
+    /// eye on every row that survived, which on a screen of names that all
+    /// contain `temp` is most of the work the box was there to save.
+    ///
+    /// Ground rather than ink. The names in that pane already carry two
+    /// weights and two inks, saying group from dataset; a third ink laid over
+    /// part of a word would be read as a third kind of thing. A block behind
+    /// the letters says where the match is without joining that argument.
+    ///
+    /// An alpha rather than a mix, which is the one place this differs from
+    /// `surfacePending`: the row underneath it is plain, hovered or selected,
+    /// three different grounds, and a colour mixed against one of them is
+    /// wrong on the other two.
+    readonly property color surfaceMatch: dark ? Qt.rgba(1, 1, 1, 0.22)
+                                               : Qt.rgba(0, 0, 0, 0.16)
     /// --surface-invert / --text-invert. The ground flipped: the design
     /// system's Tooltip is the only thing that stands on it, and it does so
     /// precisely because nothing else in the UI does.
