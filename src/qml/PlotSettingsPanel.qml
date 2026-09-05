@@ -156,14 +156,38 @@ SettingsPanel {
             }
         }
 
-        // "Same" is one colour for every line, which is what the plot has
-        // always drawn; "range" fades between two. A named ramp needs neither,
-        // so neither is shown.
+        // Which of the two kinds the choice is, stated rather than left to be
+        // inferred from a name. The two behave differently in ways the reader
+        // can see -- a palette holds a line's colour still when its neighbours
+        // are unticked, a map does not -- and the count is the number they
+        // actually want: how many lines they can tell apart before two of them
+        // are drawn alike.
+        Text {
+            width: parent.width
+            text: {
+                if (!panel.target)
+                    return ""
+                const palette = Theme.categoricalPalettes[panel.target.colorMode]
+                if (palette)
+                    return qsTr("%1 colours, each its own; past that the cycle starts over.")
+                           .arg(palette.length)
+                if (panel.target.colorMode === "same")
+                    return qsTr("One colour for every line.")
+                return qsTr("A continuous map; the lines take even shares of it.")
+            }
+            font: Theme.caption
+            color: Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+
+        // The two cycles the reader builds themselves: "same" is one colour
+        // for every line, "range" fades between two. A palette and a named
+        // ramp are both given, so neither swatch is shown for them.
         RowLayout {
             width: parent.width
             spacing: Theme.gapS
-            visible: panel.target && (panel.target.colorMode === "same"
-                                      || panel.target.colorMode === "range")
+            visible: !!panel.target && (panel.target.colorMode === "same"
+                                        || panel.target.colorMode === "range")
 
             ColorSwatchButton {
                 label: panel.target && panel.target.colorMode === "range"
@@ -184,7 +208,7 @@ SettingsPanel {
 
             ColorSwatchButton {
                 label: qsTr("last line")
-                visible: panel.target && panel.target.colorMode === "range"
+                visible: !!panel.target && panel.target.colorMode === "range"
                 value: panel.target ? panel.target.colorRangeTo : Theme.info
                 onPicked: chosen => {
                     if (panel.target) panel.target.colorRangeTo = chosen
@@ -198,7 +222,9 @@ SettingsPanel {
             text: qsTr("reverse")
             // Which end of a ramp is the dark one is a property of the ramp,
             // not of the data; the reader is the one who knows which way round
-            // they want to read it.
+            // they want to read it. On a palette it turns the order of the
+            // entries around, so a plot of four lines can be given the other
+            // end of the cycle when the near end clashes with something.
             checked: panel.target ? panel.target.colorsReversed : false
             onToggled: { if (panel.target) panel.target.colorsReversed = checked }
         }
@@ -211,11 +237,13 @@ SettingsPanel {
         // It earns its place on a perceptual ramp. Those run dark to light,
         // and this plot's ground is true black, so the first lines of a
         // viridis start out very nearly invisible; pulling the near handle up
-        // takes that end of the map back. One colour has no map to slice, so
-        // the row is absent rather than disabled.
+        // takes that end of the map back. One colour has no map to slice and a
+        // palette has no continuum to take a slice out of, so for both of
+        // those the row is absent rather than disabled.
         Text {
             width: parent.width
-            visible: panel.target && panel.target.colorMode !== "same"
+            visible: !!panel.target && panel.target.colorMode !== "same"
+                     && !panel.isPalette(panel.target.colorMode)
             text: qsTr("map range %1 … %2")
                   .arg(panel.target ? panel.target.colorFrom.toFixed(2) : 0)
                   .arg(panel.target ? panel.target.colorTo.toFixed(2) : 1)
@@ -225,7 +253,8 @@ SettingsPanel {
 
         RealRangeSlider {
             width: parent.width
-            visible: panel.target && panel.target.colorMode !== "same"
+            visible: !!panel.target && panel.target.colorMode !== "same"
+                     && !panel.isPalette(panel.target.colorMode)
             from: 0.0
             to: 1.0
             firstValue: panel.target ? panel.target.colorFrom : 0.0
@@ -239,7 +268,10 @@ SettingsPanel {
         }
 
         // What the cycle looks like across the lines actually being drawn.
-        // A ramp is a hard thing to imagine from its name.
+        // A ramp is a hard thing to imagine from its name, and so is the
+        // length of a palette -- twenty-four cells is enough that every
+        // palette here visibly starts over inside the strip, which is the
+        // sentence above drawn rather than written.
         Row {
             width: parent.width
             height: Theme.gapL
@@ -323,10 +355,24 @@ SettingsPanel {
         }
     }
 
-    /// The cycles on offer, as two lists that stay put. "Same" is one colour
-    /// for every line and "range" fades between two; the rest are Theme's
-    /// named ramps, which carry their own names.
-    readonly property var colorModeKeys: ["same", "range"].concat(Theme.colorRampNames)
+    /// The cycles on offer, as two lists that stay put.
+    ///
+    /// Theme's categorical palettes lead, because one of them is what a plot
+    /// opens on and because they are the answer to the question the reader is
+    /// usually asking -- which line is which. Then the two the reader builds
+    /// themselves: "same" is one colour for every line, "range" fades between
+    /// two. Then Theme's named ramps, which carry their own names.
+    readonly property var colorModeKeys:
+        Theme.categoricalPaletteNames.concat(["same", "range"],
+                                             Theme.colorRampNames)
     readonly property var colorModeLabels:
-        [qsTr("same"), qsTr("range")].concat(Theme.colorRampNames)
+        Theme.categoricalPaletteNames.concat([qsTr("same"), qsTr("range")],
+                                             Theme.colorRampNames)
+
+    /// Whether `mode` names a palette rather than a map. Asked of Theme rather
+    /// than kept as a list here, so adding a palette to the design system adds
+    /// it to this panel and nothing has to be kept in step by hand.
+    function isPalette(mode) {
+        return Theme.categoricalPalettes[mode] !== undefined
+    }
 }

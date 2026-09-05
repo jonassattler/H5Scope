@@ -468,11 +468,28 @@ QtObject {
     /// the system; the marker is the smallest dot that still reads as one.
     readonly property real plotLineWidth: 1.0
     readonly property real plotMarkerSize: 4.0
-    /// A bundle of lines is drawn in the one accent rather than in a colour per
-    /// series -- the system rations colour to state, and a rainbow would spend
-    /// it on decoration. Overlap is what separates them, so they are drawn
-    /// under full strength; a single line keeps it.
-    readonly property real plotSeriesOpacity: 0.55
+    /// How strongly a line in a bundle is drawn. A single line keeps full
+    /// strength -- it has nothing to separate from.
+    ///
+    /// Translucency is what shows where a bundle piles up: fifty opaque
+    /// hairlines over one another are a solid band, and the same fifty at part
+    /// strength say how many are there. Colour now says *which* line each one
+    /// is, so this no longer has to do that job as well, but it still does
+    /// this one.
+    ///
+    /// The two scopes are nowhere near each other, and the arithmetic is why.
+    /// A translucent line is its colour mixed with the ground it is drawn on.
+    /// Mixing toward black gives a dimmer version of the colour, and dim on
+    /// black is still a line; mixing toward white floods the colour with white,
+    /// and pale on white is nothing -- the same asymmetry `rowStripe` above
+    /// runs into. Measured: the palettes' weakest entry reads at 3.4:1 through
+    /// 0.55 on black and at 1.7:1 through 0.55 on white, which is a line the
+    /// reader has to hunt for. 0.95 is the value that brings the light scope
+    /// back to the dark one's 3.4:1, by the same rule the light scope is
+    /// solved for throughout this file -- so the light theme keeps a little of
+    /// the piling-up and spends the rest on being legible, which is the trade
+    /// a white ground forces.
+    readonly property real plotSeriesOpacity: dark ? 0.55 : 0.95
     /// Inset between the chart's frame and its plot area, where the axis
     /// labels live. The left side takes more because a y label is a number of
     /// several digits written sideways-on to the axis, where an x label is a
@@ -668,6 +685,70 @@ QtObject {
     readonly property var valueRampLabels: ["grayscale"].concat(
         colorRampNames.filter(name => name !== "grayscale"))
 
+    // --- categorical palettes for plotted lines ---------------------------
+    // A ramp answers "how far along is this line". A palette answers "which
+    // line is this". They are different questions, and the ramps above are the
+    // wrong instrument for the second one: a ramp puts its neighbours next to
+    // each other by construction, so lines 7 and 8 of a viridis differ by a
+    // shade nobody can name and the legend is the only thing separating them.
+    // A palette spends its colours the other way -- every entry as far from
+    // every other as the space allows -- which is what lets a stroke be
+    // identified on its own, without reading a key. That is what a plot of
+    // named lines actually needs, so it is what the plot opens on.
+    //
+    // Both palettes are generated rather than borrowed, by farthest-point
+    // selection in CIELAB under CIEDE2000: each colour in turn is the one
+    // furthest from the ground it is drawn on, from the accent drawn over it,
+    // and from every colour already taken. That ordering is the point -- the
+    // first k entries are near-maximally separated for *any* k, so six lines
+    // are as distinguishable as twenty and simply take the first six.
+    //
+    // The two scopes are the same hues solved twice, for the rule the light
+    // scope above is solved for: a colour reads against white as strongly as
+    // its counterpart reads against black. A line therefore keeps its identity
+    // when the theme flips -- the green one is still the green one -- and
+    // changes only its weight. Where a hue has no deep form that is still a
+    // colour (the cyans and the yellows, which go grey or olive before they go
+    // dark) it is lightened until it does, which is the concession the signal
+    // colours already make at amber700 and red700.
+    //
+    // Every entry clears WCAG's 3:1 non-text contrast against its own scope's
+    // ground -- 3.9:1 at the very worst -- so no line is drawn in something
+    // the reader has to hunt for on either theme.
+    readonly property var categoricalPalettes: ({
+        // Twenty colours, no two closer than 13.1 dE00 in either scope. For
+        // scale: matplotlib's tab20 manages 12.1 across its twenty, and does
+        // it against one ground rather than two.
+        "spectrum": dark
+            ? ["#B64EF5", "#F6330C", "#009700", "#0089C4", "#C99400",
+               "#FF9DBB", "#00CFC6", "#ACB5FF", "#64F44D", "#FFA379",
+               "#FF005E", "#F09AFF", "#6173FF", "#808700", "#F200AE",
+               "#009276", "#C76700", "#12C8FF", "#00B46A", "#B3C300"]
+            : ["#9C33DB", "#D01F00", "#007C00", "#0089C3", "#6C4E00",
+               "#7D003F", "#006A65", "#003989", "#063A00", "#6F2500",
+               "#D4004C", "#6C0081", "#085AFC", "#696F00", "#C90090",
+               "#009276", "#A55500", "#006684", "#006237", "#444B00"],
+        // Ten that hold apart under protanopia, deuteranopia and tritanopia as
+        // well as under ordinary vision: 7.8 dE00 at the worst, simulated
+        // four ways in both scopes. tab10 falls to 1.9 on the same measure and
+        // Okabe-Ito's seven reach 8.7 -- but Okabe-Ito's yellow carries 1.3:1
+        // against white, which is a line the light theme cannot show at all.
+        //
+        // Shorter than the spectrum on purpose. Colours that survive all three
+        // dichromacies at once are a small set, and padding the list would
+        // only be a longer list of colours some readers cannot tell apart.
+        "safe": dark
+            ? ["#0088CB", "#B37400", "#FFAE7F", "#CCB5FF", "#FB0080",
+               "#00F3BD", "#FF8798", "#00A98C", "#798DFF", "#FC43E7"]
+            : ["#007BB8", "#945F00", "#602800", "#001AB4", "#D00069",
+               "#00523E", "#930036", "#008B73", "#0050C5", "#A20094"]
+    })
+
+    /// The palettes in the order the plot settings offer them, which is the
+    /// order they are argued in above: the long one first, because it is the
+    /// one that separates the most lines and the one the plot opens on.
+    readonly property var categoricalPaletteNames: ["spectrum", "safe"]
+
     /// A colour `position` of the way along `stops`, interpolated in RGB.
     ///
     /// A function rather than a table because the number of lines is not known
@@ -683,6 +764,34 @@ QtObject {
         const lower = Math.floor(at)
         const upper = Math.min(lower + 1, stops.length - 1)
         return theme.mix(stops[lower], stops[upper], at - lower)
+    }
+
+    /// The colour line `position` takes from the palette `stops`, which
+    /// repeats.
+    ///
+    /// rampColor's counterpart, and the difference between them is the whole
+    /// difference between the two kinds of cycle: a ramp is asked for a place
+    /// along a continuum and interpolates to reach it, a palette is asked
+    /// which entry a line *is* and can only hand one back.
+    ///
+    /// Repeating rather than running out is what makes two hundred lines
+    /// drawable at all. The twenty-first line takes the first colour again,
+    /// and the legend beside it is what tells the two apart -- which is the
+    /// same bargain every plotting library makes, and a better one than
+    /// silently drawing the rest in grey.
+    ///
+    /// The modulo is written to stay positive because reversing a cycle counts
+    /// backwards from its end, and JavaScript's % keeps the sign of its left
+    /// operand: -1 % 20 is -1, and stops[-1] is undefined.
+    function categoricalColor(stops, position) {
+        if (!stops || stops.length === 0)
+            return theme.accent
+        const n = stops.length
+        const at = Math.round(position)
+        // Qt.color rather than the stored string: rampColor's neighbours all
+        // return a colour, and a caller that compares two of them should not
+        // have to know which of the two cycles it asked.
+        return Qt.color(stops[((at % n) + n) % n])
     }
 
     /// The ink that reads on `fill`.
