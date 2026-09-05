@@ -134,10 +134,72 @@ SettingsPanel {
         }
     }
 
-    // --- one colour, two, or a named ramp ---------------------------------
+    // --- which kind of cycle, then which one ------------------------------
     SettingRow {
         label: qsTr("colours")
 
+        // The kind first, because it is the real decision and the two kinds
+        // answer different questions: a palette says *which line* a stroke is,
+        // a map says *how far along* it sits. They used to share one flat
+        // dropdown, which offered no way to tell -- with the list closed,
+        // nothing said that `safe` and `viridis` were different kinds of
+        // thing, and the reader had to pick one to find out.
+        //
+        // "same" is a map here, filed with `range` and the ramps. One colour
+        // for every line is the degenerate map -- `range` with both ends the
+        // same -- and it is certainly not a palette: the one thing every
+        // palette does is give each line a colour of its own.
+        ButtonGroup { id: colorKinds }
+
+        // Stacked, where the radio pair at the foot of this panel sits in a
+        // row. Those two are "row" and "column"; these are "categorical" and
+        // "continuous", which in the system's label face are 110px and 100px
+        // of uppercase, and two of them side by side overrun a 212px rail and
+        // cut the second word off. The rail is the fixed quantity here.
+        Column {
+            spacing: Theme.gapXS
+
+            AppRadioButton {
+                id: categoricalKind
+
+                text: qsTr("categorical")
+                ButtonGroup.group: colorKinds
+                onClicked: panel.chooseKind(true)
+            }
+
+            AppRadioButton {
+                id: continuousKind
+
+                text: qsTr("continuous")
+                ButtonGroup.group: colorKinds
+                onClicked: panel.chooseKind(false)
+            }
+        }
+
+        // The marks follow the mode rather than the click, for the reason
+        // AppComboBox gives at `selectedIndex`: a ButtonGroup writes `checked`
+        // imperatively, and an imperative write to a bound property discards
+        // the binding for good. That is not hypothetical here -- `colorMode`
+        // is per-dataset, so selecting another dataset restores its own cycle,
+        // and a pair of radios with their bindings gone would go on naming the
+        // kind belonging to the dataset before it.
+        Binding {
+            target: categoricalKind
+            property: "checked"
+            value: panel.categorical
+            restoreMode: Binding.RestoreBindingOrValue
+        }
+
+        Binding {
+            target: continuousKind
+            property: "checked"
+            value: !panel.categorical
+            restoreMode: Binding.RestoreBindingOrValue
+        }
+
+        // Which cycle, within the kind the radios above settled. The model is
+        // one kind's list, so nothing the reader can reach in here changes the
+        // answer to the question those radios asked.
         AppComboBox {
             width: parent.width
             // A stable list, not `colorModes.map(...)`: a model expression that
@@ -156,12 +218,10 @@ SettingsPanel {
             }
         }
 
-        // Which of the two kinds the choice is, stated rather than left to be
-        // inferred from a name. The two behave differently in ways the reader
-        // can see -- a palette holds a line's colour still when its neighbours
-        // are unticked, a map does not -- and the count is the number they
-        // actually want: how many lines they can tell apart before two of them
-        // are drawn alike.
+        // What the chosen cycle actually does. The radios above name the kind,
+        // so this is left with the part they cannot say: for a palette, how
+        // many lines it separates before it starts over, which is the number
+        // the reader is really asking about.
         Text {
             width: parent.width
             text: {
@@ -173,7 +233,7 @@ SettingsPanel {
                            .arg(palette.length)
                 if (panel.target.colorMode === "same")
                     return qsTr("One colour for every line.")
-                return qsTr("A continuous map; the lines take even shares of it.")
+                return qsTr("The lines take even shares of the map.")
             }
             font: Theme.caption
             color: Theme.textDisabled
@@ -355,24 +415,80 @@ SettingsPanel {
         }
     }
 
-    /// The cycles on offer, as two lists that stay put.
+    // --- the two kinds, and what each one offers --------------------------
+    /// The cycles of each kind, as four lists that stay put.
     ///
-    /// Theme's categorical palettes lead, because one of them is what a plot
-    /// opens on and because they are the answer to the question the reader is
-    /// usually asking -- which line is which. Then the two the reader builds
-    /// themselves: "same" is one colour for every line, "range" fades between
-    /// two. Then Theme's named ramps, which carry their own names.
-    readonly property var colorModeKeys:
-        Theme.categoricalPaletteNames.concat(["same", "range"],
-                                             Theme.colorRampNames)
-    readonly property var colorModeLabels:
-        Theme.categoricalPaletteNames.concat([qsTr("same"), qsTr("range")],
-                                             Theme.colorRampNames)
+    /// Stable rather than filtered on demand, for the reason the note on the
+    /// dropdown gives: a model expression that builds a new array every time
+    /// it runs makes the ComboBox reset its index. `colorModeLabels` below
+    /// picks between two of these by reference, so the array the model sees
+    /// changes only when the kind does.
+    ///
+    /// The palettes come from Theme rather than being listed again here, so
+    /// adding one to the design system adds it to this panel.
+    readonly property var paletteKeys: Theme.categoricalPaletteNames
+    /// Palettes and ramps carry their own names; only the two the reader
+    /// builds themselves have words that want translating.
+    readonly property var paletteLabels: Theme.categoricalPaletteNames
+    readonly property var mapKeys: ["same", "range"].concat(Theme.colorRampNames)
+    readonly property var mapLabels:
+        [qsTr("same"), qsTr("range")].concat(Theme.colorRampNames)
 
-    /// Whether `mode` names a palette rather than a map. Asked of Theme rather
-    /// than kept as a list here, so adding a palette to the design system adds
-    /// it to this panel and nothing has to be kept in step by hand.
+    /// Which kind the plot is drawing, which is read off the mode rather than
+    /// stored beside it. One authority: `colorMode` is the setting, it is what
+    /// DatasetMemory carries per dataset, and a second copy saying which kind
+    /// it belongs to is a second thing that can be wrong.
+    readonly property bool categorical:
+        panel.target ? panel.isPalette(panel.target.colorMode) : true
+
+    /// What the dropdown is showing: the chosen kind's list, and only it.
+    readonly property var colorModeKeys: panel.categorical ? panel.paletteKeys
+                                                           : panel.mapKeys
+    readonly property var colorModeLabels: panel.categorical ? panel.paletteLabels
+                                                             : panel.mapLabels
+
+    /// The last cycle chosen in each kind, so that going to the other kind and
+    /// back returns the reader to what they had rather than to the top of a
+    /// list. Panel state rather than the plot's: it is about the reader's way
+    /// round the control, not about how a dataset is drawn.
+    property string lastPalette: Theme.categoricalPaletteNames[0]
+    /// A ramp rather than "same", which is first in the list. A reader who has
+    /// just asked for `continuous` and been handed one flat colour has been
+    /// answered with the opposite of what they pressed; "same" is one line
+    /// down the list for whoever wants it.
+    property string lastMap: "viridis"
+
+    /// Whether `mode` names a palette rather than a map.
     function isPalette(mode) {
         return Theme.categoricalPalettes[mode] !== undefined
     }
+
+    /// Switch kinds, landing on whatever was last used in the one asked for.
+    function chooseKind(wantPalette) {
+        if (panel.target && wantPalette !== panel.categorical)
+            panel.target.colorMode = wantPalette ? panel.lastPalette
+                                                 : panel.lastMap
+    }
+
+    /// Note the current mode as its kind's most recent.
+    ///
+    /// Driven off the mode changing rather than off the dropdown being used,
+    /// so that a cycle arriving from anywhere else -- DatasetMemory restoring
+    /// one when the reader selects another dataset -- is remembered too.
+    function rememberMode() {
+        if (!panel.target)
+            return
+        const mode = panel.target.colorMode
+        if (panel.isPalette(mode))
+            panel.lastPalette = mode
+        else if (panel.mapKeys.indexOf(mode) >= 0)
+            panel.lastMap = mode
+    }
+
+    Connections {
+        target: panel.target
+        function onColorModeChanged() { panel.rememberMode() }
+    }
+
+    Component.onCompleted: panel.rememberMode()
 }

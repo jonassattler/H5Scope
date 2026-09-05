@@ -2026,24 +2026,88 @@ TestCase {
         Theme.dark = was
     }
 
-    /// The settings panel offers the palettes, and drops the map band for
-    /// them: a palette is a set of colours and has no continuum to slice.
-    function test_the_panel_offers_the_palettes_and_hides_the_map_band() {
+    /// The panel asks the kind first and the cycle second, and the dropdown
+    /// offers one kind at a time.
+    ///
+    /// The two used to share one flat list, which gave the reader no way to
+    /// tell a palette from a map without picking one: with the list closed,
+    /// nothing said that `safe` and `viridis` were different kinds of thing.
+    function test_the_panel_offers_one_kind_of_cycle_at_a_time() {
         const panel = createTemporaryObject(plotSettingsComponent, testCase,
                                             { width: Theme.railWidth, height: 700 })
         verify(panel, "the plot settings panel must instantiate")
 
-        // Every palette is on the list, and they lead it -- one of them is
-        // what a plot opens on.
+        // Every palette Theme defines is the categorical list, and nothing
+        // else is.
         const names = Theme.categoricalPaletteNames
+        compare(panel.paletteKeys.length, names.length)
         for (let i = 0; i < names.length; ++i)
-            compare(panel.colorModeKeys[i], names[i])
-        verify(panel.colorModeKeys.indexOf("same") >= names.length)
-        verify(panel.colorModeKeys.indexOf("viridis") > 0)
+            compare(panel.paletteKeys[i], names[i])
+
+        // The maps are the two the reader builds and Theme's named ramps --
+        // "same" among them, because one colour for every line is `range`
+        // with both ends the same and is certainly not a palette.
+        verify(panel.mapKeys.indexOf("same") >= 0)
+        verify(panel.mapKeys.indexOf("range") >= 0)
+        verify(panel.mapKeys.indexOf("viridis") >= 0)
+        for (let i = 0; i < names.length; ++i) {
+            compare(panel.mapKeys.indexOf(names[i]), -1,
+                    names[i] + " is a palette and must not be offered as a map")
+        }
+        compare(panel.mapKeys.length, panel.mapLabels.length)
 
         verify(panel.isPalette("spectrum"))
         verify(!panel.isPalette("viridis"))
         verify(!panel.isPalette("same"))
+
+        // With no plot to read, the panel names the kind a plot opens on.
+        verify(panel.categorical)
+        compare(panel.colorModeKeys, panel.paletteKeys)
+    }
+
+    /// The kind follows the mode, and switching kinds returns the reader to
+    /// what they last had in the one they asked for.
+    function test_the_kind_follows_the_mode_and_remembers_each_side() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 700,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+
+        // The kind is read off the mode rather than stored beside it, so it
+        // cannot disagree with what the plot is drawing.
+        plot.colorMode = "spectrum"
+        verify(panel.categorical)
+        compare(panel.colorModeKeys, panel.paletteKeys)
+
+        plot.colorMode = "inferno"
+        verify(!panel.categorical)
+        compare(panel.colorModeKeys, panel.mapKeys)
+
+        // Going to the other kind and back lands on what was last used there,
+        // not on the top of a list -- and a mode set from anywhere counts,
+        // which is what makes DatasetMemory's restores stick.
+        panel.chooseKind(true)
+        compare(plot.colorMode, "spectrum")
+        panel.chooseKind(false)
+        compare(plot.colorMode, "inferno")
+
+        plot.colorMode = "safe"
+        panel.chooseKind(false)
+        compare(plot.colorMode, "inferno")
+        panel.chooseKind(true)
+        compare(plot.colorMode, "safe")
+
+        // Asking for the kind already showing changes nothing.
+        panel.chooseKind(true)
+        compare(plot.colorMode, "safe")
+
+        plot.colorMode = "spectrum"
     }
 
     /// That the cycle reaches the drawn lines, and not only the function that
