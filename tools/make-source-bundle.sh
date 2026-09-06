@@ -2,7 +2,24 @@
 # SPDX-FileCopyrightText: 2026 Jonas Sattler
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Assemble the Corresponding Source for a release binary.
+# Assemble the Corresponding Source for the release binaries -- all of them,
+# on both platforms, out of one plan.
+#
+# That is not a shortcut. A source archive is the same file whichever triplet
+# builds it: qtbase's tarball is qtbase's tarball, and only which subset of
+# them gets compiled differs between Linux and Windows. The Windows package set
+# is a strict subset of the Linux one -- see the comment in vcpkg.json about
+# why the qtbase feature lists are kept as close as they are -- so the archives
+# fetched for x64-linux already contain every source the .exe was built from,
+# and vcpkg-ports/ is the whole registry at the baseline regardless. The check
+# below is what keeps that true rather than merely asserted: it resolves the
+# Windows dependency graph and fails if anything in it is absent from the plan
+# this bundle was filled from.
+#
+# Resolving it is all that can be done from here -- vcpkg refuses to compute a
+# Windows *install* plan on a Linux host, wanting a Developer Prompt it cannot
+# have -- but `depend-info` needs no compiler and answers the question that
+# matters.
 #
 # H5Scope links Qt, HDF5 and about twenty further libraries statically, and
 # is conveyed under the GPL because Qt Graphs is GPL-3.0-only. Section 6 of the
@@ -156,6 +173,55 @@ if [ "${#planned[@]}" -lt 10 ] || ! printf '%s\n' "${planned[@]}" | grep -qx qtb
   exit 1
 fi
 
+# --- and the Windows binary is made of these same sources --------------------
+# The bundle is filled from the x64-linux plan above and accompanies the .exe
+# as well, on the strength of the Windows package set being a subset of it.
+# This is where that is established rather than believed. A Windows-only
+# dependency appearing one day -- a port whose Windows branch pulls something
+# the Linux one does not -- would make this bundle incomplete Corresponding
+# Source for a binary being published beside it, which is a licence failure
+# and not a packaging one, so it fails the release.
+# 2>&1 because depend-info prints its graph on *stderr*, which is surprising
+# enough to be worth stating: redirecting it to /dev/null as noise leaves this
+# parsing an empty stream, and an empty stream is what the check below exists
+# to refuse.
+echo "checking the Windows dependency graph is covered..."
+mapfile -t windows_packages < <(
+  "$VCPKG_ROOT/vcpkg" depend-info \
+    --x-manifest-root="$repo_root" \
+    --overlay-ports="$repo_root/ports" \
+    --triplet=x64-windows-static \
+    2>&1 \
+  | sed -n 's/^\([a-z0-9][a-z0-9.+-]*\)\(\[[^]]*\]\)*:\( .*\)\?$/\1/p' \
+  | sort -u)
+
+# The same defence the plan parse above has, and for the same reason: an empty
+# list satisfies every check below it without checking anything.
+if [ "${#windows_packages[@]}" -lt 10 ] \
+   || ! printf '%s\n' "${windows_packages[@]}" | grep -qx qtbase; then
+  echo "error: could not resolve the Windows dependency graph --" >&2
+  echo "       ${#windows_packages[@]} packages parsed and no qtbase among" >&2
+  echo "       them. Fix the parse rather than shipping a bundle whose" >&2
+  echo "       coverage of the .exe is unverified." >&2
+  exit 1
+fi
+
+uncovered=0
+for pkg in "${windows_packages[@]}"; do
+  printf '%s\n' "${planned[@]}" | grep -qx "$pkg" && continue
+  echo "error: $pkg is built into the Windows binary but is not in the" >&2
+  echo "       x64-linux plan this bundle was filled from" >&2
+  uncovered=$((uncovered + 1))
+done
+if [ "$uncovered" -ne 0 ]; then
+  echo "       The Windows dependency set is no longer a subset of the Linux" >&2
+  echo "       one, so one bundle no longer covers both. Fetch the Windows" >&2
+  echo "       downloads too -- on a Windows host, or by teaching this script" >&2
+  echo "       to run the plan there -- before publishing either binary." >&2
+  exit 1
+fi
+echo "windows: ${#windows_packages[@]} packages, all covered"
+
 # --- what --only-downloads could not fetch -----------------------------------
 # Every Qt module except qtbase begins its portfile with
 #
@@ -257,6 +323,11 @@ cat > "$staging/build-from-bundle.sh" <<'BUILD'
 # you still need from your own machine is a C++20 compiler, CMake 3.26+, Ninja,
 # a vcpkg checkout (for the tool itself, not its ports), and Qt's X11/OpenGL
 # development headers -- see the README's Building section.
+#
+# This rebuilds the Linux binaries. The same bundle is the source for the
+# Windows executable published beside them; on Windows the equivalent is
+# `cmake --preset windows-release` from this directory, with the same two
+# overlay-ports directories passed the same way.
 
 set -euo pipefail
 readonly here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -295,9 +366,15 @@ chmod +x "$staging/build-from-bundle.sh"
 cat > "$staging/README.bundle.md" <<EOF
 # H5Scope ${version} — Corresponding Source
 
-This is the complete source of the H5Scope ${version} binary released
-alongside it, as GPL-3.0-only section 6 requires. It was cut from commit
+This is the complete source of every H5Scope ${version} binary released
+alongside it -- the Linux executable, the AppImage and the Windows
+executable -- as GPL-3.0-only section 6 requires. It was cut from commit
 \`${commit}\` by \`tools/make-source-bundle.sh\`.
+
+One bundle covers both platforms because a source archive is the same file
+whichever compiler builds it, and the set of libraries linked into the
+Windows executable is a strict subset of the set linked into the Linux one.
+The script verifies that before writing this file.
 
 | Path | What it is |
 |---|---|
@@ -309,7 +386,9 @@ alongside it, as GPL-3.0-only section 6 requires. It was cut from commit
 | \`SHA256SUMS\` | the archives as they went in |
 
 Run \`./build-from-bundle.sh\` with \`VCPKG_ROOT\` pointing at a vcpkg checkout.
-Nothing here is fetched from the network.
+Nothing here is fetched from the network. On Windows the equivalent is
+\`cmake --preset windows-release -DVCPKG_OVERLAY_PORTS="<here>/ports;<here>/vcpkg-ports"\`
+with \`VCPKG_DOWNLOADS\` set to \`vcpkg-downloads/\`.
 
 CMake, Ninja, meson, automake and gperf are not included. GPL-3.0-only
 section 1 excludes "general-purpose tools or generally available free programs

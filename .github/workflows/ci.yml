@@ -563,7 +563,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     # The only job here that writes anything back. Scoped to this job rather
     # than the workflow so a build cannot, whatever it runs.
@@ -578,23 +578,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The binary the build job already produced and tested. Rebuilding it
-      # here would take hours and would publish a different file than the one
-      # the tests passed against. It is downloaded before the tag is checked,
-      # because the binary is what the check is against.
-      - name: Download the tested binary
+      # The binaries the build jobs already produced and tested. Rebuilding
+      # them here would take hours and would publish different files than the
+      # ones the tests passed against. They are downloaded before the tag is
+      # checked, because they are what the check is against.
+      #
+      # Into a directory each, not one: both carry a LICENSE, a
+      # THIRD-PARTY-NOTICES.md, a SOURCE.md and a THIRD-PARTY-LICENSES.txt,
+      # and two of those four differ between the platforms. Downloading them
+      # on top of each other would silently keep whichever arrived second.
+      - name: Download the tested Linux binary
         uses: actions/download-artifact@v7
         with:
           name: H5Scope-linux-x64
-          path: release-assets
+          path: downloads/linux
 
-      # The upload preserved the two directories it came from; the release
-      # publishes a flat list, so flatten it.
-      - name: Flatten the download
+      - name: Download the tested Windows executable
+        uses: actions/download-artifact@v7
+        with:
+          name: H5Scope-windows-x64
+          path: downloads/windows
+
+      # The uploads preserved the directories they came from; the release
+      # publishes a flat list, so flatten each within its own.
+      - name: Flatten the downloads
         run: |
-          find release-assets -mindepth 2 -type f -exec mv -t release-assets {} +
-          find release-assets -mindepth 1 -type d -empty -delete
-          ls -la release-assets
+          for platform in linux windows; do
+            find "downloads/$platform" -mindepth 2 -type f \
+              -exec mv -t "downloads/$platform" {} +
+            find "downloads/$platform" -mindepth 1 -type d -empty -delete
+          done
+          ls -la downloads/linux downloads/windows
 
       # The version is not recomputed here. cmake/Version.cmake worked it out
       # from the release tags during the build, and the executable is named
@@ -607,13 +621,13 @@ jobs:
       # Since the patch number *is* the number of releases in this series, the
       # tag to push is never a guess -- it is whatever the build already said.
       #
-      # The AppImage is excluded from the search rather than matched loosely:
-      # it is named for the same version and would otherwise be a second
-      # answer to "which file is the binary".
+      # The AppImage and the .exe are excluded from the search rather than
+      # matched loosely: both are named for the same version and would
+      # otherwise be further answers to "which file is the binary".
       - name: The tag must match the binary the build produced
         run: |
-          binary=$(find release-assets -maxdepth 1 -type f -name 'H5Scope-*' \
-                     ! -name '*.AppImage')
+          binary=$(find downloads/linux -maxdepth 1 -type f -name 'H5Scope-*' \
+                     ! -name '*.AppImage' ! -name '*.exe')
           if [ "$(printf '%s\n' "$binary" | grep -c .)" -ne 1 ]; then
             echo "::error::expected exactly one H5Scope-* binary, found:"
             printf '%s\n' "$binary"
@@ -631,17 +645,60 @@ jobs:
           fi
           echo "VERSION=$built" >> "$GITHUB_ENV"
 
-      # The AppImage is published beside the binary, so it has to be there.
-      - name: The AppImage must be there, and match
+      # Every other artefact carries the same version in its own name, and
+      # each is checked for rather than globbed. Two jobs on two runners
+      # counted the tags independently; agreeing is the thing worth asserting,
+      # because a release whose .exe and binary call themselves different
+      # versions is one nobody can reason about afterwards.
+      - name: Every artefact must be there, and agree
         run: |
-          appimage="release-assets/H5Scope-$VERSION-x86_64.AppImage"
-          test -f "$appimage" || {
-            echo "::error::no AppImage for $VERSION in the build's artefacts"
-            ls -la release-assets
+          missing=0
+          for expected in \
+              "downloads/linux/H5Scope-$VERSION-x86_64.AppImage" \
+              "downloads/windows/H5Scope-$VERSION.exe"; do
+            if [ -f "$expected" ]; then
+              echo "  $expected"
+            else
+              echo "::error::no $(basename "$expected") for $VERSION in the"\
+                   "build artefacts"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            ls -la downloads/linux downloads/windows
             exit 1
-          }
-          chmod +x "$appimage"
-          echo "appimage: $appimage"
+          fi
+          chmod +x "downloads/linux/H5Scope-$VERSION-x86_64.AppImage"
+
+      # One flat directory, with the four files that differ between the
+      # platforms given names that say which they belong to.
+      #
+      # THIRD-PARTY-LICENSES.txt is the one where this matters rather than
+      # merely tidies. It is generated from the ports actually on the link
+      # line, and the Windows binary links four fewer -- publishing one file
+      # under one name would attribute fontconfig, expat, libb2 and
+      # xcb-util-cursor to an executable that contains none of them. Each
+      # binary still carries its own inside it; this is about what sits beside
+      # them on the release page.
+      #
+      # LICENSE and THIRD-PARTY-NOTICES.md are the repository's own files and
+      # are the same in both, so one copy is published and the Linux one is
+      # arbitrarily the copy taken.
+      - name: Assemble what gets published
+        run: |
+          mkdir -p release-assets
+          mv "downloads/linux/H5Scope-$VERSION" release-assets/
+          mv "downloads/linux/H5Scope-$VERSION-x86_64.AppImage" release-assets/
+          mv "downloads/windows/H5Scope-$VERSION.exe" release-assets/
+          mv downloads/linux/LICENSE release-assets/
+          mv downloads/linux/THIRD-PARTY-NOTICES.md release-assets/
+          for platform in linux windows; do
+            mv "downloads/$platform/THIRD-PARTY-LICENSES.txt" \
+               "release-assets/THIRD-PARTY-LICENSES-$platform-x64.txt"
+            mv "downloads/$platform/SOURCE.md" \
+               "release-assets/SOURCE-$platform-x64.md"
+          done
+          ls -la release-assets
 
       # Only the tool: the ports this bundle ships come from the baseline, and
       # tools/make-source-bundle.sh extracts them itself.
@@ -666,8 +723,8 @@ jobs:
       - name: Checksums
         working-directory: release-assets
         run: |
-          sha256sum H5Scope-* LICENSE THIRD-PARTY-NOTICES.md \
-                    THIRD-PARTY-LICENSES.txt > SHA256SUMS
+          sha256sum H5Scope-* SOURCE-*.md LICENSE THIRD-PARTY-NOTICES.md \
+                    THIRD-PARTY-LICENSES-*.txt > SHA256SUMS
           cat SHA256SUMS
 
       # gh rather than a third-party action: it is preinstalled, and publishing
@@ -681,23 +738,40 @@ jobs:
         working-directory: release-assets
         run: |
           cat > notes.md <<EOF
-          Linux on x86-64, self-contained: Qt and HDF5 are linked statically,
-          and both files are compiled against glibc 2.28, so they run on RHEL 8
-          and anything newer. Take the AppImage if you are unsure.
+          Every file here is self-contained: Qt and HDF5 are linked statically
+          into each of them, and nothing is asked of the machine it runs on.
+
+          **Linux on x86-64** — \`H5Scope-$VERSION\` and
+          \`H5Scope-$VERSION-x86_64.AppImage\`, both compiled against glibc
+          2.28, so they run on RHEL 8 and anything newer. Take the AppImage if
+          you are unsure.
+
+          **Windows on x64** — \`H5Scope-$VERSION.exe\`. The Visual C++
+          runtime is linked in too, so there is no redistributable to install.
+          It is not code-signed, so SmartScreen will warn on first run: *More
+          info* then *Run anyway*, and \`SHA256SUMS\` is how to check you have
+          the file this build produced.
 
           GPL-3.0-only. \`H5Scope-$VERSION-source.tar.zst\` is the complete
-          Corresponding Source for the executables above; \`LICENSE\` and
-          \`THIRD-PARTY-NOTICES.md\` are the licence and the inventory of
-          everything else inside them, and the binary prints both itself with
-          \`--license\` and \`--notices\`.
+          Corresponding Source for every executable above, both platforms.
+          \`LICENSE\` and \`THIRD-PARTY-NOTICES.md\` are the licence and the
+          inventory of everything else inside them; the
+          \`THIRD-PARTY-LICENSES-*.txt\` files are the notices those libraries
+          require, one per platform because the two link slightly different
+          sets. Every binary prints all of it itself, with \`--license\` and
+          \`--notices\`.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "H5Scope $VERSION" \
             --notes-file notes.md \
             "H5Scope-$VERSION" \
             "H5Scope-$VERSION-x86_64.AppImage" \
+            "H5Scope-$VERSION.exe" \
             "H5Scope-$VERSION-source.tar.zst" \
             LICENSE \
             THIRD-PARTY-NOTICES.md \
-            THIRD-PARTY-LICENSES.txt \
+            THIRD-PARTY-LICENSES-linux-x64.txt \
+            THIRD-PARTY-LICENSES-windows-x64.txt \
+            SOURCE-linux-x64.md \
+            SOURCE-windows-x64.md \
             SHA256SUMS
