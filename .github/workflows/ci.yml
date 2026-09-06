@@ -371,6 +371,195 @@ jobs:
   # Corresponding Source for each of them.
   #
   # So: `git tag v0.2.0 && git push origin v0.2.0`, and this runs.
+  # The same thing on Windows, and deliberately the same shape: a static Qt,
+  # a static HDF5, one self-contained executable, and a check afterwards that
+  # reads the artefact rather than trusting the build.
+  #
+  # What is *not* the same is the floor. Linux has one because glibc records a
+  # version against every symbol, so a binary states the oldest system it will
+  # start on and tools/check-glibc-floor.sh can read that back. A PE import
+  # table carries nothing equivalent -- it names DLLs, not versions -- so there
+  # is no floor to verify here. The static CRT is what stands in its place:
+  # what would otherwise be the Windows spelling of the same failure, an
+  # executable that refuses to start for want of a runtime the user has no
+  # obvious way to get. tools/ci/verify-windows-binary.ps1 is where that is
+  # asserted.
+  build-windows:
+    name: Build and test (release, Windows x64)
+    runs-on: windows-latest
+    # As long as the Linux job, and for the same reason: a cold cache builds
+    # Qt from source, and this runner is slower at it.
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # The whole history and the tags with it, for the reason the Linux job
+      # gives: the patch number counts the release tags this commit descends
+      # from, and cmake/Version.cmake refuses to version a shallow build.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Qt's build trees are the deepest paths this project produces, and the
+      # ones that meet MAX_PATH first. vcpkg therefore lives at C:\v rather
+      # than under the workspace: every character saved at the root is a
+      # character available at the leaves, and the failure it prevents arrives
+      # hours in, as a compiler that cannot open a file whose name is right
+      # there in the error.
+      - name: Where vcpkg lives, and why it is two characters
+        run: |
+          git config --system core.longpaths true
+          New-Item -ItemType Directory -Force -Path C:\vcpkg-cache | Out-Null
+          "VCPKG_ROOT=C:\v"                      >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=C:\vcpkg-cache" >> $env:GITHUB_ENV
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      # The Ninja generator expects a compiler on the environment rather than
+      # looking for one, and a workflow step cannot leave its environment to
+      # the next except through GITHUB_ENV. See the script.
+      - name: The MSVC toolchain, for every step after this one
+        run: ./tools/ci/msvc-env.ps1
+
+      # Pinned to the manifest's own builtin-baseline, exactly as the Linux
+      # job does it: the registry CI reads is the one vcpkg.json names, not
+      # whatever upstream landed that morning.
+      - name: Set up vcpkg
+        run: |
+          $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout --detach $baseline
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      # The accumulating cache, and every word of the Linux job's comment on
+      # this applies here unchanged: the run id keeps the key from ever
+      # hitting, the restore-keys fall back to the newest cache for this
+      # manifest, and the save at the end writes a superset -- so each run
+      # starts where the last one got to, whether or not it passed. The run
+      # attempt is in the key because a re-run keeps the run id, and a key
+      # that already exists cannot be written again.
+      #
+      # `win` in the key because vcpkg hashes the compiler into every
+      # package's ABI tag, and nothing built by gcc on AlmaLinux can be reused
+      # by MSVC. The two caches are separate entries and count together
+      # against the repository's 10 GB; if eviction ever starts costing the
+      # Linux job its cache, a NuGet binary source on GitHub Packages is the
+      # way out, and is not subject to that limit.
+      - name: Restore vcpkg binaries
+        uses: actions/cache/restore@v6
+        with:
+          path: C:\vcpkg-cache
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-
+            vcpkg-win-
+
+      # The overlay triplet builds release only, and the clean options keep
+      # the disk from filling: both are the Linux job's reasoning, and this
+      # runner has less room than that one rather than more. The host triplet
+      # is set too -- Qt's moc, rcc and qmltyperegistrar are host dependencies
+      # and would otherwise build both configurations, which is where a debug
+      # Qt nobody links comes from.
+      #
+      # The step cap is a starting point rather than a measurement. Its
+      # purpose is that the step ends on its own terms and the save below
+      # still runs, banking whatever did build; the Linux job's 120 was
+      # arrived at from runs that were reclaimed mid-compile, and there is no
+      # equivalent history here yet. Revise it once there is.
+      - name: Configure
+        timeout-minutes: 180
+        run: |
+          cmake --preset windows-release `
+            -DVCPKG_OVERLAY_TRIPLETS="${{ github.workspace }}/cmake/triplets" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_HOST_TRIPLET=x64-windows-static-release `
+            "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build;--clean-downloads-after-build"
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Build
+        run: cmake --build --preset windows-release
+
+      # Every suite the Linux job runs, including the two design checks, which
+      # go through Git Bash here. .gitattributes is what makes that work: the
+      # runner image checks out with core.autocrlf=true, and a shell script
+      # with CRLF endings names an interpreter that does not exist.
+      - name: Test
+        run: ctest --preset windows-release
+
+      - name: The binary is fit to publish
+        run: |
+          $binary = Get-ChildItem build/windows-release/bin/H5Scope-*.exe |
+                      Select-Object -First 1
+          ./tools/ci/verify-windows-binary.ps1 $binary.FullName
+
+      # Whatever happened, and for the reason the Linux job gives: discarding
+      # the packages that did build because a later one did not makes every
+      # attempt pay the whole cost again.
+      - name: Make room for the cache
+        if: always()
+        run: |
+          foreach ($dir in 'buildtrees', 'packages', 'downloads') {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
+              "$env:VCPKG_ROOT\$dir"
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Save vcpkg binaries
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: C:\vcpkg-cache
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # A binary is conveyed object code even as a CI artefact, so it does not
+      # travel without a way to reach its source.
+      - name: Write the source pointer
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $text = @"
+          # H5Scope --- where this binary's source is
+
+          This build is GPL-3.0-only. It links Qt, HDF5 and about twenty
+          further libraries statically, and the Visual C++ runtime with them,
+          so it depends on no redistributable. LICENSE, THIRD-PARTY-NOTICES.md
+          and THIRD-PARTY-LICENSES.txt are beside this file: the licence, the
+          inventory of what is inside the executable, and the notices those
+          libraries require. The binary carries all three itself as well ---
+          run it with ``--license`` or ``--notices``.
+
+          It is compiled with MSVC against the x64-windows-static triplet.
+          The set of libraries inside it is a strict subset of the Linux
+          build's: fontconfig, expat, libb2 and xcb-util-cursor are not in it.
+
+          Built from: ${{ github.repository }} at commit ${{ github.sha }}
+          Repository: ${{ github.server_url }}/${{ github.repository }}
+          This run:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The dependency sources are pinned by vcpkg.json's builtin-baseline,
+          and vcpkg patches several of them --- the patches are part of the
+          Corresponding Source. Tagged releases attach a bundle containing all
+          of it, covering both platforms; ``tools/make-source-bundle.sh`` is
+          what assembles that bundle.
+          "@
+          Set-Content -Path build/windows-release/bin/SOURCE.md -Value $text
+
+      - name: Upload the executable
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: H5Scope-windows-x64
+          path: |
+            build/windows-release/bin/H5Scope-*.exe
+            build/windows-release/bin/SOURCE.md
+            build/windows-release/bin/LICENSE
+            build/windows-release/bin/THIRD-PARTY-NOTICES.md
+            build/windows-release/bin/THIRD-PARTY-LICENSES.txt
+          if-no-files-found: error
+          retention-days: 14
+
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
