@@ -148,6 +148,11 @@ TestCase {
         ImageSettingsPanel {}
     }
 
+    Component {
+        id: plotSettingsComponent
+        PlotSettingsPanel {}
+    }
+
     /// The tree in a window of its own, for the filter test: an item parented
     /// into the test case is never effectively visible, and an invisible item
     /// takes no focus and is delivered no key events.
@@ -457,7 +462,7 @@ TestCase {
         compare(plot.resolved.start, 0)
         compare(plot.resolved.step, 1)
         compare(plot.showGrid, true)
-        compare(plot.colorMode, "same")
+        compare(plot.colorMode, "spectrum")
 
         // ...and coming back finds what was left there.
         verify(select("/matrix"))
@@ -1825,9 +1830,12 @@ TestCase {
         view.show("plot")
         const plot = findChild(view, "plotSurface")
 
-        // The default is one accent for every line, which is what this plot
-        // has always drawn.
-        compare(plot.colorMode, "same")
+        // The default gives every line a colour of its own; "same" is still
+        // there for a reader who wants the bundle back.
+        compare(plot.colorMode, "spectrum")
+        verify(String(plot.seriesColor(0, 6)) !== String(plot.seriesColor(5, 6)))
+
+        plot.colorMode = "same"
         compare(String(plot.seriesColor(0, 6)), String(plot.seriesColor(5, 6)))
 
         plot.colorMode = "viridis"
@@ -1868,6 +1876,238 @@ TestCase {
         verify(Math.abs(plot.seriesColor(0, 1).r - 0.5) < 0.01)
 
         plot.colorMode = "same"
+    }
+
+    /// A palette gives each line a colour of its own, and starts over rather
+    /// than running out.
+    ///
+    /// The wrap is the whole reason `select all` on a table of ten thousand
+    /// rows is still a legible request: the twenty-first line takes the first
+    /// colour again and the legend tells the two apart, which is a better
+    /// bargain than drawing the rest in grey.
+    function test_a_palette_gives_each_line_its_own_colour_and_then_repeats() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+
+        const names = Theme.categoricalPaletteNames
+        verify(names.length >= 2, "there must be more than one palette to pick")
+
+        for (let p = 0; p < names.length; ++p) {
+            plot.colorMode = names[p]
+            const stops = Theme.categoricalPalettes[names[p]]
+            const n = stops.length
+
+            // Entry i, verbatim -- not interpolated, and not a share of
+            // anything. A palette hands back what it holds.
+            for (let i = 0; i < n; ++i) {
+                compare(String(plot.seriesColor(i, n)), String(Qt.color(stops[i])),
+                        names[p] + " line " + i)
+            }
+
+            // Past the end it starts over, and it keeps starting over.
+            compare(String(plot.seriesColor(n, 999)), String(Qt.color(stops[0])))
+            compare(String(plot.seriesColor(n + 3, 999)), String(Qt.color(stops[3])))
+            compare(String(plot.seriesColor(2 * n + 1, 999)), String(Qt.color(stops[1])))
+        }
+
+        plot.colorMode = "spectrum"
+    }
+
+    /// A palette colour is a property of *which* line it is, and of nothing
+    /// else -- not of how many lines are drawn beside it, and not of the band
+    /// the reader put over a map.
+    ///
+    /// This is the difference that matters in use. On a map, unticking one
+    /// line in the legend re-cuts the shares and every remaining line changes
+    /// colour; the reader is following a stroke and it turns a different
+    /// colour underneath them. A palette holds still.
+    function test_a_palette_holds_a_line_s_colour_still() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+
+        plot.colorMode = "spectrum"
+        const alone = String(plot.seriesColor(2, 3))
+        compare(String(plot.seriesColor(2, 40)), alone,
+                "how many lines are drawn must not recolour line 2")
+
+        // The map band is a map's control, and the panel hides it here; it
+        // must not reach the colours either way.
+        plot.colorFrom = 0.4
+        plot.colorTo = 0.6
+        compare(String(plot.seriesColor(2, 3)), alone,
+                "the map band must not touch a palette")
+        plot.colorFrom = 0
+        plot.colorTo = 1
+
+        // A map does the opposite, which is what the palette is being
+        // contrasted with.
+        plot.colorMode = "viridis"
+        verify(String(plot.seriesColor(2, 3)) !== String(plot.seriesColor(2, 40)),
+               "a map re-cuts its shares when the count changes")
+
+        plot.colorMode = "spectrum"
+    }
+
+    /// Reversing a palette turns the order of its entries around, the way
+    /// reversing a ramp swaps its ends.
+    function test_a_reversed_palette_runs_the_other_way() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+
+        plot.colorMode = "spectrum"
+        const stops = Theme.categoricalPalettes["spectrum"]
+        const n = stops.length
+
+        plot.colorsReversed = true
+        compare(String(plot.seriesColor(0, n)), String(Qt.color(stops[n - 1])))
+        compare(String(plot.seriesColor(1, n)), String(Qt.color(stops[n - 2])))
+        // ...and it still wraps, from the other end. Counting backwards past
+        // zero is where a plain % would hand back stops[-1].
+        compare(String(plot.seriesColor(n, n)), String(Qt.color(stops[n - 1])))
+        compare(String(plot.seriesColor(n + 1, n)), String(Qt.color(stops[n - 2])))
+
+        plot.colorsReversed = false
+        compare(String(plot.seriesColor(0, n)), String(Qt.color(stops[0])))
+    }
+
+    /// Every colour in every palette reads against the ground of the theme it
+    /// belongs to.
+    ///
+    /// The floor is WCAG's 3:1 for non-text, which is what a stroke is. This
+    /// is the assertion the palettes were generated to satisfy, and it is
+    /// worth keeping as one: a colour edited by eye into either list is
+    /// exactly the kind of change that looks fine on the theme its author had
+    /// open and disappears on the other.
+    function test_every_palette_colour_reads_against_its_own_ground() {
+        const names = Theme.categoricalPaletteNames
+        const was = Theme.dark
+
+        for (let t = 0; t < 2; ++t) {
+            Theme.dark = (t === 0)
+            for (let p = 0; p < names.length; ++p) {
+                const stops = Theme.categoricalPalettes[names[p]]
+                for (let i = 0; i < stops.length; ++i) {
+                    const ratio = contrast(stops[i], Theme.surfaceInset)
+                    verify(ratio >= 3.0,
+                           names[p] + " " + i + " (" + stops[i] + ") reads at "
+                           + ratio.toFixed(2) + ":1 on the "
+                           + (Theme.dark ? "dark" : "light") + " theme's plot ground")
+                }
+            }
+        }
+
+        Theme.dark = was
+    }
+
+    /// The two scopes of a palette are the same colours at different weights,
+    /// so a line keeps its identity when the theme flips.
+    function test_a_palette_is_the_same_length_in_both_themes() {
+        const names = Theme.categoricalPaletteNames
+        const was = Theme.dark
+
+        Theme.dark = true
+        const lengths = names.map(name => Theme.categoricalPalettes[name].length)
+
+        Theme.dark = false
+        for (let p = 0; p < names.length; ++p) {
+            compare(Theme.categoricalPalettes[names[p]].length, lengths[p],
+                    names[p] + " must offer the same number of lines in both themes")
+        }
+
+        Theme.dark = was
+    }
+
+    /// The panel asks the kind first and the cycle second, and the dropdown
+    /// offers one kind at a time.
+    ///
+    /// The two used to share one flat list, which gave the reader no way to
+    /// tell a palette from a map without picking one: with the list closed,
+    /// nothing said that `safe` and `viridis` were different kinds of thing.
+    function test_the_panel_offers_one_kind_of_cycle_at_a_time() {
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 700 })
+        verify(panel, "the plot settings panel must instantiate")
+
+        // Every palette Theme defines is the categorical list, and nothing
+        // else is.
+        const names = Theme.categoricalPaletteNames
+        compare(panel.paletteKeys.length, names.length)
+        for (let i = 0; i < names.length; ++i)
+            compare(panel.paletteKeys[i], names[i])
+
+        // The maps are the two the reader builds and Theme's named ramps --
+        // "same" among them, because one colour for every line is `range`
+        // with both ends the same and is certainly not a palette.
+        verify(panel.mapKeys.indexOf("same") >= 0)
+        verify(panel.mapKeys.indexOf("range") >= 0)
+        verify(panel.mapKeys.indexOf("viridis") >= 0)
+        for (let i = 0; i < names.length; ++i) {
+            compare(panel.mapKeys.indexOf(names[i]), -1,
+                    names[i] + " is a palette and must not be offered as a map")
+        }
+        compare(panel.mapKeys.length, panel.mapLabels.length)
+
+        verify(panel.isPalette("spectrum"))
+        verify(!panel.isPalette("viridis"))
+        verify(!panel.isPalette("same"))
+
+        // With no plot to read, the panel names the kind a plot opens on.
+        verify(panel.categorical)
+        compare(panel.colorModeKeys, panel.paletteKeys)
+    }
+
+    /// The kind follows the mode, and switching kinds returns the reader to
+    /// what they last had in the one they asked for.
+    function test_the_kind_follows_the_mode_and_remembers_each_side() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 700,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+
+        // The kind is read off the mode rather than stored beside it, so it
+        // cannot disagree with what the plot is drawing.
+        plot.colorMode = "spectrum"
+        verify(panel.categorical)
+        compare(panel.colorModeKeys, panel.paletteKeys)
+
+        plot.colorMode = "inferno"
+        verify(!panel.categorical)
+        compare(panel.colorModeKeys, panel.mapKeys)
+
+        // Going to the other kind and back lands on what was last used there,
+        // not on the top of a list -- and a mode set from anywhere counts,
+        // which is what makes DatasetMemory's restores stick.
+        panel.chooseKind(true)
+        compare(plot.colorMode, "spectrum")
+        panel.chooseKind(false)
+        compare(plot.colorMode, "inferno")
+
+        plot.colorMode = "safe"
+        panel.chooseKind(false)
+        compare(plot.colorMode, "inferno")
+        panel.chooseKind(true)
+        compare(plot.colorMode, "safe")
+
+        // Asking for the kind already showing changes nothing.
+        panel.chooseKind(true)
+        compare(plot.colorMode, "safe")
+
+        plot.colorMode = "spectrum"
     }
 
     /// That the cycle reaches the drawn lines, and not only the function that
@@ -1930,6 +2170,65 @@ TestCase {
                "the legend must cover the left edge of the plot when open")
 
         plot.legendOpen = false
+    }
+
+    /// Flipping the theme repaints the lines in the palette of the theme that
+    /// is now on.
+    ///
+    /// This is a regression test with a real bug behind it. The colours reach
+    /// a Qt Graphs series by assignment rather than by binding -- the note
+    /// above restyle() says why -- so nothing re-ran when the palette under
+    /// them changed. View -> Dark Theme repainted every other surface in the
+    /// application and left the plot drawn in the palette of the theme the
+    /// reader had just left: bright colours meant for a black ground, laid on
+    /// a white one at part strength, which is a plot of pastels nobody can
+    /// read. It only became possible to see when the palettes became the
+    /// theme's own; the fixed ramps never had a light form to be wrong about.
+    function test_the_lines_follow_the_theme_when_it_flips() {
+        verify(select("/compressed")) // 100 x 100
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        const was = Theme.dark
+        Theme.dark = true
+        plot.colorMode = "spectrum"
+        waitForRendering(win.view)
+
+        // Nothing else is touched: the theme is the only thing that moves, and
+        // it is the only thing that has to make the lines repaint.
+        Theme.dark = false
+        waitForRendering(win.view)
+
+        const shot = grabImage(plot)
+        const coloured = colouredPixels(shot, Theme.sliceBarHeight)
+        verify(coloured > 20, "the lines must still be on the plot")
+
+        // On a white ground the light palette is deep ink. The dark palette
+        // put there instead would be pastel -- every one of its colours is
+        // lighter than the ground can take -- so counting the strokes that are
+        // actually dark is what separates the two cases.
+        let deep = 0
+        for (let x = 0; x < shot.width; x += 2) {
+            for (let y = Theme.sliceBarHeight; y < shot.height; y += 2) {
+                const pixel = shot.pixel(x, y)
+                if (Math.max(pixel.r, pixel.g, pixel.b)
+                    - Math.min(pixel.r, pixel.g, pixel.b) > 0.06
+                    && luminance(pixel) < 0.5) {
+                    ++deep
+                }
+            }
+        }
+        verify(deep > coloured / 4,
+               "only " + deep + " of " + coloured + " coloured pixels read as "
+               + "ink on the light theme's ground -- the plot is drawn in the "
+               + "other theme's palette")
+
+        Theme.dark = was
     }
 
     /// Pixels with a hue -- a channel spread wide enough that no neutral, and
@@ -2812,6 +3111,146 @@ TestCase {
         compare(filter.text, "matrix")
         AppController.filterText = ""
         compare(filter.text, "")
+    }
+
+    /// Type into the tree's filter box a key at a time, the way a reader does.
+    /// Assigning to AppController.filterText would skip the box, and the box is
+    /// where the pane writes down what was open before the search.
+    function typeIntoFilter(win, text) {
+        const filter = findChild(win.tree, "treeFilter")
+        verify(filter, "the tree must carry its own filter")
+        filter.forceActiveFocus()
+        for (let i = 0; i < text.length; ++i) {
+            keyClick(text[i])
+        }
+        tryVerify(() => AppController.filterText === text, 5000,
+                  "what was typed must reach the controller")
+        return filter
+    }
+
+    /// Backspace over whatever is in the box, one key at a time.
+    function clearFilter() {
+        for (let i = AppController.filterText.length; i > 0; --i) {
+            keyClick(Qt.Key_Backspace)
+        }
+        tryVerify(() => AppController.filterText === "", 5000,
+                  "the box must empty")
+    }
+
+    /// A tree with `/group/nested/leaf` read but nothing open: the filter can
+    /// see two levels down, and none of it is on screen.
+    function treeWithGroupRead() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        // Reading is a round trip per level, so this takes more than one pass.
+        for (let pass = 0; pass < 4; ++pass) {
+            win.tree.expandToDepth(2)
+            settleTree(win)
+        }
+        verify(AppController.filteredTreeModel.indexForPath("/group/nested/leaf").valid,
+               "the fixture's nested group must have been read")
+        win.tree.collapseAll()
+        waitForRendering(win.tree)
+        return win
+    }
+
+    function test_the_filter_opens_the_tree_to_what_it_found() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        const leaf = model.indexForPath("/group/nested/leaf")
+        compare(view.rowAtIndex(leaf), -1,
+                "nothing is open, so the leaf starts off screen")
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => view.rowAtIndex(leaf) >= 0, 5000,
+                  "the filter must open the tree far enough to show what it found")
+
+        // The branches above it, and only those: a hit is a result, not a
+        // request for its contents.
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))))
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group/nested"))))
+
+        clearFilter()
+    }
+
+    function test_a_matched_group_is_not_poured_out() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        // Everything under `/group` matches `group`, because the filter reads
+        // paths. Opening it would answer a search for the group with its whole
+        // contents, when the row the reader wanted is the group itself.
+        typeIntoFilter(win, "group")
+        const row = view.rowAtIndex(model.indexForPath("/group"))
+        verify(row >= 0, "the group itself must be on screen")
+        verify(!view.isExpanded(row), "...and must be left closed")
+
+        clearFilter()
+    }
+
+    function test_clearing_the_filter_puts_the_reader_s_branches_back() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        // One branch open, chosen by the reader.
+        view.expand(view.rowAtIndex(model.indexForPath("/group")))
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))))
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => view.isExpanded(
+                      view.rowAtIndex(model.indexForPath("/group/nested"))),
+                  5000, "the search must open the way to the leaf")
+
+        clearFilter()
+        waitForRendering(win.tree)
+
+        // What the search opened is closed again; what the reader opened is not.
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "the reader's own branch must survive the search")
+        verify(!view.isExpanded(view.rowAtIndex(model.indexForPath("/group/nested"))),
+               "...and the search's must not")
+
+        win.tree.collapseAll()
+    }
+
+    function test_the_filter_marks_the_letters_it_matched() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        typeIntoFilter(win, "trix")
+        waitForRendering(win.tree)
+
+        const row = view.itemAtIndex(model.indexForPath("/matrix"))
+        verify(row, "the matched row must be on screen")
+        compare(row.mark.start, 2, "`trix` begins two characters into `matrix`")
+        compare(row.mark.length, 4)
+
+        const mark = findChild(row, "matchMark")
+        verify(mark, "the row must carry a mark for what was matched")
+        verify(mark.visible, "...and it must be drawn")
+        verify(mark.width > 0)
+
+        // It stands over the tail of the name, not over the whole of it.
+        verify(mark.x > 0, "the mark must start where the match does")
+
+        clearFilter()
+        waitForRendering(win.tree)
+        verify(!findChild(view.itemAtIndex(model.indexForPath("/matrix")),
+                          "matchMark").visible,
+               "an empty box marks nothing")
     }
 
     function test_theme_tokens_are_defined() {

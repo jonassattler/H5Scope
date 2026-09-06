@@ -41,6 +41,73 @@ void TreeFilterProxyModel::setFilterText(const QString& text)
     endFilterChange(QSortFilterProxyModel::Direction::Rows);
 }
 
+QVariantMap TreeFilterProxyModel::matchIn(const QString& name) const
+{
+    const auto answer = [](int start, int length) {
+        return QVariantMap{{QStringLiteral("start"), start},
+                           {QStringLiteral("length"), length}};
+    };
+    if (filterText_.isEmpty()) {
+        return answer(-1, 0);
+    }
+    if (pattern_.has_value()) {
+        // A pattern is anchored, so it takes the whole name or none of it --
+        // there is no shorter run to look for, and no arithmetic to do.
+        const QRegularExpressionMatch found = pattern_->match(name);
+        if (!found.hasMatch()) {
+            return answer(-1, 0);
+        }
+        return answer(static_cast<int>(found.capturedStart()),
+                      static_cast<int>(found.capturedLength()));
+    }
+    const qsizetype at = name.indexOf(filterText_, 0, Qt::CaseInsensitive);
+    if (at < 0) {
+        return answer(-1, 0);
+    }
+    return answer(static_cast<int>(at), static_cast<int>(filterText_.size()));
+}
+
+QString TreeFilterProxyModel::pathAt(const QModelIndex& index) const
+{
+    const auto* tree = qobject_cast<const H5TreeModel*>(sourceModel());
+    return tree == nullptr ? QString{} : tree->pathAt(mapToSource(index));
+}
+
+QModelIndex TreeFilterProxyModel::indexForPath(const QString& path) const
+{
+    const auto* tree = qobject_cast<const H5TreeModel*>(sourceModel());
+    return tree == nullptr ? QModelIndex{} : mapFromSource(tree->indexForPath(path));
+}
+
+QVariantList TreeFilterProxyModel::matchIndexes() const
+{
+    QVariantList found;
+    if (!filterText_.isEmpty()) {
+        collectMatches({}, found);
+    }
+    return found;
+}
+
+void TreeFilterProxyModel::collectMatches(const QModelIndex& parent,
+                                          QVariantList& into) const
+{
+    const auto* tree = qobject_cast<const H5TreeModel*>(sourceModel());
+    // Same rule as the filter itself: never ask a group for children it has
+    // not read, because asking is what reads them.
+    if (tree == nullptr || !tree->isPopulated(mapToSource(parent))) {
+        return;
+    }
+    const int count = rowCount(parent);
+    for (int row = 0; row < count; ++row) {
+        const QModelIndex child = index(row, 0, parent);
+        if (matches(mapToSource(child))) {
+            into.append(QVariant::fromValue(child));
+            continue; // the topmost hit down this branch, and no further
+        }
+        collectMatches(child, into);
+    }
+}
+
 bool TreeFilterProxyModel::matches(const QModelIndex& index) const
 {
     const QString name = index.data(H5TreeModel::NameRole).toString();

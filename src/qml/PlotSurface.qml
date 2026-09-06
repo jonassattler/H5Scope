@@ -209,20 +209,31 @@ Item {
         ? 1.0 : surface.plot.maximum + surface.padding
 
     // --- which line is which ---------------------------------------------
-    /// How the lines are coloured: "same", "range", or the name of one of
-    /// Theme's ramps.
+    /// How the lines are coloured: the name of one of Theme's categorical
+    /// palettes, or "same", or "range", or the name of one of its ramps.
     ///
-    /// The default is "same" at the one accent, which is what this plot has
-    /// always drawn -- a bundle separated by overlap. Colour is offered because
-    /// overlap stops separating anything at a dozen lines, and a legend that
-    /// names them is no use if they all look alike.
-    property string colorMode: "same"
+    /// Two kinds of answer share the one property because the reader is making
+    /// one choice. A palette gives each line a colour of its own and starts
+    /// over when it runs out; a map -- "range", or a named ramp -- spreads the
+    /// lines along a continuum and gives each an even share of it.
+    ///
+    /// The default is the spectrum palette. This plot used to open on "same",
+    /// one accent for every line, and separate them by overlap alone; that
+    /// stops separating anything at about a dozen lines, and the legend that
+    /// names them is no use when they all look alike. A map was the first
+    /// answer to that and is the wrong shape for the question: it puts its
+    /// neighbours next to each other by construction, so the lines it has to
+    /// tell apart are the ones it draws most alike. A palette is built to do
+    /// exactly this, so it is what a new plot opens on.
+    property string colorMode: "spectrum"
     property color colorSingle: Theme.accent
     property color colorRangeFrom: Theme.accent
     property color colorRangeTo: Theme.info
     /// Run the cycle the other way. Which end of a ramp is the dark one is a
     /// property of the ramp and not of the data, and the reader is the one who
-    /// knows which way round they want to read it.
+    /// knows which way round they want to read it. On a palette it is the
+    /// order of the entries that turns around, so the first line takes the
+    /// colour the last one would have.
     property bool colorsReversed: false
 
     /// Which part of the cycle the lines actually span, as two positions
@@ -235,6 +246,10 @@ Item {
     /// this plot's ground is true black, so the first few lines of a viridis
     /// start out nearly invisible. Pulling the near handle up takes that end
     /// of the map back.
+    ///
+    /// A palette has no continuum to take a slice out of -- its colours are a
+    /// set and not a range -- so this does not apply to one, and the settings
+    /// panel drops the control rather than showing one that does nothing.
     property real colorFrom: 0.0
     property real colorTo: 1.0
 
@@ -245,6 +260,11 @@ Item {
     property int highlighted: -1
 
     /// The colour line `position` of `count` takes.
+    ///
+    /// `count` is what the maps need and what a palette ignores: a share of a
+    /// continuum only exists once you know how many shares there are, where a
+    /// palette entry is the position itself. The rest of this note is about
+    /// the maps.
     ///
     /// The lines sit at the *middles* of `count` equal shares of the map
     /// rather than at its ends: line i of n is drawn at (i + 1) / (n + 1), so
@@ -265,6 +285,22 @@ Item {
     function seriesColor(position, count) {
         if (surface.colorMode === "same")
             return surface.colorSingle
+
+        // A palette is asked which line this is rather than how far along it
+        // sits, so none of the arithmetic below applies to one: not the shares
+        // -- there is no continuum to take shares of -- and not the reader's
+        // band. The position is the answer, counted along a cycle that
+        // repeats, and it does not move when a line is added or taken away.
+        // That is the second thing a palette buys over a map: on a map every
+        // line changes colour when one of them is unticked.
+        const palette = Theme.categoricalPalettes[surface.colorMode]
+        if (palette) {
+            return Theme.categoricalColor(
+                palette,
+                surface.colorsReversed ? palette.length - 1 - position
+                                       : position)
+        }
+
         let at = count > 0 ? (position + 1) / (count + 1) : 0.5
         if (surface.colorsReversed)
             at = 1 - at
@@ -724,6 +760,19 @@ Item {
     onColorFromChanged: surface.restyle()
     onColorToChanged: surface.restyle()
     onHighlightedChanged: surface.restyle()
+
+    // The palettes are the theme's own -- the same hues solved for whichever
+    // ground the plot is standing on -- so flipping the theme changes what
+    // every line is drawn in, and by how much (plotSeriesOpacity is the
+    // theme's too). None of that reaches the series on its own: the line above
+    // says why these are assignments and not bindings, and an assignment does
+    // not re-run when what it was computed from changes. Without this, View ->
+    // Dark Theme repainted the whole application and left the plot drawn in
+    // the palette of the theme the reader had just left.
+    Connections {
+        target: Theme
+        function onDarkChanged() { surface.restyle() }
+    }
 
     Connections {
         target: AppController.datasetPlot
