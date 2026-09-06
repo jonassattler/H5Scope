@@ -37,10 +37,13 @@
 #include <QModelIndex>
 #include <QString>
 
+#if defined(__unix__)
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -60,8 +63,9 @@ namespace {
 /// It is the honest default for this benchmark. A large HDF5 file is opened
 /// once, cold, by a reader who then waits; measuring the second open of it
 /// measures a state the complaint was never about.
-bool evict(const std::string& path)
+bool evict([[maybe_unused]] const std::string& path)
 {
+#if defined(__unix__)
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         return false;
@@ -70,6 +74,12 @@ bool evict(const std::string& path)
     const bool ok = ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) == 0;
     ::close(fd);
     return ok;
+#else
+    // Windows has no unprivileged way to drop one file from the cache, so the
+    // caller is told it did not happen and says so. `--warm` is the honest
+    // way to run this there.
+    return false;
+#endif
 }
 
 /// Read syscalls this process has made, from /proc/self/io's `syscr`.
@@ -82,6 +92,12 @@ bool evict(const std::string& path)
 /// same number on every machine; a duration is not.
 long long readSyscalls()
 {
+#if !defined(__linux__)
+    // Negative means "not available here", which measure() propagates and
+    // report() prints as "-". Returning 0 instead would put a plausible number
+    // in the column this whole tool exists to fill.
+    return -1;
+#else
     std::FILE* io = std::fopen("/proc/self/io", "re");
     if (io == nullptr) {
         return -1;
@@ -95,6 +111,7 @@ long long readSyscalls()
     }
     std::fclose(io);
     return value;
+#endif
 }
 
 struct Row
@@ -118,25 +135,52 @@ void report(const std::vector<Row>& rows)
     std::printf("%-10s %10s %10s %12s %10s %9s   %s\n", "----------", "----------",
                 "----------", "------------", "----------", "---------",
                 "------------------------");
+    // Every count goes through here, so a column with nothing to say says "-"
+    // rather than 0. Two things have nothing to say: a phase whose unit does
+    // not apply, and -- on any platform without /proc/self/io -- the read
+    // counter itself. See readSyscalls().
+    const auto cell = [](long long value, char* buffer, std::size_t size) {
+        if (value < 0) {
+            std::snprintf(buffer, size, "-");
+        } else {
+            std::snprintf(buffer, size, "%lld", value);
+        }
+        return buffer;
+    };
+
     long long totalReads = 0;
+    bool readsKnown = true;
     double totalMs = 0.0;
     double totalBlocking = 0.0;
     for (const Row& row : rows) {
-        totalReads += row.reads;
+        if (row.reads < 0) {
+            readsKnown = false;
+        } else {
+            totalReads += row.reads;
+        }
         totalMs += row.milliseconds;
         totalBlocking += row.blocking;
-        if (row.units > 0) {
-            std::printf("%-10s %10.1f %10.1f %12lld %10lld %9.2f   %s\n", row.name,
-                        row.milliseconds, row.blocking, row.reads, row.units,
-                        static_cast<double>(row.reads) / static_cast<double>(row.units),
-                        row.unitName);
+
+        char reads[24];
+        char units[24];
+        char per[24];
+        cell(row.reads, reads, sizeof reads);
+        cell(row.units > 0 ? row.units : -1, units, sizeof units);
+        if (row.reads >= 0 && row.units > 0) {
+            std::snprintf(per, sizeof per, "%.2f",
+                          static_cast<double>(row.reads)
+                              / static_cast<double>(row.units));
         } else {
-            std::printf("%-10s %10.1f %10.1f %12lld %10s %9s   %s\n", row.name,
-                        row.milliseconds, row.blocking, row.reads, "-", "-", "");
+            std::snprintf(per, sizeof per, "-");
         }
+
+        std::printf("%-10s %10.1f %10.1f %12s %10s %9s   %s\n", row.name,
+                    row.milliseconds, row.blocking, reads, units, per,
+                    row.units > 0 ? row.unitName : "");
     }
-    std::printf("%-10s %10.1f %10.1f %12lld\n\n", "total", totalMs, totalBlocking,
-                totalReads);
+    char total[24];
+    std::printf("%-10s %10.1f %10.1f %12s\n\n", "total", totalMs, totalBlocking,
+                cell(readsKnown ? totalReads : -1, total, sizeof total));
 }
 
 /// One measured phase: how long it took and how many read syscalls it cost.
@@ -149,8 +193,13 @@ std::pair<double, long long> measure(F&& body)
     const auto start = std::chrono::steady_clock::now();
     body();
     const auto end = std::chrono::steady_clock::now();
+    const long long readsAfter = readSyscalls();
+    // Unknown in, unknown out. Subtracting two -1s would otherwise report a
+    // confident zero for a count nothing measured.
+    const long long reads =
+        (readsBefore < 0 || readsAfter < 0) ? -1 : readsAfter - readsBefore;
     return {std::chrono::duration<double, std::milli>(end - start).count(),
-            readSyscalls() - readsBefore};
+            reads};
 }
 
 /// `rows.push_back({name, ...measure(body)..., units, unit})` without writing
