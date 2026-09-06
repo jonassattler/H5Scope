@@ -63,6 +63,32 @@ qt_import_plugins(H5Scope
     Qt6::QMinimalIntegrationPlugin
 )
 
+# --- what the file itself says it is, on Windows ---------------------------
+# The icon and the version block. Both live in a resource compiled into the
+# executable, which is where Windows looks for them -- there is no equivalent
+# of the .desktop file beside the binary, so an executable without this is one
+# Explorer draws as a blank sheet and whose properties are empty.
+#
+# The version comes from cmake/Version.cmake through configure_file, so the
+# Details tab and `--version` cannot disagree.
+if(WIN32)
+  # Harmless where CMake has already enabled it, decisive where it has not:
+  # a .rc among a target's sources is silently ignored rather than compiled
+  # if the RC language was never enabled, and the result is a build that
+  # succeeds and an executable with no icon.
+  enable_language(RC)
+
+  # Forward slashes: rc.exe accepts them in a path, and a backslash inside a
+  # resource string is an escape character.
+  file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/packaging/h5scope.ico"
+       H5SCOPE_ICON_PATH)
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/packaging/h5scope.rc.in"
+    "${CMAKE_BINARY_DIR}/generated/h5scope.rc"
+    @ONLY)
+  target_sources(H5Scope PRIVATE "${CMAKE_BINARY_DIR}/generated/h5scope.rc")
+endif()
+
 # The version is in the file name, so a directory of builds is self-describing
 # and a downloaded artefact still says what it is once it has left the page it
 # came from.
