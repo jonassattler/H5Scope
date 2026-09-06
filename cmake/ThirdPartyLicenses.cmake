@@ -25,17 +25,20 @@
 
 # Ports whose code is linked into H5Scope. Keep in step with the inventory
 # in THIRD-PARTY-NOTICES.md; between them, the link line is the authority.
+#
+# The Windows dependency set is a strict subset of the Linux one -- there is
+# no port on that link line that is not also on this one -- so this is the
+# whole list and the branch below only takes things away. That is a property
+# of how vcpkg.json is written rather than a coincidence; see the comment
+# there about why the qtbase feature lists are kept as close as they are.
 set(H5SCOPE_LINKED_PORTS
   brotli
   bzip2
   double-conversion
-  expat
-  fontconfig
   freetype
   harfbuzz
   hdf5
   libaec
-  libb2
   libpng
   md4c
   meshoptimizer
@@ -46,10 +49,32 @@ set(H5SCOPE_LINKED_PORTS
   qtquick3d
   qtshadertools
   qtsvg
-  xcb-util-cursor
   zlib
   zstd
 )
+
+# The four that reach the link line on Linux alone.
+#
+#   fontconfig  font discovery on X11; Windows asks DirectWrite instead
+#   expat       fontconfig's XML parser, and nothing else here needs one
+#   libb2       qtbase takes BLAKE2 from the system on Unix and uses its own
+#               bundled copy on Windows, so the port is not installed there
+#   xcb-util-cursor
+#               ports/xcb-util-cursor, which exists to keep the binary off
+#               libxcb-cursor.so.0; there is no X11 on Windows to have it
+#
+# Named here rather than filtered out of the list above so that dropping one
+# on Linux is still the deliberate act the header describes: a port that stops
+# being linked has to be removed from a list either way.
+if(NOT WIN32)
+  list(APPEND H5SCOPE_LINKED_PORTS
+    expat
+    fontconfig
+    libb2
+    xcb-util-cursor
+  )
+  list(SORT H5SCOPE_LINKED_PORTS)
+endif()
 
 # Ports whose vcpkg copyright file points at a licence instead of being one.
 # See licenses/README.md; the checks below are what keep the substitution
@@ -118,13 +143,22 @@ that too.
   foreach(port ${H5SCOPE_LINKED_PORTS})
     set(copyright "${installed}/${triplet}/share/${port}/copyright")
     if(NOT EXISTS "${copyright}")
+      # What vcpkg did install, listed with the failure. The list above is
+      # per-platform, so the first build on a platform whose dependency set
+      # differs fails here -- and a message naming one port at a time would
+      # make that one CI run per missing port. This makes it one.
+      file(GLOB installed_ports RELATIVE "${installed}/${triplet}/share"
+           "${installed}/${triplet}/share/*")
+      list(FILTER installed_ports EXCLUDE REGEX "^vcpkg")
+      list(JOIN installed_ports " " installed_ports)
       message(FATAL_ERROR
         "No licence text for '${port}' at ${copyright}.\n"
         "Every port in H5SCOPE_LINKED_PORTS is linked into the binary and "
         "its licence has to travel with it. Either the port was renamed -- fix "
         "the list in cmake/ThirdPartyLicenses.cmake -- or it is no longer "
         "linked, in which case remove it from the list and from "
-        "THIRD-PARTY-NOTICES.md.")
+        "THIRD-PARTY-NOTICES.md.\n"
+        "vcpkg installed these for ${triplet}:\n  ${installed_ports}")
     endif()
 
     _h5scope_port_version("${port}" "${installed}" "${triplet}" version)

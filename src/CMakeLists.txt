@@ -37,13 +37,28 @@ qt_import_qml_plugins(H5Scope)
 #
 # Wayland needs its shell integration alongside the platform plugin: without a
 # shell the client connects and then never gets a surface.
-qt_import_plugins(H5Scope
-  INCLUDE
+#
+# Named per platform rather than in one list, because these are targets and a
+# target that the Qt for this platform does not build simply does not exist:
+# leaving QXcbIntegrationPlugin in the list on Windows is not a plugin that
+# never loads, it is a link against a name CMake cannot resolve, and the
+# configure fails.
+if(WIN32)
+  set(h5scope_platform_plugins Qt6::QWindowsIntegrationPlugin)
+else()
+  set(h5scope_platform_plugins
     Qt6::QWaylandIntegrationPlugin
     Qt6::QWaylandXdgShellIntegrationPlugin
     Qt6::QXcbIntegrationPlugin
     Qt6::QXcbGlxIntegrationPlugin
-    # Headless: CI smoke tests and any automation without a display.
+  )
+endif()
+
+qt_import_plugins(H5Scope
+  INCLUDE
+    ${h5scope_platform_plugins}
+    # Headless: CI smoke tests and any automation without a display. Built for
+    # every platform Qt supports, so these are outside the branch above.
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QMinimalIntegrationPlugin
 )
