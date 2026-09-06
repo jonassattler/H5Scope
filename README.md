@@ -35,9 +35,11 @@ and shown as images, alpha included.
 
 ## Installing
 
-Every release ships a self-contained build for Linux on x86-64. Qt, HDF5 and
-the C++ runtime are linked statically, so there is nothing to install and no
-runtime to match.
+Every release ships self-contained builds for Linux and Windows on x86-64. Qt,
+HDF5 and the C++ runtime are linked statically into each of them, so there is
+nothing to install and no runtime to match.
+
+### Linux
 
 **The AppImage** is the one to take if you are unsure. It brings a desktop
 entry, an icon and an association with `.h5` files.
@@ -53,12 +55,41 @@ chmod +x H5Scope-<version>-x86_64.AppImage
 chmod +x H5Scope-<version>
 ./H5Scope-<version>
 ```
+
+Both are compiled against glibc 2.28, so they run on RHEL 8 and anything newer.
+
+### Windows
+
+**`H5Scope-<version>.exe`** is one file and nothing else. The Visual C++
+runtime is linked in with everything else, so there is no redistributable to
+install.
+
+It is not code-signed. On first run SmartScreen will say "Windows protected
+your PC": choose *More info*, then *Run anyway*. `SHA256SUMS` on the release
+page is how to check you have the file the build actually produced.
+
+```powershell
+Get-FileHash H5Scope-<version>.exe -Algorithm SHA256
+```
+
+`--version`, `--help`, `--license` and `--notices` print to the console when
+the program is started from one. Windows does not wait for a windowed program,
+so the shell prompt comes back first and the text arrives underneath it; pipe
+or redirect it to read it comfortably.
+
+```powershell
+.\H5Scope-<version>.exe --license > terms.txt
+```
+
 ## Building
 
-Requirements: CMake 3.26 or newer, Ninja, a C++20 compiler, and
-[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` exported. Qt also
-needs the X11 and OpenGL development packages from the system package manager.
-On Debian and Ubuntu:
+Requirements everywhere: CMake 3.26 or newer, Ninja, a C++20 compiler, and
+[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set.
+
+### Linux
+
+Qt also needs the X11 and OpenGL development packages from the system package
+manager. On Debian and Ubuntu:
 
 ```sh
 sudo apt-get install '^libxcb.*-dev' libx11-xcb-dev libglu1-mesa-dev \
@@ -75,11 +106,32 @@ cmake --build --preset release
 ctest --preset release
 ```
 
+### Windows
+
+Visual Studio 2022 with the *Desktop development with C++* workload. The
+presets use Ninja, which expects the compiler to be on the environment already,
+so run these from an **x64 Native Tools Command Prompt** rather than an
+ordinary one:
+
+```powershell
+$env:VCPKG_ROOT = "C:\v"
+cmake --preset windows-release   # or windows-debug
+cmake --build --preset windows-release
+ctest --preset windows-release
+```
+
+Keep the vcpkg checkout at a short path. Qt's build trees are the deepest this
+project produces and the first to run into `MAX_PATH`; every character saved at
+the root is one available at the leaves, and the failure arrives hours in, as a
+compiler that cannot open a file whose name is right there in the error.
+
+### Either way
+
 The first configure builds Qt and HDF5 from source and takes hours; every later
 one reads vcpkg's binary cache and takes seconds.
 
-[docs/BUILDING.md](docs/BUILDING.md) covers the release build, the AppImage and
-the source bundle.
+[docs/BUILDING.md](docs/BUILDING.md) covers the release builds on both
+platforms, the AppImage and the source bundle.
 
 ## Contributing
 

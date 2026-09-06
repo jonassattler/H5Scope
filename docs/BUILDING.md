@@ -1,7 +1,7 @@
 # Building H5Scope
 
 [The README](../README.md) has the ordinary development build. This covers the
-release build, the AppImage and the source bundle.
+release builds on both platforms, the AppImage and the source bundle.
 
 ## Design goals
 
@@ -13,7 +13,8 @@ release build, the AppImage and the source bundle.
   compiled into the binary, so the UI looks the same on a machine with no fonts
   installed at all.
 - **Static linking.** The resulting binary has zero Qt and zero HDF5 runtime
-  dependencies. CI fails the build if `ldd` ever finds one.
+  dependencies, and on Windows no Visual C++ runtime dependency either. CI
+  fails the build if `ldd` or `dumpbin` ever finds one.
 - **Modern C++20**, split into a Qt-free backend (`h5core`), Qt model classes,
   and a Qt Quick/QML UI, so everything below the view is testable headless.
 - **Consistent styling on every platform.** Qt Quick Controls with the *Basic*
@@ -21,7 +22,7 @@ release build, the AppImage and the source bundle.
   platform behaviour of its own. All visual decisions live in one `Theme`
   singleton of design tokens.
 
-## Building what the release publishes
+## Building what the release publishes, on Linux
 
 The README's build targets the machine it runs on, which is what you want while
 developing. A *release* build additionally has to start on RHEL 8, and that is a
@@ -98,6 +99,58 @@ than asserted, and it works on any ELF:
 tools/check-glibc-floor.sh 2.28 build/release/bin/H5Scope
 ```
 
+## Building what the release publishes, on Windows
+
+There is no container here and nothing corresponding to the glibc floor, and
+the reason is worth stating rather than leaving as an absence. glibc records a
+version against every symbol, so an ELF states the oldest system it will start
+on and `tools/check-glibc-floor.sh` reads that back out. A PE import table
+carries nothing equivalent — it names DLLs, not versions — so there is no floor
+in the file to verify, and building on a newer Windows does not raise one.
+
+What does have to be got right is the C runtime, and it is the same failure
+wearing different clothes. The triplet is `x64-windows-static`, whose whole
+point is the static CRT: `x64-windows-static-md` would build the same static Qt
+against the *dynamic* runtime, and the executable would then refuse to start on
+a machine without the Visual C++ redistributable — naming a library the user
+has no obvious way to get, on a desktop that has never had Visual Studio
+installed, which is every desktop this is published for.
+
+From an x64 Native Tools Command Prompt, with `VCPKG_ROOT` set:
+
+```powershell
+cmake --preset windows-release `
+    -DVCPKG_OVERLAY_TRIPLETS="$PWD/cmake/triplets" `
+    -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+    -DVCPKG_HOST_TRIPLET=x64-windows-static-release
+cmake --build --preset windows-release
+ctest --preset windows-release
+```
+
+The overlay triplet is the release-only one, which is what CI uses and what
+keeps a debug Qt nobody links off the disk. Without those three flags the
+`windows-release` preset builds against plain `x64-windows-static` and both
+configurations of every port, which works and costs twice as much.
+
+Then the check CI runs over the result:
+
+```powershell
+.\tools\ci\verify-windows-binary.ps1 build\windows-release\bin\H5Scope-<version>.exe
+```
+
+It asserts that seven names are absent from the import table — `Qt6*`, `hdf5*`
+and the five spellings of the dynamic C runtime — and that `--license` and
+`--notices` still print. That last one is not a formality: the executable is
+built `WIN32_EXECUTABLE`, so Windows starts it with null standard handles and
+every write to stdout goes nowhere unless `attachParentConsole()` in
+`src/main.cpp` has claimed somewhere to write. A binary that accepts
+`--license`, exits 0 and prints nothing would satisfy the letter of nothing.
+
+`tools/ci/msvc-env.ps1` is what CI uses to get the toolchain onto the
+environment, since a workflow step has no Native Tools prompt to start from. It
+publishes through `GITHUB_ENV`, so it configures a workflow rather than a
+shell; run by hand it prints what it would set, which is how to check it.
+
 ## Building from the source bundle
 
 The bundle attached to each release contains everything needed to rebuild that
@@ -119,6 +172,17 @@ preset. Because the bundle omits `.git`, it carries
 the version it was cut at in `cmake/BundleVersion.cmake`, which
 `cmake/Version.cmake` reads when there is no history to count.
 
+One bundle is the Corresponding Source for every binary in the release, the
+Windows executable included. A source archive is the same file whichever
+triplet builds it — only which subset gets compiled differs — and the Windows
+package set is a strict subset of the Linux one, so the archives fetched for
+`x64-linux` already contain every source the `.exe` was built from.
+`tools/make-source-bundle.sh` establishes that rather than assuming it: it
+resolves the Windows dependency graph with `vcpkg depend-info` and fails if
+anything in it is missing from the plan the bundle was filled from. On Windows
+the rebuild is `cmake --preset windows-release` with the same two overlay port
+directories, in place of `build-from-bundle.sh`.
+
 ## Releases
 
 `main` is always releasable and every push to it is built and tested, but a
@@ -130,13 +194,22 @@ git push origin v0.2.0
 ```
 
 That runs the `release` job in `.github/workflows/ci.yml`, which takes the
-binary the build job already tested, assembles the Corresponding Source bundle
-with `tools/make-source-bundle.sh`, and publishes both — with the licence, the
-notices and their texts — as a GitHub release. Builds of `main` are kept as
-short-retention CI artifacts, which is a convenience, not a release.
+binaries the two build jobs already tested, assembles the Corresponding Source
+bundle with `tools/make-source-bundle.sh`, and publishes them — with the
+licence, the notices and their texts — as a GitHub release. Builds of `main`
+are kept as short-retention CI artifacts, which is a convenience, not a
+release.
+
+`THIRD-PARTY-LICENSES.txt` is published once per platform, under a name that
+says which. It is generated from the ports actually on the link line, and the
+Windows binary links four fewer — publishing one file under one name would
+attribute fontconfig, expat, libb2 and xcb-util-cursor to an executable that
+contains none of them.
 
 The job refuses to publish a tag that disagrees with the binary the build
-produced. There is nothing to guess: the patch number counts the releases in
+produced, and refuses a release whose artefacts disagree with each other: two
+jobs on two runners counted the release tags independently, and that they
+arrived at the same version is the thing worth asserting. There is nothing to guess: the patch number counts the releases in
 this series, so the tag to push is whatever the last build called itself. Only a
 new major or minor is a decision, and that is two numbers at the top of
 `cmake/Version.cmake`.

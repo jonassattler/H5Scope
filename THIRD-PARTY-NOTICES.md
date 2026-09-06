@@ -56,6 +56,12 @@ DeviceDiscoverySupport, EglFSDeviceIntegration, FbSupport, InputSupport, and
 the platform, image-format, QML debug and Wayland decoration plugins that
 accompany them.
 
+That list is the Linux build's. On Windows the platform modules differ rather
+than the licensing: XcbQpa, WaylandClient, WlShellIntegration, the Wayland
+decoration plugins and the EGL and device-discovery support modules are absent,
+and the Windows platform plugin is linked in their place. Every module named is
+under the same terms on both.
+
 Bold above marks the GPL-only modules. Qt Quick 3D is linked because the
 `qtgraphs` package requires it; H5Scope uses only the 2D half of Qt Graphs
 and renders nothing in 3D. It arrives with Graphs and would leave with it, so
@@ -99,6 +105,23 @@ dual-licensed, the option H5Scope relies on is marked.
 | md4c | 0.5.3 | MIT |
 | meshoptimizer | 1.2 | MIT |
 | xcb-util-cursor | 0.1.5 | MIT (X11-style) |
+
+That table is the Linux build. The Windows executable links a strict subset of
+it: every library in it is in the Linux binary too, and four of them are not in
+the Windows one.
+
+| Absent from the Windows build | Why |
+|---|---|
+| Fontconfig | font discovery on X11; Windows asks DirectWrite instead |
+| Expat | Fontconfig's XML parser, and nothing else here needs one |
+| libb2 | qtbase takes BLAKE2 from the system on Unix and uses its own bundled copy on Windows, so the port is not installed there |
+| xcb-util-cursor | there is no X11 to keep the binary off `libxcb-cursor.so.0` — see below for what it is doing in the table at all |
+
+Nothing is in the Windows build that is not in the Linux one, which is what
+lets one document be the inventory for both. Each release publishes a
+`THIRD-PARTY-LICENSES-<platform>-x64.txt` generated from the ports actually on
+that platform's link line, and each binary prints its own with `--notices`;
+`cmake/ThirdPartyLicenses.cmake` is where the difference is written down.
 
 xcb-util-cursor appears in that table rather than in *System libraries*
 below, and the move is the whole point of it being there. Qt 6.5 and newer
