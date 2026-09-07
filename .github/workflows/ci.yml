@@ -550,6 +550,20 @@ jobs:
       - name: Test
         run: ctest --preset windows-release
 
+      # ctest's own transcript, kept whenever anything above failed. The QML
+      # suite failed once having printed nothing to the console at all --
+      # eighty-five seconds and then a bare non-zero exit -- which left
+      # nothing to diagnose from and cost a run to find out. This is what to
+      # read next time.
+      - name: The test log, if anything failed
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ctest-log-windows
+          path: build/windows-release/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: The binary is fit to publish
         run: |
           $binary = Get-ChildItem build/windows-release/bin/H5Scope-*.exe |
