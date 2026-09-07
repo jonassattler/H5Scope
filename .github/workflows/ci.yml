@@ -843,28 +843,18 @@ jobs:
         working-directory: release-assets
         run: |
           cat > notes.md <<EOF
-          Every file here is self-contained: Qt and HDF5 are linked statically
-          into each of them, and nothing is asked of the machine it runs on.
+          Self-contained builds: Qt and HDF5 are linked statically, so there is
+          nothing to install.
 
-          **Linux on x86-64** — \`H5Scope-$VERSION\` and
-          \`H5Scope-$VERSION-x86_64.AppImage\`, both compiled against glibc
-          2.28, so they run on RHEL 8 and anything newer. Take the AppImage if
-          you are unsure.
-
-          **Windows on x64** — \`H5Scope-$VERSION.exe\`. The Visual C++
-          runtime is linked in too, so there is no redistributable to install.
-          It is not code-signed, so SmartScreen will warn on first run: *More
-          info* then *Run anyway*, and \`SHA256SUMS\` is how to check you have
-          the file this build produced.
+          - **Linux x86-64** — \`H5Scope-$VERSION\`, or the AppImage if you
+            want a desktop entry. Built against glibc 2.28: RHEL 8 and newer.
+          - **Windows x64** — \`H5Scope-$VERSION.exe\`. Not code-signed, so
+            SmartScreen warns on first run: *More info* → *Run anyway*.
 
           GPL-3.0-only. \`H5Scope-$VERSION-source.tar.zst\` is the complete
-          Corresponding Source for every executable above, both platforms.
-          \`LICENSE\` and \`THIRD-PARTY-NOTICES.md\` are the licence and the
-          inventory of everything else inside them; the
-          \`THIRD-PARTY-LICENSES-*.txt\` files are the notices those libraries
-          require, one per platform because the two link slightly different
-          sets. Every binary prints all of it itself, with \`--license\` and
-          \`--notices\`.
+          Corresponding Source for both; every binary also prints its terms
+          with \`--license\` and \`--notices\`. \`SHA256SUMS\` covers
+          everything here.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "H5Scope $VERSION" \
