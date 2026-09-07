@@ -395,6 +395,22 @@ jobs:
       run:
         shell: pwsh
 
+    # Declared here rather than written into GITHUB_ENV by a step, and that is
+    # not only tidiness. vcvars64.bat exports a VCPKG_ROOT of its own -- the
+    # copy of vcpkg that ships inside Visual Studio -- and the first version of
+    # this job set ours in a step that ran *before* the toolchain step, which
+    # then published Visual Studio's over it. tools/ci/msvc-env.ps1 now withholds
+    # that one name; stating ours at the top of the job is the other half.
+    #
+    # C:\v is two characters on purpose. Qt's build trees are the deepest paths
+    # this project produces and the first to meet MAX_PATH, so every character
+    # saved at the root is one available at the leaves -- and the failure that
+    # prevents arrives hours in, as a compiler that cannot open a file whose
+    # name is right there in the error.
+    env:
+      VCPKG_ROOT: C:\v
+      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
+
     steps:
       # The whole history and the tags with it, for the reason the Linux job
       # gives: the patch number counts the release tags this commit descends
@@ -403,18 +419,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Qt's build trees are the deepest paths this project produces, and the
-      # ones that meet MAX_PATH first. vcpkg therefore lives at C:\v rather
-      # than under the workspace: every character saved at the root is a
-      # character available at the leaves, and the failure it prevents arrives
-      # hours in, as a compiler that cannot open a file whose name is right
-      # there in the error.
-      - name: Where vcpkg lives, and why it is two characters
+      # vcpkg refuses a binary cache directory that does not exist, and long
+      # paths are the other thing that has to be true before anything is
+      # cloned into C:\v.
+      - name: Long paths, and somewhere to keep the binary cache
         run: |
           git config --system core.longpaths true
-          New-Item -ItemType Directory -Force -Path C:\vcpkg-cache | Out-Null
-          "VCPKG_ROOT=C:\v"                      >> $env:GITHUB_ENV
-          "VCPKG_DEFAULT_BINARY_CACHE=C:\vcpkg-cache" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force `
+                   -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       # The Ninja generator expects a compiler on the environment rather than
@@ -429,6 +441,7 @@ jobs:
       - name: Set up vcpkg
         run: |
           $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          Write-Host "cloning vcpkg $baseline into $env:VCPKG_ROOT"
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           git -C $env:VCPKG_ROOT checkout --detach $baseline
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
@@ -450,7 +463,7 @@ jobs:
       - name: Restore vcpkg binaries
         uses: actions/cache/restore@v6
         with:
-          path: C:\vcpkg-cache
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-
@@ -510,7 +523,7 @@ jobs:
         if: always()
         uses: actions/cache/save@v6
         with:
-          path: C:\vcpkg-cache
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # A binary is conveyed object code even as a CI artefact, so it does not

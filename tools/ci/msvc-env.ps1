@@ -67,9 +67,26 @@ if (-not $after.ContainsKey('VCToolsInstallDir')) {
     throw 'vcvars64.bat ran but set no VCToolsInstallDir; the toolchain is not there.'
 }
 
+# Variables vcvars sets that are none of its business to set.
+#
+# VCPKG_ROOT is the whole list, and it is here because it took the first
+# Windows CI run down. Visual Studio bundles a copy of vcpkg at VC\vcpkg and
+# vcvars64.bat exports VCPKG_ROOT pointing at it -- so this script dutifully
+# published Visual Studio's vcpkg over the checkout the job had set up one
+# step earlier, and the clone that followed found a directory that existed,
+# was not empty, and was not its own. The bootstrap after it then had no
+# script to run.
+#
+# It is not part of the toolchain in any sense this script means: it is
+# Visual Studio advertising an unrelated tool it happens to ship. This
+# project pins its own vcpkg at the baseline vcpkg.json names, which is the
+# entire point of pinning it.
+$notOurs = @('VCPKG_ROOT')
+
 $envFile  = $env:GITHUB_ENV
 $pathFile = $env:GITHUB_PATH
 $changed  = 0
+$withheld = 0
 
 foreach ($name in ($after.Keys | Sort-Object)) {
     # PATH is handled below: it is a list, and prepending its new entries is
@@ -78,6 +95,15 @@ foreach ($name in ($after.Keys | Sort-Object)) {
 
     $was = [System.Environment]::GetEnvironmentVariable($name)
     if ($was -eq $after[$name]) { continue }
+
+    # Said out loud rather than skipped quietly: this is the difference
+    # between the job using its own vcpkg and Visual Studio's, and a reader
+    # of the log should be able to see which happened.
+    if ($notOurs -contains $name) {
+        Write-Host "  withheld $name=$($after[$name]) (was '$was')"
+        $withheld++
+        continue
+    }
     $changed++
 
     if ($envFile) {
@@ -101,4 +127,5 @@ if ($pathFile) {
     foreach ($entry in $added) { Write-Host "  PATH += $entry" }
 }
 
-Write-Host "MSVC environment: $changed variables, $($added.Count) PATH entries"
+Write-Host ("MSVC environment: $changed variables, $($added.Count) PATH " +
+    "entries, $withheld withheld")
