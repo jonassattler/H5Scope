@@ -247,6 +247,14 @@ new major or minor is a decision, and that is two numbers at the top of
 
 ## Checks
 
+The test presets set `QT_ASSUME_STDERR_HAS_CONSOLE=1`, which matters only on
+Windows and matters a lot there. Qt decides whether to log to stderr or to the
+debugger by asking whether stderr is a console; under CTest it is a pipe, so
+the answer is no and every `qDebug`, every warning and the whole of Qt Test's
+own report go to `OutputDebugString` and vanish. A failing QML suite then
+reports eighty-five seconds and a non-zero exit with `<end of output>` beside
+it — and so does a passing one, which is how to recognise it.
+
 Two design-token checks run in CI and under CTest, before the build:
 
 - `tools/check-design-tokens.sh` rejects raw hex colours, raw pixel numbers and
