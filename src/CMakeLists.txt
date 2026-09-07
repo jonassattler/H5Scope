@@ -102,10 +102,22 @@ set_target_properties(H5Scope PROPERTIES
 # This drops the superseded ones and points a stable `H5Scope` at the
 # current build, so there is always one name that means "what I just built".
 add_custom_command(TARGET H5Scope POST_BUILD
+  # The name to keep is asked of the target rather than rebuilt from the
+  # version, and the pattern carries the suffix. Spelling the name out worked
+  # for exactly as long as the suffix was empty: on Windows the target is
+  # H5Scope-0.3.2.exe and the name to keep was H5Scope-0.3.2, so the two did
+  # not match and the step removed the executable it had just linked --
+  #
+  #   [242/244] Linking CXX executable bin\H5Scope-0.3.2.exe
+  #   -- Removing superseded build H5Scope-0.3.2.exe
+  #
+  # -- leaving a build that succeeded, a test suite that passed, and nothing
+  # to publish. The suffix in the pattern earns its place too: without it the
+  # glob also matches H5Scope-0.3.2.pdb and this step deletes that instead.
   COMMAND ${CMAKE_COMMAND}
     -DPRUNE_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-    -DPRUNE_PATTERN=H5Scope-*
-    -DPRUNE_KEEP=H5Scope-${H5SCOPE_VERSION}
+    -DPRUNE_PATTERN=H5Scope-*${CMAKE_EXECUTABLE_SUFFIX}
+    -DPRUNE_KEEP=$<TARGET_FILE_NAME:H5Scope>
     -DPRUNE_LINK=H5Scope
     -P ${CMAKE_SOURCE_DIR}/cmake/PruneVersionedBinaries.cmake
   VERBATIM

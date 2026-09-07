@@ -588,6 +588,15 @@ jobs:
         run: |
           $binary = Get-ChildItem build/windows-release/bin/H5Scope-*.exe |
                       Select-Object -First 1
+          # Said here rather than left to the script's parameter binding,
+          # which reported a missing executable as "Cannot bind argument to
+          # parameter 'Binary' because it is an empty string" -- true, and no
+          # help at all in finding out that the build had deleted its own
+          # output.
+          if (-not $binary) {
+            Get-ChildItem build/windows-release/bin | Format-Table -AutoSize
+            throw "no H5Scope-*.exe in build/windows-release/bin"
+          }
           ./tools/ci/verify-windows-binary.ps1 $binary.FullName
 
       # Whatever happened, and for the reason the Linux job gives: discarding
