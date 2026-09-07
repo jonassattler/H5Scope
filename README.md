@@ -120,10 +120,20 @@ cmake --build --preset windows-release
 ctest --preset windows-release
 ```
 
-Keep the vcpkg checkout at a short path. Qt's build trees are the deepest this
-project produces and the first to run into `MAX_PATH`; every character saved at
-the root is one available at the leaves, and the failure arrives hours in, as a
-compiler that cannot open a file whose name is right there in the error.
+Keep both the vcpkg checkout and this repository at short paths — `C:\v` and
+`C:\src\H5Scope` rather than anything under `Documents`. Qt's artefacts are
+the deepest this project produces and the first to run into `MAX_PATH`: its
+FluentWinUI3 style plugin alone contributes a 225-character resource object
+name, so a long prefix is what decides whether the link succeeds. The failure
+does not say so — it is `LNK1181: cannot open input file`, naming a file that
+is there.
+
+If the source has to live somewhere long, put the installed tree elsewhere
+instead:
+
+```powershell
+cmake --preset windows-release -DVCPKG_INSTALLED_DIR=C:\i
+```
 
 ### Either way
 

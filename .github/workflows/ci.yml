@@ -452,6 +452,23 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$drive\vcpkg-cache" | Out-Null
           "VCPKG_ROOT=$drive\v"                          >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$drive\vcpkg-cache" >> $env:GITHUB_ENV
+
+          # And the installed tree, which is the other half of the same
+          # problem and was missed the first time. VCPKG_ROOT covers
+          # buildtrees, packages and downloads; vcpkg_installed defaults to
+          # somewhere inside the build directory, which is under the
+          # workspace, which is long. Qt's deepest artefact is
+          #
+          #   .../Qt6/qml/QtQuick/Controls/FluentWinUI3/objects-Release/
+          #   qtquickcontrols2fluentwinui3styleplugin_resources_2/.qt/rcc/
+          #   qrc_qtquickcontrols2fluentwinui3styleplugin_raw_qml_0_init.cpp.obj
+          #
+          # and under the workspace that comes to 266 characters against a
+          # MAX_PATH of 260 -- so the link failed with LNK1181, "cannot open
+          # input file", naming a file that was there. $drive\i takes 54
+          # characters off the front of every one of them.
+          "VCPKG_INSTALLED_DIR=$drive\i" >> $env:GITHUB_ENV
+
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       # The Ninja generator expects a compiler on the environment rather than
@@ -513,6 +530,7 @@ jobs:
             -DVCPKG_OVERLAY_TRIPLETS="${{ github.workspace }}/cmake/triplets" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
             -DVCPKG_HOST_TRIPLET=x64-windows-static-release `
+            -DVCPKG_INSTALLED_DIR="$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build;--clean-downloads-after-build"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 

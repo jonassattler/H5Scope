@@ -141,6 +141,23 @@ that this project's objects come out `/MD` against `/MT` libraries and the
 linker rejects the mismatch after everything has compiled. It sits beside the
 `-static-libstdc++` block, which is the same decision on the other platform.
 
+`VCPKG_INSTALLED_DIR` is pointed somewhere short for a reason worth knowing
+before it bites. `MAX_PATH` is 260 characters and Qt's deepest artefact is
+
+```
+.../Qt6/qml/QtQuick/Controls/FluentWinUI3/objects-Release/
+qtquickcontrols2fluentwinui3styleplugin_resources_2/.qt/rcc/
+qrc_qtquickcontrols2fluentwinui3styleplugin_raw_qml_0_init.cpp.obj
+```
+
+which is 225 characters before any prefix at all. Under a CI workspace —
+`D:\a\H5Scope\H5Scope\build\windows-release\vcpkg_installed\...` — the whole
+thing came to 266, and the link failed with `LNK1181: cannot open input file`
+naming a file that existed. Moving the installed tree to `D:\i` takes 54
+characters off every path under it. A short `VCPKG_ROOT` is not enough on its
+own: that covers buildtrees, packages and downloads, while `vcpkg_installed`
+defaults to the build directory.
+
 The overlay triplet is the release-only one, which is what CI uses and what
 keeps a debug Qt nobody links off the disk. Without those three flags the
 `windows-release` preset builds against plain `x64-windows-static` and both
