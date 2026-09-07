@@ -480,13 +480,33 @@ jobs:
       # Pinned to the manifest's own builtin-baseline, exactly as the Linux
       # job does it: the registry CI reads is the one vcpkg.json names, not
       # whatever upstream landed that morning.
+      # The bootstrap is retried, on the same reasoning as
+      # tools/ci/seed-downloads.sh on the Linux side: it fetches vcpkg.exe
+      # from GitHub's release CDN, and that transfer has already been cut off
+      # mid-flight once --
+      #
+      #   While calling Windows API function WinHttpReceiveResponse got error 0
+      #   The connection with the server was terminated abnormally
+      #
+      # -- taking a run down four steps in, for a reason that has nothing to do
+      # with anything being built. Three attempts, and a failure after those is
+      # reported as one rather than swallowed.
       - name: Set up vcpkg
         run: |
           $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
           Write-Host "cloning vcpkg $baseline into $env:VCPKG_ROOT"
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           git -C $env:VCPKG_ROOT checkout --detach $baseline
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) {
+              throw "bootstrap-vcpkg failed $attempt times; last exit $LASTEXITCODE"
+            }
+            Write-Host "bootstrap attempt $attempt failed; retrying in 15s"
+            Start-Sleep -Seconds 15
+          }
 
       # The accumulating cache, and every word of the Linux job's comment on
       # this applies here unchanged: the run id keeps the key from ever
