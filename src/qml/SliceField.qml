@@ -141,7 +141,21 @@ Rectangle {
     /// well, the smaller well elides further, and it settles with room for an
     /// ellipsis and nothing else. The well used to be sized that way and stood
     /// one rounding of its own width away from it. Metrics cannot elide.
-    readonly property real pathWanted: pathMetrics.width
+    ///
+    /// The advance rather than `width`, and the difference is the whole of
+    /// what a label needs to not elide. `width` is the tight bounding box of
+    /// the glyphs; what a Text lays out to -- its contentWidth -- is the sum
+    /// of their advances, and the two are not the same number. On this
+    /// project's Linux build "/cube" measures 32 against an advance of
+    /// 31.765625, so the bounding box was the larger and the label fitted by
+    /// luck. Under Windows' rasteriser the inequality goes the other way: the
+    /// box is narrower than the advance, the label is built a fraction too
+    /// small for its own text, and it elides on a bar with room to spare.
+    ///
+    /// Ceiling because a Text's width is whole pixels and an advance is not:
+    /// 31.765625 pixels of text does not fit in 31 of label. This is the same
+    /// number as before on Linux, and a defensible one everywhere.
+    readonly property real pathWanted: Math.ceil(pathMetrics.advanceWidth)
     /// Both brackets: chrome that is never squeezed, whatever else is.
     readonly property real bracketsWidth: field.editable
         ? openBracket.implicitWidth + closeBracket.implicitWidth : 0
