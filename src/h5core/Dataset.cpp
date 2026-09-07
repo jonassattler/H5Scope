@@ -118,7 +118,13 @@ void collectStorageSources(hid_t createProps, DatasetInfo& info)
     if (externalCount > 0) {
         for (int i = 0; i < externalCount; ++i) {
             char name[512] = {};
-            off_t offset = 0;
+            // HDoff_t rather than off_t, which is the type H5Pget_external
+            // actually names and the only one that is right on both
+            // platforms. HDF5 defines it as off_t on Unix -- which is why
+            // off_t compiled here for as long as this was built only on
+            // Linux -- and as int64_t on Windows, where off_t is a 32-bit
+            // long and no pointer to one converts.
+            HDoff_t offset = 0;
             hsize_t size = 0;
             if (H5Pget_external(createProps, static_cast<unsigned>(i), sizeof(name), name,
                                 &offset, &size)

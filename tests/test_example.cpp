@@ -74,7 +74,9 @@ public:
 
     [[nodiscard]] std::string path() const
     {
-        return (directory_ / "example.h5").string();
+        // generic_string for the reason TempFile gives: the QML suite reads
+        // this through QML, where a separator is "/" whatever the platform.
+        return (directory_ / "example.h5").generic_string();
     }
 
 private:

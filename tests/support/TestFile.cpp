@@ -95,7 +95,15 @@ struct Record {
 
 TempFile::TempFile(std::string stem)
     : directory_(makeUniqueDirectory(stem)),
-      path_((directory_ / (stem + ".h5")).string())
+      // generic_string rather than string: this path is handed to Qt and, in
+      // the QML suite, into JavaScript, and both of those spell a separator
+      // "/" on every platform. std::filesystem hands back the native one, so
+      // on Windows the fixture arrived in QML as C:\Users\...\qml.h5 and
+      // `fixture.lastIndexOf("/")` was -1 -- which made a test comparing
+      // folderOf() against the path's own leading segment compare it against
+      // the empty string instead. Windows takes forward slashes everywhere
+      // this path goes, so there is nothing to convert back.
+      path_((directory_ / (stem + ".h5")).generic_string())
 {
 }
 

@@ -1,0 +1,55 @@
+// SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// The Windows executable's resource: its icon, and what the Details tab of
+// the file's properties says about it.
+//
+// Configured by src/CMakeLists.txt rather than written literally, because the
+// version is counted out of the release tags by cmake/Version.cmake and a
+// second, typed copy of it here is a second answer to what this build is.
+//
+// Written by hand rather than left to Qt's own generator, which is driven by
+// a set of QT_TARGET_* target properties and produces a version block but no
+// icon. One file that says everything is easier to check than half a file and
+// a property list.
+//
+// No `#include <windows.h>`: every constant below is written as its literal
+// value, so the resource compiles without a search path and there is nothing
+// to get wrong about where the SDK headers are.
+
+// Resource id 1, which is what Explorer takes as the application icon: it
+// shows the numerically lowest icon resource, not the first one declared.
+1 ICON "@H5SCOPE_ICON_PATH@"
+
+1 VERSIONINFO
+FILEVERSION    @H5SCOPE_VERSION_MAJOR@,@H5SCOPE_VERSION_MINOR@,@H5SCOPE_VERSION_PATCH@,0
+PRODUCTVERSION @H5SCOPE_VERSION_MAJOR@,@H5SCOPE_VERSION_MINOR@,@H5SCOPE_VERSION_PATCH@,0
+FILEFLAGSMASK  0x3fL
+FILEFLAGS      0x0L
+FILEOS         0x00040004L  // VOS_NT_WINDOWS32
+FILETYPE       0x00000001L  // VFT_APP
+FILESUBTYPE    0x00000000L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0409 is US English, 04b0 is Unicode; the pair has to match the
+        // Translation value at the bottom or the block is not found.
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription",  "H5Scope -- a viewer for HDF5 files"
+            // The full string, so a build between releases says "-dev" here
+            // as it does everywhere else. FILEVERSION above cannot: it is
+            // four numbers.
+            VALUE "FileVersion",      "@H5SCOPE_VERSION_STRING@"
+            VALUE "InternalName",     "H5Scope"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Jonas Sattler. GNU General Public License version 3 only. Run with --license for the terms and --notices for what is inside it."
+            VALUE "OriginalFilename", "H5Scope-@H5SCOPE_VERSION@.exe"
+            VALUE "ProductName",      "H5Scope"
+            VALUE "ProductVersion",   "@H5SCOPE_VERSION_STRING@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

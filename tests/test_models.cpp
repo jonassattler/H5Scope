@@ -2194,7 +2194,18 @@ TEST_CASE("the recent list keeps what opened, newest first", "[controller]")
         const QString path = QString::fromStdString(second.path());
         REQUIRE_FALSE(controller.recentFiles().first().toMap()
                           .value(QStringLiteral("missing")).toBool());
-        QFile::remove(path);
+
+        // Off the file before deleting it, because `second` is the one still
+        // open and Windows will not unlink an open file. POSIX will -- the
+        // name goes and the inode lives on for whoever holds it -- so this
+        // passed everywhere until it did not: on Windows the remove simply
+        // failed, the file stayed, and the entry was correctly not missing.
+        // Opening another file closes this one; see H5Session::open.
+        REQUIRE(h5test::openFileAndSettle(
+            controller, QString::fromStdString(first.path())));
+        // Required rather than called: a remove that quietly does nothing
+        // makes everything below it assert about a file that is still there.
+        REQUIRE(QFile::remove(path));
         // Checked when the list is asked for rather than when the file was
         // opened: the row that offers to open it is what has to know.
         const QVariantList after = controller.recentFiles();

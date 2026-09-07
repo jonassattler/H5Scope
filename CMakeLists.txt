@@ -64,6 +64,44 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_link_options(-static-libstdc++ -static-libgcc)
 endif()
 
+# ...and on Windows the same question has a different name: the C runtime.
+#
+# vcpkg's x64-windows-static triplet builds every port against the static CRT,
+# and nothing passes that fact on. vcpkg's toolchain file sets no
+# CMAKE_MSVC_RUNTIME_LIBRARY at all, so CMake applies its own default of
+# MultiThreadedDLL and this project's objects come out /MD while every library
+# they link is /MT. The linker does catch it -- that is exactly what
+# /failifmismatch is for -- but only after everything has compiled:
+#
+#   lld-link: error: /failifmismatch: mismatch detected for 'RuntimeLibrary':
+#   >>> Catch2.lib(catch_assertion_handler.cpp.obj) has value MT_StaticRelease
+#   >>> test_support.lib(TestFile.cpp.obj)          has value MD_DynamicRelease
+#
+# Set here rather than in the preset so it holds for any configure, and set
+# before anything creates a target, because that is when CMake reads it.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+  # And the source files are UTF-8, which MSVC does not assume. Without this
+  # it reads them in the machine's active code page -- 1252 on a GitHub
+  # runner -- and every character that page cannot represent becomes a
+  # literal question mark, with a warning nobody reads among thousands:
+  #
+  #   warning C4566: character represented by universal-character-name
+  #   '\u5024' cannot be represented in the current code page (1252)
+  #
+  # That is not a cosmetic loss. tools/ExampleFile.cpp writes HDF5 objects
+  # named in Japanese, Cyrillic and emoji precisely because a viewer must not
+  # assume names are ASCII, and tests/test_example.cpp reads them back. With
+  # the characters flattened to '?' the distinct names collide, and the test
+  # that exists to defend the property fails for the one reason that has
+  # nothing to do with it.
+  #
+  # /utf-8 sets both the source and the execution character set, which is what
+  # every other compiler here already does and what Qt and HDF5 both expect.
+  add_compile_options(/utf-8)
+endif()
+
 if(PROJECT_IS_TOP_LEVEL)
   set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 endif()

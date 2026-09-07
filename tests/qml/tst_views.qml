@@ -1025,9 +1025,25 @@ TestCase {
         // ceiling of the bar's choosing. That ceiling was half the picker's
         // width, and a line past it scrolled inside a well with three hundred
         // spare pixels beside it.
-        verify(Math.abs(field.width - field.implicitWidth) < 1,
-               "the well must take the width it asks for: " + field.width
-               + " vs " + field.implicitWidth)
+        //
+        // Unless the bar had nothing to give, which is a different thing and
+        // has to be told apart from it rather than assumed away. How much a
+        // bar of a given width has spare is a question about how wide the host
+        // draws text: this window opens at a width with pixels to spare on
+        // Linux and thirty short of the well's ask under Windows' rasteriser,
+        // where the well is right to take what it can get.
+        //
+        // The spacer is what the difference is read from. It is the item that
+        // holds whatever the bar did not spend, so a spacer with nothing in it
+        // is a bar with nothing left to have given the well -- and a spacer
+        // with room in it beside a well below its ask is the ceiling this
+        // assertion exists to catch, on any platform and at any width.
+        const spacer = findChild(win.contentItem, "sliceSpacer")
+        verify(spacer, "the bar must have its spacer")
+        verify(Math.abs(field.width - field.implicitWidth) < 1 || spacer.width < 1,
+               "the well must take the width it asks for unless the bar has "
+               + "nothing spare: " + field.width + " vs " + field.implicitWidth
+               + ", spare " + spacer.width)
 
         AppController.applySlice(":, :, :, :")
     }

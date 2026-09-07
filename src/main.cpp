@@ -16,7 +16,68 @@
 #include <QQuickStyle>
 #include <QTextStream>
 
+#if defined(Q_OS_WIN)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+#include <cstdio>
+#endif
+
 namespace {
+
+#if defined(Q_OS_WIN)
+/// Give the process somewhere to print, when Windows has given it nowhere.
+///
+/// H5Scope is built with WIN32_EXECUTABLE, which makes it a GUI-subsystem
+/// executable: Windows starts it with no console and with null standard
+/// handles, so every write to stdout goes nowhere at all. That is right for
+/// the window -- a viewer should not open a black rectangle behind itself --
+/// and wrong for the four options that are text: `--license`, `--notices`,
+/// `--version` and `--help`.
+///
+/// It is `--license` that makes this load-bearing rather than a convenience.
+/// The described way to use H5Scope is to download one executable and run it,
+/// so the recipient of that executable has nowhere but the executable itself
+/// to read the terms it is conveyed under; src/gui/CMakeLists.txt compiles the
+/// GPL into the binary for exactly that reason. A binary that accepts
+/// `--license`, exits 0 and prints nothing satisfies the letter of nothing.
+///
+/// Two cases, and the order matters:
+///
+///   Standard output already exists -- `H5Scope --license > terms.txt`, or a
+///   pipe. The handle was inherited from the shell and printing already works.
+///   Reopening CONOUT$ here would take the output *away* from the file the
+///   user asked for and put it on the console instead, so this returns and
+///   changes nothing.
+///
+///   Standard output is null -- run from a console with no redirection, or
+///   from Explorer. AttachConsole borrows the console of whatever launched
+///   this, if there is one; the CRT streams then have to be pointed at it,
+///   because they were bound to nothing at startup and do not notice. Started
+///   from Explorer there is no parent console, AttachConsole fails, and the
+///   application goes on to open its window with stdout still going nowhere,
+///   which is exactly right.
+///
+/// What this cannot fix: cmd.exe does not wait for a GUI-subsystem process, so
+/// it prints its next prompt and the licence then arrives underneath it. The
+/// text is all there and the shell is simply no longer looking. `H5Scope
+/// --license | more` or a redirect avoids it, and both take the first branch
+/// above.
+void attachParentConsole()
+{
+    const HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (::AttachConsole(ATTACH_PARENT_PROCESS) == 0) {
+        return;
+    }
+    FILE* stream = nullptr;
+    (void)::freopen_s(&stream, "CONOUT$", "w", stdout);
+    (void)::freopen_s(&stream, "CONOUT$", "w", stderr);
+}
+#endif
 
 /// Write a compiled-in text resource to stdout. False only if the resource is
 /// absent, which cannot happen to a correctly assembled binary -- the licence
@@ -76,6 +137,12 @@ int printLicenseOptions(int argc, char* argv[])
 
 int main(int argc, char* argv[])
 {
+#if defined(Q_OS_WIN)
+    // First, because everything below that prints depends on it -- including
+    // the licence options on the next line, which is the whole point.
+    attachParentConsole();
+#endif
+
     if (const int status = printLicenseOptions(argc, argv); status >= 0) {
         return status;
     }

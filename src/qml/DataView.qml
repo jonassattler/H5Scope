@@ -268,7 +268,15 @@ Rectangle {
 
                 // Keeps the buttons at the right end while there is nothing
                 // to say about the line.
+                //
+                // Named because what it holds is the answer to a question the
+                // slice tests have to ask: whether a well narrower than its
+                // own line was capped by the bar or simply had nothing left to
+                // take. This is the room that was left over, so nothing left
+                // over is nothing to have given.
                 Item {
+                    objectName: "sliceSpacer"
+
                     Layout.fillWidth: true
                     visible: !sliceNote.visible
                 }

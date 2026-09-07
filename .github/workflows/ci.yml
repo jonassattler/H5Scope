@@ -371,10 +371,304 @@ jobs:
   # Corresponding Source for each of them.
   #
   # So: `git tag v0.2.0 && git push origin v0.2.0`, and this runs.
+  # The same thing on Windows, and deliberately the same shape: a static Qt,
+  # a static HDF5, one self-contained executable, and a check afterwards that
+  # reads the artefact rather than trusting the build.
+  #
+  # What is *not* the same is the floor. Linux has one because glibc records a
+  # version against every symbol, so a binary states the oldest system it will
+  # start on and tools/check-glibc-floor.sh can read that back. A PE import
+  # table carries nothing equivalent -- it names DLLs, not versions -- so there
+  # is no floor to verify here. The static CRT is what stands in its place:
+  # what would otherwise be the Windows spelling of the same failure, an
+  # executable that refuses to start for want of a runtime the user has no
+  # obvious way to get. tools/ci/verify-windows-binary.ps1 is where that is
+  # asserted.
+  build-windows:
+    name: Build and test (release, Windows x64)
+    runs-on: windows-latest
+    # As long as the Linux job, and for the same reason: a cold cache builds
+    # Qt from source, and this runner is slower at it.
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # The whole history and the tags with it, for the reason the Linux job
+      # gives: the patch number counts the release tags this commit descends
+      # from, and cmake/Version.cmake refuses to version a shallow build.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Where vcpkg lives, and it is two decisions rather than one.
+      #
+      # A short root, because Qt's build trees are the deepest paths this
+      # project produces and the first to meet MAX_PATH: every character saved
+      # at the root is one available at the leaves.
+      #
+      # And on the runner's *big* drive, which is the half that was got wrong
+      # the first time. This job originally hardcoded C:\v, and the C: of a
+      # windows-latest runner has about 29 GB free against D:'s 220 -- so a
+      # release-only static Qt got qtbase built, spent forty minutes on
+      # qtdeclarative and died installing it, with CMake reporting "file cannot
+      # create directory ... Maybe need administrative privileges", which is
+      # its generic guess for a mkdir that failed. The disk was simply full;
+      # the runner said so itself a moment later, having no room left for its
+      # own diagnostic log.
+      #
+      # Derived from GITHUB_WORKSPACE rather than named, because "the drive the
+      # runner put the workspace on" is the question actually being asked --
+      # that is where the image has room, and an image that moves it moves this
+      # too. The floor below turns a wrong answer into a failure in the first
+      # minute instead of the fortieth.
+      #
+      # Written into GITHUB_ENV by a step, which is safe now for a reason worth
+      # naming: vcvars64.bat exports a VCPKG_ROOT of its own -- the copy of
+      # vcpkg inside Visual Studio -- and an earlier version of this job had
+      # that quietly overwrite ours. tools/ci/msvc-env.ps1 withholds that one
+      # name, so this no longer has to run after the toolchain step.
+      - name: Somewhere with room for a Qt build
+        run: |
+          git config --system core.longpaths true
+
+          $drive = Split-Path -Qualifier $env:GITHUB_WORKSPACE
+          $free = (Get-PSDrive -Name $drive.TrimEnd(':')).Free / 1GB
+          Write-Host "workspace drive $drive has $([math]::Round($free, 1)) GB free"
+
+          # 29 GB is measured to be too little; this is the next round number
+          # with real headroom above it. A cache hit needs a fraction of it,
+          # but the run that has to build Qt is the one that matters.
+          if ($free -lt 60) {
+            throw ("$drive has only $([math]::Round($free, 1)) GB free and a " +
+                   "from-source Qt needs more than that. C: on this image has " +
+                   "about 29 GB, which is where this job used to put vcpkg " +
+                   "and how it used to fail. Check which drive the workspace " +
+                   "is on.")
+          }
+
+          New-Item -ItemType Directory -Force -Path "$drive\vcpkg-cache" | Out-Null
+          "VCPKG_ROOT=$drive\v"                          >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$drive\vcpkg-cache" >> $env:GITHUB_ENV
+
+          # And the installed tree, which is the other half of the same
+          # problem and was missed the first time. VCPKG_ROOT covers
+          # buildtrees, packages and downloads; vcpkg_installed defaults to
+          # somewhere inside the build directory, which is under the
+          # workspace, which is long. Qt's deepest artefact is
+          #
+          #   .../Qt6/qml/QtQuick/Controls/FluentWinUI3/objects-Release/
+          #   qtquickcontrols2fluentwinui3styleplugin_resources_2/.qt/rcc/
+          #   qrc_qtquickcontrols2fluentwinui3styleplugin_raw_qml_0_init.cpp.obj
+          #
+          # and under the workspace that comes to 266 characters against a
+          # MAX_PATH of 260 -- so the link failed with LNK1181, "cannot open
+          # input file", naming a file that was there. $drive\i takes 54
+          # characters off the front of every one of them.
+          "VCPKG_INSTALLED_DIR=$drive\i" >> $env:GITHUB_ENV
+
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      # The Ninja generator expects a compiler on the environment rather than
+      # looking for one, and a workflow step cannot leave its environment to
+      # the next except through GITHUB_ENV. See the script.
+      - name: The MSVC toolchain, for every step after this one
+        run: ./tools/ci/msvc-env.ps1
+
+      # Pinned to the manifest's own builtin-baseline, exactly as the Linux
+      # job does it: the registry CI reads is the one vcpkg.json names, not
+      # whatever upstream landed that morning.
+      # The bootstrap is retried, on the same reasoning as
+      # tools/ci/seed-downloads.sh on the Linux side: it fetches vcpkg.exe
+      # from GitHub's release CDN, and that transfer has already been cut off
+      # mid-flight once --
+      #
+      #   While calling Windows API function WinHttpReceiveResponse got error 0
+      #   The connection with the server was terminated abnormally
+      #
+      # -- taking a run down four steps in, for a reason that has nothing to do
+      # with anything being built. Three attempts, and a failure after those is
+      # reported as one rather than swallowed.
+      - name: Set up vcpkg
+        run: |
+          $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          Write-Host "cloning vcpkg $baseline into $env:VCPKG_ROOT"
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout --detach $baseline
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) {
+              throw "bootstrap-vcpkg failed $attempt times; last exit $LASTEXITCODE"
+            }
+            Write-Host "bootstrap attempt $attempt failed; retrying in 15s"
+            Start-Sleep -Seconds 15
+          }
+
+      # The accumulating cache, and every word of the Linux job's comment on
+      # this applies here unchanged: the run id keeps the key from ever
+      # hitting, the restore-keys fall back to the newest cache for this
+      # manifest, and the save at the end writes a superset -- so each run
+      # starts where the last one got to, whether or not it passed. The run
+      # attempt is in the key because a re-run keeps the run id, and a key
+      # that already exists cannot be written again.
+      #
+      # `win` in the key because vcpkg hashes the compiler into every
+      # package's ABI tag, and nothing built by gcc on AlmaLinux can be reused
+      # by MSVC. The two caches are separate entries and count together
+      # against the repository's 10 GB; if eviction ever starts costing the
+      # Linux job its cache, a NuGet binary source on GitHub Packages is the
+      # way out, and is not subject to that limit.
+      - name: Restore vcpkg binaries
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-
+            vcpkg-win-
+
+      # The overlay triplet builds release only, and the clean options keep
+      # the disk from filling: both are the Linux job's reasoning, and this
+      # runner has less room than that one rather than more. The host triplet
+      # is set too -- Qt's moc, rcc and qmltyperegistrar are host dependencies
+      # and would otherwise build both configurations, which is where a debug
+      # Qt nobody links comes from.
+      #
+      # The step cap is a starting point rather than a measurement. Its
+      # purpose is that the step ends on its own terms and the save below
+      # still runs, banking whatever did build; the Linux job's 120 was
+      # arrived at from runs that were reclaimed mid-compile, and there is no
+      # equivalent history here yet. Revise it once there is.
+      - name: Configure
+        timeout-minutes: 180
+        run: |
+          cmake --preset windows-release `
+            -DVCPKG_OVERLAY_TRIPLETS="${{ github.workspace }}/cmake/triplets" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_HOST_TRIPLET=x64-windows-static-release `
+            -DVCPKG_INSTALLED_DIR="$env:VCPKG_INSTALLED_DIR" `
+            "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build;--clean-downloads-after-build"
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      # -k 0 so ninja reports every file it cannot compile rather than
+      # stopping at the first. This platform is reachable only from here: a
+      # build that stops at one error turns "what does not compile with MSVC"
+      # into one answer per CI run, and each run is a Qt restore, a configure
+      # and a queue wait to learn the next thing that a single run could have
+      # told us. It still exits non-zero, so a failure is still a failure.
+      - name: Build
+        run: cmake --build --preset windows-release -- -k 0
+
+      # Every suite the Linux job runs, including the two design checks, which
+      # go through Git Bash here. .gitattributes is what makes that work: the
+      # runner image checks out with core.autocrlf=true, and a shell script
+      # with CRLF endings names an interpreter that does not exist.
+      - name: Test
+        run: ctest --preset windows-release
+
+      # ctest's own transcript, kept whenever anything above failed. The QML
+      # suite failed once having printed nothing to the console at all --
+      # eighty-five seconds and then a bare non-zero exit -- which left
+      # nothing to diagnose from and cost a run to find out. This is what to
+      # read next time.
+      - name: The test log, if anything failed
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ctest-log-windows
+          path: build/windows-release/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: The binary is fit to publish
+        run: |
+          $binary = Get-ChildItem build/windows-release/bin/H5Scope-*.exe |
+                      Select-Object -First 1
+          # Said here rather than left to the script's parameter binding,
+          # which reported a missing executable as "Cannot bind argument to
+          # parameter 'Binary' because it is an empty string" -- true, and no
+          # help at all in finding out that the build had deleted its own
+          # output.
+          if (-not $binary) {
+            Get-ChildItem build/windows-release/bin | Format-Table -AutoSize
+            throw "no H5Scope-*.exe in build/windows-release/bin"
+          }
+          ./tools/ci/verify-windows-binary.ps1 $binary.FullName
+
+      # Whatever happened, and for the reason the Linux job gives: discarding
+      # the packages that did build because a later one did not makes every
+      # attempt pay the whole cost again.
+      - name: Make room for the cache
+        if: always()
+        run: |
+          foreach ($dir in 'buildtrees', 'packages', 'downloads') {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
+              "$env:VCPKG_ROOT\$dir"
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Save vcpkg binaries
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # A binary is conveyed object code even as a CI artefact, so it does not
+      # travel without a way to reach its source.
+      - name: Write the source pointer
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $text = @"
+          # H5Scope --- where this binary's source is
+
+          This build is GPL-3.0-only. It links Qt, HDF5 and about twenty
+          further libraries statically, and the Visual C++ runtime with them,
+          so it depends on no redistributable. LICENSE, THIRD-PARTY-NOTICES.md
+          and THIRD-PARTY-LICENSES.txt are beside this file: the licence, the
+          inventory of what is inside the executable, and the notices those
+          libraries require. The binary carries all three itself as well ---
+          run it with ``--license`` or ``--notices``.
+
+          It is compiled with MSVC against the x64-windows-static triplet.
+          The set of libraries inside it is a strict subset of the Linux
+          build's: fontconfig, expat, libb2 and xcb-util-cursor are not in it.
+
+          Built from: ${{ github.repository }} at commit ${{ github.sha }}
+          Repository: ${{ github.server_url }}/${{ github.repository }}
+          This run:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The dependency sources are pinned by vcpkg.json's builtin-baseline,
+          and vcpkg patches several of them --- the patches are part of the
+          Corresponding Source. Tagged releases attach a bundle containing all
+          of it, covering both platforms; ``tools/make-source-bundle.sh`` is
+          what assembles that bundle.
+          "@
+          Set-Content -Path build/windows-release/bin/SOURCE.md -Value $text
+
+      - name: Upload the executable
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: H5Scope-windows-x64
+          path: |
+            build/windows-release/bin/H5Scope-*.exe
+            build/windows-release/bin/SOURCE.md
+            build/windows-release/bin/LICENSE
+            build/windows-release/bin/THIRD-PARTY-NOTICES.md
+            build/windows-release/bin/THIRD-PARTY-LICENSES.txt
+          if-no-files-found: error
+          retention-days: 14
+
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     # The only job here that writes anything back. Scoped to this job rather
     # than the workflow so a build cannot, whatever it runs.
@@ -389,23 +683,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The binary the build job already produced and tested. Rebuilding it
-      # here would take hours and would publish a different file than the one
-      # the tests passed against. It is downloaded before the tag is checked,
-      # because the binary is what the check is against.
-      - name: Download the tested binary
+      # The binaries the build jobs already produced and tested. Rebuilding
+      # them here would take hours and would publish different files than the
+      # ones the tests passed against. They are downloaded before the tag is
+      # checked, because they are what the check is against.
+      #
+      # Into a directory each, not one: both carry a LICENSE, a
+      # THIRD-PARTY-NOTICES.md, a SOURCE.md and a THIRD-PARTY-LICENSES.txt,
+      # and two of those four differ between the platforms. Downloading them
+      # on top of each other would silently keep whichever arrived second.
+      - name: Download the tested Linux binary
         uses: actions/download-artifact@v7
         with:
           name: H5Scope-linux-x64
-          path: release-assets
+          path: downloads/linux
 
-      # The upload preserved the two directories it came from; the release
-      # publishes a flat list, so flatten it.
-      - name: Flatten the download
+      - name: Download the tested Windows executable
+        uses: actions/download-artifact@v7
+        with:
+          name: H5Scope-windows-x64
+          path: downloads/windows
+
+      # The uploads preserved the directories they came from; the release
+      # publishes a flat list, so flatten each within its own.
+      - name: Flatten the downloads
         run: |
-          find release-assets -mindepth 2 -type f -exec mv -t release-assets {} +
-          find release-assets -mindepth 1 -type d -empty -delete
-          ls -la release-assets
+          for platform in linux windows; do
+            find "downloads/$platform" -mindepth 2 -type f \
+              -exec mv -t "downloads/$platform" {} +
+            find "downloads/$platform" -mindepth 1 -type d -empty -delete
+          done
+          ls -la downloads/linux downloads/windows
 
       # The version is not recomputed here. cmake/Version.cmake worked it out
       # from the release tags during the build, and the executable is named
@@ -418,13 +726,13 @@ jobs:
       # Since the patch number *is* the number of releases in this series, the
       # tag to push is never a guess -- it is whatever the build already said.
       #
-      # The AppImage is excluded from the search rather than matched loosely:
-      # it is named for the same version and would otherwise be a second
-      # answer to "which file is the binary".
+      # The AppImage and the .exe are excluded from the search rather than
+      # matched loosely: both are named for the same version and would
+      # otherwise be further answers to "which file is the binary".
       - name: The tag must match the binary the build produced
         run: |
-          binary=$(find release-assets -maxdepth 1 -type f -name 'H5Scope-*' \
-                     ! -name '*.AppImage')
+          binary=$(find downloads/linux -maxdepth 1 -type f -name 'H5Scope-*' \
+                     ! -name '*.AppImage' ! -name '*.exe')
           if [ "$(printf '%s\n' "$binary" | grep -c .)" -ne 1 ]; then
             echo "::error::expected exactly one H5Scope-* binary, found:"
             printf '%s\n' "$binary"
@@ -442,17 +750,60 @@ jobs:
           fi
           echo "VERSION=$built" >> "$GITHUB_ENV"
 
-      # The AppImage is published beside the binary, so it has to be there.
-      - name: The AppImage must be there, and match
+      # Every other artefact carries the same version in its own name, and
+      # each is checked for rather than globbed. Two jobs on two runners
+      # counted the tags independently; agreeing is the thing worth asserting,
+      # because a release whose .exe and binary call themselves different
+      # versions is one nobody can reason about afterwards.
+      - name: Every artefact must be there, and agree
         run: |
-          appimage="release-assets/H5Scope-$VERSION-x86_64.AppImage"
-          test -f "$appimage" || {
-            echo "::error::no AppImage for $VERSION in the build's artefacts"
-            ls -la release-assets
+          missing=0
+          for expected in \
+              "downloads/linux/H5Scope-$VERSION-x86_64.AppImage" \
+              "downloads/windows/H5Scope-$VERSION.exe"; do
+            if [ -f "$expected" ]; then
+              echo "  $expected"
+            else
+              echo "::error::no $(basename "$expected") for $VERSION in the"\
+                   "build artefacts"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            ls -la downloads/linux downloads/windows
             exit 1
-          }
-          chmod +x "$appimage"
-          echo "appimage: $appimage"
+          fi
+          chmod +x "downloads/linux/H5Scope-$VERSION-x86_64.AppImage"
+
+      # One flat directory, with the four files that differ between the
+      # platforms given names that say which they belong to.
+      #
+      # THIRD-PARTY-LICENSES.txt is the one where this matters rather than
+      # merely tidies. It is generated from the ports actually on the link
+      # line, and the Windows binary links four fewer -- publishing one file
+      # under one name would attribute fontconfig, expat, libb2 and
+      # xcb-util-cursor to an executable that contains none of them. Each
+      # binary still carries its own inside it; this is about what sits beside
+      # them on the release page.
+      #
+      # LICENSE and THIRD-PARTY-NOTICES.md are the repository's own files and
+      # are the same in both, so one copy is published and the Linux one is
+      # arbitrarily the copy taken.
+      - name: Assemble what gets published
+        run: |
+          mkdir -p release-assets
+          mv "downloads/linux/H5Scope-$VERSION" release-assets/
+          mv "downloads/linux/H5Scope-$VERSION-x86_64.AppImage" release-assets/
+          mv "downloads/windows/H5Scope-$VERSION.exe" release-assets/
+          mv downloads/linux/LICENSE release-assets/
+          mv downloads/linux/THIRD-PARTY-NOTICES.md release-assets/
+          for platform in linux windows; do
+            mv "downloads/$platform/THIRD-PARTY-LICENSES.txt" \
+               "release-assets/THIRD-PARTY-LICENSES-$platform-x64.txt"
+            mv "downloads/$platform/SOURCE.md" \
+               "release-assets/SOURCE-$platform-x64.md"
+          done
+          ls -la release-assets
 
       # Only the tool: the ports this bundle ships come from the baseline, and
       # tools/make-source-bundle.sh extracts them itself.
@@ -477,8 +828,8 @@ jobs:
       - name: Checksums
         working-directory: release-assets
         run: |
-          sha256sum H5Scope-* LICENSE THIRD-PARTY-NOTICES.md \
-                    THIRD-PARTY-LICENSES.txt > SHA256SUMS
+          sha256sum H5Scope-* SOURCE-*.md LICENSE THIRD-PARTY-NOTICES.md \
+                    THIRD-PARTY-LICENSES-*.txt > SHA256SUMS
           cat SHA256SUMS
 
       # gh rather than a third-party action: it is preinstalled, and publishing
@@ -492,23 +843,40 @@ jobs:
         working-directory: release-assets
         run: |
           cat > notes.md <<EOF
-          Linux on x86-64, self-contained: Qt and HDF5 are linked statically,
-          and both files are compiled against glibc 2.28, so they run on RHEL 8
-          and anything newer. Take the AppImage if you are unsure.
+          Every file here is self-contained: Qt and HDF5 are linked statically
+          into each of them, and nothing is asked of the machine it runs on.
+
+          **Linux on x86-64** — \`H5Scope-$VERSION\` and
+          \`H5Scope-$VERSION-x86_64.AppImage\`, both compiled against glibc
+          2.28, so they run on RHEL 8 and anything newer. Take the AppImage if
+          you are unsure.
+
+          **Windows on x64** — \`H5Scope-$VERSION.exe\`. The Visual C++
+          runtime is linked in too, so there is no redistributable to install.
+          It is not code-signed, so SmartScreen will warn on first run: *More
+          info* then *Run anyway*, and \`SHA256SUMS\` is how to check you have
+          the file this build produced.
 
           GPL-3.0-only. \`H5Scope-$VERSION-source.tar.zst\` is the complete
-          Corresponding Source for the executables above; \`LICENSE\` and
-          \`THIRD-PARTY-NOTICES.md\` are the licence and the inventory of
-          everything else inside them, and the binary prints both itself with
-          \`--license\` and \`--notices\`.
+          Corresponding Source for every executable above, both platforms.
+          \`LICENSE\` and \`THIRD-PARTY-NOTICES.md\` are the licence and the
+          inventory of everything else inside them; the
+          \`THIRD-PARTY-LICENSES-*.txt\` files are the notices those libraries
+          require, one per platform because the two link slightly different
+          sets. Every binary prints all of it itself, with \`--license\` and
+          \`--notices\`.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "H5Scope $VERSION" \
             --notes-file notes.md \
             "H5Scope-$VERSION" \
             "H5Scope-$VERSION-x86_64.AppImage" \
+            "H5Scope-$VERSION.exe" \
             "H5Scope-$VERSION-source.tar.zst" \
             LICENSE \
             THIRD-PARTY-NOTICES.md \
-            THIRD-PARTY-LICENSES.txt \
+            THIRD-PARTY-LICENSES-linux-x64.txt \
+            THIRD-PARTY-LICENSES-windows-x64.txt \
+            SOURCE-linux-x64.md \
+            SOURCE-windows-x64.md \
             SHA256SUMS

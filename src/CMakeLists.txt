@@ -37,16 +37,57 @@ qt_import_qml_plugins(H5Scope)
 #
 # Wayland needs its shell integration alongside the platform plugin: without a
 # shell the client connects and then never gets a surface.
-qt_import_plugins(H5Scope
-  INCLUDE
+#
+# Named per platform rather than in one list, because these are targets and a
+# target that the Qt for this platform does not build simply does not exist:
+# leaving QXcbIntegrationPlugin in the list on Windows is not a plugin that
+# never loads, it is a link against a name CMake cannot resolve, and the
+# configure fails.
+if(WIN32)
+  set(h5scope_platform_plugins Qt6::QWindowsIntegrationPlugin)
+else()
+  set(h5scope_platform_plugins
     Qt6::QWaylandIntegrationPlugin
     Qt6::QWaylandXdgShellIntegrationPlugin
     Qt6::QXcbIntegrationPlugin
     Qt6::QXcbGlxIntegrationPlugin
-    # Headless: CI smoke tests and any automation without a display.
+  )
+endif()
+
+qt_import_plugins(H5Scope
+  INCLUDE
+    ${h5scope_platform_plugins}
+    # Headless: CI smoke tests and any automation without a display. Built for
+    # every platform Qt supports, so these are outside the branch above.
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QMinimalIntegrationPlugin
 )
+
+# --- what the file itself says it is, on Windows ---------------------------
+# The icon and the version block. Both live in a resource compiled into the
+# executable, which is where Windows looks for them -- there is no equivalent
+# of the .desktop file beside the binary, so an executable without this is one
+# Explorer draws as a blank sheet and whose properties are empty.
+#
+# The version comes from cmake/Version.cmake through configure_file, so the
+# Details tab and `--version` cannot disagree.
+if(WIN32)
+  # Harmless where CMake has already enabled it, decisive where it has not:
+  # a .rc among a target's sources is silently ignored rather than compiled
+  # if the RC language was never enabled, and the result is a build that
+  # succeeds and an executable with no icon.
+  enable_language(RC)
+
+  # Forward slashes: rc.exe accepts them in a path, and a backslash inside a
+  # resource string is an escape character.
+  file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/packaging/h5scope.ico"
+       H5SCOPE_ICON_PATH)
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/packaging/h5scope.rc.in"
+    "${CMAKE_BINARY_DIR}/generated/h5scope.rc"
+    @ONLY)
+  target_sources(H5Scope PRIVATE "${CMAKE_BINARY_DIR}/generated/h5scope.rc")
+endif()
 
 # The version is in the file name, so a directory of builds is self-describing
 # and a downloaded artefact still says what it is once it has left the page it
@@ -61,10 +102,22 @@ set_target_properties(H5Scope PROPERTIES
 # This drops the superseded ones and points a stable `H5Scope` at the
 # current build, so there is always one name that means "what I just built".
 add_custom_command(TARGET H5Scope POST_BUILD
+  # The name to keep is asked of the target rather than rebuilt from the
+  # version, and the pattern carries the suffix. Spelling the name out worked
+  # for exactly as long as the suffix was empty: on Windows the target is
+  # H5Scope-0.3.2.exe and the name to keep was H5Scope-0.3.2, so the two did
+  # not match and the step removed the executable it had just linked --
+  #
+  #   [242/244] Linking CXX executable bin\H5Scope-0.3.2.exe
+  #   -- Removing superseded build H5Scope-0.3.2.exe
+  #
+  # -- leaving a build that succeeded, a test suite that passed, and nothing
+  # to publish. The suffix in the pattern earns its place too: without it the
+  # glob also matches H5Scope-0.3.2.pdb and this step deletes that instead.
   COMMAND ${CMAKE_COMMAND}
     -DPRUNE_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-    -DPRUNE_PATTERN=H5Scope-*
-    -DPRUNE_KEEP=H5Scope-${H5SCOPE_VERSION}
+    -DPRUNE_PATTERN=H5Scope-*${CMAKE_EXECUTABLE_SUFFIX}
+    -DPRUNE_KEEP=$<TARGET_FILE_NAME:H5Scope>
     -DPRUNE_LINK=H5Scope
     -P ${CMAKE_SOURCE_DIR}/cmake/PruneVersionedBinaries.cmake
   VERBATIM
