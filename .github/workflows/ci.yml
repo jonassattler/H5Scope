@@ -516,8 +516,14 @@ jobs:
             "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build;--clean-downloads-after-build"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
+      # -k 0 so ninja reports every file it cannot compile rather than
+      # stopping at the first. This platform is reachable only from here: a
+      # build that stops at one error turns "what does not compile with MSVC"
+      # into one answer per CI run, and each run is a Qt restore, a configure
+      # and a queue wait to learn the next thing that a single run could have
+      # told us. It still exits non-zero, so a failure is still a failure.
       - name: Build
-        run: cmake --build --preset windows-release
+        run: cmake --build --preset windows-release -- -k 0
 
       # Every suite the Linux job runs, including the two design checks, which
       # go through Git Bash here. .gitattributes is what makes that work: the
