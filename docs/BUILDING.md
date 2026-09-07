@@ -127,6 +127,20 @@ cmake --build --preset windows-release
 ctest --preset windows-release
 ```
 
+The presets name `cl` as the compiler rather than letting CMake find one, and
+that is not redundant with running from a Native Tools prompt. Visual Studio 18
+ships an LLVM toolchain beside MSVC and `vcvars64.bat` puts it on `PATH`, so
+CMake's own search picked `clang++` in GNU-driver mode — which compiled the
+whole project and then failed at the link, since vcpkg had built every port
+with `cl` and clang's GNU driver asks for the dynamic CRT. Naming the compiler
+says what the build is, and matches what the dependencies were built with.
+
+The static CRT is the other half, and the root `CMakeLists.txt` sets it:
+vcpkg's toolchain file sets no `CMAKE_MSVC_RUNTIME_LIBRARY` at all, so without
+that this project's objects come out `/MD` against `/MT` libraries and the
+linker rejects the mismatch after everything has compiled. It sits beside the
+`-static-libstdc++` block, which is the same decision on the other platform.
+
 The overlay triplet is the release-only one, which is what CI uses and what
 keeps a debug Qt nobody links off the disk. Without those three flags the
 `windows-release` preset builds against plain `x64-windows-static` and both

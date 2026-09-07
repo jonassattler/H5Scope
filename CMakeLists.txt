@@ -64,6 +64,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_link_options(-static-libstdc++ -static-libgcc)
 endif()
 
+# ...and on Windows the same question has a different name: the C runtime.
+#
+# vcpkg's x64-windows-static triplet builds every port against the static CRT,
+# and nothing passes that fact on. vcpkg's toolchain file sets no
+# CMAKE_MSVC_RUNTIME_LIBRARY at all, so CMake applies its own default of
+# MultiThreadedDLL and this project's objects come out /MD while every library
+# they link is /MT. The linker does catch it -- that is exactly what
+# /failifmismatch is for -- but only after everything has compiled:
+#
+#   lld-link: error: /failifmismatch: mismatch detected for 'RuntimeLibrary':
+#   >>> Catch2.lib(catch_assertion_handler.cpp.obj) has value MT_StaticRelease
+#   >>> test_support.lib(TestFile.cpp.obj)          has value MD_DynamicRelease
+#
+# Set here rather than in the preset so it holds for any configure, and set
+# before anything creates a target, because that is when CMake reads it.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(PROJECT_IS_TOP_LEVEL)
   set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 endif()
