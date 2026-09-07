@@ -395,22 +395,6 @@ jobs:
       run:
         shell: pwsh
 
-    # Declared here rather than written into GITHUB_ENV by a step, and that is
-    # not only tidiness. vcvars64.bat exports a VCPKG_ROOT of its own -- the
-    # copy of vcpkg that ships inside Visual Studio -- and the first version of
-    # this job set ours in a step that ran *before* the toolchain step, which
-    # then published Visual Studio's over it. tools/ci/msvc-env.ps1 now withholds
-    # that one name; stating ours at the top of the job is the other half.
-    #
-    # C:\v is two characters on purpose. Qt's build trees are the deepest paths
-    # this project produces and the first to meet MAX_PATH, so every character
-    # saved at the root is one available at the leaves -- and the failure that
-    # prevents arrives hours in, as a compiler that cannot open a file whose
-    # name is right there in the error.
-    env:
-      VCPKG_ROOT: C:\v
-      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
-
     steps:
       # The whole history and the tags with it, for the reason the Linux job
       # gives: the patch number counts the release tags this commit descends
@@ -419,14 +403,55 @@ jobs:
         with:
           fetch-depth: 0
 
-      # vcpkg refuses a binary cache directory that does not exist, and long
-      # paths are the other thing that has to be true before anything is
-      # cloned into C:\v.
-      - name: Long paths, and somewhere to keep the binary cache
+      # Where vcpkg lives, and it is two decisions rather than one.
+      #
+      # A short root, because Qt's build trees are the deepest paths this
+      # project produces and the first to meet MAX_PATH: every character saved
+      # at the root is one available at the leaves.
+      #
+      # And on the runner's *big* drive, which is the half that was got wrong
+      # the first time. This job originally hardcoded C:\v, and the C: of a
+      # windows-latest runner has about 29 GB free against D:'s 220 -- so a
+      # release-only static Qt got qtbase built, spent forty minutes on
+      # qtdeclarative and died installing it, with CMake reporting "file cannot
+      # create directory ... Maybe need administrative privileges", which is
+      # its generic guess for a mkdir that failed. The disk was simply full;
+      # the runner said so itself a moment later, having no room left for its
+      # own diagnostic log.
+      #
+      # Derived from GITHUB_WORKSPACE rather than named, because "the drive the
+      # runner put the workspace on" is the question actually being asked --
+      # that is where the image has room, and an image that moves it moves this
+      # too. The floor below turns a wrong answer into a failure in the first
+      # minute instead of the fortieth.
+      #
+      # Written into GITHUB_ENV by a step, which is safe now for a reason worth
+      # naming: vcvars64.bat exports a VCPKG_ROOT of its own -- the copy of
+      # vcpkg inside Visual Studio -- and an earlier version of this job had
+      # that quietly overwrite ours. tools/ci/msvc-env.ps1 withholds that one
+      # name, so this no longer has to run after the toolchain step.
+      - name: Somewhere with room for a Qt build
         run: |
           git config --system core.longpaths true
-          New-Item -ItemType Directory -Force `
-                   -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+          $drive = Split-Path -Qualifier $env:GITHUB_WORKSPACE
+          $free = (Get-PSDrive -Name $drive.TrimEnd(':')).Free / 1GB
+          Write-Host "workspace drive $drive has $([math]::Round($free, 1)) GB free"
+
+          # 29 GB is measured to be too little; this is the next round number
+          # with real headroom above it. A cache hit needs a fraction of it,
+          # but the run that has to build Qt is the one that matters.
+          if ($free -lt 60) {
+            throw ("$drive has only $([math]::Round($free, 1)) GB free and a " +
+                   "from-source Qt needs more than that. C: on this image has " +
+                   "about 29 GB, which is where this job used to put vcpkg " +
+                   "and how it used to fail. Check which drive the workspace " +
+                   "is on.")
+          }
+
+          New-Item -ItemType Directory -Force -Path "$drive\vcpkg-cache" | Out-Null
+          "VCPKG_ROOT=$drive\v"                          >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$drive\vcpkg-cache" >> $env:GITHUB_ENV
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       # The Ninja generator expects a compiler on the environment rather than
