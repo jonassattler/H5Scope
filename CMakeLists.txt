@@ -102,6 +102,27 @@ if(MSVC)
   add_compile_options(/utf-8)
 endif()
 
+# --- what the compiler already knows -----------------------------------------
+# This project compiled for a long time with no warning flags at all, which is
+# not the same thing as compiling without warnings: it means nobody was being
+# told. Switching them on found exactly one thing -- a constructor whose
+# initialiser list ran in a different order from the members it initialised,
+# which -Wreorder names and a reader does not -- and the tree has been clean
+# ever since, generated moc code included.
+#
+# Not -Werror. These are for the person reading the build, and a warning that
+# stops the build is one that gets switched off the first time it is
+# inconvenient; the CI build is where a new one is meant to be noticed.
+#
+# Warnings out of Qt's and HDF5's own headers are not this project's to fix and
+# would drown the ones that are. CMake compiles imported targets' include
+# directories with -isystem, which is what already keeps them quiet.
+if(MSVC)
+  add_compile_options(/W4)
+else()
+  add_compile_options(-Wall -Wextra)
+endif()
+
 if(PROJECT_IS_TOP_LEVEL)
   set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 endif()

@@ -13,8 +13,6 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
-#include <functional>
-#include <memory>
 #include <optional>
 #include <vector>
 
@@ -206,20 +204,33 @@ public:
     /// dimension the grid has spread along an axis; `axes` must describe the
     /// same dataset, which is what starting from axes() and pinning guarantees.
     ///
-    /// Blocking: it waits for the HDF5 thread. Nothing on the drawing path may
-    /// call it -- the plot and the image ask through requestSamples() below --
-    /// and it is kept because a test that has to spin an event loop to read
-    /// four numbers is a test about the event loop.
+    /// Blocking, like the one above: it waits for the HDF5 thread. The plot and
+    /// the image are both built on it, so the wait is real and is what the
+    /// batch form below exists to stop paying more than once.
     [[nodiscard]] NumericGrid sampleValues(const TableAxes& axes, int firstRow,
                                            int rowSpan, int maxRows, int firstColumn,
                                            int columnSpan, int maxColumns) const;
 
-    /// The same sampling, asked for rather than waited on. `then` runs on this
-    /// thread when the numbers arrive, and not at all if the source has changed
-    /// in the meantime.
-    void requestSamples(const TableAxes& axes, int firstRow, int rowSpan, int maxRows,
-                        int firstColumn, int columnSpan, int maxColumns,
-                        std::function<void(NumericGrid)> then);
+    /// One rectangle asked for, in the arguments sampleValues() takes.
+    struct SampleRequest {
+        int firstRow = 0;
+        int rowSpan = -1;
+        int maxRows = 1;
+        int firstColumn = 0;
+        int columnSpan = -1;
+        int maxColumns = 1;
+    };
+
+    /// Several rectangles of the table on screen, in one crossing of the
+    /// thread. Answers in the order asked, one entry per request.
+    ///
+    /// The plot is why this exists. A line is one row of the table, so drawing
+    /// n of them is n rectangles -- and asked one at a time each of those is a
+    /// blocking round trip with its own handshake, which made "draw every
+    /// line" of a ten-thousand-row table ten thousand of them and a window
+    /// that stopped answering. The reads themselves were never the cost.
+    [[nodiscard]] std::vector<NumericGrid>
+    sampleValues(const std::vector<SampleRequest>& requests) const;
 
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
@@ -241,6 +252,12 @@ private:
     void rebuild(TableLayout layout);
     /// Ensure the cached block covers (row, column), asking for it if not.
     void ensureBlock(int row, int column) const;
+    /// Record why the last read failed, or clear it when one succeeds.
+    ///
+    /// Not a plain assignment, because rowCount() and columnCount() are zero
+    /// while a message stands: a message arriving or clearing is a change in
+    /// the size of the model, and this is what announces it as one.
+    void setReadError(QString text) const;
     /// The sampling itself, on the HDF5 thread.
     [[nodiscard]] static NumericGrid sampleFrom(const h5core::DataSource& source,
                                                 const TableAxes& axes, int firstRow,

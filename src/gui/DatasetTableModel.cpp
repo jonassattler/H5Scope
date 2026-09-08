@@ -127,6 +127,38 @@ DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& 
     return block;
 }
 
+void DatasetTableModel::setReadError(QString text) const
+{
+    if (errorText_ == text) {
+        return;
+    }
+
+    // rowCount() and columnCount() are both zero while a message stands, so a
+    // read that fails -- or one that succeeds after another had failed -- does
+    // not change what the cells hold, it changes how many of them there are.
+    // Qt has one way to say that, and dataChanged is not it: a view told only
+    // that the contents moved goes on addressing rows the model has just
+    // stopped having, which is where a scroll into a dataset whose external
+    // file had gone missing ended up indexing past the end of the table.
+    //
+    // A message replacing another message resizes nothing, and resetting for
+    // one would throw away the reader's scroll position for a change of
+    // wording.
+    if (errorText_.isEmpty() == text.isEmpty()) {
+        errorText_ = std::move(text);
+        return;
+    }
+
+    auto* self = const_cast<DatasetTableModel*>(this);
+    self->beginResetModel();
+    errorText_ = std::move(text);
+    block_ = {};
+    askedRowOrigin_ = -1;
+    askedColumnOrigin_ = -1;
+    extent_.reset();
+    self->endResetModel();
+}
+
 void DatasetTableModel::ensureBlock(int row, int column) const
 {
     if (block_.valid && row >= block_.rowOrigin
@@ -176,18 +208,17 @@ void DatasetTableModel::ensureBlock(int row, int column) const
             self->askedRowOrigin_ = -1;
             self->askedColumnOrigin_ = -1;
             if (!read.error.isEmpty()) {
-                self->block_ = {};
-                self->errorText_ = read.error;
-                emit self->dataChanged(self->index(0, 0),
-                                       self->index(std::max(0, self->rowCount() - 1),
-                                                   std::max(0, self->columnCount() - 1)));
+                self->setReadError(read.error);
                 return;
             }
             if (!read.block.valid) {
                 return;
             }
+            // Before the block is installed: clearing the message is what puts
+            // the rows back, and setReadError() empties the cached block when
+            // it announces that.
+            self->setReadError(QString{});
             self->block_ = std::move(read.block);
-            self->errorText_.clear();
             // Only the block that arrived. The rest of the table is either
             // already painted or is waiting on a request of its own.
             const QModelIndex topLeft =
@@ -369,30 +400,35 @@ DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan
     });
 }
 
-void DatasetTableModel::requestSamples(const TableAxes& axes, int firstRow, int rowSpan,
-                                       int maxRows, int firstColumn, int columnSpan,
-                                       int maxColumns,
-                                       std::function<void(NumericGrid)> then)
+std::vector<DatasetTableModel::NumericGrid>
+DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) const
 {
-    NumericGrid grid;
-    if (!sampleable(grid)) {
-        // Answered here rather than across the thread: nothing is going to be
-        // read, and a caller that got its answer a frame later for no reason
-        // would flicker for no reason.
-        then(std::move(grid));
-        return;
+    std::vector<NumericGrid> grids;
+    if (requests.empty()) {
+        return grids;
     }
-    H5Thread::instance().submit(
-        requests_,
-        [axes, firstRow, rowSpan, maxRows, firstColumn, columnSpan,
-         maxColumns](H5Session& session) {
-            const h5core::DataSource* source = session.source();
-            return (source == nullptr)
-                       ? NumericGrid{}
-                       : sampleFrom(*source, axes, firstRow, rowSpan, maxRows,
-                                    firstColumn, columnSpan, maxColumns);
-        },
-        std::move(then));
+    NumericGrid refusal;
+    if (!sampleable(refusal)) {
+        // The same answer every one of them would have got, without a crossing
+        // to fetch it: whether there is anything numeric to read is a question
+        // about the description this side already holds.
+        grids.assign(requests.size(), refusal);
+        return grids;
+    }
+    return H5Thread::instance().invoke([&](H5Session& session) {
+        std::vector<NumericGrid> read;
+        read.reserve(requests.size());
+        const h5core::DataSource* source = session.source();
+        for (const SampleRequest& request : requests) {
+            read.push_back(source == nullptr
+                               ? NumericGrid{}
+                               : sampleFrom(*source, axes_, request.firstRow,
+                                            request.rowSpan, request.maxRows,
+                                            request.firstColumn, request.columnSpan,
+                                            request.maxColumns));
+        }
+        return read;
+    });
 }
 
 QVariant DatasetTableModel::data(const QModelIndex& index, int role) const

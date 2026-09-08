@@ -200,6 +200,55 @@ std::vector<double> Array::values() const
     return out;
 }
 
+std::vector<double> Array::block(const std::vector<hsize_t>& offset,
+                                 const std::vector<hsize_t>& count) const
+{
+    std::vector<double> out;
+    if (shape_.empty()) {
+        out.push_back(at({}));
+        return out;
+    }
+
+    // Read against the rank rather than against what was handed in: a `count`
+    // longer than the array has dimensions would otherwise put factors into
+    // the total that the walk below has no wheel to turn.
+    std::vector<hsize_t> extents(shape_.size(), 1);
+    for (std::size_t d = 0; d < shape_.size(); ++d) {
+        extents[d] = d < count.size() ? count[d] : hsize_t{1};
+    }
+    const hsize_t total = elementCount(extents);
+    if (total == 0) {
+        return out;
+    }
+    out.reserve(static_cast<std::size_t>(total));
+
+    // Where element (offset) sits, worked out once; from there the walk below
+    // only ever adds and subtracts strides.
+    std::ptrdiff_t start = offset_;
+    for (std::size_t d = 0; d < shape_.size(); ++d) {
+        start += strides_[d]
+                 * static_cast<std::ptrdiff_t>(d < offset.size() ? offset[d] : 0);
+    }
+
+    std::vector<hsize_t> index(shape_.size(), 0);
+    std::ptrdiff_t position = start;
+    for (hsize_t n = 0; n < total; ++n) {
+        out.push_back(position >= 0
+                              && position < static_cast<std::ptrdiff_t>(storage_->size())
+                          ? (*storage_)[static_cast<std::size_t>(position)]
+                          : 0.0);
+        for (std::size_t d = shape_.size(); d-- > 0;) {
+            position += strides_[d];
+            if (++index[d] < extents[d]) {
+                break;
+            }
+            position -= strides_[d] * static_cast<std::ptrdiff_t>(extents[d]);
+            index[d] = 0;
+        }
+    }
+    return out;
+}
+
 Array Array::materialised() const
 {
     // Already exactly its own buffer: hand back the same storage rather than

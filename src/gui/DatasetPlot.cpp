@@ -128,14 +128,64 @@ void DatasetPlot::setSeriesVisible(int series, bool visible)
     emit changed();
 }
 
-DatasetTableModel::NumericGrid DatasetPlot::sampleOne(int series) const
+DatasetTableModel::SampleRequest DatasetPlot::requestFor(int series) const
 {
     // One line, thinned along its length. Along the rows that is one table row
     // in full; along the columns it is the transpose, read the same way round,
     // and fill() is what turns it back.
     return seriesFromRows_
-               ? table_->sampleValues(series, 1, 1, 0, -1, kMaxPoints)
-               : table_->sampleValues(0, -1, kMaxPoints, series, 1, 1);
+               ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, kMaxPoints}
+               : DatasetTableModel::SampleRequest{0, -1, kMaxPoints, series, 1, 1};
+}
+
+void DatasetPlot::readMissing() const
+{
+    // Every line not already held, in one crossing of the thread rather than
+    // one per line. Each crossing is a blocking round trip with a handshake at
+    // both ends, and the handshake -- not the read -- is what made the
+    // legend's `all` on a ten-thousand-row table stop the window: ten thousand
+    // reads of a single row each, taken one at a time.
+    std::vector<int> wanted;
+    for (const int series : drawn_) {
+        if (lines_.find(series) == lines_.end()) {
+            wanted.push_back(series);
+        }
+    }
+    if (wanted.empty()) {
+        return;
+    }
+
+    // In batches rather than all at once. One crossing for ten thousand lines
+    // would hold ten thousand answers in hand *and* the ten thousand copies of
+    // them going into `lines_`, which is the same 160 MB twice; a batch at a
+    // time keeps the second copy to kReadBatch lines while still turning the
+    // round trips into a number a reader does not wait for.
+    for (std::size_t first = 0; first < wanted.size(); first += kReadBatch) {
+        const std::size_t last = std::min(first + kReadBatch, wanted.size());
+
+        std::vector<DatasetTableModel::SampleRequest> requests;
+        requests.reserve(last - first);
+        for (std::size_t i = first; i < last; ++i) {
+            requests.push_back(requestFor(wanted[i]));
+        }
+
+        std::vector<DatasetTableModel::NumericGrid> grids =
+            table_->sampleValues(requests);
+        const std::size_t count = std::min(last - first, grids.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            DatasetTableModel::NumericGrid& grid = grids[i];
+            if (!grid.error.isEmpty() && error_.isEmpty()) {
+                error_ = grid.error;
+            }
+            // Every line covers the same extent of the other axis, so these are
+            // the same for all of them and the last word is as good as the
+            // first. The extent is what the x axis is drawn against, so it has
+            // to be one number rather than one per line.
+            points_ = seriesFromRows_ ? grid.columns : grid.rows;
+            stride_ = seriesFromRows_ ? grid.columnStride : grid.rowStride;
+            lines_.emplace(wanted[first + i], std::move(grid.values));
+        }
+    }
 }
 
 void DatasetPlot::ensure() const
@@ -156,20 +206,12 @@ void DatasetPlot::ensure() const
         it = seriesVisible(it->first) ? std::next(it) : lines_.erase(it);
     }
 
+    readMissing();
+
     for (const int series : drawn_) {
-        auto held = lines_.find(series);
+        const auto held = lines_.find(series);
         if (held == lines_.end()) {
-            const DatasetTableModel::NumericGrid grid = sampleOne(series);
-            if (!grid.error.isEmpty() && error_.isEmpty()) {
-                error_ = grid.error;
-            }
-            held = lines_.emplace(series, std::move(grid.values)).first;
-            // Every line covers the same extent of the other axis, so these are
-            // the same for all of them and the last word is as good as the
-            // first. The extent is what the x axis is drawn against, so it has
-            // to be one number rather than one per line.
-            points_ = seriesFromRows_ ? grid.columns : grid.rows;
-            stride_ = seriesFromRows_ ? grid.columnStride : grid.rowStride;
+            continue; // it did not read; readMissing() kept the reason
         }
         for (const double value : held->second) {
             if (!std::isfinite(value)) {

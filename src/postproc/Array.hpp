@@ -71,6 +71,19 @@ public:
     /// Every element in row-major order. Materialises first if it has to.
     [[nodiscard]] std::vector<double> values() const;
 
+    /// The sub-box at `offset` with extent `count`, in row-major order.
+    ///
+    /// `values()` over a rectangle rather than over the whole array, and for
+    /// the same reason: the walk carries a rolling position, so the next
+    /// element is one add away from this one. `at()` would re-multiply the
+    /// whole index tuple per element, which is what reading a computed raster
+    /// a million pixels at a time was doing.
+    ///
+    /// `offset` and `count` are taken as matching the rank; anything they
+    /// reach outside the array reads as 0, as `at()` does.
+    [[nodiscard]] std::vector<double> block(const std::vector<hsize_t>& offset,
+                                            const std::vector<hsize_t>& count) const;
+
     /// The axes permuted: `axes[i]` says which of the input's dimensions
     /// becomes dimension `i`. Metadata only.
     [[nodiscard]] Array transposed(const std::vector<std::size_t>& axes) const;

@@ -1788,6 +1788,46 @@ TEST_CASE_METHOD(ControllerFixture, "the table samples itself as numbers",
         REQUIRE(grid.maximum == 32.0);
     }
 
+    SECTION("a batch answers each request as asking one at a time would")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/matrix")); // 4x3
+        // One row of the table per request, which is what the plot asks for --
+        // and the whole reason the batch form exists, since asking per line is
+        // a blocking round trip per line.
+        std::vector<gui::DatasetTableModel::SampleRequest> requests;
+        for (int row = 0; row < 4; ++row) {
+            requests.push_back({row, 1, 1, 0, -1, 64});
+        }
+        const auto batched = table()->sampleValues(requests);
+        REQUIRE(batched.size() == 4);
+        for (int row = 0; row < 4; ++row) {
+            const auto alone = table()->sampleValues(row, 1, 1, 0, -1, 64);
+            const auto& together = batched[static_cast<std::size_t>(row)];
+            REQUIRE(together.error.isEmpty());
+            REQUIRE(together.rows == alone.rows);
+            REQUIRE(together.columns == alone.columns);
+            REQUIRE(together.values == alone.values);
+        }
+    }
+
+    SECTION("a batch over a dataset with no numbers refuses each of them")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/str_vlen"));
+        const auto batched = table()->sampleValues(
+            {{0, 1, 1, 0, -1, 64}, {1, 1, 1, 0, -1, 64}});
+        REQUIRE(batched.size() == 2);
+        for (const auto& grid : batched) {
+            REQUIRE_FALSE(grid.error.isEmpty());
+            REQUIRE(grid.values.empty());
+        }
+    }
+
+    SECTION("an empty batch reads nothing and answers nothing")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/matrix"));
+        REQUIRE(table()->sampleValues({}).empty());
+    }
+
     SECTION("a table larger than the cap is thinned, never truncated")
     {
         REQUIRE(h5test::selectAndSettle(controller, "/long_vec")); // 1000 rows, 1 column

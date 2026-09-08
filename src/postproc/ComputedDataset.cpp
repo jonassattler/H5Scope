@@ -88,34 +88,20 @@ ComputedDataset::readNumericWindow(const std::vector<hsize_t>& offset,
     window.offset = offset;
     window.count = clamp(offset, count);
 
-    const hsize_t total = elementCount(window.count);
-    window.values.reserve(static_cast<std::size_t>(total));
-    if (total == 0) {
-        return window;
-    }
-    if (info_.shape.empty()) {
-        window.values.push_back(values_.at({}));
+    if (elementCount(window.count) == 0) {
         return window;
     }
 
-    // Row-major over the block, reading each element through the array's own
-    // strides -- which may be a transpose of the buffer, so this cannot be a
-    // memcpy however contiguous the block looks.
-    const std::size_t rank = info_.shape.size();
-    std::vector<hsize_t> index(rank, 0);
-    std::vector<hsize_t> position(rank, 0);
-    for (hsize_t n = 0; n < total; ++n) {
-        for (std::size_t d = 0; d < rank; ++d) {
-            position[d] = (d < offset.size() ? offset[d] : 0) + index[d];
-        }
-        window.values.push_back(values_.at(position));
-        for (std::size_t d = rank; d-- > 0;) {
-            if (++index[d] < window.count[d]) {
-                break;
-            }
-            index[d] = 0;
-        }
-    }
+    // Row-major over the block, read through the array's own strides -- which
+    // may be a transpose of the buffer, so this cannot be a memcpy however
+    // contiguous the block looks.
+    //
+    // Array::block does the walk with a rolling position. It used to be done
+    // here with Array::at() per element, which rebuilds the index tuple and
+    // re-multiplies the whole of it every time: rank multiplications and a
+    // vector write per value, on the path a computed raster of a million
+    // pixels goes down.
+    window.values = values_.block(offset, window.count);
     return window;
 }
 
