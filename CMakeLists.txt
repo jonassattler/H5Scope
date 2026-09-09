@@ -118,7 +118,14 @@ endif()
 # would drown the ones that are. CMake compiles imported targets' include
 # directories with -isystem, which is what already keeps them quiet.
 if(MSVC)
-  add_compile_options(/W4)
+  # /external:W0 is what makes /W4 usable here. CMake passes a dependency's
+  # include directories as /external:I, which is MSVC's -isystem, but unlike
+  # GCC that alone silences nothing: the level for external headers is set
+  # separately, and left at the default a Windows build reported eighteen
+  # unreachable-code warnings from inside Qt's own qjsengine.h and nothing
+  # from this project at all. Warnings nobody here can fix are what teaches a
+  # reader to stop reading them.
+  add_compile_options(/W4 /external:W0)
 else()
   add_compile_options(-Wall -Wextra)
 endif()

@@ -259,19 +259,22 @@ int main(int argc, char** argv)
         const QModelIndex wide = widest(model, visited, members);
         if (wide.isValid()) {
             const QString widePath = model.pathAt(wide);
-            gui::H5TreeModel cold;
-            cold.open();
+            // `fresh` rather than `cold`, which is the name of the page-cache
+            // flag above it. Two things called cold in one function, one of
+            // them a bool and the other a tree, is what MSVC's C4456 is for.
+            gui::H5TreeModel fresh;
+            fresh.open();
             h5.drain();
-            cold.revealPath(widePath);
+            fresh.revealPath(widePath);
             h5.drain();
-            const QModelIndex again = cold.indexForPath(widePath);
+            const QModelIndex again = fresh.indexForPath(widePath);
             long long listed = 0;
             bench::phase(rows, "listing", [&] {
                 // The click, and then the answer. `ui ms` on this row is what
                 // the click itself cost the window.
-                (void)bench::blocking([&] { return cold.rowCount(again); });
+                (void)bench::blocking([&] { return fresh.rowCount(again); });
                 gui::H5Thread::instance().drain();
-                listed = bench::blocking([&] { return cold.rowCount(again); });
+                listed = bench::blocking([&] { return fresh.rowCount(again); });
             }, listed, "members listed on expand");
             rows.back().units = listed;
 
@@ -280,11 +283,11 @@ int main(int argc, char** argv)
                 // One layout pass of forty rows, which the model turns into one
                 // job, and then the frame in which the answers land.
                 for (long long row = 0; row < shownRows; ++row) {
-                    askEveryRole(cold, cold.index(static_cast<int>(row), 0, again));
+                    askEveryRole(fresh, fresh.index(static_cast<int>(row), 0, again));
                 }
                 gui::H5Thread::instance().drain();
                 for (long long row = 0; row < shownRows; ++row) {
-                    askEveryRole(cold, cold.index(static_cast<int>(row), 0, again));
+                    askEveryRole(fresh, fresh.index(static_cast<int>(row), 0, again));
                 }
             }, shownRows, "rows the viewport shows");
             std::printf("widest group: %s (%d members)\n",
