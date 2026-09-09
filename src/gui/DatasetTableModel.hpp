@@ -13,8 +13,6 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
-#include <functional>
-#include <memory>
 #include <optional>
 #include <vector>
 
@@ -206,20 +204,40 @@ public:
     /// dimension the grid has spread along an axis; `axes` must describe the
     /// same dataset, which is what starting from axes() and pinning guarantees.
     ///
-    /// Blocking: it waits for the HDF5 thread. Nothing on the drawing path may
-    /// call it -- the plot and the image ask through requestSamples() below --
-    /// and it is kept because a test that has to spin an event loop to read
-    /// four numbers is a test about the event loop.
+    /// Blocking, like the one above: it waits for the HDF5 thread. The plot and
+    /// the image are both built on it, so the wait is real and is what the
+    /// batch form below exists to stop paying more than once.
     [[nodiscard]] NumericGrid sampleValues(const TableAxes& axes, int firstRow,
                                            int rowSpan, int maxRows, int firstColumn,
                                            int columnSpan, int maxColumns) const;
 
-    /// The same sampling, asked for rather than waited on. `then` runs on this
-    /// thread when the numbers arrive, and not at all if the source has changed
-    /// in the meantime.
-    void requestSamples(const TableAxes& axes, int firstRow, int rowSpan, int maxRows,
-                        int firstColumn, int columnSpan, int maxColumns,
-                        std::function<void(NumericGrid)> then);
+    /// One rectangle asked for, in the arguments sampleValues() takes.
+    struct SampleRequest {
+        int firstRow = 0;
+        int rowSpan = -1;
+        int maxRows = 1;
+        int firstColumn = 0;
+        int columnSpan = -1;
+        int maxColumns = 1;
+        /// Which reading of the dataset to take it from. Absent means the
+        /// table on screen, which is what the plot asks for. The image asks
+        /// for a different one per plane -- the same table with its colour
+        /// dimension held at one channel -- and carrying the axes on the
+        /// request is what lets all of its planes travel in one crossing
+        /// rather than one each.
+        std::optional<TableAxes> axes;
+    };
+
+    /// Several rectangles of the dataset, in one crossing of the thread.
+    /// Answers in the order asked, one entry per request.
+    ///
+    /// The plot is why this exists. A line is one row of the table, so drawing
+    /// n of them is n rectangles -- and asked one at a time each of those is a
+    /// blocking round trip with its own handshake, which made "draw every
+    /// line" of a ten-thousand-row table ten thousand of them and a window
+    /// that stopped answering. The reads themselves were never the cost.
+    [[nodiscard]] std::vector<NumericGrid>
+    sampleValues(const std::vector<SampleRequest>& requests) const;
 
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
@@ -241,6 +259,12 @@ private:
     void rebuild(TableLayout layout);
     /// Ensure the cached block covers (row, column), asking for it if not.
     void ensureBlock(int row, int column) const;
+    /// Record why the last read failed, or clear it when one succeeds.
+    ///
+    /// Not a plain assignment, because rowCount() and columnCount() are zero
+    /// while a message stands: a message arriving or clearing is a change in
+    /// the size of the model, and this is what announces it as one.
+    void setReadError(QString text) const;
     /// The sampling itself, on the HDF5 thread.
     [[nodiscard]] static NumericGrid sampleFrom(const h5core::DataSource& source,
                                                 const TableAxes& axes, int firstRow,
@@ -263,10 +287,24 @@ private:
     /// Requests in flight, disowned whenever the source changes so a block
     /// read of the last dataset cannot be painted over this one.
     mutable H5Requests requests_;
-    /// The block a read is on its way for, so the same one is not asked for
+
+    /// Where a block starts, as the pair that names it.
+    struct Origin {
+        int row = 0;
+        int column = 0;
+        [[nodiscard]] bool operator==(const Origin&) const = default;
+    };
+
+    /// The blocks a read is on its way for, so the same one is not asked for
     /// once per cell of it.
-    mutable int askedRowOrigin_ = -1;
-    mutable int askedColumnOrigin_ = -1;
+    ///
+    /// A list rather than a single pair, because one layout pass routinely
+    /// wants two: a viewport of forty rows starting anywhere but a multiple of
+    /// sixty-four straddles a boundary. With one slot the second request
+    /// displaced the record of the first, and the cells belonging to the first
+    /// then asked for it all over again -- so the straddle cost three reads of
+    /// two blocks.
+    mutable std::vector<Origin> asked_;
 
     /// One rectangle of the *table*, not of the dataset: with a scattered
     /// selection the two are no longer the same shape.
@@ -286,9 +324,23 @@ private:
                                          const TableAxes& axes, Block block,
                                          QString& error);
 
+    /// The block holding (row, column), or null. Found rather than assumed:
+    /// see blocks_.
+    [[nodiscard]] const Block* blockAt(int row, int column) const;
+
     // Mutable: data() is const by Qt's contract but must be able to slide the
-    // cached block. Nothing observable outside the model changes.
-    mutable Block block_;
+    // cached blocks. Nothing observable outside the model changes.
+    //
+    /// The blocks held, newest first, capped at kCachedBlocks.
+    ///
+    /// More than one, because a viewport is not a block and does not line up
+    /// with one. Forty rows starting at row 40 cover the end of the block at 0
+    /// and the start of the block at 64, so a cache of one held whichever had
+    /// been painted last and re-read the other on every repaint -- a crossing
+    /// and four thousand elements per frame, for a table nobody had scrolled.
+    /// bench-data's `revisit` phase is the number that showed it, and
+    /// tests/test_cost.cpp is what keeps it at nothing.
+    mutable std::vector<Block> blocks_;
     mutable QString errorText_;
 
     /// What valueExtent() answers with, sampled once per table.
@@ -304,6 +356,11 @@ private:
 
     static constexpr int kBlockRows = 64;
     static constexpr int kBlockColumns = 64;
+    /// Blocks kept. Four covers any viewport that straddles a boundary in both
+    /// directions at once, which is the worst an unscrolled window can do, and
+    /// costs 16 384 cached cells -- the same order as the one-block cache it
+    /// replaces and nothing beside a dataset large enough to need it.
+    static constexpr std::size_t kCachedBlocks = 4;
     /// Cells per axis behind valueExtent(). The same trade the image makes at
     /// 1024: enough of the table that the extremes are the table's, few enough
     /// that asking is one read rather than a walk of a dataset larger than

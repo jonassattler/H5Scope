@@ -774,8 +774,14 @@ void H5TreeModel::continueReveal(Node* parent, QStringList remaining,
                     requestFacts(next, true);
                     QMetaObject::invokeMethod(
                         this,
-                        [this, next, whole] {
-                            emit pathRevealed(indexFor(next), whole);
+                        [this, whole] {
+                            // Found again by its path rather than carried here
+                            // as a pointer. This runs a turn of the event loop
+                            // later, and closing the file in that turn deletes
+                            // every node in the tree -- so a captured Node*
+                            // would be read after the tree it belonged to was
+                            // gone. A path outlives the nodes that spell it.
+                            emit pathRevealed(indexForPath(whole), whole);
                         },
                         Qt::QueuedConnection);
                 }

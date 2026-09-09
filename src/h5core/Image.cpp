@@ -40,8 +40,21 @@ std::optional<std::string> stringAttribute(hid_t object, const char* name)
 
     // A scalar string, which is what the spec asks for; anything longer is
     // read as its first element, which is the only one that could be meant.
-    std::vector<unsigned char> buffer(H5Tget_size(native.get()));
-    if (buffer.empty() || H5Aread(attribute.get(), native.get(), buffer.data()) < 0) {
+    //
+    // The buffer is still the whole attribute, though, because H5Aread has no
+    // partial form: it fills `buf` with every element there is, and sizing it
+    // for one was a heap overflow of (n - 1) elements the moment a file
+    // carried CLASS as an array of strings rather than as the scalar the spec
+    // asks for. A file is allowed to be wrong; this is not allowed to be a
+    // buffer overrun when it is.
+    const hssize_t elements = H5Sget_simple_extent_npoints(space.get());
+    const std::size_t elementSize = H5Tget_size(native.get());
+    if (elements <= 0 || elementSize == 0) {
+        H5Eclear2(H5E_DEFAULT);
+        return std::nullopt;
+    }
+    std::vector<unsigned char> buffer(static_cast<std::size_t>(elements) * elementSize);
+    if (H5Aread(attribute.get(), native.get(), buffer.data()) < 0) {
         H5Eclear2(H5E_DEFAULT);
         return std::nullopt;
     }

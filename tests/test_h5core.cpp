@@ -10,10 +10,15 @@
 #include "h5core/Types.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/matchers/catch_matchers_vector.hpp>
 
+#include <hdf5.h>
+
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -585,5 +590,109 @@ TEST_CASE_METHOD(Fixture, "attributes", "[h5core][attribute]")
     SECTION("an object without attributes yields an empty list")
     {
         REQUIRE(h5core::readAttributes(file, "/matrix").empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Attributes the Image specification says are scalars, and are not
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A file holding one dataset whose CLASS and IMAGE_SUBCLASS are *arrays* of
+/// strings rather than the scalars the spec calls for.
+///
+/// This is not a shape any writer intends, and it is a shape a file is allowed
+/// to be in -- which is the point. H5Aread has no partial form: it fills the
+/// buffer with every element the attribute has, so a reader that sized the
+/// buffer for the one element it wanted wrote past the end of it by the rest,
+/// on nothing worse than a malformed file. The assertions below are that the
+/// first element still decides, which is what the attribute could only have
+/// meant; the value of the case is that it is read at all.
+void writeArrayValuedImageTags(const std::string& path, bool variableLength)
+{
+    const hid_t file =
+        H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+
+    const std::vector<hsize_t> dims{4, 4};
+    const std::vector<std::uint8_t> pixels(16, 0);
+    const hid_t space = H5Screate_simple(2, dims.data(), nullptr);
+    const hid_t dataset = H5Dcreate2(file, "img", H5T_NATIVE_UINT8, space, H5P_DEFAULT,
+                                     H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_NATIVE_UINT8, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     pixels.data())
+            >= 0);
+
+    // Three elements where the spec says one. Both string flavours, because
+    // they overrun differently: a variable-length element is a pointer and a
+    // fixed-length one is its own bytes.
+    const auto tag = [&](const char* name, const char* first, const char* rest) {
+        const hid_t type = H5Tcopy(H5T_C_S1);
+        if (variableLength) {
+            REQUIRE(H5Tset_size(type, H5T_VARIABLE) >= 0);
+        } else {
+            REQUIRE(H5Tset_size(type, 32) >= 0);
+        }
+        const hsize_t count = 3;
+        const hid_t attributeSpace = H5Screate_simple(1, &count, nullptr);
+        const hid_t attribute = H5Acreate2(dataset, name, type, attributeSpace,
+                                           H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(attribute >= 0);
+        if (variableLength) {
+            const char* values[3] = {first, rest, rest};
+            REQUIRE(H5Awrite(attribute, type, values) >= 0);
+        } else {
+            std::vector<char> values(3 * 32, '\0');
+            const auto put = [&](std::size_t slot, const char* text) {
+                const std::size_t length = std::min<std::size_t>(std::strlen(text), 31);
+                std::memcpy(values.data() + slot * 32, text, length);
+            };
+            put(0, first);
+            put(1, rest);
+            put(2, rest);
+            REQUIRE(H5Awrite(attribute, type, values.data()) >= 0);
+        }
+        H5Aclose(attribute);
+        H5Sclose(attributeSpace);
+        H5Tclose(type);
+    };
+
+    tag("CLASS", "IMAGE", "IMAGE");
+    tag("IMAGE_SUBCLASS", "IMAGE_GRAYSCALE", "IMAGE_TRUECOLOR");
+
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("an image tag written as an array is read, not overrun",
+          "[h5core][image]")
+{
+    const bool variableLength = GENERATE(true, false);
+    h5test::TempFile temp{"arraytags"};
+    writeArrayValuedImageTags(temp.path(), variableLength);
+
+    const h5core::File file(temp.path());
+
+    SECTION("the outline reads the first element and stops there")
+    {
+        const auto outline = file.datasetOutline("/img");
+        REQUIRE(outline.image);
+        // The first element of IMAGE_SUBCLASS, not the last one written.
+        REQUIRE(outline.subclass == h5core::ImageSubclass::Grayscale);
+    }
+
+    SECTION("so does the full description")
+    {
+        const h5core::Dataset dataset(file, "/img");
+        REQUIRE(dataset.info().image.has_value());
+        REQUIRE(dataset.info().image->subclass == h5core::ImageSubclass::Grayscale);
+        // Rank 2 is the shape a single-channel subclass implies, so the tag is
+        // honoured rather than merely reported.
+        REQUIRE(dataset.info().image->shapeMatches);
     }
 }

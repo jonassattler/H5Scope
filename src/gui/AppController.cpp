@@ -36,11 +36,13 @@ namespace gui {
 
 AppController::AppController(QObject* parent)
     : QObject(parent),
+      // In declaration order, which is the order they are actually built in
+      // whatever order they are written here.
       treeModel_(new H5TreeModel(this)),
+      filteredTreeModel_(new TreeFilterProxyModel(this)),
       datasetModel_(new DatasetTableModel(this)),
       attributeModel_(new AttributeTableModel(this)),
       infoModel_(new ObjectInfoModel(this)),
-      filteredTreeModel_(new TreeFilterProxyModel(this)),
       tableSetupModel_(new TableSetupModel(this)),
       postprocessModel_(new PostprocessModel(this))
 {

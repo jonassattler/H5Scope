@@ -11,6 +11,7 @@
 #include <QtGraphs/QAbstractSeries>
 #include <QtQml/qqmlregistration.h>
 
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <vector>
@@ -154,8 +155,13 @@ private:
     /// Sample every line in the drawn set that has not been sampled yet, and
     /// with it the extent and the point count they share.
     void ensure() const;
-    /// Read one line of the table as numbers.
-    [[nodiscard]] DatasetTableModel::NumericGrid sampleOne(int series) const;
+    /// The rectangle of the table one line is: a row of it, or a column when
+    /// the lines run the other way.
+    [[nodiscard]] DatasetTableModel::SampleRequest requestFor(int series) const;
+    /// Read every drawn line that is not already held, in one batch. Asking
+    /// per line is a blocking round trip per line, which is what `all` on a
+    /// table of thousands used to cost.
+    void readMissing() const;
     /// Put the drawn set back to where a new table starts it: its first
     /// kMaxInitialSeries lines.
     void reseed();
@@ -191,6 +197,12 @@ public:
     /// before they have asked for anything, not on what they may ask for:
     /// the legend ticks any line in the table and `select all` takes them all.
     static constexpr int kMaxInitialSeries = 64;
+    /// Lines read per crossing of the HDF5 thread. Large enough that the round
+    /// trips stop being what the reader waits for -- the default set of 64 is
+    /// one crossing, and `all` on a table of thousands is dozens rather than
+    /// thousands -- and small enough that the answers in hand never amount to
+    /// a second copy of everything already drawn.
+    static constexpr std::size_t kReadBatch = 256;
 };
 
 } // namespace gui

@@ -321,6 +321,77 @@ TEST_CASE("a strided view reads in the order it was asked for", "[postproc][arra
     }
 }
 
+TEST_CASE("a block of a strided view reads what walking it element by element "
+          "would have",
+          "[postproc][array]")
+{
+    // block() is the fast path under every computed window the views draw, and
+    // at() is the definition it has to keep agreeing with. So the assertion is
+    // that they agree -- over a transpose and a descent as well as over a plain
+    // array, because those are where a rolling position can drift.
+    const auto walked = [](const Array& array, const std::vector<hsize_t>& offset,
+                           const std::vector<hsize_t>& count) {
+        std::vector<double> out;
+        std::vector<hsize_t> index(count.size(), 0);
+        const hsize_t total = postproc::elementCount(count);
+        for (hsize_t n = 0; n < total; ++n) {
+            std::vector<hsize_t> at(count.size(), 0);
+            for (std::size_t d = 0; d < count.size(); ++d) {
+                at[d] = offset[d] + index[d];
+            }
+            out.push_back(array.at(at));
+            for (std::size_t d = count.size(); d-- > 0;) {
+                if (++index[d] < count[d]) {
+                    break;
+                }
+                index[d] = 0;
+            }
+        }
+        return out;
+    };
+
+    SECTION("the whole of a plain array")
+    {
+        const Array input = counting({3, 4});
+        REQUIRE(input.block({0, 0}, {3, 4}) == input.values());
+    }
+
+    SECTION("a rectangle inside one")
+    {
+        const Array input = counting({3, 4});
+        REQUIRE(input.block({1, 1}, {2, 2}) == std::vector<double>{5, 6, 9, 10});
+        REQUIRE(input.block({1, 1}, {2, 2}) == walked(input, {1, 1}, {2, 2}));
+    }
+
+    SECTION("a rectangle of a transpose")
+    {
+        const Array input = counting({3, 4}).transposed({1, 0});
+        REQUIRE(input.block({0, 0}, {4, 3}) == input.values());
+        REQUIRE(input.block({1, 1}, {2, 2}) == walked(input, {1, 1}, {2, 2}));
+    }
+
+    SECTION("a rectangle of a descent, which runs backwards through the buffer")
+    {
+        const Array input =
+            counting({3, 4}).selected({{2, 1, 0}, {3, 2, 1, 0}}, {false, false});
+        REQUIRE(input.block({0, 0}, {3, 4}) == input.values());
+        REQUIRE(input.block({1, 1}, {2, 3}) == walked(input, {1, 1}, {2, 3}));
+    }
+
+    SECTION("a scalar is its one value")
+    {
+        const Array scalar({}, {7.0});
+        REQUIRE(scalar.block({}, {}) == std::vector<double>{7.0});
+    }
+
+    SECTION("a block of no extent is no values")
+    {
+        const Array input = counting({3, 4});
+        REQUIRE(input.block({0, 0}, {0, 4}).empty());
+        REQUIRE(input.block({1, 1}, {2, 0}).empty());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What each operation refuses, and why
 // ---------------------------------------------------------------------------

@@ -632,8 +632,13 @@ void writeTypes(hid_t file)
         const Id rich = readingType();
         std::vector<Reading> readings(6);
         for (std::size_t i = 0; i < readings.size(); ++i) {
-            std::snprintf(readings[i].station, sizeof(readings[i].station), "ST-%03zu",
-                          i);
+            // Bounded rather than the bare index: `%zu` on a size_t is up to
+            // twenty digits as far as the compiler can tell, which is more
+            // than the field holds and is what -Wformat-truncation says. The
+            // modulo is the range the loop already has, written where the
+            // compiler can see it. The names are unchanged: ST-000 upwards.
+            std::snprintf(readings[i].station, sizeof(readings[i].station), "ST-%03u",
+                          static_cast<unsigned>(i) % 1000U);
             readings[i].timestamp = 1700000000LL + static_cast<std::int64_t>(i) * 3600;
             readings[i].position = {static_cast<double>(i), static_cast<double>(i) * 2.0,
                                     static_cast<double>(i) * 3.0};
@@ -764,8 +769,10 @@ void writeCommitted(hid_t file)
 
         std::vector<Reading> readings(3);
         for (std::size_t i = 0; i < readings.size(); ++i) {
-            std::snprintf(readings[i].station, sizeof(readings[i].station), "SHARED%zu",
-                          i);
+            // Bounded for the same reason as ST- above, and printing the same
+            // names it did: SHARED0 upwards.
+            std::snprintf(readings[i].station, sizeof(readings[i].station), "SHARED%u",
+                          static_cast<unsigned>(i) % 1000U);
             readings[i].timestamp = 1700000000LL + static_cast<std::int64_t>(i);
             readings[i].position = {1.0, 2.0, 3.0};
             for (int s = 0; s < 4; ++s) {

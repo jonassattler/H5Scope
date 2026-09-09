@@ -246,9 +246,10 @@ private:
     };
 
     void ensure() const;
-    /// One plane, read with the colour axis held at `index` -- or the table as
-    /// it stands when there is no colour axis.
-    [[nodiscard]] DatasetTableModel::NumericGrid readPlane(int index) const;
+    /// The read one plane is: the colour axis held at `index`, or the table as
+    /// it stands when there is no colour axis. A request rather than a grid, so
+    /// every plane of a colour picture travels in one crossing.
+    [[nodiscard]] DatasetTableModel::SampleRequest requestFor(int index) const;
     /// Extent of the colour axis in the dataset, or 0 when there is none.
     [[nodiscard]] int channelExtent() const;
     /// Hold every channel index inside the colour axis. Called whenever that

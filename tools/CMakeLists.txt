@@ -30,3 +30,13 @@ set_target_properties(example_file make-example-file
 qt_add_executable(bench-tree bench-tree.cpp)
 target_link_libraries(bench-tree PRIVATE gui Qt6::Core)
 qt_import_plugins(bench-tree INCLUDE Qt6::QOffscreenIntegrationPlugin)
+
+# ...and what the Data Viewer costs, once a dataset has been chosen. The other
+# half of the same question, and a separate tool because the two have separate
+# causes: the tree pays for the walk and this pays for the read. Both print the
+# table in BenchReport.hpp, so they can be read side by side.
+#
+# Qt6::Gui because DatasetImage renders a QImage; nothing here opens a window.
+qt_add_executable(bench-data bench-data.cpp)
+target_link_libraries(bench-data PRIVATE gui postproc Qt6::Core Qt6::Gui)
+qt_import_plugins(bench-data INCLUDE Qt6::QOffscreenIntegrationPlugin)

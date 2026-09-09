@@ -23,13 +23,12 @@ void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QStrin
     // is what stops a block of the previous selection arriving a frame later
     // and being painted into this one's grid.
     requests_.reset();
-    askedRowOrigin_ = -1;
-    askedColumnOrigin_ = -1;
+    asked_.clear();
 
     present_ = present;
     info_ = std::move(info);
     sourcePath_ = std::move(path);
-    block_ = {};
+    blocks_.clear();
     errorText_.clear();
 
     rebuild(present_ ? defaultLayout(info_.shape, info_.image) : TableLayout{});
@@ -58,9 +57,8 @@ void DatasetTableModel::rebuild(TableLayout layout)
     // A null dataspace holds no elements at all, and the empty product over the
     // axes would otherwise make a one-cell table out of nothing.
     axes_ = TableAxes(std::move(layout), !present_ || info_.isNull());
-    block_ = {};
-    askedRowOrigin_ = -1;
-    askedColumnOrigin_ = -1;
+    blocks_.clear();
+    asked_.clear();
     // A different table has a different extent, and a colour ramp stretched
     // between the old one would be reading the new numbers on the old scale.
     extent_.reset();
@@ -127,11 +125,52 @@ DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& 
     return block;
 }
 
+void DatasetTableModel::setReadError(QString text) const
+{
+    if (errorText_ == text) {
+        return;
+    }
+
+    // rowCount() and columnCount() are both zero while a message stands, so a
+    // read that fails -- or one that succeeds after another had failed -- does
+    // not change what the cells hold, it changes how many of them there are.
+    // Qt has one way to say that, and dataChanged is not it: a view told only
+    // that the contents moved goes on addressing rows the model has just
+    // stopped having, which is where a scroll into a dataset whose external
+    // file had gone missing ended up indexing past the end of the table.
+    //
+    // A message replacing another message resizes nothing, and resetting for
+    // one would throw away the reader's scroll position for a change of
+    // wording.
+    if (errorText_.isEmpty() == text.isEmpty()) {
+        errorText_ = std::move(text);
+        return;
+    }
+
+    auto* self = const_cast<DatasetTableModel*>(this);
+    self->beginResetModel();
+    errorText_ = std::move(text);
+    blocks_.clear();
+    asked_.clear();
+    extent_.reset();
+    self->endResetModel();
+}
+
+const DatasetTableModel::Block* DatasetTableModel::blockAt(int row, int column) const
+{
+    for (const Block& block : blocks_) {
+        if (block.valid && row >= block.rowOrigin
+            && row < block.rowOrigin + block.rows && column >= block.columnOrigin
+            && column < block.columnOrigin + block.columns) {
+            return &block;
+        }
+    }
+    return nullptr;
+}
+
 void DatasetTableModel::ensureBlock(int row, int column) const
 {
-    if (block_.valid && row >= block_.rowOrigin
-        && row < block_.rowOrigin + block_.rows && column >= block_.columnOrigin
-        && column < block_.columnOrigin + block_.columns) {
+    if (blockAt(row, column) != nullptr) {
         return;
     }
 
@@ -149,11 +188,11 @@ void DatasetTableModel::ensureBlock(int row, int column) const
     // One request per block, however many cells of it the view asks about
     // before the answer lands. Without this the first paint of a screenful
     // would queue a hundred identical reads.
-    if (askedRowOrigin_ == block.rowOrigin && askedColumnOrigin_ == block.columnOrigin) {
+    const Origin origin{block.rowOrigin, block.columnOrigin};
+    if (std::find(asked_.begin(), asked_.end(), origin) != asked_.end()) {
         return;
     }
-    askedRowOrigin_ = block.rowOrigin;
-    askedColumnOrigin_ = block.columnOrigin;
+    asked_.push_back(origin);
 
     auto* self = const_cast<DatasetTableModel*>(this);
     struct Read {
@@ -172,29 +211,43 @@ void DatasetTableModel::ensureBlock(int row, int column) const
             read.block = readBlock(*source, axes, block, read.error);
             return read;
         },
-        [self](Read read) {
-            self->askedRowOrigin_ = -1;
-            self->askedColumnOrigin_ = -1;
+        [self, origin](Read read) {
+            std::erase(self->asked_, origin);
             if (!read.error.isEmpty()) {
-                self->block_ = {};
-                self->errorText_ = read.error;
-                emit self->dataChanged(self->index(0, 0),
-                                       self->index(std::max(0, self->rowCount() - 1),
-                                                   std::max(0, self->columnCount() - 1)));
+                self->setReadError(read.error);
                 return;
             }
             if (!read.block.valid) {
                 return;
             }
-            self->block_ = std::move(read.block);
-            self->errorText_.clear();
+            // Before the block is installed: clearing the message is what puts
+            // the rows back, and setReadError() empties the cache when it
+            // announces that.
+            self->setReadError(QString{});
+
+            const int rowOrigin = read.block.rowOrigin;
+            const int columnOrigin = read.block.columnOrigin;
+            const int rows = read.block.rows;
+            const int columns = read.block.columns;
+
+            // Newest first, and the oldest goes when there are too many. A
+            // viewport that straddles a boundary wants two at once and gets
+            // them; a reader scrolling through a dataset larger than RAM still
+            // holds a bounded number of cells.
+            std::erase_if(self->blocks_, [&](const Block& held) {
+                return held.rowOrigin == rowOrigin
+                       && held.columnOrigin == columnOrigin;
+            });
+            self->blocks_.insert(self->blocks_.begin(), std::move(read.block));
+            if (self->blocks_.size() > kCachedBlocks) {
+                self->blocks_.resize(kCachedBlocks);
+            }
+
             // Only the block that arrived. The rest of the table is either
             // already painted or is waiting on a request of its own.
-            const QModelIndex topLeft =
-                self->index(self->block_.rowOrigin, self->block_.columnOrigin);
+            const QModelIndex topLeft = self->index(rowOrigin, columnOrigin);
             const QModelIndex bottomRight =
-                self->index(self->block_.rowOrigin + self->block_.rows - 1,
-                            self->block_.columnOrigin + self->block_.columns - 1);
+                self->index(rowOrigin + rows - 1, columnOrigin + columns - 1);
             if (topLeft.isValid() && bottomRight.isValid()) {
                 emit self->dataChanged(topLeft, bottomRight);
             }
@@ -369,30 +422,36 @@ DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan
     });
 }
 
-void DatasetTableModel::requestSamples(const TableAxes& axes, int firstRow, int rowSpan,
-                                       int maxRows, int firstColumn, int columnSpan,
-                                       int maxColumns,
-                                       std::function<void(NumericGrid)> then)
+std::vector<DatasetTableModel::NumericGrid>
+DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) const
 {
-    NumericGrid grid;
-    if (!sampleable(grid)) {
-        // Answered here rather than across the thread: nothing is going to be
-        // read, and a caller that got its answer a frame later for no reason
-        // would flicker for no reason.
-        then(std::move(grid));
-        return;
+    std::vector<NumericGrid> grids;
+    if (requests.empty()) {
+        return grids;
     }
-    H5Thread::instance().submit(
-        requests_,
-        [axes, firstRow, rowSpan, maxRows, firstColumn, columnSpan,
-         maxColumns](H5Session& session) {
-            const h5core::DataSource* source = session.source();
-            return (source == nullptr)
-                       ? NumericGrid{}
-                       : sampleFrom(*source, axes, firstRow, rowSpan, maxRows,
-                                    firstColumn, columnSpan, maxColumns);
-        },
-        std::move(then));
+    NumericGrid refusal;
+    if (!sampleable(refusal)) {
+        // The same answer every one of them would have got, without a crossing
+        // to fetch it: whether there is anything numeric to read is a question
+        // about the description this side already holds.
+        grids.assign(requests.size(), refusal);
+        return grids;
+    }
+    return H5Thread::instance().invoke([&](H5Session& session) {
+        std::vector<NumericGrid> read;
+        read.reserve(requests.size());
+        const h5core::DataSource* source = session.source();
+        for (const SampleRequest& request : requests) {
+            const TableAxes& axes = request.axes.has_value() ? *request.axes : axes_;
+            read.push_back(source == nullptr
+                               ? NumericGrid{}
+                               : sampleFrom(*source, axes, request.firstRow,
+                                            request.rowSpan, request.maxRows,
+                                            request.firstColumn, request.columnSpan,
+                                            request.maxColumns));
+        }
+        return read;
+    });
 }
 
 QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
@@ -417,15 +476,16 @@ QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
     };
 
     ensureBlock(row, column);
-    if (!block_.valid) {
+    const Block* block = blockAt(row, column);
+    if (block == nullptr) {
         return missing();
     }
-    const auto flat = static_cast<std::size_t>(row - block_.rowOrigin) * block_.columns
-                      + static_cast<std::size_t>(column - block_.columnOrigin);
-    if (flat >= block_.cells.size()) {
+    const auto flat = static_cast<std::size_t>(row - block->rowOrigin) * block->columns
+                      + static_cast<std::size_t>(column - block->columnOrigin);
+    if (flat >= block->cells.size()) {
         return missing();
     }
-    const QString& cell = block_.cells[flat];
+    const QString& cell = block->cells[flat];
     if (role == Number) {
         // Off the cell the file gave, not off the display string: that one has
         // been rounded to the reader's notation, and a fill computed from it
@@ -520,29 +580,33 @@ int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
     if (!present_ || rows <= 0 || columns <= 0) {
         return 0;
     }
-    // One block covers what a screen shows several times over, so the rectangle
-    // asked for is clamped into the block the view is already over rather than
-    // sliding it -- a column width must not be the thing that decides which
-    // part of a dataset gets read.
+    // The blocks already held, and no others: the rectangle asked for is
+    // clamped into each of them rather than sliding the cache -- a column
+    // width must not be the thing that decides which part of a dataset gets
+    // read. Every block is walked because a viewport that straddles a boundary
+    // is exactly the case where the widest cell is in the other one.
     ensureBlock(std::max(firstRow, 0), std::max(firstColumn, 0));
-    if (!block_.valid) {
-        return 0;
-    }
-    const int firstR = std::max(firstRow, block_.rowOrigin);
-    const int lastR = std::min(firstRow + rows, block_.rowOrigin + block_.rows);
-    const int firstC = std::max(firstColumn, block_.columnOrigin);
-    const int lastC = std::min(firstColumn + columns,
-                               block_.columnOrigin + block_.columns);
 
     int widest = 0;
-    for (int r = firstR; r < lastR; ++r) {
-        for (int c = firstC; c < lastC; ++c) {
-            const auto flat =
-                static_cast<std::size_t>(r - block_.rowOrigin) * block_.columns
-                + static_cast<std::size_t>(c - block_.columnOrigin);
-            if (flat < block_.cells.size()) {
-                widest = std::max<int>(
-                    widest, static_cast<int>(formatted(block_.cells[flat]).size()));
+    for (const Block& block : blocks_) {
+        if (!block.valid) {
+            continue;
+        }
+        const int firstR = std::max(firstRow, block.rowOrigin);
+        const int lastR = std::min(firstRow + rows, block.rowOrigin + block.rows);
+        const int firstC = std::max(firstColumn, block.columnOrigin);
+        const int lastC =
+            std::min(firstColumn + columns, block.columnOrigin + block.columns);
+
+        for (int r = firstR; r < lastR; ++r) {
+            for (int c = firstC; c < lastC; ++c) {
+                const auto flat =
+                    static_cast<std::size_t>(r - block.rowOrigin) * block.columns
+                    + static_cast<std::size_t>(c - block.columnOrigin);
+                if (flat < block.cells.size()) {
+                    widest = std::max<int>(
+                        widest, static_cast<int>(formatted(block.cells[flat]).size()));
+                }
             }
         }
     }

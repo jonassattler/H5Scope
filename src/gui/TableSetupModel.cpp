@@ -325,10 +325,17 @@ QString TableSetupModel::applySlice(const QString& text)
     // One announcement for the whole line rather than `touch` per dimension:
     // each of those carries a layout change with it, and a rank-4 slice would
     // rebuild the table four times on its way to the selection asked for.
-    emit dataChanged(index(0, 0), index(static_cast<int>(rank) - 1, 0),
-                     {ModeRole, IndexValueRole, RangeFirstRole, RangeLastRole,
-                      ExpressionRole, ExpressionErrorRole, SelectedCountRole,
-                      SummaryRole});
+    //
+    // A scalar has no dimensions and so no rows to announce. Saying so anyway
+    // asked for row -1 of an empty model, which is the "Invalid index" Qt warns
+    // about -- once per return to every scalar dataset, since the slice this
+    // restores is the empty line a scalar's own panel writes.
+    if (rank > 0) {
+        emit dataChanged(index(0, 0), index(static_cast<int>(rank) - 1, 0),
+                         {ModeRole, IndexValueRole, RangeFirstRole, RangeLastRole,
+                          ExpressionRole, ExpressionErrorRole, SelectedCountRole,
+                          SummaryRole});
+    }
     emit tableLayoutChanged();
     return {};
 }
