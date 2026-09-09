@@ -585,8 +585,9 @@ QtObject {
         pixelSize: 12,
         weight: Font.Normal
     })
-    /// The tree's expander glyph, which sits below the type scale on purpose:
-    /// it is punctuation, not text.
+    /// The number stepper's arrows, which sit below the type scale on purpose:
+    /// they are punctuation, not text. The tree's expanders were set in this
+    /// face too until they became geometry -- see Caret.qml.
     readonly property font caret: Qt.font({
         families: theme.monoFamilies,
         pixelSize: 9,

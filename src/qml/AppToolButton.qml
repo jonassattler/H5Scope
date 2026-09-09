@@ -52,15 +52,17 @@ Button {
     readonly property bool ghost: variant === "ghost"
     readonly property bool small: size === "sm"
 
-    /// The mark after the label, if any. A panel's caret follows the panel:
-    /// down while it is up and to be dismissed, up while it is waiting.
-    readonly property string affordance: {
-        if (control.opens === "dialog")
-            return "…"
-        if (control.opens === "panel")
-            return control.open ? "▾" : "▸"
-        return ""
-    }
+    /// The mark after the label, if any. A dialog gets the ellipsis; a panel
+    /// gets a caret, which is geometry rather than a character and so is drawn
+    /// below rather than named here.
+    readonly property string affordance: control.opens === "dialog" ? "…" : ""
+    /// Whether the mark is the panel caret. It follows the panel: down while
+    /// it is up and to be dismissed, along while it is waiting.
+    readonly property bool marksPanel: control.opens === "panel"
+    /// The caret's slot. A shade under the label's own size, because it is
+    /// punctuation on the instruction and not a second word of it.
+    readonly property int caretSize: control.size === "lg" ? Theme.gapL
+                                                           : Theme.gapL - 2
 
     implicitHeight: size === "sm" ? Theme.tinyControlHeight
                   : size === "lg" ? Theme.controlHeight
@@ -84,10 +86,13 @@ Button {
     readonly property real labelWidth: control.text === ""
                                        ? 0
                                        : Math.ceil(labelMetrics.advanceWidth) + Theme.s1
-    readonly property real markWidth: control.affordance === ""
-                                      ? 0
-                                      : Math.ceil(markMetrics.advanceWidth) + Theme.s1
-                                        + Theme.gapS
+    readonly property real markWidth: {
+        if (control.marksPanel)
+            return control.caretSize + Theme.gapS
+        if (control.affordance === "")
+            return 0
+        return Math.ceil(markMetrics.advanceWidth) + Theme.s1 + Theme.gapS
+    }
 
     TextMetrics {
         id: labelMetrics
@@ -181,18 +186,40 @@ Button {
             }
         }
 
-        Text {
+        // One slot, whichever mark goes in it, so the label has a single thing
+        // to anchor against and the two cases cannot disagree about where the
+        // text has to stop.
+        Item {
             id: mark
 
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            visible: control.affordance !== ""
-            text: control.affordance
-            font: control.font
-            // The mark is punctuation on the label, not a second word: it
-            // steps back so the instruction still reads first.
-            color: control.filled ? control.ink : Theme.textSecondary
-            verticalAlignment: Text.AlignVCenter
+            visible: control.marksPanel || control.affordance !== ""
+            width: control.marksPanel ? caret.width : ellipsis.width
+            height: control.marksPanel ? caret.height : ellipsis.height
+
+            Caret {
+                id: caret
+
+                anchors.centerIn: parent
+                visible: control.marksPanel
+                size: control.caretSize
+                angle: control.open ? 90 : 0
+                // The mark is punctuation on the label, not a second word: it
+                // steps back so the instruction still reads first.
+                color: control.filled ? control.ink : Theme.textSecondary
+            }
+
+            Text {
+                id: ellipsis
+
+                anchors.centerIn: parent
+                visible: !control.marksPanel
+                text: control.affordance
+                font: control.font
+                color: control.filled ? control.ink : Theme.textSecondary
+                verticalAlignment: Text.AlignVCenter
+            }
         }
     }
 }
