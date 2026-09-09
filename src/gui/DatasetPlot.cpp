@@ -133,9 +133,11 @@ DatasetTableModel::SampleRequest DatasetPlot::requestFor(int series) const
     // One line, thinned along its length. Along the rows that is one table row
     // in full; along the columns it is the transpose, read the same way round,
     // and fill() is what turns it back.
+    // The trailing {} is the request's optional axes: the plot always reads the
+    // table on screen, so it names none and the batch uses the model's own.
     return seriesFromRows_
-               ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, kMaxPoints}
-               : DatasetTableModel::SampleRequest{0, -1, kMaxPoints, series, 1, 1};
+               ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, kMaxPoints, {}}
+               : DatasetTableModel::SampleRequest{0, -1, kMaxPoints, series, 1, 1, {}};
 }
 
 void DatasetPlot::readMissing() const

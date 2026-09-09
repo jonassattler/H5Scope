@@ -51,6 +51,18 @@ target_link_libraries(test_example PRIVATE
 )
 catch_discover_tests(test_example)
 
+# --- what the views cost, asserted rather than measured --------------------
+# Counts, never durations: a duration measures the machine and a count measures
+# the program. Reaches the models over tests/support/CountingSource.hpp for the
+# data path, and over a small many-object file from the scale generator for the
+# tree -- so it needs example_file for the second half and no large file at all
+# for the first. See the header of test_cost.cpp.
+add_executable(test_cost test_cost.cpp)
+target_link_libraries(test_cost PRIVATE
+  gui postproc example_file test_support test_main Qt6::Test
+)
+catch_discover_tests(test_cost)
+
 # --- QML: the real bindings, via Qt Quick Test ----------------------------
 qt_add_executable(test_qml tst_qml.cpp)
 target_link_libraries(test_qml PRIVATE
@@ -98,6 +110,30 @@ add_test(NAME qmlload COMMAND test_qmlload)
 set_tests_properties(qmlload PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
   RESOURCE_LOCK rendering
+)
+
+# --- the benchmarks still run ----------------------------------------------
+# A smoke run over a small generated file, not a threshold: what is asserted
+# about cost lives in test_cost above, in counts that are the same number on
+# every machine. This is here because tools/bench-tree and tools/bench-data are
+# what someone reaches for when a file is slow, nothing else builds or runs
+# them, and a tool discovered to be broken at that moment is no tool at all.
+add_test(NAME benchmarks
+  COMMAND ${CMAKE_COMMAND}
+          -DMAKE_EXAMPLE=$<TARGET_FILE:make-example-file>
+          -DBENCH_TREE=$<TARGET_FILE:bench-tree>
+          -DBENCH_DATA=$<TARGET_FILE:bench-data>
+          -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_SOURCE_DIR}/cmake/RunBenchmarks.cmake
+)
+# It writes a file of tens of megabytes and then reads it back through the whole
+# stack; sharing a two-core runner with the two rendering suites would measure
+# the contention rather than anything else. It is also the one test here that is
+# I/O bound.
+set_tests_properties(benchmarks PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  RESOURCE_LOCK rendering
+  TIMEOUT 900
 )
 
 # --- design-system adherence ----------------------------------------------

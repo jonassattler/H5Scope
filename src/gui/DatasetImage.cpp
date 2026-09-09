@@ -268,7 +268,7 @@ void DatasetImage::setChannelDimension(int dimension)
     // is a statement about the picture, and it used to rearrange the table --
     // which changed the slice under the grid and the plot as well, for a
     // question neither of them had been asked. The picture arranges its own
-    // axes instead; see TableAxes::asPicture and readPlane below.
+    // axes instead; see TableAxes::asPicture and requestFor below.
 }
 
 void DatasetImage::setGrayIndex(int index)
@@ -447,20 +447,20 @@ void DatasetImage::setMissingColor(const QColor& color)
     invalidate();
 }
 
-DatasetTableModel::NumericGrid DatasetImage::readPlane(int index) const
+DatasetTableModel::SampleRequest DatasetImage::requestFor(int index) const
 {
     // Without a colour axis this is the table exactly as the grid has it. With
     // one it is that table read as a picture around that axis -- in a copy of
     // the axes, so the grid keeps whatever it was showing however the channels
     // are chosen.
     const TableAxes& axes = table_->axes();
-    if (channelDimension_ < 0) {
-        return table_->sampleValues(axes, 0, -1, kMaxExtent, 0, -1, kMaxExtent);
-    }
-    return table_->sampleValues(
-        axes.asPicture(static_cast<std::size_t>(channelDimension_),
-                       static_cast<hsize_t>(std::max(index, 0))),
-        0, -1, kMaxExtent, 0, -1, kMaxExtent);
+    DatasetTableModel::SampleRequest request{0, -1, kMaxExtent, 0, -1, kMaxExtent, {}};
+    request.axes = (channelDimension_ < 0)
+                       ? axes
+                       : axes.asPicture(
+                             static_cast<std::size_t>(channelDimension_),
+                             static_cast<hsize_t>(std::max(index, 0)));
+    return request;
 }
 
 void DatasetImage::ensure() const
@@ -469,23 +469,31 @@ void DatasetImage::ensure() const
         return;
     }
 
-    Raster raster;
+    // Every plane in one crossing of the HDF5 thread rather than one each.
+    // Four planes asked for separately are four blocking round trips, and a
+    // raster that has to be re-read whenever a channel index moves pays them
+    // again every time; the reads are the same reads either way.
+    std::vector<int> channels;
     switch (colorMode()) {
     case ColorMode::Rgba:
-        raster.planes.push_back(readPlane(redIndex_));
-        raster.planes.push_back(readPlane(greenIndex_));
-        raster.planes.push_back(readPlane(blueIndex_));
-        raster.planes.push_back(readPlane(alphaIndex_));
+        channels = {redIndex_, greenIndex_, blueIndex_, alphaIndex_};
         break;
     case ColorMode::Rgb:
-        raster.planes.push_back(readPlane(redIndex_));
-        raster.planes.push_back(readPlane(greenIndex_));
-        raster.planes.push_back(readPlane(blueIndex_));
+        channels = {redIndex_, greenIndex_, blueIndex_};
         break;
     case ColorMode::Grayscale:
-        raster.planes.push_back(readPlane(grayIndex_));
+        channels = {grayIndex_};
         break;
     }
+
+    std::vector<DatasetTableModel::SampleRequest> requests;
+    requests.reserve(channels.size());
+    for (const int channel : channels) {
+        requests.push_back(requestFor(channel));
+    }
+
+    Raster raster;
+    raster.planes = table_->sampleValues(requests);
 
     // One ramp over all the channels: mapping each to its own extremes would
     // shift the hue of every pixel by however far the three happened to

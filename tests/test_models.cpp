@@ -1796,7 +1796,7 @@ TEST_CASE_METHOD(ControllerFixture, "the table samples itself as numbers",
         // a blocking round trip per line.
         std::vector<gui::DatasetTableModel::SampleRequest> requests;
         for (int row = 0; row < 4; ++row) {
-            requests.push_back({row, 1, 1, 0, -1, 64});
+            requests.push_back({row, 1, 1, 0, -1, 64, {}});
         }
         const auto batched = table()->sampleValues(requests);
         REQUIRE(batched.size() == 4);
@@ -1814,7 +1814,7 @@ TEST_CASE_METHOD(ControllerFixture, "the table samples itself as numbers",
     {
         REQUIRE(h5test::selectAndSettle(controller, "/str_vlen"));
         const auto batched = table()->sampleValues(
-            {{0, 1, 1, 0, -1, 64}, {1, 1, 1, 0, -1, 64}});
+            {{0, 1, 1, 0, -1, 64, {}}, {1, 1, 1, 0, -1, 64, {}}});
         REQUIRE(batched.size() == 2);
         for (const auto& grid : batched) {
             REQUIRE_FALSE(grid.error.isEmpty());

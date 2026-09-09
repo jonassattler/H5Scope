@@ -219,10 +219,17 @@ public:
         int firstColumn = 0;
         int columnSpan = -1;
         int maxColumns = 1;
+        /// Which reading of the dataset to take it from. Absent means the
+        /// table on screen, which is what the plot asks for. The image asks
+        /// for a different one per plane -- the same table with its colour
+        /// dimension held at one channel -- and carrying the axes on the
+        /// request is what lets all of its planes travel in one crossing
+        /// rather than one each.
+        std::optional<TableAxes> axes;
     };
 
-    /// Several rectangles of the table on screen, in one crossing of the
-    /// thread. Answers in the order asked, one entry per request.
+    /// Several rectangles of the dataset, in one crossing of the thread.
+    /// Answers in the order asked, one entry per request.
     ///
     /// The plot is why this exists. A line is one row of the table, so drawing
     /// n of them is n rectangles -- and asked one at a time each of those is a
@@ -280,10 +287,24 @@ private:
     /// Requests in flight, disowned whenever the source changes so a block
     /// read of the last dataset cannot be painted over this one.
     mutable H5Requests requests_;
-    /// The block a read is on its way for, so the same one is not asked for
+
+    /// Where a block starts, as the pair that names it.
+    struct Origin {
+        int row = 0;
+        int column = 0;
+        [[nodiscard]] bool operator==(const Origin&) const = default;
+    };
+
+    /// The blocks a read is on its way for, so the same one is not asked for
     /// once per cell of it.
-    mutable int askedRowOrigin_ = -1;
-    mutable int askedColumnOrigin_ = -1;
+    ///
+    /// A list rather than a single pair, because one layout pass routinely
+    /// wants two: a viewport of forty rows starting anywhere but a multiple of
+    /// sixty-four straddles a boundary. With one slot the second request
+    /// displaced the record of the first, and the cells belonging to the first
+    /// then asked for it all over again -- so the straddle cost three reads of
+    /// two blocks.
+    mutable std::vector<Origin> asked_;
 
     /// One rectangle of the *table*, not of the dataset: with a scattered
     /// selection the two are no longer the same shape.
@@ -303,9 +324,23 @@ private:
                                          const TableAxes& axes, Block block,
                                          QString& error);
 
+    /// The block holding (row, column), or null. Found rather than assumed:
+    /// see blocks_.
+    [[nodiscard]] const Block* blockAt(int row, int column) const;
+
     // Mutable: data() is const by Qt's contract but must be able to slide the
-    // cached block. Nothing observable outside the model changes.
-    mutable Block block_;
+    // cached blocks. Nothing observable outside the model changes.
+    //
+    /// The blocks held, newest first, capped at kCachedBlocks.
+    ///
+    /// More than one, because a viewport is not a block and does not line up
+    /// with one. Forty rows starting at row 40 cover the end of the block at 0
+    /// and the start of the block at 64, so a cache of one held whichever had
+    /// been painted last and re-read the other on every repaint -- a crossing
+    /// and four thousand elements per frame, for a table nobody had scrolled.
+    /// bench-data's `revisit` phase is the number that showed it, and
+    /// tests/test_cost.cpp is what keeps it at nothing.
+    mutable std::vector<Block> blocks_;
     mutable QString errorText_;
 
     /// What valueExtent() answers with, sampled once per table.
@@ -321,6 +356,11 @@ private:
 
     static constexpr int kBlockRows = 64;
     static constexpr int kBlockColumns = 64;
+    /// Blocks kept. Four covers any viewport that straddles a boundary in both
+    /// directions at once, which is the worst an unscrolled window can do, and
+    /// costs 16 384 cached cells -- the same order as the one-block cache it
+    /// replaces and nothing beside a dataset large enough to need it.
+    static constexpr std::size_t kCachedBlocks = 4;
     /// Cells per axis behind valueExtent(). The same trade the image makes at
     /// 1024: enough of the table that the extremes are the table's, few enough
     /// that asking is one read rather than a walk of a dataset larger than

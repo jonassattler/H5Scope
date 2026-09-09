@@ -11,7 +11,11 @@
 // `--scale` additionally writes example_scale.h5: the same kinds of object as
 // example.h5 holds one of, in the tens of thousands, over a few gigabytes of
 // storage. It is not written by default because it takes a minute and most of
-// a disk, and nothing in the test suite reads it -- tools/bench-tree does.
+// a disk. tools/bench-tree and tools/bench-data are what read it.
+//
+// tests/test_cost.cpp calls writeScaleFile() directly at a size that writes in
+// a moment, because what it asserts is that the cost does *not* grow with these
+// counts -- which is as visible at a thousand members as at eight thousand.
 
 #include "ExampleFile.hpp"
 

@@ -207,6 +207,21 @@ public:
     [[nodiscard]] int outstanding() const;
     [[nodiscard]] bool busy() const { return outstanding() > 0; }
 
+    /// How many times anything has crossed to the HDF5 thread, ever.
+    ///
+    /// Counted because it is the half of the cost that the file does not
+    /// decide. What a job *does* is bounded by how much of the dataset was
+    /// asked for; how many jobs there are is bounded by the code, and it is
+    /// the number that regresses -- a loop that asks per row rather than per
+    /// screenful reads exactly as many elements either way and takes a
+    /// thousand times as long to do it, because a crossing is a queued call
+    /// and, for invoke(), a wait on both sides of it.
+    ///
+    /// Monotonic and process-wide, so a caller measures a span by taking the
+    /// difference across whatever it is measuring. That is what tools/bench-data
+    /// reports and what tests/test_cost.cpp asserts on.
+    [[nodiscard]] long long crossings() const;
+
     /// Run this thread's event loop until nothing is outstanding, or the
     /// deadline passes. Returns whether it went quiet.
     ///
@@ -241,6 +256,8 @@ private:
     /// Touched only from inside a job, which is to say only on `worker_`.
     H5Session session_;
     std::atomic<int> outstanding_{0};
+    /// Never reset: see crossings(). A span is a difference, not a total.
+    std::atomic<long long> crossings_{0};
 };
 
 } // namespace gui

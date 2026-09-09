@@ -26,6 +26,8 @@
 //   make-example-file /tmp/h5bench --scale
 //   bench-tree /tmp/h5bench/example_scale.h5
 
+#include "BenchReport.hpp"
+
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
@@ -33,211 +35,18 @@
 #include "h5core/File.hpp"
 
 #include <QCoreApplication>
-#include <QElapsedTimer>
 #include <QModelIndex>
 #include <QString>
 
-#if defined(__unix__)
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
-#include <chrono>
-#include <cstddef>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <string>
-#include <type_traits>
-#include <utility>
+#include <string_view>
 #include <vector>
 
 namespace {
-
-/// Evict the file from the page cache, so the run measures the disk rather
-/// than the memory the last run left it in. posix_fadvise on clean pages needs
-/// no privilege, which drop_caches does -- and it drops only this file, so the
-/// rest of the machine is left alone.
-///
-/// It is the honest default for this benchmark. A large HDF5 file is opened
-/// once, cold, by a reader who then waits; measuring the second open of it
-/// measures a state the complaint was never about.
-bool evict([[maybe_unused]] const std::string& path)
-{
-#if defined(__unix__)
-    const int fd = ::open(path.c_str(), O_RDONLY);
-    if (fd < 0) {
-        return false;
-    }
-    ::fsync(fd);
-    const bool ok = ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) == 0;
-    ::close(fd);
-    return ok;
-#else
-    // Windows has no unprivileged way to drop one file from the cache, so the
-    // caller is told it did not happen and says so. `--warm` is the honest
-    // way to run this there.
-    return false;
-#endif
-}
-
-/// Read syscalls this process has made, from /proc/self/io's `syscr`.
-///
-/// The number that matters most here, and the reason it is measured at all.
-/// Wall-clock on a warm local NVMe says almost nothing about the machine the
-/// complaint came from: every one of these is a page-cache hit at a
-/// microsecond here and a round trip at several milliseconds over a network
-/// filesystem, which is where large HDF5 files usually live. A count is the
-/// same number on every machine; a duration is not.
-long long readSyscalls()
-{
-#if !defined(__linux__)
-    // Negative means "not available here", which measure() propagates and
-    // report() prints as "-". Returning 0 instead would put a plausible number
-    // in the column this whole tool exists to fill.
-    return -1;
-#else
-    std::FILE* io = std::fopen("/proc/self/io", "re");
-    if (io == nullptr) {
-        return -1;
-    }
-    char line[128] = {};
-    long long value = -1;
-    while (std::fgets(line, sizeof(line), io) != nullptr) {
-        if (std::sscanf(line, "syscr: %lld", &value) == 1) {
-            break;
-        }
-    }
-    std::fclose(io);
-    return value;
-#endif
-}
-
-struct Row
-{
-    const char* name;
-    double milliseconds;  ///< wall clock, waiting for the file included
-    double blocking;      ///< of which was spent inside a call on this thread
-    long long reads;
-    long long units;
-    const char* unitName;
-};
-
-void report(const std::vector<Row>& rows)
-{
-    // Two durations, and the second is the one the complaint was about. `ms` is
-    // how long the operation took; `ui ms` is how much of that the calling
-    // thread spent inside a model call and could not have been drawing a frame.
-    // On the synchronous version they were the same number.
-    std::printf("\n%-10s %10s %10s %12s %10s %9s   %s\n", "phase", "ms", "ui ms",
-                "reads", "count", "reads/ea", "unit");
-    std::printf("%-10s %10s %10s %12s %10s %9s   %s\n", "----------", "----------",
-                "----------", "------------", "----------", "---------",
-                "------------------------");
-    // Every count goes through here, so a column with nothing to say says "-"
-    // rather than 0. Two things have nothing to say: a phase whose unit does
-    // not apply, and -- on any platform without /proc/self/io -- the read
-    // counter itself. See readSyscalls().
-    const auto cell = [](long long value, char* buffer, std::size_t size) {
-        if (value < 0) {
-            std::snprintf(buffer, size, "-");
-        } else {
-            std::snprintf(buffer, size, "%lld", value);
-        }
-        return buffer;
-    };
-
-    long long totalReads = 0;
-    bool readsKnown = true;
-    double totalMs = 0.0;
-    double totalBlocking = 0.0;
-    for (const Row& row : rows) {
-        if (row.reads < 0) {
-            readsKnown = false;
-        } else {
-            totalReads += row.reads;
-        }
-        totalMs += row.milliseconds;
-        totalBlocking += row.blocking;
-
-        char reads[24];
-        char units[24];
-        char per[24];
-        cell(row.reads, reads, sizeof reads);
-        cell(row.units > 0 ? row.units : -1, units, sizeof units);
-        if (row.reads >= 0 && row.units > 0) {
-            std::snprintf(per, sizeof per, "%.2f",
-                          static_cast<double>(row.reads)
-                              / static_cast<double>(row.units));
-        } else {
-            std::snprintf(per, sizeof per, "-");
-        }
-
-        std::printf("%-10s %10.1f %10.1f %12s %10s %9s   %s\n", row.name,
-                    row.milliseconds, row.blocking, reads, units, per,
-                    row.units > 0 ? row.unitName : "");
-    }
-    char total[24];
-    std::printf("%-10s %10.1f %10.1f %12s\n\n", "total", totalMs, totalBlocking,
-                cell(readsKnown ? totalReads : -1, total, sizeof total));
-}
-
-/// One measured phase: how long it took and how many read syscalls it cost.
-/// Steady clock rather than QElapsedTimer's default so the numbers mean the
-/// same thing on every platform this is compared across.
-template<typename F>
-std::pair<double, long long> measure(F&& body)
-{
-    const long long readsBefore = readSyscalls();
-    const auto start = std::chrono::steady_clock::now();
-    body();
-    const auto end = std::chrono::steady_clock::now();
-    const long long readsAfter = readSyscalls();
-    // Unknown in, unknown out. Subtracting two -1s would otherwise report a
-    // confident zero for a count nothing measured.
-    const long long reads =
-        (readsBefore < 0 || readsAfter < 0) ? -1 : readsAfter - readsBefore;
-    return {std::chrono::duration<double, std::milli>(end - start).count(),
-            reads};
-}
-
-/// `rows.push_back({name, ...measure(body)..., units, unit})` without writing
-/// the structured binding out seven times.
-/// How much of a phase was spent inside a call on this thread. Accumulated by
-/// blocking() below, which every model call in the benchmark is wrapped in.
-double blockingMilliseconds = 0.0;
-
-/// Time one call on this thread and add it to the phase's blocking total. What
-/// is being counted is the part a frame would have had to wait for.
-template<typename F>
-auto blocking(F&& body) -> decltype(body())
-{
-    const auto start = std::chrono::steady_clock::now();
-    if constexpr (std::is_void_v<decltype(body())>) {
-        body();
-        blockingMilliseconds +=
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start)
-                .count();
-    } else {
-        auto result = body();
-        blockingMilliseconds +=
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start)
-                .count();
-        return result;
-    }
-}
-
-template<typename F>
-void phase(std::vector<Row>& rows, const char* name, F&& body, long long& units,
-           const char* unitName)
-{
-    blockingMilliseconds = 0.0;
-    const auto [milliseconds, reads] = measure(std::forward<F>(body));
-    rows.push_back({name, milliseconds, blockingMilliseconds, reads, units, unitName});
-}
 
 /// Every role the tree delegate declares as a required property, asked of one
 /// index. This is the unit of work a row costs when it scrolls into view, and
@@ -254,7 +63,7 @@ constexpr int kDelegateRoles[] = {
 
 void askEveryRole(const gui::H5TreeModel& model, const QModelIndex& index)
 {
-    blocking([&] {
+    bench::blocking([&] {
         for (const int role : kDelegateRoles) {
             (void)model.data(index, role);
         }
@@ -278,13 +87,13 @@ long long expand(gui::H5TreeModel& model, const QModelIndex& parent, int depth)
 
     for (int step = 0; step <= depth && !level.empty(); ++step) {
         for (const QModelIndex& node : level) {
-            blocking([&] { (void)model.rowCount(node); });
+            bench::blocking([&] { (void)model.rowCount(node); });
         }
         h5.drain();
 
         std::vector<QModelIndex> next;
         for (const QModelIndex& node : level) {
-            const int rows = blocking([&] { return model.rowCount(node); });
+            const int rows = bench::blocking([&] { return model.rowCount(node); });
             total += rows;
             for (int row = 0; row < rows; ++row) {
                 next.push_back(model.index(row, 0, node));
@@ -378,18 +187,18 @@ int main(int argc, char** argv)
     }
 
     try {
-        if (cold && !evict(path)) {
+        if (cold && !bench::evict(path)) {
             std::fprintf(stderr,
                          "bench-tree: could not evict %s from the page cache; "
                          "the numbers below are warm\n",
                          path.c_str());
         }
 
-        std::vector<Row> rows;
-        long long none = 0;
+        std::vector<bench::Row> rows;
+        const long long none = 0;
 
         auto& h5 = gui::H5Thread::instance();
-        phase(rows, "open", [&] {
+        bench::phase(rows, "open", [&] {
             h5.invoke([&](gui::H5Session& session) {
                 session.open(path);
                 return 0;
@@ -398,7 +207,7 @@ int main(int argc, char** argv)
 
         gui::H5TreeModel model;
         long long topLevel = 0;
-        phase(rows, "root", [&] {
+        bench::phase(rows, "root", [&] {
             model.open();
             // The model reads asynchronously now, so every phase below settles
             // the queue before it stops the clock. What is being measured is
@@ -411,7 +220,7 @@ int main(int argc, char** argv)
         rows.back().unitName = "top-level rows";
 
         long long populated = 0;
-        phase(rows, "expand",
+        bench::phase(rows, "expand",
               [&] { populated = expand(model, QModelIndex{}, depth); }, populated,
               "rows populated");
         rows.back().units = populated;
@@ -420,7 +229,7 @@ int main(int argc, char** argv)
         collect(model, QModelIndex{}, visited);
         long long rendered = static_cast<long long>(visited.size());
 
-        phase(rows, "rows", [&] {
+        bench::phase(rows, "rows", [&] {
             for (const QModelIndex& index : visited) {
                 askEveryRole(model, index);
             }
@@ -431,7 +240,7 @@ int main(int argc, char** argv)
         // cached: what scrolling back over ground already seen costs, which is
         // the difference between a tree that feels alive and one that does not.
         long long screenful = std::min<long long>(viewport, rendered);
-        phase(rows, "viewport", [&] {
+        bench::phase(rows, "viewport", [&] {
             for (long long i = 0; i < screenful; ++i) {
                 askEveryRole(model, visited[static_cast<std::size_t>(i)]);
             }
@@ -457,17 +266,17 @@ int main(int argc, char** argv)
             h5.drain();
             const QModelIndex again = cold.indexForPath(widePath);
             long long listed = 0;
-            phase(rows, "listing", [&] {
+            bench::phase(rows, "listing", [&] {
                 // The click, and then the answer. `ui ms` on this row is what
                 // the click itself cost the window.
-                (void)blocking([&] { return cold.rowCount(again); });
+                (void)bench::blocking([&] { return cold.rowCount(again); });
                 gui::H5Thread::instance().drain();
-                listed = blocking([&] { return cold.rowCount(again); });
+                listed = bench::blocking([&] { return cold.rowCount(again); });
             }, listed, "members listed on expand");
             rows.back().units = listed;
 
             long long shownRows = std::min<long long>(viewport, listed);
-            phase(rows, "screenful", [&] {
+            bench::phase(rows, "screenful", [&] {
                 // One layout pass of forty rows, which the model turns into one
                 // job, and then the frame in which the answers land.
                 for (long long row = 0; row < shownRows; ++row) {
@@ -485,7 +294,7 @@ int main(int argc, char** argv)
         gui::TreeFilterProxyModel proxy;
         proxy.setSourceModel(&model);
         long long shown = 0;
-        phase(rows, "filter", [&] {
+        bench::phase(rows, "filter", [&] {
             proxy.setFilterText(filterText);
             shown = proxy.rowCount({});
         }, rendered, "rows tested");
@@ -495,9 +304,9 @@ int main(int argc, char** argv)
 
         const QString target =
             model.pathAt(visited.empty() ? QModelIndex{} : visited.back());
-        phase(rows, "path", [&] { (void)model.indexForPath(target); }, none, "");
+        bench::phase(rows, "path", [&] { (void)model.indexForPath(target); }, none, "");
 
-        report(rows);
+        bench::report(rows);
         gui::H5Thread::shutdown();
         return 0;
     }

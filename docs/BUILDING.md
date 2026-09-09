@@ -261,3 +261,31 @@ Two design-token checks run in CI and under CTest, before the build:
   font families named anywhere outside `src/qml/Theme.qml`.
 - `tools/check-elided-text.sh` rejects text that can elide without a tooltip to
   read it in full.
+
+### What things cost
+
+Two benchmarks, and a suite that asserts what they measure.
+
+`tools/bench-tree` and `tools/bench-data` report wall-clock milliseconds, the
+part of them spent blocking the calling thread, read syscalls, and *crossings*
+— jobs sent to the HDF5 thread. Neither is a test and neither has a threshold:
+a duration measures the machine, and a wall-clock bound on a shared CI runner
+fails for reasons that have nothing to do with this project. They are what to
+reach for when a file is slow.
+
+```sh
+make-example-file /tmp/h5bench --scale     # 2.2 GB, ~35 000 objects
+bench-tree /tmp/h5bench/example_scale.h5 --depth 2
+bench-data /tmp/h5bench/example_scale.h5
+```
+
+`--small` writes a file a tenth the size, which is enough to see the shape of
+the numbers.
+
+What *does* fail a build is `tests/test_cost.cpp`, which asserts on counts and
+never on time — the same number on every machine. It drives the real table,
+plot and image over `tests/support/CountingSource.hpp`, a `DataSource` that
+answers like a dataset and writes down what it was asked, so it needs no large
+file. CTest also runs both benchmarks once over a small generated file
+(`cmake/RunBenchmarks.cmake`); that asserts nothing except that the tools still
+work, which is worth a test of its own because nothing else builds or runs them.

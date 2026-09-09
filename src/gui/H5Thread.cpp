@@ -104,11 +104,16 @@ void H5Thread::shutdown()
 
 void H5Thread::postJob(std::function<void()> job)
 {
+    // Counted here rather than in submit(), because this is where the crossing
+    // actually is. invoke() run from a job already on the worker reaches
+    // neither of these and is not a crossing.
+    crossings_.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(runner_, std::move(job), Qt::QueuedConnection);
 }
 
 void H5Thread::invokeBlocking(const std::function<void()>& job)
 {
+    crossings_.fetch_add(1, std::memory_order_relaxed);
     QMetaObject::invokeMethod(runner_, job, Qt::BlockingQueuedConnection);
 }
 
@@ -144,6 +149,11 @@ void H5Thread::finished()
 int H5Thread::outstanding() const
 {
     return outstanding_.load();
+}
+
+long long H5Thread::crossings() const
+{
+    return crossings_.load(std::memory_order_relaxed);
 }
 
 bool H5Thread::drain(int timeoutMilliseconds)
