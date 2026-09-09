@@ -118,14 +118,26 @@ endif()
 # would drown the ones that are. CMake compiles imported targets' include
 # directories with -isystem, which is what already keeps them quiet.
 if(MSVC)
-  # /external:W0 is what makes /W4 usable here. CMake passes a dependency's
-  # include directories as /external:I, which is MSVC's -isystem, but unlike
-  # GCC that alone silences nothing: the level for external headers is set
-  # separately, and left at the default a Windows build reported eighteen
-  # unreachable-code warnings from inside Qt's own qjsengine.h and nothing
-  # from this project at all. Warnings nobody here can fix are what teaches a
-  # reader to stop reading them.
-  add_compile_options(/W4 /external:W0)
+  # /W4, and then the two flags that make it readable.
+  #
+  # A Windows build at /W4 reported eighteen C4702 "unreachable code" warnings
+  # and nothing else. All eighteen are one line of Qt's own qjsengine.h, reached
+  # from every translation unit that includes it. Warnings nobody here can act
+  # on are what teach a reader to stop reading them.
+  #
+  # /external:W0 is the mechanism that *should* fix that: it sets the warning
+  # level for headers reached through /external:I, which is MSVC's -isystem.
+  # It does nothing on this toolchain, and the reason is worth writing down --
+  # CMake is not passing /external:I for these includes at all, so there is no
+  # external header for the level to apply to. It stays because it is the right
+  # switch and costs nothing if that changes.
+  #
+  # /wd4702 is what actually silences it. Suppressing a warning outright is a
+  # real cost -- it hides genuine unreachable code in this project too -- and it
+  # is accepted here on the evidence: C4702 has never once fired on this
+  # codebase, and fires eighteen times per build on a header this project does
+  # not own. GCC's -Wall has no equivalent and reports nothing here.
+  add_compile_options(/W4 /external:W0 /wd4702)
 else()
   add_compile_options(-Wall -Wextra)
 endif()
