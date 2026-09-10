@@ -539,7 +539,28 @@ Item {
     // this rather than resetting, so nothing else here has to react to it.
     Connections {
         target: grid.model
+
         function onFloatFormatChanged() { Qt.callLater(grid.remeasure) }
+
+        // A block landing is the first moment there is anything to fit a
+        // column to, and until this was here it was a moment nothing watched.
+        //
+        // `measure()` walks the cells the model has already read and no
+        // others, and a dataset's cells are read on the HDF5 thread: at the
+        // instant the selection changes there are none, because setSource()
+        // has just emptied the cache. So the remeasure below -- the only one
+        // there was -- ran against an empty model, took 0 for the widest cell
+        // and left the columns at the floor. What made it look intermittent
+        // rather than broken is that `measure()` is also driven off the
+        // TableView's visible range: switching between two datasets of
+        // different shape moves that range after the data arrives and fits the
+        // columns by accident, and switching between two of the same shape
+        // does not move it at all.
+        //
+        // Qt.callLater collapses a screenful of blocks arriving together into
+        // one pass, and `measure` asks only about the rectangle already on
+        // screen, so this reads nothing the view was not reading anyway.
+        function onDataChanged() { Qt.callLater(grid.measure) }
     }
 
     // A new dataset invalidates any cell the user had picked in the old one,

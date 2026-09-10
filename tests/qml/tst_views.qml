@@ -704,6 +704,51 @@ TestCase {
         Theme.pixelRatio = was
     }
 
+    /// Auto width fits the columns of whatever is selected, not of whichever
+    /// dataset happened to be first.
+    ///
+    /// `measure()` walks the cells the model has already read, and those are
+    /// read on the HDF5 thread: when the selection changes there are none,
+    /// because setSource() has just emptied the cache. The one remeasure the
+    /// grid did ran there, against an empty model, and took 0. Nothing then
+    /// looked again once the blocks landed, so the columns kept the floor
+    /// width. It looked intermittent rather than broken because `measure()` is
+    /// also driven off the TableView's visible range -- a switch between two
+    /// datasets of *different* shape moves that range after the data arrives
+    /// and fits the columns by accident, which is why the bug reads as "auto
+    /// sizing breaks when switching between datasets".
+    function test_auto_width_fits_every_dataset_and_not_only_the_first() {
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        const grid = findChild(view, "valueGrid")
+        verify(grid, "the value grid must be reachable")
+
+        /// Wait for the blocks to land and the width to follow them.
+        const fitted = (path) => {
+            verify(select(path))
+            tryVerify(() => grid.widestCell > 0, 10000,
+                      "nothing was ever measured for " + path
+                      + ", so its columns are at the floor width")
+            waitForRendering(view)
+        }
+
+        verify(grid.autoWidth, "auto width is the default")
+
+        // The first selection this grid ever sees.
+        fitted("/matrix")
+
+        // ...and the next, which is the half that was broken. Wider values
+        // than /matrix's, so the fit is visible in the width and not only in
+        // the measurement: past the floor the slider would give it.
+        fitted("/compressed")
+        verify(grid.columnWidth > Theme.s11,
+               "a column of four-digit values must be wider than the floor: "
+               + grid.columnWidth)
+
+        // ...and back, where the shape returns to what it was two selections
+        // ago and the visible range therefore does not move at all.
+        fitted("/matrix")
+    }
+
     function test_file_system_helpers_answer_the_picker() {
         verify(String(FileSystem.home).indexOf("file://") === 0)
         verify(FileSystem.places.length > 0)
