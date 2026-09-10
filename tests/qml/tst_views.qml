@@ -777,7 +777,7 @@ TestCase {
             const rules = []
             for (let i = 0; i < row.children.length; ++i) {
                 if (row.children[i].color !== undefined
-                        && row.children[i].height === Theme.borderWidth)
+                        && row.children[i].height === Theme.hairline)
                     rules.push(row.children[i])
             }
             compare(rules.length, 1, "every row declares its separator")
@@ -787,6 +787,58 @@ TestCase {
                 ++lastRows
         }
         verify(lastRows > 0, "some row has to be the last one")
+    }
+
+    /// Every row of a panel is a whole number of physical pixels tall.
+    ///
+    /// This is the table's rule -- see Theme.snap -- applied where it was
+    /// missing. A row is as tall as its text and text measures in fractions of
+    /// a logical pixel, so at a fractional display scale every row boundary in
+    /// the panel lands at a different fraction of a physical one and the
+    /// hairline drawn there is smeared over two rows of the screen at a
+    /// different share of each. Left unsnapped at 150% every row here came out
+    /// 27 logical pixels, which is 40.5 physical: every separator in the tab
+    /// on a half-pixel, which is what "these lines are too thin and render
+    /// inconsistently" looks like from the other side of the screen.
+    ///
+    /// 1.5 rather than the ratio the test machine happens to have: headless is
+    /// 1.0, where snapping is the identity and this would assert nothing.
+    function test_panel_rows_land_on_the_device_pixel_grid() {
+        const was = Theme.pixelRatio
+        Theme.pixelRatio = 1.5
+        try {
+            verify(select("/compressed"))
+            const win = createTemporaryObject(infoWindowComponent, testCase)
+            verify(win, "the information window must instantiate")
+            waitForRendering(win.info)
+
+            const rows = []
+            const visit = (item) => {
+                if (item.last !== undefined && item.modelData !== undefined)
+                    rows.push(item)
+                for (let i = 0; i < item.children.length; ++i)
+                    visit(item.children[i])
+            }
+            visit(win.info)
+            verify(rows.length > 0, "the tab must draw rows")
+
+            for (const row of rows) {
+                const physical = row.height * 1.5
+                fuzzyCompare(physical, Math.round(physical), 1e-6,
+                             "the row for \"" + row.modelData.label
+                             + "\" is " + row.height + " logical pixels, which"
+                             + " is " + physical + " physical ones")
+            }
+
+            // And the rule itself, for the same reason: one logical pixel is
+            // one and a half physical at this scale, and half a pixel of a
+            // line is half its colour.
+            const rulePhysical = Theme.hairline * 1.5
+            fuzzyCompare(rulePhysical, Math.round(rulePhysical), 1e-6,
+                         "a hairline must be a whole number of pixels")
+        } finally {
+            Theme.pixelRatio = was
+        }
     }
 
     /// Every TextEdit under `root` -- which on the Information tab is every
