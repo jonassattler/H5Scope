@@ -535,7 +535,16 @@ TestCase {
         verify(image.backgroundCustom)
         compare(String(image.ground), String(Qt.color("#336699")))
 
-        // The checkerboard overrides the colour outright.
+        // The checkerboard is what a picture stands on until the reader says
+        // otherwise: a flat ground leaves them deciding whether a pale corner
+        // is a pale pixel or no pixel at all.
+        verify(image.checkerboard, "the checkerboard is the default ground")
+
+        // It overrides the colour outright, which is why the swatch beside it
+        // goes dead while it is on -- and the chosen colour is still there
+        // underneath, for when it is switched off again.
+        image.checkerboard = false
+        compare(String(image.ground), String(Qt.color("#336699")))
         image.checkerboard = true
         compare(image.checkerboard, true)
     }
