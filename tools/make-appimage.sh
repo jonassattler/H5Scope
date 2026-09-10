@@ -176,8 +176,17 @@ printf 'X-AppImage-Version=%s\n' "$version" >> "$appdir/h5scope.desktop"
 install -m 644 "$appdir/h5scope.desktop" "$appdir/usr/share/applications/h5scope.desktop"
 
 install -m 644 "$packaging/h5scope.png" "$appdir/h5scope.png"
+# Every size the theme can be asked for, each drawn from the vector at that
+# size rather than resampled from the 256 -- see tools/make-icons.sh. A panel
+# asking hicolor for a 24x24 gets the render meant for 24x24, and only falls
+# back to scaling something else when there is nothing else to give it.
 install -m 644 "$packaging/h5scope.png" \
     "$appdir/usr/share/icons/hicolor/256x256/apps/h5scope.png"
+for size in 16 24 32 48 64 128; do
+    install -d "$appdir/usr/share/icons/hicolor/${size}x${size}/apps"
+    install -m 644 "$packaging/icons/h5scope-$size.png" \
+        "$appdir/usr/share/icons/hicolor/${size}x${size}/apps/h5scope.png"
+done
 install -m 644 "$packaging/h5scope.svg" \
     "$appdir/usr/share/icons/hicolor/scalable/apps/h5scope.svg"
 # The thumbnail a file manager shows for the AppImage itself.

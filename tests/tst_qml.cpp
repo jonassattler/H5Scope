@@ -3,6 +3,7 @@
 
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
+#include "gui/EmbeddedIcon.hpp"
 #include "support/TestFile.hpp"
 
 #include <QQmlContext>
@@ -50,6 +51,32 @@ private:
     gui::EmbeddedFontResult result_;
 };
 
+/// Exposed to QML as `EmbeddedIcon`, on the same reasoning as FontProbe above:
+/// the icon has to come out of the binary, and asking the desktop what it drew
+/// would pass on a machine where the icon happens to be installed.
+///
+/// `sizes` is what the QIcon actually holds, which is the assertion worth
+/// making: a set that reports only 256x256 is a build in which the six small
+/// renders never reached the resource, and one that reports seven is a set Qt
+/// can pick from rather than resample.
+class IconProbe : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QStringList sizes READ sizes CONSTANT)
+
+public:
+    explicit IconProbe(QObject* parent = nullptr) : QObject(parent) {}
+
+    [[nodiscard]] QStringList sizes() const
+    {
+        QStringList found;
+        for (const QSize& size : gui::applicationIcon().availableSizes()) {
+            found << QStringLiteral("%1x%2").arg(size.width()).arg(size.height());
+        }
+        return found;
+    }
+};
+
 /// Exposed to QML as `TestFixture`, so the .qml suites know which file to open.
 class TestFixture : public QObject
 {
@@ -90,6 +117,9 @@ public slots:
         // instantiates Setup before it constructs the QGuiApplication, and the
         // font database cannot be touched until that exists.
         fonts_ = std::make_unique<FontProbe>();
+        // Same reason as the fonts: a QPixmap needs the QGuiApplication that
+        // does not exist when Setup is constructed.
+        icon_ = std::make_unique<IconProbe>();
 
         // The image view resolves its source through the provider, exactly
         // as it does under main.cpp; without it the suite would exercise a
@@ -100,6 +130,8 @@ public slots:
                                                   fixture_.get());
         engine->rootContext()->setContextProperty(QStringLiteral("EmbeddedFonts"),
                                                   fonts_.get());
+        engine->rootContext()->setContextProperty(QStringLiteral("EmbeddedIcon"),
+                                                  icon_.get());
     }
 
 private:
@@ -107,6 +139,7 @@ private:
     h5test::TempFile temp_{"qml"};
     std::unique_ptr<TestFixture> fixture_;
     std::unique_ptr<FontProbe> fonts_;
+    std::unique_ptr<IconProbe> icon_;
 };
 
 QUICK_TEST_MAIN_WITH_SETUP(qml, Setup)

@@ -20,6 +20,7 @@ qt_add_library(gui STATIC
   FileSystem.cpp
   FocusRelease.cpp
   EmbeddedFonts.cpp
+  EmbeddedIcon.cpp
 )
 
 # The design system's typefaces travel inside the binary. A GUI application
@@ -41,6 +42,40 @@ qt_add_resources(gui "fonts"
     fonts/IBMPlexMono-Regular.ttf
     fonts/IBMPlexMono-Medium.ttf
     fonts/LICENSE.txt
+)
+
+# The application icon travels inside the binary too, and for a reason the
+# fonts do not have: on Linux there is nowhere else for it to be. A Windows
+# executable carries its icon in its own resource (packaging/h5scope.rc.in) and
+# an AppImage carries one in the AppDir, but an ELF has no such slot -- a bare
+# `./H5Scope-0.3.3` on a machine with nothing installed took whatever the
+# window manager draws for an application it has never heard of. main.cpp hands
+# these to QGuiApplication::setWindowIcon, which is what X11 puts in
+# _NET_WM_ICON and what every Qt window falls back on.
+#
+# Seven sizes rather than one, because each is drawn from the vector at the
+# size it will be shown at: the icon's grid lines are three pixels wide at 256
+# and survive to 16 only by being redrawn there. Handing Qt a single 256 and
+# letting it resample is the one thing tools/make-icons.sh exists to avoid, and
+# it would be undone here.
+#
+# The 256 is packaging/h5scope.png -- the file the AppImage and the hicolor
+# theme install -- aliased into the set rather than committed a second time
+# under a second name. The other six have no other consumer and live in
+# packaging/icons/.
+set(h5scope_icon_files "${CMAKE_SOURCE_DIR}/packaging/h5scope.png")
+set_source_files_properties("${CMAKE_SOURCE_DIR}/packaging/h5scope.png"
+  PROPERTIES QT_RESOURCE_ALIAS "h5scope-256.png")
+foreach(size IN ITEMS 16 24 32 48 64 128)
+  set(h5scope_icon "${CMAKE_SOURCE_DIR}/packaging/icons/h5scope-${size}.png")
+  set_source_files_properties("${h5scope_icon}"
+    PROPERTIES QT_RESOURCE_ALIAS "h5scope-${size}.png")
+  list(APPEND h5scope_icon_files "${h5scope_icon}")
+endforeach()
+
+qt_add_resources(gui "icons"
+  PREFIX "/icons"
+  FILES ${h5scope_icon_files}
 )
 
 # The project's own licence and the notices its dependencies require, on the

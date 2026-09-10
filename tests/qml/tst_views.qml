@@ -3053,6 +3053,30 @@ TestCase {
         compare(Theme.monoFamilies[0], "IBM Plex Mono")
     }
 
+    function test_the_icon_comes_from_the_binary_at_every_size() {
+        // Same argument as the fonts above. On Linux there is nowhere but the
+        // binary for this to be: a Windows executable has a resource slot and
+        // an AppImage has an AppDir, and an ELF has neither, so a bare
+        // ./H5Scope took whatever the desktop draws for a program it has never
+        // heard of.
+        const sizes = EmbeddedIcon.sizes
+        const wanted = ["16x16", "24x24", "32x32", "48x48", "64x64",
+                        "128x128", "256x256"]
+        for (const size of wanted) {
+            verify(sizes.indexOf(size) !== -1,
+                   "the icon must carry a " + size + " render; it has ["
+                   + sizes.join(", ") + "]")
+        }
+
+        // Seven entries and not one. A QIcon holding only the 256 still draws
+        // at every size -- by resampling it -- so the failure this guards
+        // against looks exactly like success until the icon is 16 pixels wide
+        // and its grid has turned to haze. tools/make-icons.sh draws each of
+        // these from the vector; this is what says they all arrived.
+        compare(sizes.length, wanted.length,
+                "unexpected icon sizes: [" + sizes.join(", ") + "]")
+    }
+
     function test_the_menu_bar_carries_a_file_menu() {
         // design.txt asks for a proper menu rather than a strip of buttons, so
         // what has to hold is that these are real Menus with real Actions --
