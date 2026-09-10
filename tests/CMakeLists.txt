@@ -152,3 +152,27 @@ add_test(NAME elided_text
   COMMAND bash ${CMAKE_SOURCE_DIR}/tools/check-elided-text.sh
                ${CMAKE_SOURCE_DIR}/src/qml
 )
+
+# --- the README's pictures can still be taken ------------------------------
+# tools/make-screenshots drives the whole application -- the QML root, the tree,
+# the three views -- and photographs it, which makes it the one thing here that
+# would break silently: nobody runs it except when the README is being
+# refreshed, and by then the reason it broke is a hundred commits back.
+#
+# Into the build tree, not docs/screenshots: what is asserted is that the
+# pictures can be taken, not that they are the ones committed. Two machines do
+# not rasterise text identically and a byte comparison would fail on the second
+# one; the program itself checks what can be checked everywhere -- that the
+# window came out the size it asked for, that each tab it wanted is the tab it
+# got, and that something was actually drawn.
+add_test(NAME screenshots
+  COMMAND make-screenshots --out ${CMAKE_CURRENT_BINARY_DIR}/screenshots
+)
+# It draws real frames, so it takes the rendering lock like the two suites that
+# do: the QML suite beside it measures itself in wall-clock seconds, and on a
+# two-core runner it would be measuring this as well. See the note there.
+set_tests_properties(screenshots PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  RESOURCE_LOCK rendering
+  TIMEOUT 300
+)
