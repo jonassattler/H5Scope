@@ -20,7 +20,7 @@ Item {
     id: icon
 
     /// "rotateLeft" | "rotateRight" | "flipHorizontal" | "flipVertical"
-    /// | "close" | "grip"
+    /// | "close" | "grip" | "plus"
     property string name
     property color color: Theme.textPrimary
     /// Stroke weight on the 24-unit grid; 2 is the system's line icon weight.
@@ -41,6 +41,7 @@ Item {
             case "flipVertical":   return flipVerticalIcon
             case "close":          return closeIcon
             case "grip":           return gripIcon
+            case "plus":           return plusIcon
             default:               return null
             }
         }
@@ -77,6 +78,42 @@ Item {
                 startX: 17 * icon.unit
                 startY: 7 * icon.unit
                 PathLine { x: 7 * icon.unit; y: 17 * icon.unit }
+            }
+        }
+    }
+
+    // The same two strokes as the close above, turned 45 degrees -- which is
+    // literally what a plus is, and drawing it that way is what keeps the two
+    // the same weight and the same inset when they sit in the same column.
+    // Squared off rather than round-capped at the ends: a plus reads as a
+    // crosshair, and the round cap that softens a dismissal makes an add look
+    // like a smudge at 18 pixels.
+    Component {
+        id: plusIcon
+
+        Shape {
+            preferredRendererType: Shape.CurveRenderer
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+
+                startX: 12 * icon.unit
+                startY: 6 * icon.unit
+                PathLine { x: 12 * icon.unit; y: 18 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+
+                startX: 6 * icon.unit
+                startY: 12 * icon.unit
+                PathLine { x: 18 * icon.unit; y: 12 * icon.unit }
             }
         }
     }
