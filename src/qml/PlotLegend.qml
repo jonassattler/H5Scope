@@ -31,7 +31,12 @@ Rectangle {
     /// name writes.
     property var target
 
-    readonly property var plot: AppController.datasetPlot
+    /// Read off the surface rather than off the controller, so a legend is
+    /// always describing the plot it is sitting on. The custom plot tabs are
+    /// what made that distinction matter: this file used to name
+    /// AppController.datasetPlot itself, which is right for exactly one of the
+    /// plots this component now serves.
+    readonly property var plot: legend.target ? legend.target.plot : null
     /// Lines in the table, which is how many rows the list has.
     readonly property int total: plot ? plot.sourceSeriesCount : 0
     /// How many a new selection opens on. Read off the plot rather than
@@ -52,7 +57,7 @@ Rectangle {
     x: legend.open ? 0 : -width
 
     Connections {
-        target: AppController.datasetPlot
+        target: legend.plot
         function onChanged() { legend.revision++ }
     }
 
@@ -167,7 +172,10 @@ Rectangle {
 
                     AppCheckBox {
                         checked: row.drawn
-                        onToggled: legend.plot.setSeriesVisible(row.index, checked)
+                        onToggled: {
+                            if (legend.plot)
+                                legend.plot.setSeriesVisible(row.index, checked)
+                        }
                     }
 
                     // The colour the line is actually drawn in, which is the
@@ -255,7 +263,7 @@ Rectangle {
                     // the button still does what it says, and the reader is
                     // told what they are about to ask for before they ask.
                     variant: legend.total > 500 ? "caution" : "secondary"
-                    onClicked: legend.plot.selectAll()
+                    onClicked: { if (legend.plot) legend.plot.selectAll() }
 
                     AppToolTip {
                         shown: parent.hovered
@@ -274,7 +282,7 @@ Rectangle {
                     text: qsTr("first %1").arg(legend.limit)
                     size: "sm"
                     visible: legend.total > legend.limit
-                    onClicked: legend.plot.selectFirst(legend.limit)
+                    onClicked: { if (legend.plot) legend.plot.selectFirst(legend.limit) }
 
                     AppToolTip {
                         shown: parent.hovered
@@ -286,7 +294,7 @@ Rectangle {
                     Layout.fillWidth: true
                     text: qsTr("none")
                     size: "sm"
-                    onClicked: legend.plot.selectNone()
+                    onClicked: { if (legend.plot) legend.plot.selectNone() }
                 }
             }
         }

@@ -33,39 +33,50 @@ Item {
     /// it that nobody asked to see.
     property bool active: true
 
-    readonly property var plot: AppController.datasetPlot
-    readonly property bool drawable: active && AppController.datasetIsNumeric
+    /// The object being drawn. AppController.datasetPlot by default, which is
+    /// the selected dataset read as lines; a custom plot tab hands this its
+    /// own object instead. Everything below asks that object the same
+    /// questions -- which lines, how many points, what the extent is, fill
+    /// this series -- and none of them are questions about a selection, which
+    /// is what makes one surface serve both.
+    property var plot: AppController.datasetPlot
+    /// Whether what `plot` is drawing is something this can draw at all. For
+    /// the selected dataset that is a question about its datatype; a custom
+    /// plot answers it for itself.
+    property bool sourceUsable: AppController.datasetIsNumeric
+    readonly property bool drawable: active && surface.sourceUsable
                                      && plot.hasData
 
-    // --- the x axis, as start / step / stop ------------------------------
-    // The x values themselves, not a window onto them. Element i of the data
-    // is drawn at `start + i * step`, and `stop` is where the axis ends -- so
-    // these three numbers say what the columns of the table *are*, which is
-    // the question a dataset that is a measurement against something asks.
-    //
-    // Any two of them determine the third, and the third is computed rather
-    // than typed, so they can never contradict each other. The default is what
-    // a reader would write for data with no x of its own: 0 : 1 : len(data),
-    // the element's own index, which is exactly what the grid's column headers
-    // count.
-    //
-    // The upper bound is exclusive, as it is everywhere else in this program
-    // -- the data settings panel's index expressions are numpy's and h5py's --
-    // so `stop = start + step * len`, and 0 : 1 : len(data) is len(data)
-    // points in both places.
-    property real rangeStart: 0.0
-    property real rangeStep: 1.0
-    property real rangeStop: 1.0
+    /// Which group the reader's settings are filed under, per dataset. Empty
+    /// disables the memory entirely -- see DatasetMemory, which does nothing
+    /// without a group -- which is what a plot that is not about the selection
+    /// wants: its settings belong to the tab, not to whatever the tree has
+    /// highlighted.
+    property string memoryGroup: "plotView"
+    property string plotMemoryGroup: "plot"
 
-    /// Which of "start", "step", "stop" the reader has stated, oldest first.
-    /// At most two: a third pushes out the oldest, so the two most recent
-    /// edits are always the ones in force and nothing has to be released
-    /// before it can be typed over.
-    property var locks: []
+    // --- the x axis, as start / step / stop ------------------------------
+    // The three numbers and the two-of-three solver live in RangeAxis, which
+    // is where they went when a second plot started asking for them. The four
+    // aliases below are the surface's own public names, kept because the
+    // settings panel writes them, DatasetMemory files them by name, and the
+    // QML suite reads them.
+    readonly property RangeAxis xAxis: RangeAxis {
+        id: rangeAxis
+
+        length: surface.dataLength
+    }
+
+    property alias rangeStart: rangeAxis.start
+    property alias rangeStep: rangeAxis.step
+    property alias rangeStop: rangeAxis.stop
+    property alias locks: rangeAxis.locks
 
     /// Kept for readers of this surface that only want to know whether the x
     /// axis is the data's own.
-    readonly property bool autoAxis: locks.length === 0
+    readonly property bool autoAxis: xAxis.automatic
+    readonly property var resolved: xAxis.resolved
+    readonly property bool rangeValid: xAxis.valid
 
     /// Roughly how many ticks an axis carries.
     readonly property int tickTarget: 8
@@ -78,94 +89,24 @@ Item {
     /// while there is no dataset.
     readonly property int dataLength: Math.max(surface.plot.sourcePointCount, 1)
 
-    /// Whether the three numbers describe an axis at all. A step of zero has
-    /// no ticks and a stop below its start has no extent; either is something
-    /// the reader typed on the way to something else, so it is reported rather
-    /// than drawn.
-    readonly property bool rangeValid: resolved.step > 0
-                                       && resolved.stop > resolved.start
-                                       && isFinite(resolved.start)
-                                       && isFinite(resolved.step)
-                                       && isFinite(resolved.stop)
+    function locked(which) { return xAxis.locked(which) }
+    function lock(which) { xAxis.lock(which) }
+    function unlock(which) { xAxis.unlock(which) }
+    function setLocked(which, on) { xAxis.setLocked(which, on) }
 
-    function locked(which) {
-        return surface.locks.indexOf(which) !== -1
-    }
-
-    /// State `which` at the value the reader just entered, dropping the oldest
-    /// of the two already stated if that would make three.
-    function lock(which) {
-        if (surface.locked(which))
-            return
-        const next = surface.locks.concat([which])
-        surface.locks = next.length > 2 ? next.slice(next.length - 2) : next
-    }
-
-    function unlock(which) {
-        surface.locks = surface.locks.filter(entry => entry !== which)
-    }
-
-    function setLocked(which, on) {
-        if (on)
-            surface.lock(which)
-        else
-            surface.unlock(which)
-    }
-
-    /// The three numbers the axis is actually drawn with.
+    /// Whether the trio above is what puts the points along x.
     ///
-    /// With two stated the third follows from `stop = start + step * len`.
-    /// With one, the default supplies the next one along -- start before step
-    /// before stop -- and the third still follows, so there is exactly one
-    /// answer whatever the reader has said and nothing is ever derived from a
-    /// number they cannot see.
-    readonly property var resolved: {
-        const n = surface.dataLength
+    /// It is for this plot and for a custom tab whose x axis is a stated
+    /// range, and it is not for one drawing against another dataset read as a
+    /// time series: there the plot object works out every x itself and two
+    /// bindings pushing a start and a step over the top of it would be the
+    /// surface overruling the data.
+    property bool rangeDrivesX: true
 
-        const hasStart = surface.locked("start")
-        const hasStep = surface.locked("step")
-        const hasStop = surface.locked("stop")
-
-        if (hasStart && hasStep) {
-            return { start: surface.rangeStart,
-                     step: surface.rangeStep,
-                     stop: surface.rangeStart + surface.rangeStep * n }
-        }
-        if (hasStart && hasStop) {
-            return { start: surface.rangeStart,
-                     step: (surface.rangeStop - surface.rangeStart) / n,
-                     stop: surface.rangeStop }
-        }
-        if (hasStep && hasStop) {
-            return { start: surface.rangeStop - surface.rangeStep * n,
-                     step: surface.rangeStep,
-                     stop: surface.rangeStop }
-        }
-        if (hasStart) {
-            return { start: surface.rangeStart,
-                     step: 1.0,
-                     stop: surface.rangeStart + n }
-        }
-        if (hasStep) {
-            return { start: 0.0,
-                     step: surface.rangeStep,
-                     stop: surface.rangeStep * n }
-        }
-        if (hasStop) {
-            return { start: 0.0,
-                     step: surface.rangeStop / n,
-                     stop: surface.rangeStop }
-        }
-        return { start: 0.0, step: 1.0, stop: n }
-    }
-
-    /// The x bounds the axis takes. A trio that does not describe an axis
-    /// falls back to the default one, so a half-typed number leaves the plot
-    /// standing rather than blanking it.
-    readonly property real axisMinX:
-        surface.rangeValid ? surface.resolved.start : 0.0
-    readonly property real axisMaxX:
-        surface.rangeValid ? surface.resolved.stop : surface.dataLength
+    /// The x bounds the axis takes. Overridable, because a plot whose x comes
+    /// from a dataset knows its own extent and this arithmetic does not.
+    property real axisMinX: xAxis.minimum
+    property real axisMaxX: xAxis.maximum
 
     // Where the points sit is the plot's own business -- they are built in
     // fill() and never cross into QML -- so the resolved start and step are
@@ -175,12 +116,14 @@ Item {
     Binding {
         target: surface.plot
         property: "xStart"
+        when: surface.rangeDrivesX
         value: surface.rangeValid ? surface.resolved.start : 0.0
     }
 
     Binding {
         target: surface.plot
         property: "xStep"
+        when: surface.rangeDrivesX
         value: surface.rangeValid ? surface.resolved.step : 1.0
     }
 
@@ -775,7 +718,7 @@ Item {
     }
 
     Connections {
-        target: AppController.datasetPlot
+        target: surface.plot
         enabled: surface.active
         function onChanged() { Qt.callLater(surface.rebuild) }
         // The same lines, moved along x. Nothing has to be re-read and no
@@ -791,7 +734,7 @@ Item {
     // the same dataset is not a new selection and disturbs none of it.
     DatasetMemory {
         subject: surface
-        group: "plotView"
+        group: surface.memoryGroup
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
@@ -804,8 +747,8 @@ Item {
     // line rather than as a thousand. A choice the reader made outranks that,
     // so it is remembered; a dataset they have not been to keeps the object's.
     DatasetMemory {
-        subject: AppController.datasetPlot
-        group: "plot"
+        subject: surface.plot
+        group: surface.plotMemoryGroup
         restoresDefaults: false
         names: ["seriesFromRows"]
     }
@@ -870,6 +813,20 @@ Item {
         target: surface
     }
 
+    /// What to say when there is nothing drawn and the plot object itself has
+    /// no complaint to make. This is the only part of the message that is
+    /// about *what* is being plotted rather than about plotting, so it is the
+    /// only part a custom tab replaces; the error branch above it is the plot
+    /// object's own words either way.
+    property string idleReason: {
+        if (!AppController.datasetTabVisible)
+            return qsTr("Select a dataset in the tree to plot its values.")
+        if (!AppController.datasetIsNumeric)
+            return qsTr("%1 holds no numbers. Only a numeric dataset can be plotted.")
+                   .arg(AppController.currentPath)
+        return qsTr("The selected slice has no finite values in it.")
+    }
+
     ViewMessage {
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
@@ -883,12 +840,7 @@ Item {
                 return ""
             if (surface.plot.error !== "")
                 return surface.plot.error
-            if (!AppController.datasetTabVisible)
-                return qsTr("Select a dataset in the tree to plot its values.")
-            if (!AppController.datasetIsNumeric)
-                return qsTr("%1 holds no numbers. Only a numeric dataset can be plotted.")
-                       .arg(AppController.currentPath)
-            return qsTr("The selected slice has no finite values in it.")
+            return surface.idleReason
         }
     }
 

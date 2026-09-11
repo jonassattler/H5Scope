@@ -25,6 +25,7 @@ qt_add_qml_module(appqml
     DataView.qml
     TableSurface.qml
     PlotSurface.qml
+    RangeAxis.qml
     ImageSurface.qml
     ViewFooter.qml
     SliceField.qml

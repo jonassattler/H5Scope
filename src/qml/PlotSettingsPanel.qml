@@ -7,15 +7,27 @@ import QtQuick.Layouts
 import H5Scope.Backend
 
 /// How the lines are drawn, and which of them. The series settings write
-/// straight to AppController.datasetPlot, because drawing fewer lines means
-/// reading less of the file -- a question about the data rather than about the
-/// frame around it.
+/// straight to the plot object rather than to the surface, because drawing
+/// fewer lines means reading less of the file -- a question about the data
+/// rather than about the frame around it.
+///
+/// Two of the rows are about the *source* rather than about the drawing, and a
+/// custom plot tab switches both off. The x axis is one: a custom plot states
+/// its x in its own data panel, because there it is one of three things and
+/// not always three numbers. "One line per" is the other: a custom plot's
+/// entries are already single lines, so there is no table left to read either
+/// way round. Everything else -- the colours, the view, the drawing -- is the
+/// same question about either plot and is shared rather than copied.
 SettingsPanel {
     id: panel
 
     /// The PlotSurface these settings apply to.
     property var target
-    readonly property var plot: AppController.datasetPlot
+    readonly property var plot: panel.target ? panel.target.plot : null
+
+    /// Whether the two source rows are shown. See the note above.
+    property bool showXAxis: true
+    property bool showOrientation: true
 
     title: qsTr("plot settings")
 
@@ -28,6 +40,7 @@ SettingsPanel {
     // this row never has to know the rule.
     SettingRow {
         label: qsTr("x axis")
+        visible: panel.showXAxis
 
         Repeater {
             model: [
@@ -393,6 +406,7 @@ SettingsPanel {
 
     SettingRow {
         label: qsTr("one line per")
+        visible: panel.showOrientation
 
         ButtonGroup { id: orientations }
 
@@ -402,14 +416,14 @@ SettingsPanel {
             AppRadioButton {
                 text: qsTr("row")
                 ButtonGroup.group: orientations
-                checked: panel.plot.seriesFromRows
+                checked: panel.plot ? panel.plot.seriesFromRows : true
                 onClicked: panel.plot.seriesFromRows = true
             }
 
             AppRadioButton {
                 text: qsTr("column")
                 ButtonGroup.group: orientations
-                checked: !panel.plot.seriesFromRows
+                checked: panel.plot ? !panel.plot.seriesFromRows : false
                 onClicked: panel.plot.seriesFromRows = false
             }
         }
