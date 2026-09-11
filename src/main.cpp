@@ -6,12 +6,14 @@
 #include "h5scope/Version.hpp"
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
+#include "gui/EmbeddedIcon.hpp"
 #include "h5core/Error.hpp"
 
 #include <QCommandLineParser>
 #include <QDebug>
 #include <QFile>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QTextStream>
@@ -159,6 +161,32 @@ int main(int argc, char* argv[])
     // nowhere at all unless a host application has named itself first.
     QCoreApplication::setOrganizationName(QStringLiteral("H5Scope"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("h5scope.local"));
+
+    // What the window is called by the desktop it is running on.
+    //
+    // Wayland does not let a client hand the compositor a picture: the icon a
+    // taskbar draws is the one in the .desktop file whose base name matches
+    // this, so without it a Wayland session shows the generic placeholder
+    // however many pixmaps the process is holding. It costs nothing where
+    // there is no such file -- the name simply matches nothing -- and it is
+    // the only way the installed icon and the running window are connected.
+    QGuiApplication::setDesktopFileName(QStringLiteral("h5scope"));
+
+    // ...and the picture itself, for everywhere that does take one: X11 puts
+    // it in _NET_WM_ICON, and every Qt window falls back on it.
+    //
+    // Compiled into the binary rather than looked for beside it. A Windows
+    // executable already carries this icon in its own resource and an AppImage
+    // carries one in the AppDir, but an ELF has no slot for it: the described
+    // way to use this program on Linux is to download one file and run it, and
+    // that file had no icon at all until it was put here. See EmbeddedIcon.
+    if (const QIcon icon = gui::applicationIcon(); icon.isNull()) {
+        qWarning() << "H5Scope: the bundled application icon failed to load;"
+                   << "the window will take whatever the desktop draws for an"
+                   << "application it does not recognise.";
+    } else {
+        QGuiApplication::setWindowIcon(icon);
+    }
 
     // Basic is the only style with no platform-specific behaviour: it renders
     // identically on every OS, which is what makes the Theme singleton the

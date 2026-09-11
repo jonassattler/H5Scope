@@ -47,7 +47,13 @@ Item {
     /// the colour: neither of its two greys is a colour a channel could have
     /// produced, so what shows through it is unmistakably nothing rather than
     /// a dark or a pale pixel.
-    property bool checkerboard: false
+    ///
+    /// On by default, and for that reason: a flat ground makes a reader decide
+    /// whether a pale corner is a pale pixel or no pixel at all, and the only
+    /// way to find out was to know this switch existed and to reach for it.
+    /// The pattern answers the question before it is asked, and where the
+    /// raster is opaque there is nothing behind it to see.
+    property bool checkerboard: true
 
     /// The ground actually drawn, when it is a colour at all.
     readonly property color ground:

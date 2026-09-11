@@ -262,6 +262,44 @@ Two design-token checks run in CI and under CTest, before the build:
 - `tools/check-elided-text.sh` rejects text that can elide without a tooltip to
   read it in full.
 
+### The README's screenshots
+
+`docs/screenshots/*.png` are build output, not files anyone takes by hand:
+
+```sh
+cmake --build --preset release --target screenshots
+```
+
+`tools/make-screenshots` runs the application — the real QML root, loaded the
+way `src/main.cpp` loads it — over the example file it generates for itself,
+puts the window into each state the README describes, and photographs it. What
+it captures is the window's own surface, so no title bar, shadow or desktop
+from the machine that ran it gets into the picture.
+
+It runs headless, on the offscreen platform, and asks Qt Quick for `"rhi"` —
+the graphics API rather than the raster fallback that platform otherwise
+selects. That matters for one thing and it is visible: the software renderer
+silently draws no grid behind the plot. Where no OpenGL context can be had at
+all the run says so and takes the lesser picture rather than failing.
+
+One pixel to a pixel. A denser picture would be sharper in the README and this
+cannot take one: with a scale factor set, the offscreen platform renders the
+scene at the full density and then reads back a window-sized corner of it.
+
+A file is rewritten only when its picture actually changed — compared against
+what is on disk with a tolerance of two channel steps, because two runs on one
+machine already differ by the odd rounding in the driver. So a regenerate after
+a change that did not touch the window leaves `git status` clean, and a `wrote`
+in its output is the README asking for a commit.
+
+Adding a picture is one entry in the list at the top of
+`tools/make-screenshots.cpp` — which branches of the tree are open, what is
+selected, which tab — and a paragraph in the README. CTest runs the whole thing
+into the build tree on every run (`screenshots`), so a generator broken by a
+change to the window fails then rather than the next time someone needs a
+picture. It asserts that the pictures can be taken, not that they match the
+committed ones: two machines do not rasterise text identically.
+
 ### What things cost
 
 Two benchmarks, and a suite that asserts what they measure.

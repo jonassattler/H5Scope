@@ -104,7 +104,7 @@ MenuItem {
     // Neither the checkbox indicator nor the submenu arrow the Basic style
     // would otherwise draw has a place here: the mark is a dot in the gutter
     // below, and the caret is drawn in the row's own trailing column, in the
-    // same glyph and the same face the tree draws its expanders with.
+    // same geometry the tree draws its expanders with.
     indicator: null
     arrow: null
 
@@ -183,18 +183,16 @@ MenuItem {
                 }
             }
 
-            Text {
-                anchors.fill: parent
+            Caret {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
                 visible: control.opensSubMenu
-                // The tree's expander glyph, in the tree's expander face: a
-                // caret is punctuation everywhere in this application, and a
-                // drawer that opens to the side points at where it opens.
-                text: "▸"
-                font: Theme.caret
+                // The tree's expander, in the tree's geometry: a caret is
+                // punctuation everywhere in this application, and a drawer
+                // that opens to the side points at where it opens.
+                size: Theme.menuMarkWidth - 2
                 color: control.highlighted ? Theme.accentText
                                            : Theme.textSecondary
-                horizontalAlignment: Text.AlignRight
-                verticalAlignment: Text.AlignVCenter
             }
         }
     }

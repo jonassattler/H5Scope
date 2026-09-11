@@ -160,9 +160,22 @@ Rectangle {
                     infoRow.index === panel.modelData.rows.length - 1
 
                 width: panel.bodyWidth
-                implicitHeight: Math.max(key.implicitHeight,
-                                         value.implicitHeight)
-                                + Theme.gapS + Theme.gapS
+                // Snapped, for the rule at the foot of it.
+                //
+                // A row is as tall as its text, and text is measured in
+                // fractions of a logical pixel -- so without this every row
+                // boundary in the panel lands at a different fraction of a
+                // physical one, and the hairline drawn there is smeared across
+                // two rows of the screen at a different share of each. That is
+                // what made these lines look like several different weights of
+                // line: they were. Snapping the row is what fixes it, exactly
+                // as ValueGrid snaps its cell -- every seam after the first is
+                // a multiple of the row. Rounding is to the nearest physical
+                // pixel and the row carries a gap step of air at each end, so
+                // nothing can be clipped by it.
+                implicitHeight: Theme.snap(Math.max(key.implicitHeight,
+                                                    value.implicitHeight)
+                                           + Theme.gapS + Theme.gapS)
 
                 // The label column, wide enough for the longest label the
                 // application produces and never more than a share of the row
@@ -205,11 +218,23 @@ Rectangle {
                 // Between the rows, not under the last of them: a rule along
                 // the foot of the panel is the panel's own border drawn twice,
                 // a hairline's width above itself.
+                //
+                // `border` -- line-1, the weight this panel is already drawn
+                // with, at its rim and under its header. It was `surfaceRaised`,
+                // which is the next surface up from the one the panel stands on
+                // and six values of 255 away from it: a separator that has to be
+                // hunted for is not separating anything. A rule between rows is
+                // a line and takes a line colour.
+                //
+                // `hairline` rather than `borderWidth`, so it is a whole number
+                // of physical pixels wherever the window is: one logical pixel
+                // is one and a half physical ones at 150%, and half a pixel of
+                // a line is half its colour.
                 Rectangle {
                     anchors.bottom: parent.bottom
                     width: parent.width
-                    height: Theme.borderWidth
-                    color: Theme.surfaceRaised
+                    height: Theme.hairline
+                    color: Theme.border
                     visible: !infoRow.last
                 }
             }

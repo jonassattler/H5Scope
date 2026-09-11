@@ -9,9 +9,18 @@
 # a working SVG rasteriser to produce an icon. Run it after editing the SVG,
 # and commit what changes.
 #
-#   h5scope.png   256x256, for the AppImage and the hicolor theme
-#   h5scope.ico   16/24/32/48/64/128/256, for the Windows executable's
-#                 resource -- see packaging/h5scope.rc.in
+#   h5scope.png       256x256, for the AppImage and the hicolor theme
+#   h5scope.ico       16/24/32/48/64/128/256, for the Windows executable's
+#                     resource -- see packaging/h5scope.rc.in
+#   icons/h5scope-N   the same sizes below 256 as separate files, compiled into
+#                     the binary as :/icons and handed to QGuiApplication as
+#                     the window icon -- see src/gui/EmbeddedIcon.cpp. The 256
+#                     is not repeated there: h5scope.png above is that render,
+#                     and src/gui/CMakeLists.txt aliases it into the set.
+#
+# So one `rsvg-convert` per size feeds all three consumers, and the icon in the
+# Windows resource, the icon in the AppImage and the icon the running window
+# carries are the same bytes rather than three renders that agree by habit.
 #
 # Every size is rendered from the vector rather than resampled from the 256,
 # which is what the small ones need: a 16x16 produced by downscaling a 256x256
@@ -52,6 +61,14 @@ for size in "${sizes[@]}"; do
 done
 
 cp "$tmp/256.png" "$repo_root/packaging/h5scope.png"
+
+# Every size but the 256, which packaging/h5scope.png already is.
+mkdir -p "$repo_root/packaging/icons"
+for size in "${sizes[@]}"; do
+  if [[ "$size" != 256 ]]; then
+    cp "$tmp/$size.png" "$repo_root/packaging/icons/h5scope-$size.png"
+  fi
+done
 
 SIZES="${sizes[*]}" TMP="$tmp" OUT="$repo_root/packaging/h5scope.ico" \
 python3 - <<'PY'
@@ -94,4 +111,5 @@ print(f"{out}: {len(written.info['sizes'])} entries, "
       f"{os.path.getsize(out)} bytes")
 PY
 
-echo "wrote packaging/h5scope.png and packaging/h5scope.ico"
+echo "wrote packaging/h5scope.png, packaging/h5scope.ico" \
+     "and packaging/icons/ (${#sizes[@]} renders)"

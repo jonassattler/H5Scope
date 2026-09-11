@@ -535,7 +535,16 @@ TestCase {
         verify(image.backgroundCustom)
         compare(String(image.ground), String(Qt.color("#336699")))
 
-        // The checkerboard overrides the colour outright.
+        // The checkerboard is what a picture stands on until the reader says
+        // otherwise: a flat ground leaves them deciding whether a pale corner
+        // is a pale pixel or no pixel at all.
+        verify(image.checkerboard, "the checkerboard is the default ground")
+
+        // It overrides the colour outright, which is why the swatch beside it
+        // goes dead while it is on -- and the chosen colour is still there
+        // underneath, for when it is switched off again.
+        image.checkerboard = false
+        compare(String(image.ground), String(Qt.color("#336699")))
         image.checkerboard = true
         compare(image.checkerboard, true)
     }
@@ -704,6 +713,51 @@ TestCase {
         Theme.pixelRatio = was
     }
 
+    /// Auto width fits the columns of whatever is selected, not of whichever
+    /// dataset happened to be first.
+    ///
+    /// `measure()` walks the cells the model has already read, and those are
+    /// read on the HDF5 thread: when the selection changes there are none,
+    /// because setSource() has just emptied the cache. The one remeasure the
+    /// grid did ran there, against an empty model, and took 0. Nothing then
+    /// looked again once the blocks landed, so the columns kept the floor
+    /// width. It looked intermittent rather than broken because `measure()` is
+    /// also driven off the TableView's visible range -- a switch between two
+    /// datasets of *different* shape moves that range after the data arrives
+    /// and fits the columns by accident, which is why the bug reads as "auto
+    /// sizing breaks when switching between datasets".
+    function test_auto_width_fits_every_dataset_and_not_only_the_first() {
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        const grid = findChild(view, "valueGrid")
+        verify(grid, "the value grid must be reachable")
+
+        /// Wait for the blocks to land and the width to follow them.
+        const fitted = (path) => {
+            verify(select(path))
+            tryVerify(() => grid.widestCell > 0, 10000,
+                      "nothing was ever measured for " + path
+                      + ", so its columns are at the floor width")
+            waitForRendering(view)
+        }
+
+        verify(grid.autoWidth, "auto width is the default")
+
+        // The first selection this grid ever sees.
+        fitted("/matrix")
+
+        // ...and the next, which is the half that was broken. Wider values
+        // than /matrix's, so the fit is visible in the width and not only in
+        // the measurement: past the floor the slider would give it.
+        fitted("/compressed")
+        verify(grid.columnWidth > Theme.s11,
+               "a column of four-digit values must be wider than the floor: "
+               + grid.columnWidth)
+
+        // ...and back, where the shape returns to what it was two selections
+        // ago and the visible range therefore does not move at all.
+        fitted("/matrix")
+    }
+
     function test_file_system_helpers_answer_the_picker() {
         verify(String(FileSystem.home).indexOf("file://") === 0)
         verify(FileSystem.places.length > 0)
@@ -777,7 +831,7 @@ TestCase {
             const rules = []
             for (let i = 0; i < row.children.length; ++i) {
                 if (row.children[i].color !== undefined
-                        && row.children[i].height === Theme.borderWidth)
+                        && row.children[i].height === Theme.hairline)
                     rules.push(row.children[i])
             }
             compare(rules.length, 1, "every row declares its separator")
@@ -787,6 +841,58 @@ TestCase {
                 ++lastRows
         }
         verify(lastRows > 0, "some row has to be the last one")
+    }
+
+    /// Every row of a panel is a whole number of physical pixels tall.
+    ///
+    /// This is the table's rule -- see Theme.snap -- applied where it was
+    /// missing. A row is as tall as its text and text measures in fractions of
+    /// a logical pixel, so at a fractional display scale every row boundary in
+    /// the panel lands at a different fraction of a physical one and the
+    /// hairline drawn there is smeared over two rows of the screen at a
+    /// different share of each. Left unsnapped at 150% every row here came out
+    /// 27 logical pixels, which is 40.5 physical: every separator in the tab
+    /// on a half-pixel, which is what "these lines are too thin and render
+    /// inconsistently" looks like from the other side of the screen.
+    ///
+    /// 1.5 rather than the ratio the test machine happens to have: headless is
+    /// 1.0, where snapping is the identity and this would assert nothing.
+    function test_panel_rows_land_on_the_device_pixel_grid() {
+        const was = Theme.pixelRatio
+        Theme.pixelRatio = 1.5
+        try {
+            verify(select("/compressed"))
+            const win = createTemporaryObject(infoWindowComponent, testCase)
+            verify(win, "the information window must instantiate")
+            waitForRendering(win.info)
+
+            const rows = []
+            const visit = (item) => {
+                if (item.last !== undefined && item.modelData !== undefined)
+                    rows.push(item)
+                for (let i = 0; i < item.children.length; ++i)
+                    visit(item.children[i])
+            }
+            visit(win.info)
+            verify(rows.length > 0, "the tab must draw rows")
+
+            for (const row of rows) {
+                const physical = row.height * 1.5
+                fuzzyCompare(physical, Math.round(physical), 1e-6,
+                             "the row for \"" + row.modelData.label
+                             + "\" is " + row.height + " logical pixels, which"
+                             + " is " + physical + " physical ones")
+            }
+
+            // And the rule itself, for the same reason: one logical pixel is
+            // one and a half physical at this scale, and half a pixel of a
+            // line is half its colour.
+            const rulePhysical = Theme.hairline * 1.5
+            fuzzyCompare(rulePhysical, Math.round(rulePhysical), 1e-6,
+                         "a hairline must be a whole number of pixels")
+        } finally {
+            Theme.pixelRatio = was
+        }
     }
 
     /// Every TextEdit under `root` -- which on the Information tab is every
@@ -2945,6 +3051,30 @@ TestCase {
         // ...and the Theme must actually ask for them first.
         compare(Theme.sansFamilies[0], "IBM Plex Sans")
         compare(Theme.monoFamilies[0], "IBM Plex Mono")
+    }
+
+    function test_the_icon_comes_from_the_binary_at_every_size() {
+        // Same argument as the fonts above. On Linux there is nowhere but the
+        // binary for this to be: a Windows executable has a resource slot and
+        // an AppImage has an AppDir, and an ELF has neither, so a bare
+        // ./H5Scope took whatever the desktop draws for a program it has never
+        // heard of.
+        const sizes = EmbeddedIcon.sizes
+        const wanted = ["16x16", "24x24", "32x32", "48x48", "64x64",
+                        "128x128", "256x256"]
+        for (const size of wanted) {
+            verify(sizes.indexOf(size) !== -1,
+                   "the icon must carry a " + size + " render; it has ["
+                   + sizes.join(", ") + "]")
+        }
+
+        // Seven entries and not one. A QIcon holding only the 256 still draws
+        // at every size -- by resampling it -- so the failure this guards
+        // against looks exactly like success until the icon is 16 pixels wide
+        // and its grid has turned to haze. tools/make-icons.sh draws each of
+        // these from the vector; this is what says they all arrived.
+        compare(sizes.length, wanted.length,
+                "unexpected icon sizes: [" + sizes.join(", ") + "]")
     }
 
     function test_the_menu_bar_carries_a_file_menu() {

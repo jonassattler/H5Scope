@@ -45,6 +45,7 @@ qt_add_qml_module(appqml
     Panel.qml
     Badge.qml
     AppIcon.qml
+    Caret.qml
     AppIconButton.qml
     AppComboBox.qml
     FilterInput.qml
@@ -76,9 +77,10 @@ qt_add_qml_module(appqml
 #                            every other surface here.
 #   QtGraphs                 PlotSurface.qml.
 #   QtQuick.Shapes           AppIcon.qml draws the orientation controls'
-#                            glyphs as vector paths, because the design system
-#                            ships no icon font and this binary carries only
-#                            the four text faces it actually sets.
+#                            glyphs as vector paths, and Caret.qml the
+#                            expander chevron, because the design system ships
+#                            no icon font and this binary carries only the four
+#                            text faces it actually sets.
 #   QtQuick.Dialogs          ColorSwatchButton.qml, for the one control this
 #                            application does not draw itself. See the note
 #                            there: picking a colour out of a wheel is a solved

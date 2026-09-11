@@ -239,22 +239,18 @@ Rectangle {
                 width: Math.max(0, node.width - x)
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                radius: Theme.radiusS
+                // Square. The selection is a rectangle and says so; it carried
+                // a 2px radius and a signal-white rule down its left edge, and
+                // between the two the reader was told three times over which
+                // row they had just clicked. Once is enough, and the ground
+                // under the name is the once.
+                radius: Theme.radiusNone
                 // Theme.clear rather than "transparent": the same colour at
                 // zero alpha, which is what "no ground here" means when the
                 // ground it stands in for is a light one.
                 color: node.current ? Theme.surfaceActive
                      : hover.hovered ? Theme.surfaceHover
                                      : Theme.clear(Theme.surfaceHover)
-
-                // Active marker: a 2px signal-white rule, never a filled tint.
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: Theme.borderWidthAccent
-                    color: node.current ? Theme.accent : "transparent"
-                }
             }
 
             HoverHandler { id: hover }
@@ -345,14 +341,18 @@ Rectangle {
                     }
                 }
 
-                Text {
+                Caret {
                     Layout.preferredWidth: Theme.gapL - 2
                     Layout.fillHeight: true
-                    text: node.hasChildren ? (node.expanded ? "▾" : "▸") : ""
-                    font: Theme.caret
+                    size: Theme.gapL - 2
+                    angle: node.expanded ? 90 : 0
                     color: Theme.textSecondary
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    // Opacity, not `visible`: a RowLayout gives an invisible
+                    // item no width at all, so a leaf hidden that way would
+                    // pull its own name a column left of every branch's. The
+                    // slot is the tree's, not the caret's, and a dataset holds
+                    // it open exactly as the empty glyph here used to.
+                    opacity: node.hasChildren ? 1 : 0
 
                     TapHandler {
                         enabled: node.hasChildren
