@@ -94,6 +94,10 @@ public:
         /// bucket apart. The plot needs this rather than the stride, because
         /// where a point sits along x is what it is multiplied by.
         double columnStep = 1.0;
+        /// ...and the same down the rows, for a line that runs that way --
+        /// which every 1-D dataset does, because defaultOnX keeps a rank-1
+        /// dimension on the row axis so it still reads as a column in the grid.
+        double rowStep = 1.0;
         /// Row-major, size == rows * columns. NaN marks a cell that could not
         /// be read, so one bad element does not discard the block around it.
         std::vector<double> values;

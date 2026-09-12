@@ -178,11 +178,11 @@ DatasetTableModel::SampleRequest DatasetPlot::requestFor(int series) const
                // kMaxPoints doubles and nothing about what this costs in
                // memory changes.
                ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, cap_ / 2, {}, true}
-               // The other way up the line runs down the rows, which are not
-               // contiguous in the file; see sampleFrom for why an envelope is
-               // only offered along the columns. This is the reading that still
-               // thins by stride, and the one that can still miss a spike.
-               : DatasetTableModel::SampleRequest{0, -1, cap_, series, 1, 1, {}, false};
+               // The other way up the line runs down the rows, and that is not
+               // an afterthought: every 1-D dataset in every file is drawn this
+               // way, because defaultOnX keeps a rank-1 dimension on the row
+               // axis so a vector still reads as a column in the grid.
+               : DatasetTableModel::SampleRequest{0, -1, cap_ / 2, series, 1, 1, {}, true};
 }
 
 void DatasetPlot::readMissing() const
@@ -228,7 +228,7 @@ void DatasetPlot::readMissing() const
             // first. The extent is what the x axis is drawn against, so it has
             // to be one number rather than one per line.
             points_ = seriesFromRows_ ? grid.columns : grid.rows;
-            step_ = seriesFromRows_ ? grid.columnStep : static_cast<double>(grid.rowStride);
+            step_ = seriesFromRows_ ? grid.columnStep : grid.rowStep;
             lines_.emplace(wanted[first + i], std::move(grid.values));
         }
     }

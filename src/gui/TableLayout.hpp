@@ -17,7 +17,8 @@
 namespace gui {
 
 /// How one dimension of a dataset contributes indices to the table.
-enum class AxisMode {
+enum class AxisMode
+{
     All,    ///< every index in the dimension
     Index,  ///< exactly one index
     Range,  ///< an inclusive first..last span
@@ -31,7 +32,8 @@ enum class AxisMode {
 /// both products the lower-numbered dimension is the more significant one.
 /// Every dimension belongs to exactly one axis, so a table cell always names a
 /// complete index tuple.
-struct TableLayout {
+struct TableLayout
+{
     std::vector<std::vector<hsize_t>> indices; ///< sorted, unique, per dimension
     std::vector<bool> onX;                     ///< true = column axis
 
@@ -47,7 +49,8 @@ struct TableLayout {
 
 /// Where each dimension of a dataset starts out, before the reader touches
 /// anything.
-struct DefaultAxes {
+struct DefaultAxes
+{
     std::vector<bool> onX;             ///< true = column axis
     std::optional<std::size_t> pinned; ///< this dimension starts at one index
 };
@@ -102,6 +105,16 @@ public:
     /// fastest x-dimension, capped at `limit`. That run is one hyperslab, so
     /// it is one read.
     [[nodiscard]] int runLength(qint64 column, int limit) const;
+
+    /// The same question down a column: how many table rows from `row` name
+    /// consecutive indices of the fastest y-dimension, capped at `limit`.
+    ///
+    /// Those rows are one hyperslab and so one read -- not a contiguous one
+    /// unless the table is a vector, because a row of a 2-D dataset is as long
+    /// as the dataset is wide, but one read either way. That is what lets the
+    /// plot take an envelope of a line that runs down the rows, which is what
+    /// every 1-D dataset in every file is.
+    [[nodiscard]] int rowRunLength(qint64 row, int limit) const;
 
     /// The same table with `dimension` contributing `index` and nothing else.
     /// Returns *this unchanged when the dimension or the index is out of

@@ -306,18 +306,32 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
     const bool hasX = !axes.xDims().empty();
     const std::size_t lastX = hasX ? axes.xDims().back() : 0;
 
+    const bool hasY = !axes.yDims().empty();
+    const std::size_t lastY = hasY ? axes.yDims().back() : 0;
+
     // An envelope, when one was asked for and there is anything to summarise.
     //
-    // Only along the columns, because only the columns are contiguous in the
-    // file: the last x-dimension is the one that turns fastest along a row, so
-    // a bucket of them is one hyperslab and one read. Down the rows every
-    // element of a bucket would be its own read, and an envelope that cost
-    // `rowStride` times the round trips is not the same bargain at all. A plot
-    // reading its lines the other way up therefore gets plain stride sampling,
-    // which is what it got before.
+    // Along the columns when the line runs that way: the last x-dimension is
+    // the one that turns fastest along a row, so a bucket of columns is one
+    // contiguous hyperslab and one read.
+    //
+    // And down the rows when it runs that way, which is not an afterthought but
+    // the case that matters most. defaultOnX keeps a rank-1 dimension on the
+    // row axis so a vector still reads as a column in the grid, so *every* 1-D
+    // dataset -- every trace, every spectrum, every log -- is a line down the
+    // rows, and it would otherwise be the one shape still thinning by stride.
+    // A span of rows is one hyperslab and one read exactly as a span of columns
+    // is; it is merely not a contiguous one, because a row of a 2-D dataset is
+    // as long as the dataset is wide. Same number of reads, same number of
+    // elements, further apart.
     const bool envelopeColumns = envelope && hasX && grid.columnStride > 1;
+    const bool envelopeRows = envelope && !envelopeColumns && hasY && grid.rowStride > 1;
+    const int rowBuckets = grid.rows;
+
     grid.columns = envelopeColumns ? 2 * buckets : buckets;
     grid.columnStep = envelopeColumns ? grid.columnStride / 2.0 : grid.columnStride;
+    grid.rows = envelopeRows ? 2 * rowBuckets : rowBuckets;
+    grid.rowStep = envelopeRows ? grid.rowStride / 2.0 : grid.rowStride;
 
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     grid.values.assign(static_cast<std::size_t>(grid.rows) * grid.columns, nan);
@@ -400,6 +414,63 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                     const auto at = static_cast<std::size_t>(r) * grid.columns + 2 * b;
                     grid.values[at] = lowAt <= highAt ? lowest : highest;
                     grid.values[at + 1] = lowAt <= highAt ? highest : lowest;
+                }
+            }
+        }
+        catch (const h5core::H5Error& error) {
+            grid.error = QString::fromStdString(error.summary());
+        }
+        return grid;
+    }
+
+    if (envelopeRows) {
+        // The mirror of the block above, down the other axis: one read per
+        // bucket of rows, the extremes of what came back, in the order they
+        // occurred.
+        try {
+            for (int c = 0; c < grid.columns; ++c) {
+                const auto column = static_cast<int>(firstColumn + qint64{c} * grid.columnStride);
+                for (int b = 0; b < rowBuckets; ++b) {
+                    const qint64 wanted = qint64{b} * grid.rowStride;
+                    const auto row = static_cast<int>(firstRow + wanted);
+                    const auto span =
+                        static_cast<int>(std::min<qint64>(grid.rowStride, rowExtent - wanted));
+                    const int run = axes.rowRunLength(row, std::min(span, kReadRun));
+
+                    std::vector<hsize_t> offset = axes.coordinates(row, column);
+                    std::vector<hsize_t> count(axes.rank(), 1);
+                    count[lastY] = static_cast<hsize_t>(std::max(run, 1));
+                    const h5core::NumericWindow window = source.readNumericWindow(offset, count);
+
+                    double lowest = 0.0;
+                    double highest = 0.0;
+                    qsizetype lowAt = -1;
+                    qsizetype highAt = -1;
+                    const auto seen = static_cast<qsizetype>(window.values.size());
+                    for (qsizetype i = 0; i < seen; ++i) {
+                        const double value = window.values[i];
+                        if (!std::isfinite(value)) {
+                            continue;
+                        }
+                        if (lowAt < 0 || value < lowest) {
+                            lowest = value;
+                            lowAt = i;
+                        }
+                        if (highAt < 0 || value > highest) {
+                            highest = value;
+                            highAt = i;
+                        }
+                    }
+                    if (lowAt < 0) {
+                        continue; // the whole bucket stays NaN, which is what it is
+                    }
+                    note(lowest);
+                    note(highest);
+
+                    const auto first = static_cast<std::size_t>(2 * b) * grid.columns + c;
+                    const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
+                    grid.values[first] = lowAt <= highAt ? lowest : highest;
+                    grid.values[second] = lowAt <= highAt ? highest : lowest;
                 }
             }
         }

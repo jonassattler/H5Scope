@@ -22,26 +22,31 @@
 #include "gui/DatasetLookup.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/H5Thread.hpp"
 #include "gui/PlotItem.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
-#include "gui/H5Thread.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
 #include "support/TestFile.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include <QCoreApplication>
 #include <QColor>
+#include <QCoreApplication>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
-#include <cmath>
+#include <hdf5.h>
 
+#include <cmath>
+#include <vector>
+
+using Catch::Approx;
 using Catch::Matchers::ContainsSubstring;
 
 namespace {
@@ -52,21 +57,18 @@ namespace {
 /// event loop are one job -- so settling means turning the loop as well as
 /// draining the thread, and a few times over: adding a dataset resolves its
 /// shape in one crossing and reads its lines in the next.
-struct PlotFixture {
+struct PlotFixture
+{
     h5test::TempFile temp{"custom"};
     gui::AppController controller;
 
     PlotFixture()
     {
         h5test::onH5([&] { h5test::writeFixture(temp.path()); });
-        REQUIRE(h5test::openFileAndSettle(controller,
-                                          QString::fromStdString(temp.path())));
+        REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
     }
 
-    [[nodiscard]] gui::CustomPlotSet* set() const
-    {
-        return controller.customPlots();
-    }
+    [[nodiscard]] gui::CustomPlotSet* set() const { return controller.customPlots(); }
 
     /// A fresh tab, settled.
     [[nodiscard]] gui::CustomPlot* tab()
@@ -107,15 +109,13 @@ struct PlotFixture {
 
     [[nodiscard]] static QString errorOf(const gui::CustomPlot* plot, int row)
     {
-        return plot->data(plot->index(row, 0), gui::CustomPlot::ErrorRole)
-            .toString();
+        return plot->data(plot->index(row, 0), gui::CustomPlot::ErrorRole).toString();
     }
 };
 
 } // namespace
 
-TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets together",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets together", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     REQUIRE(plot != nullptr);
@@ -171,8 +171,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("a block is not a line, and the reason names its shape")
     {
         add(plot, QStringLiteral("/matrix[:, :]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("is one line"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("is one line"));
         CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("4"));
         CHECK_FALSE(plot->hasData());
     }
@@ -180,15 +179,13 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("a single element is not a line either")
     {
         add(plot, QStringLiteral("/matrix[0, 0]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("one element"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("one element"));
     }
 
     SECTION("a path that is not there says that rather than anything else")
     {
         add(plot, QStringLiteral("/nowhere[:]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("nothing at this path"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("nothing at this path"));
     }
 
     SECTION("a group holds no values")
@@ -200,22 +197,19 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("text cannot be plotted")
     {
         add(plot, QStringLiteral("/str_vlen[:]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("only numbers"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("only numbers"));
     }
 
     SECTION("a scalar has no line in it")
     {
         add(plot, QStringLiteral("/scalar_int"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("single value"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("single value"));
     }
 
     SECTION("an unbalanced bracket is reported in the subscript parser's words")
     {
         add(plot, QStringLiteral("/series/a[:"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("never closed"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("never closed"));
     }
 
     SECTION("a bad entry does not stop a good one being drawn")
@@ -229,8 +223,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its slice",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its slice", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));
@@ -242,13 +235,13 @@ TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its sli
 
     plot->setAlias(0, QStringLiteral("morning"));
     CHECK(plot->seriesLabel(0) == QStringLiteral("morning"));
-    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::AliasRole).toString()
-          == QStringLiteral("morning"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::AliasRole).toString() ==
+          QStringLiteral("morning"));
     // The other line is untouched, and so is what is actually read: the entry
     // still holds the slice, because that is what the file is asked for.
     CHECK(plot->seriesLabel(1) == QStringLiteral("/series/b[:]"));
-    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
-          == QStringLiteral("/series/a[:]"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ExpressionRole).toString() ==
+          QStringLiteral("/series/a[:]"));
     CHECK(plot->pointCount() == 128);
 
     SECTION("an empty alias hands the slice back")
@@ -277,8 +270,7 @@ TEST_CASE_METHOD(PlotFixture, "a bare path is the whole of the dataset", "[custo
     CHECK(plot->pointCount() == 64);
 }
 
-TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would draw",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would draw", "[custom]")
 {
     gui::CustomPlot* plot = tab();
 
@@ -316,13 +308,11 @@ TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would
         settleAll();
         CHECK(plot->sourceSeriesCount() == 0);
         REQUIRE(said.count() == 1);
-        CHECK_THAT(said.at(0).at(0).toString().toStdString(),
-                   ContainsSubstring("only numbers"));
+        CHECK_THAT(said.at(0).at(0).toString().toStdString(), ContainsSubstring("only numbers"));
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is chosen",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is chosen", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));
@@ -397,8 +387,7 @@ TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is cho
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));    // 64 samples, sets the axis
@@ -407,8 +396,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
     REQUIRE(plot->sourcePointCount() == 64);
 
     const auto scalable = [&](int row) {
-        return plot->data(plot->index(row, 0), gui::CustomPlot::ScalableRole)
-            .toBool();
+        return plot->data(plot->index(row, 0), gui::CustomPlot::ScalableRole).toBool();
     };
     // The long one is exactly as long as the axis, so the pair means nothing
     // for it and the row shows them disabled.
@@ -466,8 +454,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
     }
 }
 
-TEST_CASE("a line longer than the plot draws is thinned by striding its indices",
-          "[custom]")
+TEST_CASE("a line longer than the plot draws is thinned by striding its indices", "[custom]")
 {
     // The function rather than a dataset, because the cap is 2048 points and
     // the shared fixture has nothing that long -- and because what is being
@@ -515,8 +502,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path 
                ContainsSubstring("dim"));
 }
 
-TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused", "[custom]")
 {
     gui::CustomPlot* plot = tab();
 
@@ -580,8 +566,7 @@ TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a custom plot has no window to go back to",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a custom plot has no window to go back to", "[custom]")
 {
     // The legend's "first N" button puts a table of ten thousand rows back to
     // the window a *selection* opened on. A custom plot opens on nothing and
@@ -659,12 +644,10 @@ TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[cust
     // piece of one file's contents, and it says how much of whatever is open
     // it can still draw instead of going away.
     CHECK(set()->viewNames() == QStringList{QStringLiteral("both")});
-    CHECK(set()->stateOf(QStringLiteral("both"))
-          == gui::CustomPlotSet::NoMatch);
+    CHECK(set()->stateOf(QStringLiteral("both")) == gui::CustomPlotSet::NoMatch);
 }
 
-TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open", "[custom]")
 {
     gui::CustomPlotSet* plots = set();
     const int source = plots->addPlot();
@@ -693,8 +676,8 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         gui::CustomPlot* into = plots->plotAt(target);
         CHECK(into->sourceSeriesCount() == 2);
         CHECK(into->seriesLabel(1) == QStringLiteral("/series/half[:]"));
-        CHECK(into->data(into->index(1, 0), gui::CustomPlot::ScalingRole).toInt()
-              == static_cast<int>(gui::CustomPlot::Stretch));
+        CHECK(into->data(into->index(1, 0), gui::CustomPlot::ScalingRole).toInt() ==
+              static_cast<int>(gui::CustomPlot::Stretch));
         CHECK(into->xMode() == gui::CustomPlot::Dataset);
         CHECK(into->xExpression() == QStringLiteral("/series/time[:]"));
         CHECK(into->pointCount() == 96);
@@ -723,8 +706,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         add(broken, QStringLiteral("/series/a[:]"));
         add(broken, QStringLiteral("/gone[:]"));
         add(broken, QStringLiteral("/matrix[:, :]"));
-        REQUIRE(plots->saveView(QStringLiteral("stale"),
-                                plots->indexOfName(broken->name()), {})
+        REQUIRE(plots->saveView(QStringLiteral("stale"), plots->indexOfName(broken->name()), {})
                     .isEmpty());
 
         QSignalSpy checked(plots, &gui::CustomPlotSet::viewChecked);
@@ -776,8 +758,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         REQUIRE(plots->saveView(QStringLiteral("pair"), source, {}).isEmpty());
         // Both fit the file entirely, so the order between them is the
         // alphabet's.
-        CHECK(plots->viewNames()
-              == QStringList{QStringLiteral("other"), QStringLiteral("pair")});
+        CHECK(plots->viewNames() == QStringList{QStringLiteral("other"), QStringLiteral("pair")});
 
         plots->removeView(QStringLiteral("pair"));
         CHECK(plots->viewNames() == QStringList{QStringLiteral("other")});
@@ -797,8 +778,7 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/series/a[:]"));
         add(from, QStringLiteral("/series/b[:]"));
         REQUIRE(plots->saveView(QStringLiteral("both"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("both"))
-              == gui::CustomPlotSet::FullMatch);
+        CHECK(plots->stateOf(QStringLiteral("both")) == gui::CustomPlotSet::FullMatch);
     }
 
     SECTION("some of it is")
@@ -806,8 +786,7 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/series/a[:]"));
         add(from, QStringLiteral("/gone_away[:]"));
         REQUIRE(plots->saveView(QStringLiteral("half"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("half"))
-              == gui::CustomPlotSet::PartialMatch);
+        CHECK(plots->stateOf(QStringLiteral("half")) == gui::CustomPlotSet::PartialMatch);
     }
 
     SECTION("none of it is")
@@ -815,14 +794,12 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/gone_away[:]"));
         add(from, QStringLiteral("/also_gone[:]"));
         REQUIRE(plots->saveView(QStringLiteral("stale"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("stale"))
-              == gui::CustomPlotSet::NoMatch);
+        CHECK(plots->stateOf(QStringLiteral("stale")) == gui::CustomPlotSet::NoMatch);
     }
 
     SECTION("and a view nobody saved matches nothing")
     {
-        CHECK(plots->stateOf(QStringLiteral("never"))
-              == gui::CustomPlotSet::NoMatch);
+        CHECK(plots->stateOf(QStringLiteral("never")) == gui::CustomPlotSet::NoMatch);
     }
 }
 
@@ -849,13 +826,12 @@ TEST_CASE_METHOD(PlotFixture, "the views are offered best fit first, then alphab
     add(from, QStringLiteral("/series/b[:]"));
     REQUIRE(plots->saveView(QStringLiteral("z green"), source, {}).isEmpty());
 
-    CHECK(plots->viewNames()
-          == QStringList{QStringLiteral("z green"), QStringLiteral("a yellow"),
-                         QStringLiteral("z yellow"), QStringLiteral("a red one")});
+    CHECK(plots->viewNames() == QStringList{QStringLiteral("z green"), QStringLiteral("a yellow"),
+                                            QStringLiteral("z yellow"),
+                                            QStringLiteral("a red one")});
 }
 
-TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
-                 "[custom][views]")
+TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session", "[custom][views]")
 {
     // The one thing in this application that is written down besides the list
     // of files opened, and for the same reason: a comparison built once is
@@ -877,9 +853,9 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
         QSettings::setDefaultFormat(wasFormat);
     });
 
-    const QVariantMap drawing{{QStringLiteral("showMarkers"), true},
-                              {QStringLiteral("colorSingle"),
-                               QVariant::fromValue(QColor(Qt::red))}};
+    const QVariantMap drawing{
+        {QStringLiteral("showMarkers"), true},
+        {QStringLiteral("colorSingle"), QVariant::fromValue(QColor(Qt::red))}};
     {
         gui::CustomPlotSet writing;
         const int index = writing.addPlot();
@@ -900,8 +876,8 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
 
     CHECK(back->sourceSeriesCount() == 1);
     CHECK(back->seriesLabel(0) == QStringLiteral("morning"));
-    CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
-          == QStringLiteral("/series/a[:]"));
+    CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString() ==
+          QStringLiteral("/series/a[:]"));
     CHECK(back->name() == QStringLiteral("runs"));
 
     SECTION("and so are the drawing settings, colours and all")
@@ -916,8 +892,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
         // A colour is the one value that does not survive a trip through JSON
         // on its own; it is written as "#aarrggbb", which is what a QML colour
         // property reads back without being asked.
-        CHECK(QColor(came.value(QStringLiteral("colorSingle")).toString())
-              == QColor(Qt::red));
+        CHECK(QColor(came.value(QStringLiteral("colorSingle")).toString()) == QColor(Qt::red));
     }
 
     SECTION("and forgetting one forgets it for good")
@@ -946,13 +921,11 @@ TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom
     {
         plots->setTimeSeriesOf(index, QStringLiteral("/cube"));
         settleAll();
-        CHECK(plots->plotAt(index)->xExpression()
-              == QStringLiteral("/cube[0, 0, :]"));
+        CHECK(plots->plotAt(index)->xExpression() == QStringLiteral("/cube[0, 0, :]"));
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice",
-                 "[custom][plot]")
+TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice", "[custom][plot]")
 {
     // What the legend's "add to a custom plot" puts into the entry it makes.
     // It has to be exact: the reader is taking the line they can see, and an
@@ -994,8 +967,7 @@ TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice",
     SECTION("a line running over two dimensions is not a slice, and says so")
     {
         REQUIRE(h5test::selectAndSettle(controller, "/hypercube"));
-        auto* setup =
-            qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
+        auto* setup = qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
         REQUIRE(setup != nullptr);
         // A second dimension on the columns: a line's points now run over the
         // product of two, and no hyperslab of one dimension is that line.
@@ -1081,8 +1053,7 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
 // vectors are freed. These cases are that contract, asserted rather than
 // commented.
 
-TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at once",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at once", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     REQUIRE(plot != nullptr);
@@ -1110,8 +1081,7 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at onc
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is freed",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is freed", "[custom]")
 {
     // Every one of these is a way an entry's values are destroyed while a
     // renderer may still be holding a pointer into them. The item reports no
@@ -1225,5 +1195,112 @@ TEST_CASE_METHOD(PlotFixture, "the axis handed over is the one the tab is drawn 
         gui::PlotItem item;
         plot->fill(&item);
         CHECK(item.drawnPointCount() == 0);
+    }
+}
+
+// --- what thinning keeps --------------------------------------------------
+
+namespace {
+
+/// A hundred thousand samples of nothing, with one spike in the middle of them.
+///
+/// The index is chosen to be exactly what stride sampling misses. A line of
+/// this length drawn at two thousand points has a stride of forty-nine, and
+/// 54321 is not a multiple of it -- so the old reading of this file drew a flat
+/// line at zero and reported an extent of nothing, which is a picture of a
+/// dataset that does not exist.
+void writeSpike(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t dims[1] = {100000};
+    const hid_t space = H5Screate_simple(1, dims, nullptr);
+    const hid_t set =
+        H5Dcreate2(file, "/trace", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    std::vector<double> values(100000, 0.0);
+    values[54321] = 9.0;
+    values[76543] = -7.0;
+    REQUIRE(H5Dwrite(set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+    H5Dclose(set);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
+{
+    // The claim the whole exercise rests on, asserted through both plots
+    // because they read by different routes and each had to be fixed on its
+    // own terms.
+    h5test::TempFile temp{"spike"};
+    h5test::onH5([&] { writeSpike(temp.path()); });
+
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
+
+    SECTION("read as the selected dataset")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/trace"));
+        gui::DatasetPlot* plot = controller.datasetPlot();
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->pointCount() <= gui::DatasetPlot::kMaxPoints);
+
+        // The extent is the line's own, not the extent of a sample of it --
+        // which is what puts the spike inside the pane rather than off the top
+        // of it.
+        CHECK(plot->maximum() == 9.0);
+        CHECK(plot->minimum() == -7.0);
+
+        // ...and both are among the points actually handed to the renderer.
+        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        double highest = 0.0;
+        double lowest = 0.0;
+        for (const QPointF& point : drawn) {
+            highest = std::max(highest, point.y());
+            lowest = std::min(lowest, point.y());
+        }
+        CHECK(highest == 9.0);
+        CHECK(lowest == -7.0);
+
+        // Where it is drawn is where it is in the data, to within the bucket it
+        // was the extreme of.
+        double at = 0.0;
+        for (const QPointF& point : drawn) {
+            if (point.y() == 9.0) {
+                at = point.x();
+            }
+        }
+        CHECK(at == Approx(54321.0).margin(64.0));
+    }
+
+    SECTION("read as a custom plot entry")
+    {
+        gui::CustomPlotSet* set = controller.customPlots();
+        const int index = set->addPlot();
+        PlotFixture::settleAll();
+        gui::CustomPlot* plot = set->plotAt(index);
+        REQUIRE(plot != nullptr);
+        REQUIRE(plot->addExpression(QStringLiteral("/trace[:]")) >= 0);
+        PlotFixture::settleAll();
+
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->pointCount() <= gui::CustomPlot::kMaxPoints);
+        CHECK(plot->maximum() == 9.0);
+        CHECK(plot->minimum() == -7.0);
+
+        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        double highest = 0.0;
+        double at = 0.0;
+        for (const QPointF& point : drawn) {
+            if (point.y() > highest) {
+                highest = point.y();
+                at = point.x();
+            }
+        }
+        CHECK(highest == 9.0);
+        CHECK(at == Approx(54321.0).margin(64.0));
     }
 }

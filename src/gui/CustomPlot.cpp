@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <memory>
 #include <utility>
@@ -25,29 +26,33 @@ namespace {
 
 /// What the job is asked for: one line per expression, the time base first
 /// when there is one.
-struct Ask {
+struct Ask
+{
     QString expression;
 };
 
 /// What it hands back, alongside the facts it learned on the way.
-struct Answer {
+struct Answer
+{
     QString problem;
     std::vector<double> values;
-    int stride = 1;
+    /// Axis positions between one drawn point and the next. Half a bucket when
+    /// the line was read as an envelope, because a bucket answers with two.
+    double step = 1.0;
     int sourceLength = 0;
 };
 
-struct Reply {
+struct Reply
+{
     std::vector<Answer> lines;
     std::vector<std::pair<QString, PathFacts>> learned;
 };
 
 /// Read one line. On the HDF5 thread; `opened` is this job's own cache of open
 /// datasets, so several entries over one dataset open it once.
-[[nodiscard]] Answer
-readLine(h5core::File* file, const QString& expression,
-         std::map<QString, std::shared_ptr<h5core::Dataset>>& opened,
-         std::map<QString, PathFacts>& facts)
+[[nodiscard]] Answer readLine(h5core::File* file, const QString& expression,
+                              std::map<QString, std::shared_ptr<h5core::Dataset>>& opened,
+                              std::map<QString, PathFacts>& facts)
 {
     Answer answer;
 
@@ -72,8 +77,7 @@ readLine(h5core::File* file, const QString& expression,
 
     std::vector<std::vector<hsize_t>> indices;
     std::vector<bool> drop;
-    if (!resolveLine(parts.subscript, known->second.shape, indices, drop,
-                     answer.problem)) {
+    if (!resolveLine(parts.subscript, known->second.shape, indices, drop, answer.problem)) {
         return answer;
     }
 
@@ -83,24 +87,49 @@ readLine(h5core::File* file, const QString& expression,
             break;
         }
     }
-    answer.stride = thinToPoints(indices, drop, CustomPlot::kMaxPoints);
+    // How the line is reduced to something a screen can show, and the two ways
+    // of doing it are not the same bargain.
+    //
+    // postproc::read reads the longest run of consecutive indices at a time, so
+    // a *contiguous* line is one hyperslab and one read however long it is,
+    // while a thinned one is a read per drawn point -- two thousand of them.
+    // Reading the whole line and taking the extremes of each bucket is
+    // therefore both cheaper in round trips and exact: a spike one sample wide
+    // is the extreme of whatever bucket it lands in, where a stride reaches it
+    // only by luck.
+    //
+    // The only thing stopping that being unconditional is memory. The read has
+    // to fit in one std::vector<double> before it is reduced, so past
+    // kEnvelopeElements the line is thinned by stride first and the old caveat
+    // stands for it. See CustomPlot::kEnvelopeElements.
+    const bool envelope = answer.sourceLength > CustomPlot::kMaxPoints &&
+                          answer.sourceLength <= CustomPlot::kEnvelopeElements;
+    std::size_t bucket = 1;
+    if (envelope) {
+        // Two values per bucket, so half as many buckets as points wanted.
+        const int buckets = CustomPlot::kMaxPoints / 2;
+        bucket = static_cast<std::size_t>((answer.sourceLength + buckets - 1) / buckets);
+        answer.step = static_cast<double>(bucket) / 2.0;
+    }
+    else {
+        answer.step = thinToPoints(indices, drop, CustomPlot::kMaxPoints);
+    }
 
     auto held = opened.find(parts.path);
     if (held == opened.end()) {
         try {
             held = opened
                        .emplace(parts.path,
-                                std::make_shared<h5core::Dataset>(
-                                    *file, parts.path.toStdString()))
+                                std::make_shared<h5core::Dataset>(*file, parts.path.toStdString()))
                        .first;
-        } catch (const h5core::H5Error& error) {
+        }
+        catch (const h5core::H5Error& error) {
             answer.problem = QString::fromStdString(error.summary());
             return answer;
         }
     }
 
-    const postproc::ArrayResult read =
-        postproc::read(*held->second, indices, drop);
+    const postproc::ArrayResult read = postproc::read(*held->second, indices, drop);
     if (!read.ok()) {
         answer.problem = read.error;
         return answer;
@@ -108,9 +137,49 @@ readLine(h5core::File* file, const QString& expression,
 
     const postproc::Array& array = read.array;
     const hsize_t count = array.size();
-    answer.values.reserve(static_cast<std::size_t>(count));
-    for (hsize_t i = 0; i < count; ++i) {
-        answer.values.push_back(array.at({i}));
+    if (!envelope) {
+        answer.values.reserve(static_cast<std::size_t>(count));
+        for (hsize_t i = 0; i < count; ++i) {
+            answer.values.push_back(array.at({i}));
+        }
+        return answer;
+    }
+
+    // The envelope: the smallest and the largest of each bucket, in the order
+    // they occur so the stroke keeps the direction the data has. A bucket with
+    // nothing drawable in it answers with a pair of NaN, which is a gap, which
+    // is what it is.
+    answer.values.reserve(static_cast<std::size_t>(count / bucket + 2) * 2);
+    const auto nothing = std::numeric_limits<double>::quiet_NaN();
+    for (hsize_t first = 0; first < count; first += bucket) {
+        const hsize_t last = std::min<hsize_t>(first + bucket, count);
+        double lowest = 0.0;
+        double highest = 0.0;
+        hsize_t lowAt = 0;
+        hsize_t highAt = 0;
+        bool any = false;
+        for (hsize_t i = first; i < last; ++i) {
+            const double value = array.at({i});
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            if (!any || value < lowest) {
+                lowest = value;
+                lowAt = i;
+            }
+            if (!any || value > highest) {
+                highest = value;
+                highAt = i;
+            }
+            any = true;
+        }
+        if (!any) {
+            answer.values.push_back(nothing);
+            answer.values.push_back(nothing);
+            continue;
+        }
+        answer.values.push_back(lowAt <= highAt ? lowest : highest);
+        answer.values.push_back(lowAt <= highAt ? highest : lowest);
     }
     return answer;
 }
@@ -130,8 +199,7 @@ CustomPlot::CustomPlot(QString name, DatasetLookup* lookup, QObject* parent)
     if (lookup_ != nullptr) {
         connect(lookup_, &DatasetLookup::changed, this, [this] {
             if (!entries_.empty()) {
-                emit dataChanged(index(0, 0),
-                                 index(static_cast<int>(entries_.size()) - 1, 0),
+                emit dataChanged(index(0, 0), index(static_cast<int>(entries_.size()) - 1, 0),
                                  {ErrorRole});
             }
         });
@@ -145,8 +213,7 @@ int CustomPlot::rowCount(const QModelIndex& parent) const
 
 QVariant CustomPlot::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || index.row() < 0
-        || index.row() >= static_cast<int>(entries_.size())) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= static_cast<int>(entries_.size())) {
         return {};
     }
     const Entry& entry = entries_[static_cast<std::size_t>(index.row())];
@@ -292,9 +359,8 @@ void CustomPlot::addDataset(const QString& path, bool confirmed)
                 parts << QString::number(cursor[d]);
             }
             parts << QStringLiteral(":");
-            written.push_back(path + QStringLiteral("[")
-                              + parts.join(QStringLiteral(", "))
-                              + QStringLiteral("]"));
+            written.push_back(path + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
+                              QStringLiteral("]"));
             // Odometer over the leading dimensions, fastest on the right --
             // row-major, the same order the grid lists its rows in.
             for (std::size_t d = last; d-- > 0;) {
@@ -376,7 +442,7 @@ void CustomPlot::setExpression(int row, const QString& text)
     // the one state this must never be in.
     entry.values.clear();
     entry.sourceLength = 0;
-    entry.stride = 1;
+    entry.step = 1.0;
     touch(row, {ExpressionRole, PointsRole, SourcePointsRole, ScalableRole});
     invalidate();
 }
@@ -435,12 +501,14 @@ QVariantList CustomPlot::drawnSeries() const
 
 int CustomPlot::seriesCount() const
 {
-    return static_cast<int>(std::count_if(
-        entries_.begin(), entries_.end(),
-        [](const Entry& entry) { return entry.drawn; }));
+    return static_cast<int>(std::count_if(entries_.begin(), entries_.end(),
+                                          [](const Entry& entry) { return entry.drawn; }));
 }
 
-int CustomPlot::pointCount() const { return points_; }
+int CustomPlot::pointCount() const
+{
+    return points_;
+}
 
 int CustomPlot::sourceSeriesCount() const
 {
@@ -449,13 +517,18 @@ int CustomPlot::sourceSeriesCount() const
 
 bool CustomPlot::thinned() const
 {
-    return std::any_of(entries_.begin(), entries_.end(), [](const Entry& entry) {
-        return entry.drawn && entry.stride > 1;
-    });
+    return std::any_of(entries_.begin(), entries_.end(),
+                       [](const Entry& entry) { return entry.drawn && entry.step > 1.0; });
 }
 
-double CustomPlot::minimum() const { return minimum_; }
-double CustomPlot::maximum() const { return maximum_; }
+double CustomPlot::minimum() const
+{
+    return minimum_;
+}
+double CustomPlot::maximum() const
+{
+    return maximum_;
+}
 
 int CustomPlot::sourcePointCount() const
 {
@@ -489,7 +562,10 @@ void CustomPlot::setXStep(double value)
     emit xAxisChanged();
 }
 
-bool CustomPlot::hasData() const { return hasFinite_; }
+bool CustomPlot::hasData() const
+{
+    return hasFinite_;
+}
 
 QString CustomPlot::error() const
 {
@@ -598,8 +674,10 @@ double CustomPlot::positionOf(const Entry& entry, std::size_t at) const
     }
     // Point for point, allowing for the thinning: a line drawn every stride-th
     // element covers stride axis positions between one drawn point and the
-    // next.
-    return static_cast<double>(at) * static_cast<double>(entry.stride);
+    // next -- and half a bucket when it was read as an envelope, because the
+    // two values of a bucket are its extremes and they occurred somewhere
+    // inside it.
+    return static_cast<double>(at) * entry.step;
 }
 
 void CustomPlot::releaseDrawing()
@@ -642,10 +720,10 @@ PlotLine CustomPlot::lineOf(int series) const
     // covers the elements the thinning skipped.
     const auto drawn = static_cast<double>(entry.values.size());
     if (entry.scaling == Stretch && drawn > 1.0) {
-        line.positionStep =
-            static_cast<double>(sourcePointCount() - 1) / (drawn - 1.0);
-    } else {
-        line.positionStep = static_cast<double>(entry.stride);
+        line.positionStep = static_cast<double>(sourcePointCount() - 1) / (drawn - 1.0);
+    }
+    else {
+        line.positionStep = entry.step;
     }
     return line;
 }
@@ -714,8 +792,7 @@ void CustomPlot::touch(int row, const QVector<int>& roles)
         return;
     }
     if (row < 0) {
-        emit dataChanged(index(0, 0),
-                         index(static_cast<int>(entries_.size()) - 1, 0), roles);
+        emit dataChanged(index(0, 0), index(static_cast<int>(entries_.size()) - 1, 0), roles);
         return;
     }
     emit dataChanged(index(row, 0), index(row, 0), roles);
@@ -739,7 +816,8 @@ void CustomPlot::recount()
                 minimum_ = value;
                 maximum_ = value;
                 hasFinite_ = true;
-            } else {
+            }
+            else {
                 minimum_ = std::min(minimum_, value);
                 maximum_ = std::max(maximum_, value);
             }
@@ -768,7 +846,8 @@ void CustomPlot::recount()
             xMinimum_ = value;
             xMaximum_ = value;
             seen = true;
-        } else {
+        }
+        else {
             xMinimum_ = std::min(xMinimum_, value);
             xMaximum_ = std::max(xMaximum_, value);
         }
@@ -818,8 +897,7 @@ void CustomPlot::refresh()
             std::map<QString, std::shared_ptr<h5core::Dataset>> opened;
             std::map<QString, PathFacts> facts;
             for (const Ask& ask : asks) {
-                reply.lines.push_back(
-                    readLine(file, ask.expression, opened, facts));
+                reply.lines.push_back(readLine(file, ask.expression, opened, facts));
             }
             reply.learned.reserve(facts.size());
             for (auto& entry : facts) {
@@ -844,7 +922,8 @@ void CustomPlot::refresh()
                     xSourceLength_ = answer.sourceLength;
                 }
                 at = 1;
-            } else {
+            }
+            else {
                 xProblem_.clear();
                 xValues_.clear();
                 xSourceLength_ = 0;
@@ -858,7 +937,7 @@ void CustomPlot::refresh()
                 Entry& entry = entries_[i];
                 entry.problem = answer.problem;
                 entry.values = std::move(answer.values);
-                entry.stride = answer.stride;
+                entry.step = answer.step;
                 entry.sourceLength = answer.sourceLength;
             }
 
@@ -873,19 +952,19 @@ QVariantMap CustomPlot::state() const
     QVariantList rows;
     rows.reserve(static_cast<qsizetype>(entries_.size()));
     for (const Entry& entry : entries_) {
-        rows.append(QVariantMap{
-            {QStringLiteral("expression"), entry.expression},
-            {QStringLiteral("alias"), entry.alias},
-            {QStringLiteral("scaling"),
-             entry.scaling == Stretch ? QStringLiteral("stretch")
-                                      : QStringLiteral("align")},
-            {QStringLiteral("drawn"), entry.drawn}});
+        rows.append(QVariantMap{{QStringLiteral("expression"), entry.expression},
+                                {QStringLiteral("alias"), entry.alias},
+                                {QStringLiteral("scaling"), entry.scaling == Stretch
+                                                                ? QStringLiteral("stretch")
+                                                                : QStringLiteral("align")},
+                                {QStringLiteral("drawn"), entry.drawn}});
     }
 
     QString mode = QStringLiteral("index");
     if (xMode_ == Range) {
         mode = QStringLiteral("range");
-    } else if (xMode_ == Dataset) {
+    }
+    else if (xMode_ == Dataset) {
         mode = QStringLiteral("dataset");
     }
 
@@ -899,12 +978,10 @@ void CustomPlot::setState(const QVariantMap& state)
 {
     beginResetModel();
     entries_.clear();
-    const QVariantList rows =
-        state.value(QStringLiteral("entries")).toList();
+    const QVariantList rows = state.value(QStringLiteral("entries")).toList();
     for (const QVariant& row : rows) {
         const QVariantMap fields = row.toMap();
-        const QString expression =
-            fields.value(QStringLiteral("expression")).toString().trimmed();
+        const QString expression = fields.value(QStringLiteral("expression")).toString().trimmed();
         if (expression.isEmpty()) {
             // Dropped rather than refused, which is the stance
             // PostprocessModel::setSteps takes for an operation this build does
@@ -916,8 +993,7 @@ void CustomPlot::setState(const QVariantMap& state)
         entry.expression = expression;
         entry.alias = fields.value(QStringLiteral("alias")).toString().trimmed();
         entry.scaling =
-            fields.value(QStringLiteral("scaling")).toString()
-                    == QStringLiteral("stretch")
+            fields.value(QStringLiteral("scaling")).toString() == QStringLiteral("stretch")
                 ? Stretch
                 : Align;
         entry.drawn = fields.value(QStringLiteral("drawn"), true).toBool();
@@ -926,7 +1002,7 @@ void CustomPlot::setState(const QVariantMap& state)
     endResetModel();
 
     const QString mode = state.value(QStringLiteral("xMode")).toString();
-    xMode_ = mode == QStringLiteral("range")   ? Range
+    xMode_ = mode == QStringLiteral("range")     ? Range
              : mode == QStringLiteral("dataset") ? Dataset
                                                  : Index;
     xExpression_ = state.value(QStringLiteral("xExpression")).toString();

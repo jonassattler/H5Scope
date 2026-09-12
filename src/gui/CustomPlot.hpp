@@ -8,12 +8,12 @@
 #include "PlotItem.hpp"
 
 #include <QAbstractListModel>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QPointer>
 #include <QtQml/qqmlregistration.h>
 
 #include <vector>
@@ -59,8 +59,7 @@ class CustomPlot : public QAbstractListModel
     Q_PROPERTY(XMode xMode READ xMode WRITE setXMode NOTIFY xSourceChanged)
     /// The 1-D slice read as the time base, when `xMode` is Dataset. Written
     /// the same way an entry is: `/committed/morning[:]`.
-    Q_PROPERTY(QString xExpression READ xExpression WRITE setXExpression
-                   NOTIFY xSourceChanged)
+    Q_PROPERTY(QString xExpression READ xExpression WRITE setXExpression NOTIFY xSourceChanged)
     /// Why the time base will not read, or empty. Its own property rather than
     /// a role because it is not one of the rows.
     Q_PROPERTY(QString xError READ xError NOTIFY changed)
@@ -98,7 +97,8 @@ class CustomPlot : public QAbstractListModel
 
 public:
     /// Where the x of each point comes from.
-    enum XMode {
+    enum XMode
+    {
         Index,   ///< the element's own position, 0, 1, 2 ...
         Range,   ///< a stated start, step and stop, as the plot tab's is
         Dataset, ///< another 1-D slice, read as a time base
@@ -107,7 +107,8 @@ public:
 
     /// Whether an entry shorter or longer than the axis is laid point for
     /// point along it or spread across the whole of it.
-    enum Scaling {
+    enum Scaling
+    {
         /// Sample i sits at position i. A line shorter than the axis stops
         /// early; one longer than it is cut where the axis ends.
         Align,
@@ -118,7 +119,8 @@ public:
     };
     Q_ENUM(Scaling)
 
-    enum Roles {
+    enum Roles
+    {
         ExpressionRole = Qt::UserRole + 1,
         /// What the reader would rather this line were called. Empty means the
         /// expression speaks for itself.
@@ -271,7 +273,8 @@ signals:
     void crowding(const QString& path, int lines);
 
 private:
-    struct Entry {
+    struct Entry
+    {
         QString expression;
         /// What the legend calls it, when the expression will not do.
         QString alias;
@@ -281,15 +284,16 @@ private:
         /// Filled by the last read.
         QString problem;
         std::vector<double> values;
-        int stride = 1;      ///< elements skipped between drawn points
+        double step = 1.0;    ///< axis positions between drawn points
         int sourceLength = 0; ///< elements the slice has in the file
     };
 
     /// One line as the job hands it back.
-    struct LineData {
+    struct LineData
+    {
         QString problem;
         std::vector<double> values;
-        int stride = 1;
+        double step = 1.0;
         int sourceLength = 0;
     };
 
@@ -349,6 +353,20 @@ public:
     /// beyond a couple of thousand a line is drawing more detail than a screen
     /// can resolve.
     static constexpr int kMaxPoints = 2048;
+    /// The longest line that is reduced by taking the extremes of each bucket
+    /// rather than by taking every nth element.
+    ///
+    /// An envelope has to read the whole line before it can reduce it, and
+    /// postproc::read materialises what it reads. Four million doubles is
+    /// thirty-two megabytes held for as long as it takes to walk them, which
+    /// is what this number is really about -- the read itself is one hyperslab
+    /// and is cheaper than the two thousand a thinned selection costs.
+    ///
+    /// Past it a line is thinned by stride, and the old caveat stands: a spike
+    /// narrower than one stride is not drawn. Nothing warns about that, because
+    /// the line the reader typed is still the line they get -- it is the
+    /// summary that is coarser.
+    static constexpr int kEnvelopeElements = 1 << 22;
     /// Lines past which adding a whole dataset asks first.
     ///
     /// Not a limit. Past a few dozen, strokes over one another stop separating
