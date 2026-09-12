@@ -568,14 +568,21 @@ Item {
                 // a line nobody can see. The axis rules go a step further
                 // again, so the frame reads as the frame.
                 //
-                // Qt Graphs 6.11 draws neither the grid nor the axis rules
-                // whatever these are set to -- verified by setting them to
-                // 3px red, which also does not appear -- so what "grid lines"
-                // in the settings panel turns on is, for now, nothing. The
-                // weights are stated here so that the day the library draws
-                // them, it draws them in the system's own ink. The axis
-                // *labels* are unaffected and do render; those are what the
-                // margins above make room for.
+                // This used to say that Qt Graphs drew neither the grid nor
+                // the axis rules whatever these were set to, and that "grid
+                // lines" in the settings panel therefore turned on nothing.
+                // Against the pinned 6.11.1 that is not true. Both draw, in
+                // these colours, and docs/screenshots/plot.png is a picture of
+                // them: five horizontal rules and five vertical ones, under
+                // the labels the margins above make room for.
+                //
+                // What is true is that they draw only through the graphics
+                // API. The software renderer that the offscreen platform falls
+                // back to silently drops them -- which is why
+                // tools/make-screenshots.cpp asks for the "rhi" backend by
+                // name, and why nothing in the QML suite has ever been able to
+                // see them. A note written from a headless picture is a note
+                // about the renderer that took it.
                 grid.mainColor: Theme.borderStrong
                 grid.subColor: Theme.border
                 grid.mainWidth: Theme.borderWidth
