@@ -141,9 +141,8 @@ int runSpike(int argc, char** argv, const QUrl& qmlEntry,
                  + name(options.shape) + ", " + std::to_string(options.frames)
                  + " frames per cell"
                  + (options.offscreen ? " (SOFTWARE RENDERER)" : ""));
-    if (!options.out.isEmpty()) {
-        report.appendTsv(options.out + QStringLiteral("/results.tsv"));
-    }
+    // Not written here: runBench appends each row as it finishes, so a run
+    // that dies half way through still leaves the half that worked.
     if (!allocationCountingActive()) {
         std::fprintf(stderr, "note: allocation counts were not measured\n");
     }

@@ -107,6 +107,16 @@ public:
     /// comparable file instead of three that have to be joined by hand.
     bool appendTsv(const QString& path) const;
 
+    /// One row, appended as soon as it is finished.
+    ///
+    /// Written per cell rather than per run because a run does not always
+    /// finish: Qt Graphs segmentation-faults on a single line of ten million
+    /// points, inside QSGCurveStrokeNode::cookGeometry, and a report assembled
+    /// at the end would have lost the twenty cells that had already succeeded
+    /// along with the one that did not. A benchmark should survive the thing
+    /// it is benchmarking.
+    static bool appendRow(const QString& path, const Row& row);
+
 private:
     std::vector<Row> rows_;
 };

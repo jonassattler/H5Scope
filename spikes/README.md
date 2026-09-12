@@ -37,9 +37,17 @@ under `plotting/results/`.
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg
-cmake --preset spike-release -S spikes
+cd spikes
+cmake --preset spike-release
 cmake --build --preset spike-release
+ctest --preset spike-release        # the correctness checks; needs a display
 ```
+
+From `spikes/` rather than from the repository root: `cmake --build --preset`
+and `ctest --preset` read the preset file in the working directory, and the
+root's `CMakePresets.json` knows nothing about these. The build tree still
+lands in the repository's own `build/spike-release`, which `.gitignore`
+already covers.
 
 `spikes/vcpkg.json` is the application's manifest copied verbatim with
 `qcustomplot` added, and that is deliberate rather than lazy. vcpkg hashes each
@@ -60,10 +68,25 @@ whether a renderer can keep up, and only the hand says whether the result feels
 like an instrument.
 
 ```sh
-build/spike-release/bin/spike-qtgraphs                       # interactive
-build/spike-release/bin/spike-qtgraphs --bench --out spikes/plotting/results
-build/spike-release/bin/plot-verify --out spikes/plotting/results
+R=spikes/plotting/results
+build/spike-release/bin/spike-qtgraphs                    # interactive
+build/spike-release/bin/spike-qtgraphs    --bench  --out $R
+build/spike-release/bin/spike-scenegraph  --bench  --out $R --variant batched
+build/spike-release/bin/spike-qcustomplot --bench  --out $R
+build/spike-release/bin/spike-qtgraphs    --verify --out $R
+build/spike-release/bin/plot-gallery               --out $R
 ```
+
+`--bench` writes one row per cell into `$R/results.tsv` as each finishes,
+`--verify` writes `$R/verify.tsv` and an image per check, and `plot-gallery`
+assembles both into `$R/gallery.md`. Rows are appended, so delete the two
+`.tsv` files before a fresh comparison.
+
+A row is written per cell rather than per run because a run does not always
+finish: Qt Graphs segmentation-faults on a single line of ten million points,
+inside `QSGCurveStrokeNode::cookGeometry`, and a file written at the end would
+lose the twenty cells that had already succeeded along with the one that did
+not.
 
 The benchmarks must not be run under `QT_QPA_PLATFORM=offscreen`. That platform
 declares no RHI capability, so Qt Quick falls back to its software renderer and

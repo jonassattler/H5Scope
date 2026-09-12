@@ -94,7 +94,7 @@ void BenchReport::print(const std::string& title) const
     std::printf("\n");
 }
 
-bool BenchReport::appendTsv(const QString& path) const
+bool BenchReport::appendRow(const QString& path, const Row& row)
 {
     if (path.isEmpty()) {
         return true;
@@ -112,7 +112,7 @@ bool BenchReport::appendTsv(const QString& path) const
                "\tcpu_p50\tcpu_p95\tcpu_worst\twall_p50\twall_p95\tframes\trss_mib"
                "\tdata_mib\tallocs\talloc_mib\tnote\n";
     }
-    for (const Row& row : rows_) {
+    {
         out << QString::fromStdString(row.renderer) << '\t'
             << QString::fromStdString(row.shape) << '\t' << row.series << '\t'
             << row.points << '\t' << (row.realWorkload ? 1 : 0) << '\t'
@@ -125,6 +125,16 @@ bool BenchReport::appendTsv(const QString& path) const
             << '\t' << static_cast<qulonglong>(row.allocCalls) << '\t'
             << static_cast<qulonglong>(row.allocMiB) << '\t'
             << QString::fromStdString(row.note) << '\n';
+    }
+    return true;
+}
+
+bool BenchReport::appendTsv(const QString& path) const
+{
+    for (const Row& row : rows_) {
+        if (!appendRow(path, row)) {
+            return false;
+        }
     }
     return true;
 }

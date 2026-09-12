@@ -65,8 +65,11 @@ QCustomPlotItem::~QCustomPlotItem() = default;
 
 void QCustomPlotItem::setPopulateLegend(bool on)
 {
+    // Recorded, not applied. Applying it would mean rebuilding every graph,
+    // and the surface sets this on its way to handing over a *new* dataset --
+    // so the rebuild would run against the old one, which by then it is not
+    // required to still own. The next rebuild() picks the flag up.
     populateLegend_ = on;
-    rebuild();
 }
 
 void QCustomPlotItem::setAdaptiveSampling(bool on)

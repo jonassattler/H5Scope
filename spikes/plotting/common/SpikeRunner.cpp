@@ -84,9 +84,19 @@ BenchReport runBench(Surface& surface, const Options& options)
                      surface.rendererName());
     }
 
+    // The dataset the surface is currently pointing at. Outside the loop so
+    // that nothing frees it while the surface still has it.
+    std::unique_ptr<SyntheticSource> held;
+
     std::vector<Cell> cells;
     if (options.cellSeries > 0 && options.cellPoints > 0) {
-        cells.push_back({options.cellSeries, options.cellPoints, true, false});
+        // Marked as the real workload only if it *is* one. --cell is how the
+        // grid gets run one process per cell -- which Qt Graphs requires,
+        // because it cannot finish the grid in one -- and a flag that labelled
+        // every cell "the real one" would put the marker on all of them.
+        const bool real = options.cellPoints == 2048
+                          && (options.cellSeries == 64 || options.cellSeries == 10000);
+        cells.push_back({options.cellSeries, options.cellPoints, real, false});
     } else {
         cells = grid(options.budget);
     }
@@ -103,15 +113,12 @@ BenchReport runBench(Surface& surface, const Options& options)
             row.skipped = true;
             row.note = "past --budget";
             report.add(row);
+            BenchReport::appendRow(options.out.isEmpty()
+                                       ? QString()
+                                       : options.out + QStringLiteral("/results.tsv"),
+                                   row);
             continue;
         }
-
-        // Built before the clock starts. Generating the data is the read path's
-        // job in the application and nobody's job here; timing it would add the
-        // same number to all three columns and hide the ones that differ.
-        const auto source = std::make_unique<SyntheticSource>(
-            options.shape, cell.series, cell.points, options.seed);
-        row.dataMiB = static_cast<double>(source->bytes()) / (1024.0 * 1024.0);
 
         // Throwing the previous cell's data away, timed on its own. Charging
         // it to the next cell's build would put the cost of discarding ten
@@ -123,8 +130,31 @@ BenchReport runBench(Surface& surface, const Options& options)
         surface.setSource(nullptr);
         row.clearMs = static_cast<double>(clock.nsecsElapsed()) / 1e6;
 
+        // Only now is the previous cell's data freed, and only because the
+        // surface has just been told to stop pointing at it.
+        //
+        // It was the other way round for one run, and three of the five
+        // renderers crashed on their largest cell -- two with std::bad_alloc,
+        // one with a segmentation fault, all of them looking exactly like a
+        // library that had run out of room. They had not. `held` was released
+        // at the end of the previous iteration while the surface still held
+        // the pointer, and the next call into it read a freed dataset for its
+        // series and point counts. A use-after-free that reports itself as a
+        // failed allocation is the most expensive kind of benchmark bug there
+        // is: the number it produces is plausible, and it is about the wrong
+        // program.
+        held.reset();
+
+        // Built after the clock stops. Generating the data is the read path's
+        // job in the application and nobody's job here; timing it would add
+        // the same number to all three columns and hide the ones that differ.
+        held = std::make_unique<SyntheticSource>(options.shape, cell.series,
+                                                 cell.points, options.seed);
+        const SyntheticSource* source = held.get();
+        row.dataMiB = static_cast<double>(source->bytes()) / (1024.0 * 1024.0);
+
         clock.restart();
-        surface.setSource(source.get());
+        surface.setSource(source);
         row.buildMs = static_cast<double>(clock.nsecsElapsed()) / 1e6;
 
         // Build to first complete frame. A renderer that defers its geometry
@@ -174,12 +204,21 @@ BenchReport runBench(Surface& surface, const Options& options)
         row.allocMiB = spent.bytes / (1024 * 1024);
         row.rssMiB = peakResidentMiB();
         report.add(row);
+        // On disk before the next cell starts, so a cell that takes the
+        // process down takes only itself.
+        BenchReport::appendRow(options.out.isEmpty()
+                                   ? QString()
+                                   : options.out + QStringLiteral("/results.tsv"),
+                               row);
 
         std::fprintf(stderr, "  %-12s %6d x %-9d  cpu p50 %7.2f ms  p95 %7.2f ms\n",
                      row.renderer.c_str(), row.series, row.points,
                      row.frames.cpuMedian, row.frames.cpuP95);
     }
 
+    // And the surface stops pointing at anything before the caller's stack
+    // unwinds past `held`.
+    surface.setSource(nullptr);
     return report;
 }
 
