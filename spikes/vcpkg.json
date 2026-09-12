@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "h5scope-plot-spikes",
+  "version": "0.1.0",
+  "description": "Throwaway plotting bake-off. Not the product; see spikes/README.md.",
+  "license": "GPL-3.0-only",
+  "builtin-baseline": "00c5775211f45cd08b37fce0484b4cb940e422ab",
+  "$comment-qtbase": [
+    "qtbase is named twice because a feature list cannot be qualified by",
+    "platform, only a dependency can. The X11, Wayland, EGL and fontconfig",
+    "features below do not exist for a Windows triplet, and asking for them",
+    "there does not degrade -- it fails to resolve the manifest at all.",
+    "",
+    "The Windows list is the Linux one minus exactly those. freetype is kept",
+    "although Qt on Windows draws its glyphs through DirectWrite by default,",
+    "because dropping it would also drop brotli and bzip2, which reach the",
+    "link line only as freetype's dependencies. Keeping it makes the Windows",
+    "dependency set a strict subset of the Linux one, and that is what lets",
+    "cmake/ThirdPartyLicenses.cmake, THIRD-PARTY-NOTICES.md and the source",
+    "bundle describe two platforms without describing them separately."
+  ],
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "platform": "linux",
+      "default-features": false,
+      "features": [
+        "gui",
+        "widgets",
+        "testlib",
+        "thread",
+        "concurrent",
+        "network",
+        "freetype",
+        "fontconfig",
+        "harfbuzz",
+        "png",
+        "doubleconversion",
+        "pcre2",
+        "zstd",
+        "opengl",
+        "egl",
+        "xcb",
+        "xcb-xlib",
+        "xcb-sm",
+        "xkb",
+        "xkbcommon-x11",
+        "xrender",
+        "xlib",
+        "wayland"
+      ]
+    },
+    {
+      "name": "qtbase",
+      "platform": "windows",
+      "default-features": false,
+      "features": [
+        "gui",
+        "widgets",
+        "testlib",
+        "thread",
+        "concurrent",
+        "network",
+        "freetype",
+        "harfbuzz",
+        "png",
+        "doubleconversion",
+        "pcre2",
+        "zstd",
+        "opengl"
+      ]
+    },
+    "qtdeclarative",
+    "qtgraphs",
+    "qcustomplot",
+    "hdf5",
+    "catch2",
+    {
+      "name": "xcb-util-cursor",
+      "platform": "linux"
+    }
+  ],
+  "overrides": [
+    {
+      "name": "hdf5",
+      "version-semver": "2.2.0"
+    }
+  ]
+}

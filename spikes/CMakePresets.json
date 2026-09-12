@@ -1,0 +1,62 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "spike-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../build/${presetName}",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/../ports",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "spike-release",
+      "displayName": "Plotting spikes, release",
+      "inherits": "spike-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "spike-debug",
+      "displayName": "Plotting spikes, debug",
+      "inherits": "spike-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "spike-release",
+      "configurePreset": "spike-release"
+    },
+    {
+      "name": "spike-debug",
+      "configurePreset": "spike-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "spike-release",
+      "configurePreset": "spike-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

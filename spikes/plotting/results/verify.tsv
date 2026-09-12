@@ -1,0 +1,25 @@
+renderer	check	verdict	measure	detail	image
+qtgraphs	spike	pass	0.0555556	topmost ink as a fraction of pane height (found at x=0.405714, spike is at 0.370000)	qtgraphs-spike.png
+qtgraphs	gap	fail	92	widest run of empty columns, against the 140 the data is missing	qtgraphs-gap.png
+qtgraphs	ends	pass	112	columns of pane left blank at the two ends	qtgraphs-ends.png
+qtgraphs	bigx	pass	4	longest run of columns sharing one topmost row; a sine's own crest is a few, a staircase is tens	qtgraphs-bigx.png
+qtgraphs	range	pass	0.00187857	fraction of the pane inked, with y from 1e-30 to 1e30 on a linear axis	qtgraphs-range.png
+qtgraphs	lines	pass	288	distinct quantised colours in the image, from 1024 lines each given its own hue	qtgraphs-lines.png
+qtgraphs	logy	absent	0	the renderer offers no logarithmic y axis	
+qtgraphs	dpr	pass	1	grab width over window width times device pixel ratio (1.000000); run under QT_SCALE_FACTOR=2 to make this say something	qtgraphs-dpr.png
+scenegraph	spike	pass	0.05	topmost ink as a fraction of pane height (found at x=0.369286, spike is at 0.370000)	scenegraph-spike.png
+scenegraph	gap	pass	141	widest run of empty columns, against the 140 the data is missing	scenegraph-gap.png
+scenegraph	ends	pass	0	columns of pane left blank at the two ends	scenegraph-ends.png
+scenegraph	bigx	pass	2	longest run of columns sharing one topmost row; a sine's own crest is a few, a staircase is tens	scenegraph-bigx.png
+scenegraph	range	pass	0.0017381	fraction of the pane inked, with y from 1e-30 to 1e30 on a linear axis	scenegraph-range.png
+scenegraph	lines	pass	73	distinct quantised colours in the image, from 1024 lines each given its own hue	scenegraph-lines.png
+scenegraph	logy	pass	0.000619841	fraction of the pane inked on a logarithmic y axis	scenegraph-logy.png
+scenegraph	dpr	pass	1	grab width over window width times device pixel ratio (1.000000); run under QT_SCALE_FACTOR=2 to make this say something	scenegraph-dpr.png
+qcustomplot	spike	pass	0.0644444	topmost ink as a fraction of pane height (found at x=0.379286, spike is at 0.370000)	qcustomplot-spike.png
+qcustomplot	gap	pass	135	widest run of empty columns, against the 140 the data is missing	qcustomplot-gap.png
+qcustomplot	ends	pass	48	columns of pane left blank at the two ends	qcustomplot-ends.png
+qcustomplot	bigx	pass	4	longest run of columns sharing one topmost row; a sine's own crest is a few, a staircase is tens	qcustomplot-bigx.png
+qcustomplot	range	pass	0.00217302	fraction of the pane inked, with y from 1e-30 to 1e30 on a linear axis	qcustomplot-range.png
+qcustomplot	lines	pass	253	distinct quantised colours in the image, from 1024 lines each given its own hue	qcustomplot-lines.png
+qcustomplot	logy	pass	0.00541587	fraction of the pane inked on a logarithmic y axis	qcustomplot-logy.png
+qcustomplot	dpr	pass	1	grab width over window width times device pixel ratio (1.000000); run under QT_SCALE_FACTOR=2 to make this say something	qcustomplot-dpr.png
