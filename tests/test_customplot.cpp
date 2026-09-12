@@ -31,7 +31,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <QCoreApplication>
+#include <QColor>
+#include <QScopeGuard>
+#include <QSettings>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QtGraphs/QLineSeries>
 
 #include <cmath>
@@ -641,8 +645,14 @@ TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[cust
 
     // Every entry is a path inside a file, and this is not that file any more.
     CHECK(set()->count() == 0);
-    CHECK(set()->viewNames().isEmpty());
     CHECK(set()->activeIndex() == -1);
+
+    // The views are not. A view is a way of looking at data rather than a
+    // piece of one file's contents, and it says how much of whatever is open
+    // it can still draw instead of going away.
+    CHECK(set()->viewNames() == QStringList{QStringLiteral("both")});
+    CHECK(set()->stateOf(QStringLiteral("both"))
+          == gui::CustomPlotSet::NoMatch);
 }
 
 TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
@@ -752,15 +762,161 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         CHECK(plots->plotAt(target)->name() == QStringLiteral("morning"));
     }
 
-    SECTION("saving over a name replaces the view and keeps its place in the list")
+    SECTION("saving over a name replaces the view rather than adding a second")
     {
         REQUIRE(plots->saveView(QStringLiteral("other"), source, {}).isEmpty());
         REQUIRE(plots->saveView(QStringLiteral("pair"), source, {}).isEmpty());
+        // Both fit the file entirely, so the order between them is the
+        // alphabet's.
         CHECK(plots->viewNames()
-              == QStringList{QStringLiteral("pair"), QStringLiteral("other")});
+              == QStringList{QStringLiteral("other"), QStringLiteral("pair")});
 
         plots->removeView(QStringLiteral("pair"));
         CHECK(plots->viewNames() == QStringList{QStringLiteral("other")});
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it it can draw",
+                 "[custom][views]")
+{
+    gui::CustomPlotSet* plots = set();
+    const int source = plots->addPlot();
+    settleAll();
+    gui::CustomPlot* from = plots->plotAt(source);
+
+    SECTION("everything it names is here")
+    {
+        add(from, QStringLiteral("/series/a[:]"));
+        add(from, QStringLiteral("/series/b[:]"));
+        REQUIRE(plots->saveView(QStringLiteral("both"), source, {}).isEmpty());
+        CHECK(plots->stateOf(QStringLiteral("both"))
+              == gui::CustomPlotSet::FullMatch);
+    }
+
+    SECTION("some of it is")
+    {
+        add(from, QStringLiteral("/series/a[:]"));
+        add(from, QStringLiteral("/gone_away[:]"));
+        REQUIRE(plots->saveView(QStringLiteral("half"), source, {}).isEmpty());
+        CHECK(plots->stateOf(QStringLiteral("half"))
+              == gui::CustomPlotSet::PartialMatch);
+    }
+
+    SECTION("none of it is")
+    {
+        add(from, QStringLiteral("/gone_away[:]"));
+        add(from, QStringLiteral("/also_gone[:]"));
+        REQUIRE(plots->saveView(QStringLiteral("stale"), source, {}).isEmpty());
+        CHECK(plots->stateOf(QStringLiteral("stale"))
+              == gui::CustomPlotSet::NoMatch);
+    }
+
+    SECTION("and a view nobody saved matches nothing")
+    {
+        CHECK(plots->stateOf(QStringLiteral("never"))
+              == gui::CustomPlotSet::NoMatch);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "the views are offered best fit first, then alphabetically",
+                 "[custom][views]")
+{
+    gui::CustomPlotSet* plots = set();
+    const int source = plots->addPlot();
+    settleAll();
+    gui::CustomPlot* from = plots->plotAt(source);
+
+    // A reader is nearly always looking for something that will actually draw,
+    // so that is what the top of the list is for.
+    add(from, QStringLiteral("/gone_away[:]"));
+    REQUIRE(plots->saveView(QStringLiteral("a red one"), source, {}).isEmpty());
+
+    from->clearEntries();
+    add(from, QStringLiteral("/series/a[:]"));
+    add(from, QStringLiteral("/gone_away[:]"));
+    REQUIRE(plots->saveView(QStringLiteral("z yellow"), source, {}).isEmpty());
+    REQUIRE(plots->saveView(QStringLiteral("a yellow"), source, {}).isEmpty());
+
+    from->clearEntries();
+    add(from, QStringLiteral("/series/b[:]"));
+    REQUIRE(plots->saveView(QStringLiteral("z green"), source, {}).isEmpty());
+
+    CHECK(plots->viewNames()
+          == QStringList{QStringLiteral("z green"), QStringLiteral("a yellow"),
+                         QStringLiteral("z yellow"), QStringLiteral("a red one")});
+}
+
+TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
+                 "[custom][views]")
+{
+    // The one thing in this application that is written down besides the list
+    // of files opened, and for the same reason: a comparison built once is
+    // wanted again next week, on next week's file.
+    //
+    // Nothing is read or written until a host application has named itself,
+    // which is what keeps every other suite off the reader's own settings --
+    // so this one names itself, points QSettings at a directory of its own,
+    // and puts both back afterwards.
+    QTemporaryDir home;
+    REQUIRE(home.isValid());
+    const QSettings::Format wasFormat = QSettings::defaultFormat();
+    const QString wasOrganization = QCoreApplication::organizationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, home.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("H5ScopeViewTest"));
+    const QScopeGuard restore([&] {
+        QCoreApplication::setOrganizationName(wasOrganization);
+        QSettings::setDefaultFormat(wasFormat);
+    });
+
+    const QVariantMap drawing{{QStringLiteral("showMarkers"), true},
+                              {QStringLiteral("colorSingle"),
+                               QVariant::fromValue(QColor(Qt::red))}};
+    {
+        gui::CustomPlotSet writing;
+        const int index = writing.addPlot();
+        gui::CustomPlot* plot = writing.plotAt(index);
+        REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == 0);
+        plot->setAlias(0, QStringLiteral("morning"));
+        REQUIRE(writing.setName(index, QStringLiteral("runs")).isEmpty());
+        REQUIRE(writing.saveView(QStringLiteral("kept"), index, drawing).isEmpty());
+    }
+
+    // A second set, built from nothing but what the first one wrote.
+    gui::CustomPlotSet reading;
+    REQUIRE(reading.viewNames() == QStringList{QStringLiteral("kept")});
+
+    const int into = reading.addPlot();
+    reading.restoreView(QStringLiteral("kept"), into);
+    gui::CustomPlot* back = reading.plotAt(into);
+
+    CHECK(back->sourceSeriesCount() == 1);
+    CHECK(back->seriesLabel(0) == QStringLiteral("morning"));
+    CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
+          == QStringLiteral("/series/a[:]"));
+    CHECK(back->name() == QStringLiteral("runs"));
+
+    SECTION("and so are the drawing settings, colours and all")
+    {
+        QSignalSpy restored(&reading, &gui::CustomPlotSet::viewRestored);
+        const int second = reading.addPlot();
+        reading.restoreView(QStringLiteral("kept"), second);
+
+        REQUIRE(restored.count() == 1);
+        const QVariantMap came = restored.at(0).at(1).toMap();
+        CHECK(came.value(QStringLiteral("showMarkers")).toBool());
+        // A colour is the one value that does not survive a trip through JSON
+        // on its own; it is written as "#aarrggbb", which is what a QML colour
+        // property reads back without being asked.
+        CHECK(QColor(came.value(QStringLiteral("colorSingle")).toString())
+              == QColor(Qt::red));
+    }
+
+    SECTION("and forgetting one forgets it for good")
+    {
+        reading.removeView(QStringLiteral("kept"));
+        gui::CustomPlotSet third;
+        CHECK(third.viewNames().isEmpty());
     }
 }
 

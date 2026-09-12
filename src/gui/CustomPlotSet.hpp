@@ -27,10 +27,18 @@ namespace gui {
 /// `AppController::settings_` takes, and for the same reason: a session's
 /// worth of looking at one file is not a preference.
 ///
-/// Saved views are the set's rather than any one tab's. A view saved from one
-/// tab is worth restoring into a fresh one -- that is most of what saving a
-/// comparison is for -- and a per-tab list would have made restoring into the
-/// tab that saved it the only thing possible, which is an undo and not a view.
+/// Saved views are the odd ones out, and deliberately. They are the set's
+/// rather than any one tab's -- a view saved from one tab is worth restoring
+/// into a fresh one, which is most of what saving a comparison is for -- and
+/// they outlive both the tabs and the *file*, because a view is a way of
+/// looking at data rather than a piece of one file's contents. A reader who has
+/// built a comparison of four runs wants it again next week, on next week's
+/// file, which is exactly the case the recent-files list is kept for.
+///
+/// So they are written to QSettings and read back at start-up, and a view that
+/// no longer fits the file in front of it says so rather than being thrown
+/// away: `stateOf` reports whether all, some or none of the datasets it names
+/// are there, and the panels draw a dot in that colour beside it.
 class CustomPlotSet : public QAbstractListModel
 {
     Q_OBJECT
@@ -38,7 +46,7 @@ class CustomPlotSet : public QAbstractListModel
     QML_UNCREATABLE("Obtained from AppController.customPlots")
 
     Q_PROPERTY(int count READ count NOTIFY countChanged)
-    /// The names of the saved views, in the order they were saved.
+    /// The saved views, best fit first. See `viewNames`.
     Q_PROPERTY(QStringList viewNames READ viewNames NOTIFY viewsChanged)
     /// Which tab the window is showing, or -1 when it is showing something
     /// else. Written by the tab strip.
@@ -53,6 +61,19 @@ class CustomPlotSet : public QAbstractListModel
     Q_PROPERTY(gui::CustomPlot* active READ active NOTIFY activeIndexChanged)
 
 public:
+    /// How much of a saved view the file in front of it actually holds.
+    enum MatchState {
+        /// Nothing it names is here. Most likely the wrong file.
+        NoMatch = 0,
+        /// Some of it is. Usually a file of the same shape with a run missing,
+        /// which is the case a reader most wants to be told about rather than
+        /// refused over.
+        PartialMatch = 1,
+        /// Every dataset it names is here.
+        FullMatch = 2,
+    };
+    Q_ENUM(MatchState)
+
     enum Roles {
         NameRole = Qt::UserRole + 1,
         /// Whether this tab is showing in a window of its own, in which case
@@ -68,7 +89,14 @@ public:
     [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
 
     [[nodiscard]] int count() const { return static_cast<int>(plots_.size()); }
-    [[nodiscard]] QStringList viewNames() const { return viewOrder_; }
+    /// The saved views in the order they are offered: every one that fits the
+    /// file entirely, then the partial ones, then the ones that do not fit at
+    /// all, and alphabetically within each. What a reader is looking for is
+    /// nearly always something that will actually draw, so that is what the
+    /// top of the list is for.
+    [[nodiscard]] QStringList viewNames() const;
+    /// How much of the view named fits the open file.
+    Q_INVOKABLE [[nodiscard]] MatchState stateOf(const QString& name) const;
     [[nodiscard]] int activeIndex() const { return activeIndex_; }
     void setActiveIndex(int index);
     [[nodiscard]] CustomPlot* active() const;
@@ -123,6 +151,12 @@ public:
     /// because they were QML's to begin with.
     Q_INVOKABLE void restoreView(const QString& name, int index);
 
+    /// Resolve every path every saved view names, so `stateOf` can answer.
+    ///
+    /// One crossing for the lot. Called when a file finishes opening, which is
+    /// the only moment the answers can change.
+    void refreshViewStates();
+
     [[nodiscard]] DatasetLookup* lookup() { return &lookup_; }
 
     /// Forget every tab, every view and everything known about the file. The
@@ -164,10 +198,18 @@ private:
         QVariantMap settings; ///< what the surface was drawn with
     };
     QHash<QString, View> views_;
-    /// The order they were saved in. A QHash has none, and a list that
-    /// reordered itself whenever a view was added would move the row the
-    /// reader was about to press.
-    QStringList viewOrder_;
+
+    /// Every path a saved view names, deduplicated.
+    [[nodiscard]] QStringList viewPaths() const;
+    /// Read the views back from QSettings, and write them out again.
+    ///
+    /// As JSON in one key rather than as a QVariantMap per view. QSettings
+    /// would store the maps through QDataStream, which works and is a blob:
+    /// unreadable in the file, tied to Qt's stream version, and impossible to
+    /// migrate by hand. What is saved here is a handful of paths and settings
+    /// and is worth being able to look at.
+    void loadViews();
+    void saveViews() const;
 };
 
 } // namespace gui

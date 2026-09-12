@@ -196,6 +196,24 @@ ApplicationWindow {
         return "custom:" + index
     }
 
+    /// Make a tab out of a saved view.
+    ///
+    /// Checked before the tab is made rather than after, so a reader who
+    /// changes their mind at the question is not left with an empty plot to
+    /// close. The answer arrives at onViewChecked below.
+    property string pendingView: ""
+
+    function openViewInNewTab(name) {
+        window.pendingView = name
+        window.customPlots.checkView(name)
+    }
+
+    /// ...and the half of it that happens once the question is answered.
+    function landView(name) {
+        const index = window.addCustomTab()
+        window.customPlots.restoreView(name, index)
+    }
+
     /// Close the tab at `index`, and leave the reader somewhere sensible.
     function closeCustomTab(index) {
         const wasShowing = window.customPlots.activeIndex === index
@@ -206,6 +224,28 @@ ApplicationWindow {
 
     Connections {
         target: window.customPlots
+
+        function onViewChecked(name, issues, reasons) {
+            if (name !== window.pendingView)
+                return
+            window.pendingView = ""
+            if (issues === 0) {
+                window.landView(name)
+                return
+            }
+            newTabWarning.viewName = name
+            newTabWarning.issues = issues
+            newTabWarning.reasons = reasons
+            newTabWarning.open()
+        }
+
+        // A tab that comes back from its own window is the tab the reader was
+        // just looking at, so the strip shows it rather than whatever it was
+        // showing before they tore it off.
+        function onActiveIndexChanged() {
+            if (window.customPlots.activeIndex >= 0)
+                window.informationSelected = false
+        }
 
         function onNamesChanged() { window.tabRevision++ }
         function onCountChanged() { window.tabRevision++ }
@@ -436,6 +476,29 @@ ApplicationWindow {
                         enabled: AppController.hasFile
                         onClicked: window.addCustomTab()
                     }
+
+                    // ...and beside it, the same thing from an arrangement the
+                    // reader has already built. A caret rather than a second
+                    // glyph of its own: what it does is open a list, which is
+                    // what a caret says everywhere else in this window.
+                    AppTabButton {
+                        id: viewsButton
+
+                        objectName: "openSavedView"
+
+                        glyph: "caret"
+                        ink: Theme.accent
+                        enabled: AppController.hasFile
+                                 && AppController.customPlots.viewNames.length > 0
+                        onClicked: savedViews.popup(viewsButton, 0,
+                                                    viewsButton.height)
+
+                        SavedViewsMenu {
+                            id: savedViews
+
+                            onPicked: (name) => window.openViewInNewTab(name)
+                        }
+                    }
                 }
             }
 
@@ -634,6 +697,17 @@ ApplicationWindow {
     CrowdedPlotDialog {
         id: crowdedDialog
     }
+
+    // The same question the data panel asks before restoring into an existing
+    // tab, asked before making a new one out of a view.
+    RestoreViewDialog {
+        id: newTabWarning
+
+        onAccepted: window.landView(newTabWarning.viewName)
+    }
+
+    /// Exposed for the QML suite, which cannot walk to a Popup.
+    readonly property alias savedViewWarning: newTabWarning
 
     /// The question a whole dataset raises, exposed for the QML suite: a Popup
     /// is not in the item tree, so there is no walking to it.

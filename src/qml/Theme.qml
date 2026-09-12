@@ -304,6 +304,17 @@ QtObject {
     readonly property color danger:  dark ? red500 : red700
     /// What a control that adds something is drawn in. See green500 above.
     readonly property color positive: dark ? green500 : green700
+    /// The same four, for ink standing on the *inverted* ground -- a menu row
+    /// under the pointer, which this system fills with the accent.
+    ///
+    /// The inversion swaps which of each solved pair reads: a bright hue is
+    /// for a dark ground and a deep one for a light ground, and an inverted
+    /// row is whichever the rest of the window is not. Without these a green
+    /// dot on a hovered row reads at 2.3:1 and the reader loses the one thing
+    /// the dot was there to say at the moment they point at it.
+    readonly property color warningInvert:  dark ? amber700 : amber500
+    readonly property color dangerInvert:   dark ? red700 : red500
+    readonly property color positiveInvert: dark ? green700 : green500
 
     // --- spacing ---------------------------------------------------------
     // The 2px grid, verbatim: 1 2 4 6 8 12 14 18 24 32 44 60 80 112.
@@ -794,6 +805,23 @@ QtObject {
     /// order they are argued in above: the long one first, because it is the
     /// one that separates the most lines and the one the plot opens on.
     readonly property var categoricalPaletteNames: ["spectrum", "safe"]
+
+    /// The state colour for "how much of this still fits", which is the
+    /// three-way a saved view reports: 2 is all of it, 1 some of it, 0 none.
+    /// See gui::CustomPlotSet::MatchState.
+    ///
+    /// Here rather than in the panel that draws it because two surfaces draw
+    /// this dot -- the data rail and the drawer at the end of the tab strip --
+    /// and a colour decided in two places is a colour that ends up different
+    /// in the two places. It is the same kind of mapping `categoricalColor`
+    /// below is: an application's question answered in the system's colours.
+    function matchColor(state, inverted) {
+        if (state >= 2)
+            return inverted ? theme.positiveInvert : theme.positive
+        if (state >= 1)
+            return inverted ? theme.warningInvert : theme.warning
+        return inverted ? theme.dangerInvert : theme.danger
+    }
 
     /// A colour `position` of the way along `stops`, interpolated in RGB.
     ///

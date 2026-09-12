@@ -203,21 +203,25 @@ Rectangle {
                 // because the two beside it are already the widest things in
                 // the bar.
                 //
-                // Absent in a torn-off window: the way back is closing it, and
-                // a button offering to do again what has been done is a button
-                // the reader has to work out.
+                // ...and, in a torn-off window, the way back. It was left out
+                // on the grounds that closing the window does it, which is
+                // true and is not something a reader can see: the control that
+                // took the plot out of the strip is the one they look for to
+                // put it back, so it is in the same place, reversed.
                 AppIconButton {
                     id: detachButton
 
                     objectName: "detachPlot"
 
                     Layout.alignment: Qt.AlignVCenter
-                    visible: !root.detached && root.plotIndex >= 0
-                    glyph: "detach"
+                    visible: root.plotIndex >= 0
+                    glyph: root.detached ? "attach" : "detach"
                     bare: true
-                    hint: qsTr("open this plot in a window of its own")
+                    hint: root.detached
+                          ? qsTr("put this plot back in the tab strip")
+                          : qsTr("open this plot in a window of its own")
                     onClicked: AppController.customPlots.setDetached(
-                                   root.plotIndex, true)
+                                   root.plotIndex, !root.detached)
                 }
             }
 

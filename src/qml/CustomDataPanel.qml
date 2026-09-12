@@ -127,6 +127,14 @@ SettingsPanel {
 
                 HoverHandler { id: viewHover }
 
+                /// How much of the open file this view can still draw. Read
+                /// off the list rather than computed here, and re-read
+                /// whenever the list is announced -- which is whenever a file
+                /// is opened and the states are worked out again.
+                readonly property int state:
+                    AppController.customPlots.viewNames.length >= 0
+                    ? AppController.customPlots.stateOf(viewRow.modelData) : 0
+
                 RowLayout {
                     id: viewLine
 
@@ -141,6 +149,29 @@ SettingsPanel {
                     // line up read worse than one that does.
                     anchors.rightMargin: 0
                     spacing: Theme.gapS
+
+                    // Green for all of it, amber for some, red for none. The
+                    // same dot the strip's drawer draws, in the same colours,
+                    // which is why the mapping is Theme's rather than either
+                    // file's.
+                    Rectangle {
+                        Layout.preferredWidth: Theme.indicatorSize / 2
+                        Layout.preferredHeight: Theme.indicatorSize / 2
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: width / 2
+                        color: Theme.matchColor(viewRow.state, false)
+
+                        HoverHandler { id: dotHover }
+
+                        AppToolTip {
+                            shown: dotHover.hovered
+                            text: viewRow.state >= 2
+                                  ? qsTr("every dataset this names is in the open file")
+                                  : viewRow.state >= 1
+                                    ? qsTr("some of what this names is in the open file")
+                                    : qsTr("none of what this names is in the open file")
+                        }
+                    }
 
                     Text {
                         id: viewLabel

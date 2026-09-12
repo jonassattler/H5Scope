@@ -31,6 +31,7 @@ qt_add_qml_module(appqml
     CustomDataPanel.qml
     CustomEntryRow.qml
     AddToCustomMenu.qml
+    SavedViewsMenu.qml
     CustomPlotWindow.qml
     RestoreViewDialog.qml
     CrowdedPlotDialog.qml

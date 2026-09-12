@@ -100,10 +100,24 @@ Button {
         implicitWidth: control.glyph !== "" ? Theme.iconSize : label.implicitWidth
         implicitHeight: Theme.tabBarHeight
 
+        // The caret is Caret's own geometry rather than an AppIcon path: it
+        // is the same chevron the tree and the panel buttons draw, and there
+        // is one of it.
+        Caret {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: control.inkOffset
+            visible: control.glyph === "caret"
+            size: Theme.iconSize
+            angle: 90
+            color: !control.enabled ? Theme.textDisabled
+                 : control.hovered ? control.ink
+                                   : Theme.mix(Theme.background, control.ink, 0.7)
+        }
+
         AppIcon {
             anchors.centerIn: parent
             anchors.verticalCenterOffset: control.inkOffset
-            visible: control.glyph !== ""
+            visible: control.glyph !== "" && control.glyph !== "caret"
             name: control.glyph
             // Dimmed at rest and full strength under the pointer, which is the
             // treatment every bare glyph in this application gets: with no

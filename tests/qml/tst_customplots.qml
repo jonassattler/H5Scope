@@ -49,12 +49,23 @@ TestCase {
         tryVerify(() => !AppController.busy, 10000, "and settle")
     }
 
-    /// One controller serves the whole binary, so a suite that leaves tabs
-    /// behind makes the next case depend on the last one. Re-opening the file
-    /// empties them, which is the behaviour under test in test_customplot and
-    /// is used here as the reset.
+    /// One controller serves the whole binary, so a suite that leaves state
+    /// behind makes the next case depend on the last one.
+    ///
+    /// Re-opening the file empties the tabs, which is the behaviour under test
+    /// in test_customplot and is used here as the reset. The saved views are
+    /// *not* emptied by it -- they outlive the file on purpose -- so they are
+    /// taken out by hand. Nothing reaches the reader's own settings doing it:
+    /// the QML harness names no organisation, and CustomPlotSet reads and
+    /// writes nothing until one is named.
     function init() {
         AppController.closeFile()
+        // Copied first. A QStringList reaches QML as a sequence bound to the
+        // property it came from, so reading an element re-reads the property
+        // -- and removing while walking one skips every other entry.
+        const views = AppController.customPlots.viewNames.slice()
+        for (let i = 0; i < views.length; ++i)
+            AppController.customPlots.removeView(views[i])
         verify(openFixture(), "the fixture must re-open")
     }
 
@@ -637,9 +648,14 @@ TestCase {
         const inside = findAllOf(torn.contentItem, "customWindowView")
         compare(inside.length, 1)
         compare(inside[0].plot, plot)
-        verify(inside[0].detached, "it offers no second tear-off")
-        compare(findAllOf(inside[0], "detachPlot")
-                .filter((b) => b.visible).length, 0)
+        verify(inside[0].detached, "the view knows where it is")
+
+        // The control that took the plot out of the strip is the one a reader
+        // looks for to put it back, so it is in the same place, reversed.
+        const back = findAllOf(inside[0], "detachPlot")
+                     .filter((b) => b.visible)
+        compare(back.length, 1)
+        compare(back[0].glyph, "attach")
 
         AppController.customPlots.setDetached(0, false)
         waitForRendering(win.contentItem)
@@ -1038,6 +1054,120 @@ TestCase {
         compare(legend.width, legend.minimumWidth)
         legend.resizeBy(10000)
         compare(legend.width, legend.maximumWidth)
+    }
+
+    // --- the saved views, as a library -------------------------------------
+
+    function test_the_strip_offers_the_saved_views_next_to_the_plus() {
+        const win = openWindow()
+        const caret = findAllOf(win.contentItem, "openSavedView")
+        compare(caret.length, 1)
+        verify(!caret[0].enabled, "nothing saved, so nothing to offer")
+
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        compare(AppController.customPlots.saveView("just a", 0, ({})), "")
+        waitForRendering(win.contentItem)
+
+        verify(caret[0].enabled, "and now there is")
+
+        // Picking one makes a tab of its own out of it rather than landing in
+        // the tab that happens to be open.
+        win.openViewInNewTab("just a")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        compare(AppController.customPlots.count, 2)
+        compare(win.currentTabId, "custom:1")
+        compare(AppController.customPlots.plotAt(1).sourceSeriesCount, 1)
+    }
+
+    function test_a_view_that_does_not_fit_asks_before_a_tab_is_made() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/gone_away[:]")
+        settleReads()
+        compare(AppController.customPlots.saveView("half here", 0, ({})), "")
+
+        win.openViewInNewTab("half here")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const asked = win.savedViewWarning
+        verify(asked.visible, "the question must come before the tab")
+        compare(asked.issues, 1)
+        // Nothing was made while it was open -- a reader who changes their
+        // mind is not left with an empty plot to close.
+        compare(AppController.customPlots.count, 1)
+
+        asked.accept()
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(AppController.customPlots.count, 2)
+    }
+
+    function test_a_view_carries_a_dot_saying_how_much_of_the_file_it_holds() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        compare(AppController.customPlots.saveView("all here", 0, ({})), "")
+
+        plot.addExpression("/gone_away[:]")
+        settleReads()
+        compare(AppController.customPlots.saveView("some here", 0, ({})), "")
+
+        compare(AppController.customPlots.stateOf("all here"),
+                CustomPlotSet.FullMatch)
+        compare(AppController.customPlots.stateOf("some here"),
+                CustomPlotSet.PartialMatch)
+
+        // Best fit first, then the alphabet.
+        compare(AppController.customPlots.viewNames,
+                ["all here", "some here"])
+
+        // The dot is the same colour wherever the view can be picked, which is
+        // why the mapping is Theme's rather than each panel's.
+        compare(String(Theme.matchColor(CustomPlotSet.FullMatch, false)),
+                String(Theme.positive))
+        compare(String(Theme.matchColor(CustomPlotSet.PartialMatch, false)),
+                String(Theme.warning))
+        compare(String(Theme.matchColor(CustomPlotSet.NoMatch, false)),
+                String(Theme.danger))
+    }
+
+    function test_a_torn_off_plot_can_be_put_back_from_its_own_window() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        AppController.customPlots.setDetached(0, true)
+        waitForRendering(win.contentItem)
+        wait(0)
+
+        const torn = win.plotWindows.objectAt(0)
+        verify(torn.visible)
+        compare(win.tabs.length, 4)
+
+        const inside = findAllOf(torn.contentItem, "customWindowView")[0]
+        const back = findAllOf(inside, "detachPlot").filter((b) => b.visible)[0]
+        verify(back, "the way back must be where the way out was")
+        mouseClick(back)
+        waitForRendering(win.contentItem)
+
+        verify(!torn.visible, "the window goes")
+        compare(win.tabs.length, 5)
+        // ...and the reader is looking at the tab they were just looking at.
+        compare(win.currentTabId, "custom:0")
     }
 
     function test_the_footer_counts_entries_and_datapoints() {

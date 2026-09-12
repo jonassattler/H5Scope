@@ -76,8 +76,13 @@ selection: `CustomPlotSet` holds the reader's own tabs, each a `CustomPlot` of
 1-D slices named as `path[subscript]` and drawn together. `CustomPlot` is
 deliberately shaped like `DatasetPlot` from the outside, which is what lets
 `PlotSurface.qml`, `PlotLegend.qml` and `PlotSettingsPanel.qml` draw either one
-without being forked. They answer to the *file* rather than to the tree, so
-`AppController::openFile`/`closeFile` empty them.
+without being forked. The tabs answer to the *file* rather than to the tree, so
+`AppController::openFile`/`closeFile` empty them — but the **saved views do
+not**: they are written to `QSettings` and outlive both the tabs and the file,
+and each reports how much of whatever is open it can still draw. That and the
+recent-files list are the only two things this program remembers between runs,
+and both are guarded by `QCoreApplication::organizationName().isEmpty()` so the
+tests and `make-screenshots` never touch the user's settings.
 
 ## Invariants worth knowing before editing
 

@@ -38,6 +38,15 @@ MenuItem {
     /// `checked` so the mark can follow a binding (Theme.dark, the current tab)
     /// that triggering the row would otherwise overwrite.
     property bool marked: false
+    /// What that bullet is drawn in.
+    ///
+    /// The reading ink by default, which is what a mark meaning "this is the
+    /// current one" wants. A row whose subject has a state of its own -- a
+    /// saved view, which says how much of the open file it can still draw --
+    /// sets a state colour here instead, and then owns the inverted case too:
+    /// the default below is the only thing that knows the row is hovered.
+    property color markInk:
+        control.highlighted ? Theme.accentText : Theme.textPrimary
 
     /// Whether this row opens a drawer of its own. Qt sets `subMenu` on the
     /// item it creates for a nested Menu, which is what the caret below reads.
@@ -126,7 +135,7 @@ MenuItem {
             Layout.fillHeight: true
             text: control.marked ? "•" : ""
             font: Theme.readout
-            color: control.highlighted ? Theme.accentText : Theme.textPrimary
+            color: control.markInk
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }

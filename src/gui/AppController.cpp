@@ -70,6 +70,15 @@ AppController::AppController(QObject* parent)
     customPlots_ = new CustomPlotSet(this);
     connect(customPlots_, &CustomPlotSet::notice, this,
             &AppController::statusMessage);
+    // The saved views outlive the file, so how much of each one fits has to be
+    // worked out again whenever another is opened. One crossing for the lot,
+    // and only once there is something to ask.
+    connect(this, &AppController::fileOpened, customPlots_,
+            [this](bool ok, const QString&) {
+                if (ok) {
+                    customPlots_->refreshViewStates();
+                }
+            });
 
     // The pipeline's second row is the slice above the table rather than a
     // copy of it, so it is given the model that owns that slice.

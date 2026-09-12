@@ -11,6 +11,8 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
 - Visualize datasets as spreadsheets, plots or images
 - Draw slices of several datasets together on one pair of axes, against the
   index, a stated range, or another dataset read as a time series
+- Save an arrangement of lines as a named view and put it back on another file,
+  which says up front how much of it that file still holds
 - View images, which are automatically detected based on the HDF5 specification
 - Work with high dimensional arrays by utilizing powerful slicing tools
 - Transpose, reshape, reduce and slice a dataset before you look at it, with a
