@@ -10,7 +10,6 @@
 #include <QPointer>
 #include <QString>
 #include <QVariantList>
-#include <QtGraphs/QAbstractSeries>
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
@@ -41,10 +40,12 @@ namespace gui {
 /// DatasetTableModel::sampleValues() of a single row, so the file is read in
 /// proportion to what is drawn and nothing else.
 ///
-/// The values themselves never reach QML. QML creates the Qt Graphs series and
-/// hands each one back through fill(), which loads it in a single bulk
-/// QXYSeries::replace(); appending points one at a time across the QML boundary
-/// is what makes a graph of ten thousand points slow.
+/// The values themselves never reach QML. fill() hands the renderer a pointer
+/// into the cache this object already holds, together with the arithmetic that
+/// puts a sample at an x, and the renderer projects straight from the doubles.
+/// The boundary this replaced built a QList<QPointF> per line -- sixteen bytes
+/// a point, allocated and copied on every refill -- and it was the refill, not
+/// the read, that made recolouring a ten-thousand-line selection slow.
 class DatasetPlot : public QObject
 {
     Q_OBJECT
@@ -146,11 +147,6 @@ public:
     /// on and what the legend's "first %1" puts back.
     Q_INVOKABLE void selectFirst(int count);
 
-    /// Load line `series` -- an index into the table, not into the drawn set --
-    /// into `series`, which QML created on its ChartView. A cell that could not
-    /// be read leaves a gap rather than a zero.
-    Q_INVOKABLE void fill(QAbstractSeries* target, int series);
-
     /// Hand every drawn line to `target` at once.
     ///
     /// One crossing rather than one per line, and no points built on the way:
@@ -171,8 +167,8 @@ public:
     ///
     /// The seam the suites assert the x arithmetic through, and the only
     /// reason it is public: gui::samplesOf() over these two is what fill()
-    /// used to put in a QXYSeries, so a test can read the points without a
-    /// window, an engine or a scene graph.
+    /// used to hand a renderer, so a test can read the points without a window,
+    /// an engine or a scene graph.
     [[nodiscard]] PlotLine lineOf(int series) const;
     [[nodiscard]] PlotAxis drawingAxis() const;
 

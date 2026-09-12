@@ -69,7 +69,8 @@ inline constexpr double kLogDecades = 6.0;
 /// those vectors again. There is no way for the item to notice; that is the
 /// price of not copying, and it is why this says so here rather than leaving it
 /// to be discovered.
-struct PlotLine {
+struct PlotLine
+{
     const double* values = nullptr;
     qsizetype count = 0;
 
@@ -107,7 +108,8 @@ struct PlotLine {
 };
 
 /// How the shared x axis turns a position into a value.
-struct PlotAxis {
+struct PlotAxis
+{
     /// x = start + position * step.
     double start = 0.0;
     double step = 1.0;
@@ -125,7 +127,8 @@ struct PlotAxis {
 };
 
 /// The window being shown and the pane it is shown in.
-struct PlotView {
+struct PlotView
+{
     double xMin = 0.0;
     double xMax = 1.0;
     double yMin = 0.0;
@@ -147,13 +150,15 @@ struct PlotView {
 };
 
 /// One unbroken stroke. A line with two gaps in it is three runs.
-struct PlotRun {
+struct PlotRun
+{
     int first = 0;
     int count = 0;
 };
 
 /// What projecting one line produced.
-struct PlotProjected {
+struct PlotProjected
+{
     /// Strokes appended to `runs`.
     int runs = 0;
     /// Whether the envelope was used, which is to say whether a drawn point is
@@ -197,9 +202,8 @@ struct PlotProjected {
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
 /// set of lines projects into one pair of buffers.
 ///
-PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
-                          const PlotView& view, std::vector<QPointF>& points,
-                          std::vector<PlotRun>& runs);
+PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
+                          std::vector<QPointF>& points, std::vector<PlotRun>& runs);
 
 /// Expand `count` projected points into a triangle strip `width` pixels wide,
 /// appending two vertices per station to `out`.
@@ -215,8 +219,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
 /// across the pane. At a true reversal the two normals cancel and the join
 /// falls back to a butt end, which at these widths is what a round join would
 /// have drawn anyway.
-void strokeRun(const QPointF* points, int count, double width,
-               std::vector<QPointF>& out);
+void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out);
 
 /// How many sides a marker is drawn with.
 ///

@@ -44,7 +44,8 @@ constexpr int kMaxVertices = 4 << 20;
 
 /// The colour a vertex carries: the line's own, multiplied by its strength and
 /// premultiplied, which is the convention the scene graph blends in.
-struct Ink {
+struct Ink
+{
     uchar red = 0;
     uchar green = 0;
     uchar blue = 0;
@@ -57,15 +58,13 @@ Ink inkFor(const PlotLine& line)
     const auto channel = [&](int value) {
         return static_cast<uchar>(std::lround(static_cast<double>(value) * alpha));
     };
-    return {channel(line.colour.red()), channel(line.colour.green()),
-            channel(line.colour.blue()),
+    return {channel(line.colour.red()), channel(line.colour.green()), channel(line.colour.blue()),
             static_cast<uchar>(std::lround(alpha * 255.0))};
 }
 
 } // namespace
 
-PlotItem::PlotItem(QQuickItem* parent)
-    : QQuickItem(parent)
+PlotItem::PlotItem(QQuickItem* parent) : QQuickItem(parent)
 {
     setFlag(ItemHasContents, true);
 }
@@ -205,11 +204,8 @@ double PlotItem::valueAt(double fraction) const
     // arithmetic the chrome and the curve have to agree about, so it is written
     // as the exact inverse of yFraction() and nothing else.
     const double high = std::max(view_.yMax, std::numeric_limits<double>::min());
-    const double low =
-        view_.yMin > 0.0 ? view_.yMin : high * std::pow(10.0, -kLogDecades);
-    return std::pow(10.0,
-                    std::log10(low)
-                        + fraction * (std::log10(high) - std::log10(low)));
+    const double low = view_.yMin > 0.0 ? view_.yMin : high * std::pow(10.0, -kLogDecades);
+    return std::pow(10.0, std::log10(low) + fraction * (std::log10(high) - std::log10(low)));
 }
 
 double PlotItem::xFraction(double x) const
@@ -301,8 +297,7 @@ void PlotItem::projectAll()
     lineDecimated_.assign(lines, false);
     for (std::size_t line = 0; line < lines; ++line) {
         lineRuns_[line] = static_cast<int>(runs_.size());
-        lineDecimated_[line] =
-            projectLine(lines_[line], axis_, view, points_, runs_).decimated;
+        lineDecimated_[line] = projectLine(lines_[line], axis_, view, points_, runs_).decimated;
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
 
@@ -323,9 +318,9 @@ QSGNode* PlotItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 
     projectAll();
 
-    const bool software = window() != nullptr && window()->rendererInterface() != nullptr
-                          && window()->rendererInterface()->graphicsApi()
-                                 == QSGRendererInterface::Software;
+    const bool software =
+        window() != nullptr && window()->rendererInterface() != nullptr &&
+        window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
     const Drawn wanted = software ? Drawn::Painted : Drawn::Geometry;
     if (drawn_ != wanted) {
         root->removeAllChildNodes();
@@ -365,14 +360,12 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
 
     const int strips = static_cast<int>(runs_.size()) + marked;
     const int vertices =
-        strips > 0 ? 2 * static_cast<int>(points_.size()) + kMarkerSides * marked
-                         + 2 * (strips - 1)
+        strips > 0 ? 2 * static_cast<int>(points_.size()) + kMarkerSides * marked + 2 * (strips - 1)
                    : 0;
 
     if (root->childCount() == 0) {
         auto* fresh = new QSGGeometryNode;
-        auto* geometry =
-            new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
+        auto* geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
         geometry->setDrawingMode(QSGGeometry::DrawTriangleStrip);
         fresh->setGeometry(geometry);
         fresh->setFlag(QSGNode::OwnsGeometry);
@@ -391,8 +384,8 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
     auto* vertex = geometry->vertexDataAsColoredPoint2D();
     int at = 0;
     const auto place = [&](const QPointF& point, const Ink& ink) {
-        vertex[at].set(static_cast<float>(point.x()), static_cast<float>(point.y()),
-                       ink.red, ink.green, ink.blue, ink.alpha);
+        vertex[at].set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
+                       ink.green, ink.blue, ink.alpha);
         ++at;
     };
 
@@ -403,8 +396,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
         for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
             const PlotRun& run = runs_[static_cast<std::size_t>(r)];
             stroke_.clear();
-            strokeRun(&points_[static_cast<std::size_t>(run.first)], run.count, width,
-                      stroke_);
+            strokeRun(&points_[static_cast<std::size_t>(run.first)], run.count, width, stroke_);
             if (stroke_.empty()) {
                 continue;
             }
@@ -433,8 +425,8 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
             const PlotRun& run = runs_[static_cast<std::size_t>(r)];
             for (int i = 0; i < run.count; ++i) {
                 stroke_.clear();
-                markerAt(points_[static_cast<std::size_t>(run.first + i)],
-                         markerSize_ / 2.0, stroke_);
+                markerAt(points_[static_cast<std::size_t>(run.first + i)], markerSize_ / 2.0,
+                         stroke_);
                 if (started) {
                     vertex[at] = vertex[at - 1];
                     ++at;
@@ -475,17 +467,15 @@ QSGNode* PlotItem::buildPainted(QSGNode* root)
         painter.setRenderHint(QPainter::Antialiasing, true);
         for (std::size_t line = 0; line < lines_.size(); ++line) {
             QColor colour = lines_[line].colour;
-            colour.setAlphaF(
-                std::clamp(colour.alphaF() * lines_[line].opacity, 0.0, 1.0));
+            colour.setAlphaF(std::clamp(colour.alphaF() * lines_[line].opacity, 0.0, 1.0));
             // Round joins rather than the mitred ones the geometry path builds.
             // QPainter's miter limit is its own, and the two only have to agree
             // about where the line goes, not about how a corner is finished.
-            painter.setPen(QPen(colour, lines_[line].width, Qt::SolidLine, Qt::FlatCap,
-                                Qt::RoundJoin));
+            painter.setPen(
+                QPen(colour, lines_[line].width, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
             for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
                 const PlotRun& run = runs_[static_cast<std::size_t>(r)];
-                painter.drawPolyline(&points_[static_cast<std::size_t>(run.first)],
-                                     run.count);
+                painter.drawPolyline(&points_[static_cast<std::size_t>(run.first)], run.count);
             }
             if (!marksLine(line)) {
                 continue;

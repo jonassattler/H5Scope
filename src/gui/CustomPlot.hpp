@@ -14,7 +14,6 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QPointer>
-#include <QtGraphs/QAbstractSeries>
 #include <QtQml/qqmlregistration.h>
 
 #include <vector>
@@ -35,7 +34,7 @@ namespace gui {
 /// `drawnSeries`, `seriesCount`, `pointCount`, `minimum`, `seriesLabel`,
 /// `fill` and the rest -- because that shape is what `PlotSurface.qml`,
 /// `PlotLegend.qml` and `PlotSettingsPanel.qml` ask for, and those three are
-/// about seventeen hundred lines of tuned Qt Graphs, colour and zoom behaviour
+/// about seventeen hundred lines of tuned drawing, colour and zoom behaviour
 /// that must not be forked to serve a second plot. A custom tab hands them this
 /// object instead and they draw it without knowing the difference.
 ///
@@ -227,9 +226,6 @@ public:
     Q_INVOKABLE void selectNone();
     Q_INVOKABLE void selectFirst(int count);
 
-    /// Load entry `series` into `target`, which QML created on its graph.
-    Q_INVOKABLE void fill(QAbstractSeries* target, int series);
-
     /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
     /// crossing, no points built on the way, and the values are **borrowed**.
     Q_INVOKABLE void fill(gui::PlotItem* target);
@@ -239,8 +235,8 @@ public:
     /// and a start and a step otherwise.
     ///
     /// The seam tests/test_customplot.cpp asserts the three x modes through.
-    /// gui::samplesOf() over these two is what fill() used to put in a
-    /// QXYSeries, so the suite reads the points with no engine and no graph.
+    /// gui::samplesOf() over these two is what fill() hands a renderer, so the
+    /// suite reads the points with no engine and no graph.
     [[nodiscard]] PlotLine lineOf(int series) const;
     [[nodiscard]] PlotAxis drawingAxis() const;
 

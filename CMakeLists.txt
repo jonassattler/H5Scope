@@ -180,13 +180,14 @@ if(DEFINED CACHE{XCB_CURSOR_LIBRARY} AND NOT XCB_CURSOR_LIBRARY MATCHES "\\.a$")
 endif()
 
 # --- dependencies ----------------------------------------------------------
-# Graphs rather than Charts for the Data Viewer's plot: Charts is the
-# QGraphicsView-era module -- its ChartView wraps a QGraphicsWidget and asserts
-# without a QApplication, which is the whole Qt Widgets stack dragged into a Qt
-# Quick application to draw polylines. Graphs renders on the scene graph and
-# needs none of it.
+# No plotting library. The Data Viewer's plot is drawn by gui::PlotItem
+# directly on the Qt Quick scene graph, which is what let Qt Graphs -- and the
+# unused Qt Quick 3D it dragged in with it -- leave the tree entirely. Both were
+# GPL-3.0-only, and they were the only components here that were: see
+# docs on PlotProjection.hpp for the four things a library could not do, and
+# THIRD-PARTY-NOTICES.md for what their departure changed about the licensing.
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickTest Test
-                                           LabsFolderListModel Graphs QuickShapes
+                                           LabsFolderListModel QuickShapes
                                            QuickDialogs2)
 
 # What has to be true afterwards, asserted rather than assumed: every failure

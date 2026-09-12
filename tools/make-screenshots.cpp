@@ -184,7 +184,7 @@ constexpr int kRenderPasses = 3;
 /// whole picture. A view that was handed rows while it was laying out lays them
 /// out again on the frame after -- the tree, which is fed by another thread,
 /// otherwise comes out holding a mixture of the rows it had and the rows it was
-/// given -- and Qt Graphs builds its series from what the pass before it
+/// given -- and the plot builds its geometry from what the pass before it
 /// delivered, so a plot's first frame after a change of selection can still be
 /// the axes without the line. Each pass costs a millisecond and the whole
 /// question goes away.
@@ -494,9 +494,11 @@ int main(int argc, char* argv[])
     // The offscreen platform declares no RhiBasedRendering capability, so Qt
     // Quick picks its software renderer for every window opened on it. That
     // renderer draws most of this application correctly and silently drops what
-    // it cannot do -- which here is Qt Graphs' grid, the horizontal and vertical
-    // rules the plot's readings are read against. A picture missing them is a
-    // picture of a plot this program does not draw.
+    // it cannot do -- which here is every custom QSGGeometryNode, and the plot's
+    // strokes are nothing else. gui::PlotItem carries a QPainter fallback so
+    // that the headless test suite still sees a line, but the fallback is a
+    // blitted image and not the geometry that ships. A picture of it would be a
+    // picture of the second renderer.
     //
     // "rhi" is the name for "no adaptation, use the graphics API"; asking for it
     // is what overrides the platform's answer. It needs a context to be had,

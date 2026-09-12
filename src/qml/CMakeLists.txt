@@ -86,7 +86,6 @@ qt_add_qml_module(appqml
 #                            than handing the job to the platform's file
 #                            dialog, so the picker is drawn from Theme like
 #                            every other surface here.
-#   QtGraphs                 PlotSurface.qml.
 #   QtQuick.Shapes           AppIcon.qml draws the orientation controls'
 #                            glyphs as vector paths, and Caret.qml the
 #                            expander chevron, because the design system ships
@@ -101,7 +100,6 @@ target_link_libraries(appqml PRIVATE
   gui
   Qt6::LabsFolderListModel
   Qt6::qmlfolderlistmodelplugin
-  Qt6::Graphs
   Qt6::QuickShapes
   Qt6::qmlshapesplugin
   Qt6::QuickDialogs2

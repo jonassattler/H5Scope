@@ -415,10 +415,12 @@ Item {
     /// 1, 2 or 5 times a power of ten, which is what every axis in every
     /// plotting library settles on and what a reader can add up in their head.
     ///
-    /// Set explicitly because Qt Graphs computes its automatic spacing from
-    /// the axis's *declared* range and not from the range it is showing, so a
-    /// zoomed-in axis would keep the spacing of the whole dataset and print
-    /// one lonely tick.
+    /// Written here in the first place because Qt Graphs computed its
+    /// automatic spacing from the axis's *declared* range and not from the
+    /// range it was showing, so a zoomed-in axis kept the spacing of the whole
+    /// dataset and printed one lonely tick. PlotFrame has its own copy, which
+    /// is the one the ticks are drawn from; this one is what the QML suite
+    /// reads and what the footer's readouts round against.
     function niceStep(span, target) {
         if (!(span > 0))
             return 0
@@ -613,10 +615,11 @@ Item {
     }
 
     // --- zoom and pan ----------------------------------------------------
-    // Over the graph rather than inside it: GraphsView carries handlers of its
-    // own for the zoom and pan styles it implements, and those zoom about the
-    // centre of the frame. The pointer is what a reader is aiming with, so the
-    // wheel is taken here instead and turned into the axis arithmetic above.
+    // Over the frame rather than inside it. This began as a way around
+    // GraphsView's own wheel and drag handlers, which zoomed about the centre
+    // of the frame rather than about the pointer; it stays because zoom and pan
+    // are properties of the *view* and not of the drawing, so they belong to
+    // the object that owns the window onto the data.
     Item {
         anchors.fill: parent
         // The same inset as the graph, so a pointer position in this item is a

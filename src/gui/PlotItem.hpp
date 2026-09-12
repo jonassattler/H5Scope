@@ -77,8 +77,7 @@ class PlotItem : public QQuickItem
     /// markers however this is set, and zooming in is what brings them back.
     Q_PROPERTY(bool markers READ markers WRITE setMarkers NOTIFY markersChanged FINAL)
     /// How wide a marker is, across. Theme.plotMarkerSize.
-    Q_PROPERTY(double markerSize READ markerSize WRITE setMarkerSize NOTIFY
-                   markersChanged FINAL)
+    Q_PROPERTY(double markerSize READ markerSize WRITE setMarkerSize NOTIFY markersChanged FINAL)
 
     /// How far below the largest value a logarithmic axis reaches when the
     /// data gives no floor, which it does not when the values reach zero.
@@ -185,7 +184,12 @@ private:
     /// something that happens at run time -- the graphics API is settled before
     /// the first frame -- but the node has to be discarded rather than cast if
     /// it ever did.
-    enum class Drawn { Nothing, Geometry, Painted };
+    enum class Drawn
+    {
+        Nothing,
+        Geometry,
+        Painted
+    };
 
     /// The view, with the pane's measurements and the decimation budget filled
     /// in. Kept as the projection's own struct rather than as loose members so

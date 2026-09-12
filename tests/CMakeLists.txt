@@ -92,10 +92,6 @@ qt_add_executable(test_qml tst_qml.cpp)
 target_link_libraries(test_qml PRIVATE
   Qt6::QuickTest Qt6::Qml Qt6::Quick
   gui appqml test_support
-  # PlotSurface.qml imports QtGraphs, and a static Qt resolves QML modules at
-  # link time; qt_import_qml_plugins below scans this target's own QML files,
-  # which are the test suites rather than the views they instantiate.
-  Qt6::Graphs
 )
 target_compile_definitions(test_qml PRIVATE
   QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
@@ -124,9 +120,6 @@ target_link_libraries(test_qmlload PRIVATE
   Qt6::Test Qt6::Qml Qt6::Quick Qt6::QuickControls2
   gui appqml appqmlplugin
 )
-# Main.qml reaches QtGraphs through DataView; a static Qt needs the module
-# named or the root fails to load with 'module "QtGraphs" is not installed'.
-target_link_libraries(test_qmlload PRIVATE Qt6::Graphs)
 qt_import_qml_plugins(test_qmlload)
 qt_import_plugins(test_qmlload INCLUDE Qt6::QOffscreenIntegrationPlugin)
 

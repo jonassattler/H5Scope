@@ -52,7 +52,8 @@ constexpr double kFarAway = 1e7;
 
 /// The y axis resolved into the space the values are actually mapped in: the
 /// values themselves, or their logarithms.
-struct YMapping {
+struct YMapping
+{
     double low = 0.0;
     double high = 1.0;
     bool usable = false;
@@ -83,8 +84,7 @@ bool drawable(double value, bool logY)
 
 double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
 {
-    const double position =
-        line.positionStart + static_cast<double>(at) * line.positionStep;
+    const double position = line.positionStart + static_cast<double>(at) * line.positionStep;
     if (!axis.explicitX()) {
         return axis.start + position * axis.step;
     }
@@ -135,9 +135,8 @@ double yFractionOf(double value, const PlotView& view)
     return (mapped - mapping.low) / (mapping.high - mapping.low);
 }
 
-PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
-                          const PlotView& view, std::vector<QPointF>& points,
-                          std::vector<PlotRun>& runs)
+PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
+                          std::vector<QPointF>& points, std::vector<PlotRun>& runs)
 {
     const auto startRuns = static_cast<int>(runs.size());
     const auto added = [&](bool decimated) {
@@ -180,7 +179,8 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
         const int length = static_cast<int>(points.size()) - open;
         if (length >= 2) {
             runs.push_back({open, length});
-        } else if (length == 1) {
+        }
+        else if (length == 1) {
             // A run of one station is a point, and a stroke needs a direction.
             // Dropping it keeps the counts honest rather than emitting a
             // vertex pair that rasterises to nothing.
@@ -244,10 +244,9 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
         const double ceilHigh = std::ceil(highAt) + 1.0;
         // Clamped in double before the cast: a window a long way off the data
         // gives a bound that does not fit in an int64 at all.
-        first = static_cast<std::int64_t>(
-            std::clamp(floorLow, 0.0, static_cast<double>(count - 1)));
-        last = static_cast<std::int64_t>(
-            std::clamp(ceilHigh, 0.0, static_cast<double>(count - 1)));
+        first =
+            static_cast<std::int64_t>(std::clamp(floorLow, 0.0, static_cast<double>(count - 1)));
+        last = static_cast<std::int64_t>(std::clamp(ceilHigh, 0.0, static_cast<double>(count - 1)));
     }
     if (last < first) {
         return {};
@@ -283,21 +282,16 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
     // This is what stride sampling cannot do. A spike one sample wide is the
     // maximum of whatever column it lands in, so it is selected *because* it is
     // extreme, where a stride selects by position and reaches it only by luck.
-    const double perColumn =
-        static_cast<double>(visible) / static_cast<double>(columns);
+    const double perColumn = static_cast<double>(visible) / static_cast<double>(columns);
     for (std::int64_t column = 0; column < columns; ++column) {
         const std::int64_t i0 =
-            first
-            + static_cast<std::int64_t>(
-                std::floor(static_cast<double>(column) * perColumn));
+            first + static_cast<std::int64_t>(std::floor(static_cast<double>(column) * perColumn));
         if (i0 > last) {
             break;
         }
         std::int64_t i1 =
-            first
-            + static_cast<std::int64_t>(
-                std::floor(static_cast<double>(column + 1) * perColumn))
-            - 1;
+            first +
+            static_cast<std::int64_t>(std::floor(static_cast<double>(column + 1) * perColumn)) - 1;
         i1 = std::clamp(i1, i0, last);
 
         double lowest = std::numeric_limits<double>::infinity();
@@ -330,7 +324,8 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
             if (highIndex != lowIndex) {
                 place(px, toY(highest));
             }
-        } else {
+        }
+        else {
             place(px, toY(highest));
             place(px, toY(lowest));
         }
@@ -339,8 +334,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
     return added(true);
 }
 
-void strokeRun(const QPointF* points, int count, double width,
-               std::vector<QPointF>& out)
+void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out)
 {
     if (points == nullptr || count < 2) {
         return;

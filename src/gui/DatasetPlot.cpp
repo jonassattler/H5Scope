@@ -3,9 +3,6 @@
 
 #include "DatasetPlot.hpp"
 
-#include <QList>
-#include <QPointF>
-#include <QtGraphs/QXYSeries>
 
 #include <algorithm>
 #include <cmath>
@@ -389,42 +386,6 @@ void DatasetPlot::fill(PlotItem* target)
     }
     target->setLines(std::move(lines), drawingAxis());
     drawing_ = target;
-}
-
-void DatasetPlot::fill(QAbstractSeries* target, int series)
-{
-    auto* points = qobject_cast<QXYSeries*>(target);
-    if (points == nullptr) {
-        return;
-    }
-    ensure();
-
-    const auto held = lines_.find(series);
-    if (held == lines_.end() || points_ <= 0) {
-        points->clear();
-        return;
-    }
-
-    const std::vector<double>& values = held->second;
-    QList<QPointF> line;
-    line.reserve(static_cast<qsizetype>(values.size()));
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        // A cell that would not read is a gap in the line, not a zero: an
-        // invented value at the axis is a reading of the data, and a wrong one.
-        if (std::isfinite(values[i])) {
-            // Where the element sits, not where the drawn point sits: a
-            // thinned line skips stride_ elements between one drawn point and
-            // the next, so its x has to skip the same distance. With the
-            // default axis this is the element's own index, which is what the
-            // grid's column headers count.
-            const double position =
-                static_cast<double>(i) * static_cast<double>(stride_);
-            line.append(QPointF(xStart_ + position * xStep_, values[i]));
-        }
-    }
-    // One bulk replace, not `count` appends: each append signals, and a series
-    // loaded point by point from QML redraws the graph on every one of them.
-    points->replace(line);
 }
 
 } // namespace gui

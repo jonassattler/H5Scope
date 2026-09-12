@@ -176,7 +176,7 @@ Everything is built and version-pinned by vcpkg; no system library is used.
 
 | Library | What it is for |
 |---|---|
-| [Qt](https://www.qt.io/) 6.11.1 | the whole UI, as Qt Quick/QML, plus Qt Graphs for the plot |
+| [Qt](https://www.qt.io/) 6.11.1 | the whole UI, as Qt Quick/QML. The plot is drawn on the scene graph by the application itself |
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/) 2.2.0 | reading the files |
 | [Catch2](https://github.com/catchorg/Catch2) 3.15.3 | the C++ test suites |
 | [IBM Plex](https://www.ibm.com/plex/) | the two typefaces, compiled into the binary |

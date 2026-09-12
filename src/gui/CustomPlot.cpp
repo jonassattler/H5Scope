@@ -12,7 +12,6 @@
 #include "postproc/Pipeline.hpp"
 
 #include <QPointF>
-#include <QtGraphs/QXYSeries>
 
 #include <algorithm>
 #include <cmath>
@@ -677,66 +676,6 @@ void CustomPlot::fill(PlotItem* target)
     }
     target->setLines(std::move(lines), drawingAxis());
     drawing_ = target;
-}
-
-void CustomPlot::fill(QAbstractSeries* target, int series)
-{
-    auto* points = qobject_cast<QXYSeries*>(target);
-    if (points == nullptr) {
-        return;
-    }
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
-        return;
-    }
-    const Entry& entry = entries_[static_cast<std::size_t>(series)];
-    if (entry.values.empty()) {
-        points->clear();
-        return;
-    }
-
-    const bool againstDataset = xMode_ == Dataset;
-    const auto xCount = static_cast<double>(xValues_.size());
-
-    QList<QPointF> line;
-    line.reserve(static_cast<qsizetype>(entry.values.size()));
-    for (std::size_t i = 0; i < entry.values.size(); ++i) {
-        const double value = entry.values[i];
-        // A value that would not read is a gap in the line, not a zero: an
-        // invented number at the axis is a reading of the data, and a wrong
-        // one. The plot tab's rule, and for its reason.
-        if (!std::isfinite(value)) {
-            continue;
-        }
-        const double position = positionOf(entry, i);
-
-        double x = 0.0;
-        if (againstDataset) {
-            if (xValues_.empty()) {
-                continue;
-            }
-            // The time base has a value at each of its own positions and
-            // nowhere in between, so a point that falls between two of them
-            // takes the nearer. Interpolating would invent an x, which is the
-            // same mistake as inventing a y.
-            const double at = std::round(position);
-            if (at < 0.0 || at >= xCount) {
-                // Past the end of the time base. The line stops here rather
-                // than being drawn against an x that does not exist, which is
-                // what "align" means when the two are different lengths.
-                continue;
-            }
-            x = xValues_[static_cast<std::size_t>(at)];
-            if (!std::isfinite(x)) {
-                continue;
-            }
-        } else {
-            x = xStart_ + position * xStep_;
-        }
-        line.append(QPointF(x, value));
-    }
-    // One bulk replace, not `count` appends: each append signals, and a series
-    // loaded point by point from QML redraws the graph on every one of them.
-    points->replace(line);
 }
 
 QStringList CustomPlot::paths() const

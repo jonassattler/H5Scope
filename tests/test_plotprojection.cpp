@@ -51,13 +51,13 @@ gui::PlotLine lineOver(const std::vector<double>& values)
     return line;
 }
 
-struct Projected {
+struct Projected
+{
     std::vector<QPointF> points;
     std::vector<gui::PlotRun> runs;
 };
 
-Projected project(const gui::PlotLine& line, const gui::PlotAxis& axis,
-                  const gui::PlotView& view)
+Projected project(const gui::PlotLine& line, const gui::PlotAxis& axis, const gui::PlotView& view)
 {
     Projected out;
     gui::projectLine(line, axis, view, out.points, out.runs);
@@ -175,9 +175,8 @@ TEST_CASE("a run of missing data is a gap and not a line across it", "[plot]")
 
     const gui::PlotRun& before = drawn.runs[0];
     const gui::PlotRun& after = drawn.runs[1];
-    const double endsAt = drawn.points[static_cast<std::size_t>(before.first
-                                                               + before.count - 1)]
-                              .x();
+    const double endsAt =
+        drawn.points[static_cast<std::size_t>(before.first + before.count - 1)].x();
     const double startsAt = drawn.points[static_cast<std::size_t>(after.first)].x();
 
     // The gap is a fifth of the data, so it is a fifth of the pane.
@@ -238,8 +237,7 @@ TEST_CASE("an epoch timestamp draws as a line and not as a staircase", "[plot]")
     // have been, so the test says what it is defending against.
     int distinctIfCastFirst = 1;
     for (std::size_t i = 1; i < drawn.points.size(); ++i) {
-        const auto previous =
-            static_cast<float>(kEpoch + static_cast<double>(i - 1) * 0.001);
+        const auto previous = static_cast<float>(kEpoch + static_cast<double>(i - 1) * 0.001);
         const auto current = static_cast<float>(kEpoch + static_cast<double>(i) * 0.001);
         if (current > previous) {
             ++distinctIfCastFirst;
@@ -353,8 +351,7 @@ TEST_CASE("a line against a time base is drawn sample for sample", "[plot]")
     CHECK(drawn.points[2].x() == Approx(200.0));
 }
 
-TEST_CASE("the data-space seam agrees with the projection about what is drawn",
-          "[plot]")
+TEST_CASE("the data-space seam agrees with the projection about what is drawn", "[plot]")
 {
     // samplesOf() is what tests/test_customplot.cpp asserts the x arithmetic
     // through. It has to answer the same question projectLine() does, or the
@@ -385,8 +382,7 @@ TEST_CASE("the data-space seam agrees with the projection about what is drawn",
 
 // --- the stroke ------------------------------------------------------------
 
-TEST_CASE("a stroke is built out of triangles at the width it was asked for",
-          "[plot]")
+TEST_CASE("a stroke is built out of triangles at the width it was asked for", "[plot]")
 {
     // Line width above 1.0 is an optional RHI feature and several backends
     // ignore it without saying so. The highlight -- the one affordance for
@@ -435,8 +431,7 @@ TEST_CASE("a stroke through a corner stays the width it was asked for", "[plot]"
     REQUIRE(stroke.size() == 6);
     // The corner station: a right angle, so the bisector reaches out by root
     // two and the two vertices are that much further apart than the width.
-    const double across = std::hypot(stroke[2].x() - stroke[3].x(),
-                                     stroke[2].y() - stroke[3].y());
+    const double across = std::hypot(stroke[2].x() - stroke[3].x(), stroke[2].y() - stroke[3].y());
     CHECK(across == Approx(2.0 * std::sqrt(2.0)).margin(0.001));
 }
 
@@ -553,8 +548,7 @@ TEST_CASE("an axis that runs backwards still finds its window", "[plot]")
 
     // Samples 0..1000 sit at x 1000 down to 0; this window holds the last
     // twenty of them.
-    const Projected drawn =
-        project(lineOver(values), axis, paneOver(0.0, 20.0, 0.0, 1000.0));
+    const Projected drawn = project(lineOver(values), axis, paneOver(0.0, 20.0, 0.0, 1000.0));
     REQUIRE(drawn.runs.size() == 1);
     CHECK(drawn.points.size() >= 20);
     // Drawn in sample order, so x decreases along the stroke.
@@ -584,8 +578,7 @@ TEST_CASE("a window off the end of the data draws what is nearest", "[plot]")
     CHECK(partly.points.size() >= 49);
 }
 
-TEST_CASE("a value far outside the window is drawn off the pane, not dropped",
-          "[plot]")
+TEST_CASE("a value far outside the window is drawn off the pane, not dropped", "[plot]")
 {
     // The difference between clipping and censoring. A line that leaves the top
     // of a zoomed-in pane has to leave it -- drawn to where it goes and cut off
@@ -626,8 +619,7 @@ TEST_CASE("an infinity is missing data and not a very large number", "[plot]")
     // HDF5 files carry infinities where a division went wrong, and a plot that
     // drew one would rescale the whole pane around a value that is not a
     // reading.
-    const std::vector<double> values{1.0, 2.0, std::numeric_limits<double>::infinity(),
-                                     4.0, 5.0};
+    const std::vector<double> values{1.0, 2.0, std::numeric_limits<double>::infinity(), 4.0, 5.0};
     const Projected drawn =
         project(lineOver(values), gui::PlotAxis{}, paneOver(0.0, 4.0, 0.0, 6.0));
 
@@ -655,8 +647,7 @@ TEST_CASE("a constant line is a flat stroke across the pane", "[plot]")
     }
 }
 
-TEST_CASE("the envelope keeps a downward spike as well as an upward one",
-          "[plot]")
+TEST_CASE("the envelope keeps a downward spike as well as an upward one", "[plot]")
 {
     // Asserting the maximum alone would pass with an implementation that only
     // tracked one extreme, and the half of the data below the line is the half
@@ -717,13 +708,12 @@ TEST_CASE("a gap that swallows a whole column is still a gap", "[plot]")
         values[i] = kNaN;
     }
 
-    const Projected drawn = project(lineOver(values), gui::PlotAxis{},
-                                    paneOver(0.0, 100000.0, 0.0, 2.0));
+    const Projected drawn =
+        project(lineOver(values), gui::PlotAxis{}, paneOver(0.0, 100000.0, 0.0, 2.0));
     REQUIRE(drawn.runs.size() == 2);
 
     const gui::PlotRun& after = drawn.runs[1];
-    CHECK(drawn.points[static_cast<std::size_t>(after.first)].x()
-          == Approx(600.0).margin(2.0));
+    CHECK(drawn.points[static_cast<std::size_t>(after.first)].x() == Approx(600.0).margin(2.0));
 }
 
 TEST_CASE("the column budget bounds the drawing when the lines do not", "[plot]")
@@ -764,15 +754,13 @@ TEST_CASE("a stretched line covers the axis whatever its length", "[plot]")
     CHECK(gui::xOf(line, gui::PlotAxis{}, 0) == Approx(0.0));
     CHECK(gui::xOf(line, gui::PlotAxis{}, 4) == Approx(99.0));
 
-    const Projected drawn =
-        project(line, gui::PlotAxis{}, paneOver(0.0, 99.0, 0.0, 4.0));
+    const Projected drawn = project(line, gui::PlotAxis{}, paneOver(0.0, 99.0, 0.0, 4.0));
     REQUIRE(drawn.runs.size() == 1);
     CHECK(drawn.points.front().x() == Approx(0.0).margin(0.01));
     CHECK(drawn.points.back().x() == Approx(1000.0).margin(0.01));
 }
 
-TEST_CASE("a line can start somewhere other than the beginning of the axis",
-          "[plot]")
+TEST_CASE("a line can start somewhere other than the beginning of the axis", "[plot]")
 {
     const std::vector<double> values{1.0, 2.0, 3.0};
     gui::PlotLine line = lineOver(values);
@@ -870,8 +858,7 @@ TEST_CASE("a repeated station does not undefine the stroke", "[plot]")
     // An envelope emits one point for a column that held a single sample and
     // two for a column that held a spread, so consecutive identical points
     // happen. A segment of no length has no direction to take a normal from.
-    const std::vector<QPointF> stalled{
-        {0.0, 50.0}, {10.0, 50.0}, {10.0, 50.0}, {20.0, 50.0}};
+    const std::vector<QPointF> stalled{{0.0, 50.0}, {10.0, 50.0}, {10.0, 50.0}, {20.0, 50.0}};
     std::vector<QPointF> stroke;
     gui::strokeRun(stalled.data(), 4, 2.0, stroke);
 
@@ -926,8 +913,7 @@ TEST_CASE("a stroke of no width still has area", "[plot]")
 
 // --- markers ---------------------------------------------------------------
 
-TEST_CASE("a marker is exactly as many vertices as PlotItem sized room for",
-          "[plot]")
+TEST_CASE("a marker is exactly as many vertices as PlotItem sized room for", "[plot]")
 {
     // PlotItem works the vertex count out arithmetically rather than by
     // building into a scratch buffer and measuring it, which would be a second
@@ -961,8 +947,7 @@ TEST_CASE("a marker is round and centred on its sample", "[plot]")
     CHECK(sumY / static_cast<double>(out.size()) == Approx(50.0));
 }
 
-TEST_CASE("the projection says whether a point is a sample or a summary",
-          "[plot]")
+TEST_CASE("the projection says whether a point is a sample or a summary", "[plot]")
 {
     // Which is what decides whether a line carries markers. A dot on an
     // envelope point marks two samples out of a column of a thousand, which
@@ -976,8 +961,7 @@ TEST_CASE("the projection says whether a point is a sample or a summary",
     std::vector<gui::PlotRun> runs;
 
     const gui::PlotProjected whole = gui::projectLine(
-        lineOver(values), gui::PlotAxis{}, paneOver(0.0, 100000.0, -1.0, 1.0), points,
-        runs);
+        lineOver(values), gui::PlotAxis{}, paneOver(0.0, 100000.0, -1.0, 1.0), points, runs);
     CHECK(whole.decimated);
     CHECK(whole.runs == 1);
 
@@ -985,8 +969,7 @@ TEST_CASE("the projection says whether a point is a sample or a summary",
     runs.clear();
     // Zoomed to twenty samples, which is fewer than the pane has columns.
     const gui::PlotProjected close = gui::projectLine(
-        lineOver(values), gui::PlotAxis{}, paneOver(500.0, 520.0, -1.0, 1.0), points,
-        runs);
+        lineOver(values), gui::PlotAxis{}, paneOver(500.0, 520.0, -1.0, 1.0), points, runs);
     CHECK_FALSE(close.decimated);
     CHECK(close.runs == 1);
 }
@@ -1004,7 +987,7 @@ TEST_CASE("a line drawn against a time base is never a summary", "[plot]")
 
     std::vector<QPointF> points;
     std::vector<gui::PlotRun> runs;
-    const gui::PlotProjected drawn = gui::projectLine(
-        lineOver(values), axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
+    const gui::PlotProjected drawn =
+        gui::projectLine(lineOver(values), axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
     CHECK_FALSE(drawn.decimated);
 }

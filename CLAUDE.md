@@ -58,7 +58,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, and the HDF5 thread. QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, and the plot renderer (`PlotItem` + `PlotProjection`). QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `make-screenshots`, the CI scripts and the two design checks. |
@@ -152,8 +152,11 @@ tests and `make-screenshots` never touch the user's settings.
   repository, and never `git add -A` blindly.
 - Headless anything needs `QT_QPA_PLATFORM=offscreen`. The offscreen platform
   declares no RHI capability, so Qt Quick falls back to the software renderer,
-  which cannot draw Qt Graphs' grid — `make-screenshots` asks for the `rhi`
-  backend explicitly for that reason.
+  which draws **no custom `QSGGeometryNode` at all** — it knows rectangles,
+  images, nine-patches and glyphs and silently drops the rest. `gui::PlotItem`
+  therefore carries a QPainter fallback so the QML suite still sees a line;
+  `make-screenshots` asks for the `rhi` backend explicitly so that the pictures
+  are of the geometry that ships rather than of the fallback.
 - Windows: keep the checkout and vcpkg at short paths (`C:\src\H5Scope`,
   `C:\v`). `MAX_PATH` bites during the Qt link and reports it as
   `LNK1181: cannot open input file` naming a file that exists.

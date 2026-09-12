@@ -30,27 +30,34 @@ fonts' OFL. Neither needs a display.
 
 Copyright (C) The Qt Company Ltd. and other contributors.
 
-The Qt modules linked into H5Scope fall into two groups.
+**Every Qt module linked into H5Scope** is available under
+`LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`.
+They are conveyed here under GPL-3.0-only, which the LGPL permits: LGPLv3 is
+GPLv3 plus additional permissions, and GPLv3 section 7 allows those additional
+permissions to be removed from a covered work.
 
-**Qt Graphs and Qt Quick 3D** are available under `LicenseRef-Qt-Commercial OR
-GPL-3.0-only`. There is no LGPL option for either module — Qt's own licensing
-page lists both under "Modules available under GNU General Public License v3".
-`libQt6Graphs.a`, `libgraphsplugin.a`, `libQt6Quick3D.a`,
-`libQt6Quick3DRuntimeRender.a`, `libQt6Quick3DUtils.a` and `libqquick3dplugin.a`
-are all linked into the binary, and that is what makes the combined work GPLv3.
+This used to say something different, and the difference is worth recording.
+Qt Graphs and Qt Quick 3D were available only under `LicenseRef-Qt-Commercial
+OR GPL-3.0-only` — Qt's own licensing page lists both under "Modules available
+under GNU General Public License v3" — and H5Scope linked Graphs to draw the
+plot, with Quick3D arriving because the `qtgraphs` package required it even
+though nothing here rendered in 3D. Those two were the only GPL-only components
+in the tree, and they were what made the combined work GPLv3 by obligation
+rather than by choice.
 
-**Every other Qt module** is available under `LicenseRef-Qt-Commercial OR
-LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`. They are conveyed here under
-GPL-3.0-only, which the LGPL permits: LGPLv3 is GPLv3 plus additional
-permissions, and GPLv3 section 7 allows those additional permissions to be
-removed from a covered work.
+The plot is now drawn by the application itself, directly on the Qt Quick scene
+graph, and both modules are gone from the manifest. **Nothing in this binary is
+GPL-only any more**: every Qt module here is available under LGPL-3.0, HDF5 is
+BSD-3-Clause, and the rest of the table below is MIT, Zlib and similar. H5Scope
+remains GPL-3.0-only because that is the licence its author chose for it, which
+is now the whole of the reason.
 
 Linked Qt modules: Core, Gui, Qml, QmlMeta, QmlModels, QmlWorkerScript, Quick,
 QuickControls2 (with the Basic, Fusion, Imagine, Material, Universal and
 FluentWinUI3 styles and their implementation modules), QuickTemplates2,
 QuickLayouts, QuickShapes, QuickEffects, QuickDialogs2, QuickDialogs2QuickImpl,
-QuickDialogs2Utils, **Graphs**, **Quick3D**, **Quick3DRuntimeRender**,
-**Quick3DUtils**, Svg, Network, Concurrent, OpenGL, ShaderTools, PacketProtocol,
+QuickDialogs2Utils, Svg, Network, Concurrent, OpenGL, ShaderTools,
+PacketProtocol,
 LabsFolderListModel, XcbQpa, WaylandClient, WlShellIntegration,
 DeviceDiscoverySupport, EglFSDeviceIntegration, FbSupport, InputSupport, and
 the platform, image-format, QML debug and Wayland decoration plugins that
@@ -61,13 +68,6 @@ than the licensing: XcbQpa, WaylandClient, WlShellIntegration, the Wayland
 decoration plugins and the EGL and device-discovery support modules are absent,
 and the Windows platform plugin is linked in their place. Every module named is
 under the same terms on both.
-
-Bold above marks the GPL-only modules. Qt Quick 3D is linked because the
-`qtgraphs` package requires it; H5Scope uses only the 2D half of Qt Graphs
-and renders nothing in 3D. It arrives with Graphs and would leave with it, so
-it adds no obligation that Graphs did not already impose — but it is a second
-GPL-only module, not an LGPL one, and belongs in this group rather than the
-one below.
 
 Qt source: <https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/>
 
@@ -103,7 +103,6 @@ dual-licensed, the option H5Scope relies on is marked.
 | double-conversion | 3.4.0 | BSD-3-Clause (Copyright 2006-2011, the V8 project authors) |
 | libb2 | 0.98.1 | CC0-1.0 |
 | md4c | 0.5.3 | MIT |
-| meshoptimizer | 1.2 | MIT |
 | xcb-util-cursor | 0.1.5 | MIT (X11-style) |
 
 That table is the Linux build. The Windows executable links a strict subset of
@@ -217,20 +216,24 @@ code to the executable. Nothing from them is on the link line.
 
 ## Why GPLv3
 
-H5Scope's own source could be released under a permissive licence — it is
-original work with no vendored third-party code. It is not, because Qt Graphs
-is GPL-3.0-only and is statically linked into the binary. A permissive licence
-on the source would promise something the releases cannot deliver.
+Because that is the licence chosen for this program. Nothing in the binary
+requires it.
 
-Qt Quick 3D is GPL-3.0-only as well, so strictly there are two GPL-only
-dependencies rather than one. It is not a second reason, though: it is here
-only because the `qtgraphs` port depends on it, so it arrives with Graphs and
-leaves with Graphs.
+That is a recent change and the old reasoning is worth keeping, because it says
+what the constraint was. H5Scope used to link Qt Graphs to draw its plot, and
+Qt Graphs is available only under `LicenseRef-Qt-Commercial OR GPL-3.0-only`;
+Qt Quick 3D came with it, under the same terms, for a 3-D renderer nothing here
+used. Statically linking either made the combined work GPLv3 whatever this
+project's own source said, so a permissive licence on the source would have
+promised something the releases could not deliver.
 
-The plot view is the only part that depends on Qt Graphs
-(`src/gui/DatasetPlot.{hpp,cpp}` and `src/qml/PlotSurface.qml`). Replacing it
-with Qt Quick Shapes, which is LGPL, would remove both GPL-only dependencies at
-once — Graphs directly, and the `qtquick3d` build along with it.
+The plot is now drawn by the application itself — `src/gui/PlotItem.{hpp,cpp}`
+and `src/gui/PlotProjection.{hpp,cpp}` put the geometry on the Qt Quick scene
+graph, and `src/qml/PlotFrame.qml` draws the axes — and both modules have left
+the manifest. Every remaining Qt module is available under LGPL-3.0, HDF5 is
+BSD-3-Clause, and nothing else in the table above is copyleft at all. So the
+licence is now a decision rather than an obligation, and it has not changed:
+H5Scope is GPL-3.0-only.
 
 ## Corresponding Source
 
@@ -239,7 +242,7 @@ Source for the binary released with it: this repository at the released commit
 — `ports/` included, which is where the overlay ports this project carries
 itself live — the upstream source archive of every library above, and the vcpkg
 `ports/` tree at the pinned baseline, which carries the patches vcpkg applies
-(23 to `qtbase`, 2 to `qtquick3d`, 5 to `hdf5`) and the scripts that apply
+(23 to `qtbase`, 5 to `hdf5`) and the scripts that apply
 them.
 
 See the *Building from the source bundle* section of the README.

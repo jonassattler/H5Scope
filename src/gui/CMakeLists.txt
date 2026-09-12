@@ -121,13 +121,11 @@ target_include_directories(gui PUBLIC
   # from here and from anything that links this.
   ${CMAKE_BINARY_DIR}/generated
 )
-# Qt6::Graphs for the plot presentation: DatasetPlot loads a QXYSeries in one
-# bulk replace, which is the only way to fill a graph of thousands of points
-# without a redraw per point. Graphs rather than Charts because Charts draws
-# through the Qt Widgets graphics scene and would require a QApplication in
-# what is otherwise a pure Qt Quick application. PUBLIC because
-# DatasetPlot.hpp is part of this library's interface.
-target_link_libraries(gui PUBLIC Qt6::Quick Qt6::Qml Qt6::Graphs h5core postproc)
+# Qt6::Quick because the plot is drawn on the scene graph by gui::PlotItem, and
+# PUBLIC because PlotItem.hpp is part of this library's interface: DatasetPlot
+# and CustomPlot hand their lines to one. There is no plotting library on this
+# line any more -- see docs on PlotProjection.hpp for what replaced it and why.
+target_link_libraries(gui PUBLIC Qt6::Quick Qt6::Qml h5core postproc)
 
 # AppController is declared QML_ELEMENT/QML_SINGLETON, so the module needs a
 # URI matching the QML import below.
