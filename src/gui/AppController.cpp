@@ -64,6 +64,13 @@ AppController::AppController(QObject* parent)
     datasetPlot_ = new DatasetPlot(datasetModel_, this);
     datasetImage_ = new DatasetImage(datasetModel_, this);
 
+    // ...and one reading of everything else. The custom plots are not built
+    // over the table, because they are not about the selected dataset at all;
+    // they are here so that QML still talks to exactly one object.
+    customPlots_ = new CustomPlotSet(this);
+    connect(customPlots_, &CustomPlotSet::notice, this,
+            &AppController::statusMessage);
+
     // The pipeline's second row is the slice above the table rather than a
     // copy of it, so it is given the model that owns that slice.
     postprocessModel_->setSliceSource(tableSetupModel_);
@@ -244,6 +251,8 @@ void AppController::applyDataSource()
 
 DatasetPlot* AppController::datasetPlot() const { return datasetPlot_; }
 DatasetImage* AppController::datasetImage() const { return datasetImage_; }
+
+CustomPlotSet* AppController::customPlots() const { return customPlots_; }
 
 QString AppController::fileName() const
 {
@@ -537,6 +546,7 @@ bool AppController::openFile(const QString& path)
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
     datasetInfo_ = {};
@@ -620,6 +630,7 @@ void AppController::closeFile()
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
     datasetInfo_ = {};

@@ -159,6 +159,37 @@ void writeFixture(const std::string& path)
                      hypercube.data());
     }
 
+    // --- three runs to draw against one another -------------------------
+    // For the custom plot tabs, which are the one feature here that puts
+    // several datasets on one pair of axes. Two curves of the same length and
+    // a time base for them to be drawn against, plus a half-length third so
+    // that "align" and "stretch" have something to disagree about -- which is
+    // the whole of what that pair of checkboxes decides.
+    //
+    // Values are closed forms rather than a table, so a test asserts against
+    // arithmetic rather than against a list it would have to keep in step:
+    // series_a is i, series_b is 100 - i, series_t is i / 2, and series_half
+    // is 2 * i over half as many samples.
+    {
+        std::array<double, 64> a{};
+        std::array<double, 64> b{};
+        std::array<double, 64> t{};
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            a[i] = static_cast<double>(i);
+            b[i] = 100.0 - static_cast<double>(i);
+            t[i] = static_cast<double>(i) / 2.0;
+        }
+        writeDataset(file, "series_a", H5T_NATIVE_DOUBLE, {64}, a.data());
+        writeDataset(file, "series_b", H5T_NATIVE_DOUBLE, {64}, b.data());
+        writeDataset(file, "series_t", H5T_NATIVE_DOUBLE, {64}, t.data());
+
+        std::array<double, 32> half{};
+        for (std::size_t i = 0; i < half.size(); ++i) {
+            half[i] = 2.0 * static_cast<double>(i);
+        }
+        writeDataset(file, "series_half", H5T_NATIVE_DOUBLE, {32}, half.data());
+    }
+
     // --- strings, fixed and variable length ------------------------------
     {
         constexpr std::size_t width = 8;

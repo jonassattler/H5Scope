@@ -17,6 +17,9 @@ qt_add_library(gui STATIC
   TableLayout.cpp
   TableSetupModel.cpp
   PostprocessModel.cpp
+  DatasetLookup.cpp
+  CustomPlot.cpp
+  CustomPlotSet.cpp
   FileSystem.cpp
   FocusRelease.cpp
   EmbeddedFonts.cpp

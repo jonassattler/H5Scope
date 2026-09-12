@@ -1,0 +1,154 @@
+// SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-License-Identifier: GPL-3.0-only
+
+#pragma once
+
+#include "CustomPlot.hpp"
+#include "DatasetLookup.hpp"
+
+#include <QAbstractListModel>
+#include <QString>
+#include <QStringList>
+#include <QVariantMap>
+#include <QtQml/qqmlregistration.h>
+
+#include <vector>
+
+namespace gui {
+
+/// The custom plot tabs, the views saved from them, and the one cache of what
+/// the paths they name actually are.
+///
+/// A tab is not about the selection, so this is not about it either: nothing
+/// in here moves when the reader clicks a different dataset. What it does
+/// answer to is the *file* -- every entry is a path inside one, and two files
+/// can hold a `/data` that have nothing to do with each other -- so opening or
+/// closing one empties the whole of this. That is the same stance
+/// `AppController::settings_` takes, and for the same reason: a session's
+/// worth of looking at one file is not a preference.
+///
+/// Saved views are the set's rather than any one tab's. A view saved from one
+/// tab is worth restoring into a fresh one -- that is most of what saving a
+/// comparison is for -- and a per-tab list would have made restoring into the
+/// tab that saved it the only thing possible, which is an undo and not a view.
+class CustomPlotSet : public QAbstractListModel
+{
+    Q_OBJECT
+    QML_ELEMENT
+    QML_UNCREATABLE("Obtained from AppController.customPlots")
+
+    Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /// The names of the saved views, in the order they were saved.
+    Q_PROPERTY(QStringList viewNames READ viewNames NOTIFY viewsChanged)
+    /// Which tab the window is showing, or -1 when it is showing something
+    /// else. Written by the tab strip.
+    ///
+    /// Held here rather than only in QML because two things outside the tab
+    /// need it: the tree's plus, which adds to whichever tab is up, and the
+    /// menu entry that makes a dataset the current tab's time base. Both would
+    /// otherwise have to be handed the answer from the window.
+    Q_PROPERTY(int activeIndex READ activeIndex WRITE setActiveIndex
+                   NOTIFY activeIndexChanged)
+    /// The tab `activeIndex` names, or null. What the tree's plus adds to.
+    Q_PROPERTY(gui::CustomPlot* active READ active NOTIFY activeIndexChanged)
+
+public:
+    enum Roles {
+        NameRole = Qt::UserRole + 1,
+        /// Whether this tab is showing in a window of its own, in which case
+        /// the strip does not list it. One plot lives in one place.
+        DetachedRole,
+    };
+    Q_ENUM(Roles)
+
+    explicit CustomPlotSet(QObject* parent = nullptr);
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    [[nodiscard]] int count() const { return static_cast<int>(plots_.size()); }
+    [[nodiscard]] QStringList viewNames() const { return viewOrder_; }
+    [[nodiscard]] int activeIndex() const { return activeIndex_; }
+    void setActiveIndex(int index);
+    [[nodiscard]] CustomPlot* active() const;
+
+    /// Add a tab, named for the lowest "Custom N" not taken. Returns its index.
+    Q_INVOKABLE int addPlot();
+    Q_INVOKABLE void removePlot(int index);
+    Q_INVOKABLE void movePlot(int from, int to);
+    Q_INVOKABLE [[nodiscard]] gui::CustomPlot* plotAt(int index) const;
+    Q_INVOKABLE [[nodiscard]] int indexOfName(const QString& name) const;
+    /// Rename a tab. Returns why it could not be, or empty once it is.
+    Q_INVOKABLE QString setName(int index, const QString& name);
+    Q_INVOKABLE void setDetached(int index, bool detached);
+    Q_INVOKABLE [[nodiscard]] bool detached(int index) const;
+
+    /// Add a dataset to the tab at `index`, expanded into its 1-D lines.
+    /// Offered here because every caller -- the tree's plus, the tree's menu,
+    /// the legend's menu -- has an index rather than a plot.
+    Q_INVOKABLE void addDatasetTo(int index, const QString& path);
+    /// Make `path` the time base of the tab at `index`. The whole of the
+    /// dataset when it is a vector; its first line otherwise, which is the
+    /// line the plot tab would have drawn first.
+    Q_INVOKABLE void setTimeSeriesOf(int index, const QString& path);
+
+    // --- saved views -------------------------------------------------------
+    /// Save the tab at `index` under `name`, together with the drawing
+    /// settings QML holds. Returns why it could not be, or empty once it is.
+    Q_INVOKABLE QString saveView(const QString& name, int index,
+                                 const QVariantMap& settings);
+    Q_INVOKABLE void removeView(const QString& name);
+    /// Resolve everything a view names and report how much of it will not
+    /// draw, without changing anything. Answers through `viewChecked`, because
+    /// the paths may never have been looked at.
+    Q_INVOKABLE void checkView(const QString& name);
+    /// Put a saved view into the tab at `index`. The entries and the x axis
+    /// land here; the drawing settings go back to QML through `viewRestored`,
+    /// because they were QML's to begin with.
+    Q_INVOKABLE void restoreView(const QString& name, int index);
+
+    [[nodiscard]] DatasetLookup* lookup() { return &lookup_; }
+
+    /// Forget every tab, every view and everything known about the file. The
+    /// controller calls this when a file is opened or closed.
+    void clear();
+
+signals:
+    void countChanged();
+    void viewsChanged();
+    void activeIndexChanged();
+    /// A tab's name changed, so the strip relabels itself.
+    void namesChanged();
+    /// The answer to checkView: how many of the view's lines will not draw,
+    /// and the reasons, longest-lived first. `issues` is zero when it will all
+    /// draw.
+    void viewChecked(const QString& name, int issues, const QStringList& reasons);
+    /// A view landed in the tab at `index`; `settings` is what QML saved with
+    /// it and has to put back on the surface.
+    void viewRestored(int index, const QVariantMap& settings);
+    /// Something worth telling the reader, from a tab or from here.
+    void notice(const QString& message);
+
+private:
+    [[nodiscard]] QString freeName() const;
+    [[nodiscard]] bool taken(const QString& name, int except) const;
+
+    std::vector<CustomPlot*> plots_;
+    std::vector<bool> detached_;
+    int activeIndex_ = -1;
+
+    DatasetLookup lookup_;
+
+    struct View {
+        QVariantMap plot;     ///< CustomPlot::state()
+        QVariantMap settings; ///< what the surface was drawn with
+    };
+    QHash<QString, View> views_;
+    /// The order they were saved in. A QHash has none, and a list that
+    /// reordered itself whenever a view was added would move the row the
+    /// reader was about to press.
+    QStringList viewOrder_;
+};
+
+} // namespace gui

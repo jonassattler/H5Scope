@@ -4,6 +4,7 @@
 #pragma once
 
 #include "H5Thread.hpp"
+#include "CustomPlotSet.hpp"
 #include "DatasetImage.hpp"
 #include "DatasetPlot.hpp"
 #include "ObjectInfoModel.hpp"
@@ -71,6 +72,11 @@ class AppController : public QObject
     /// which slice they draw, so both of these sit on `datasetModel`.
     Q_PROPERTY(gui::DatasetPlot* datasetPlot READ datasetPlot CONSTANT)
     Q_PROPERTY(gui::DatasetImage* datasetImage READ datasetImage CONSTANT)
+    /// The custom plot tabs: the one thing in this application that is not
+    /// about the selection. They draw 1-D slices from anywhere in the file
+    /// together, so nothing about them moves when the tree does -- but every
+    /// entry is a path *inside* a file, and this is emptied when that changes.
+    Q_PROPERTY(gui::CustomPlotSet* customPlots READ customPlots CONSTANT)
 
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
 
@@ -157,6 +163,7 @@ public:
     [[nodiscard]] bool postprocessActive() const;
     [[nodiscard]] DatasetPlot* datasetPlot() const;
     [[nodiscard]] DatasetImage* datasetImage() const;
+    [[nodiscard]] CustomPlotSet* customPlots() const;
 
     [[nodiscard]] bool hasFile() const { return fileOpen_; }
     /// Whether the file is being read right now.
@@ -309,6 +316,7 @@ private:
     PostprocessModel* postprocessModel_ = nullptr;
     DatasetPlot* datasetPlot_ = nullptr;
     DatasetImage* datasetImage_ = nullptr;
+    CustomPlotSet* customPlots_ = nullptr;
 
     /// What the selected dataset is, as plain data. The dataset itself is held
     /// open by the session on the HDF5 thread -- so that re-running a pipeline
