@@ -12,6 +12,7 @@ qt_add_library(gui STATIC
   TreeFilterProxyModel.cpp
   DatasetStringListModel.cpp
   DatasetPlot.cpp
+  PlotItem.cpp
   DatasetImage.cpp
   DatasetImageProvider.cpp
   TableLayout.cpp
