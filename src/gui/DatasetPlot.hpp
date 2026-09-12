@@ -4,8 +4,10 @@
 #pragma once
 
 #include "DatasetTableModel.hpp"
+#include "PlotItem.hpp"
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QVariantList>
 #include <QtGraphs/QAbstractSeries>
@@ -149,6 +151,31 @@ public:
     /// be read leaves a gap rather than a zero.
     Q_INVOKABLE void fill(QAbstractSeries* target, int series);
 
+    /// Hand every drawn line to `target` at once.
+    ///
+    /// One crossing rather than one per line, and no points built on the way:
+    /// the item is given a pointer into the cache and the x arithmetic, and it
+    /// projects straight from the doubles this object already holds. What that
+    /// replaced built a QList<QPointF> per line -- sixteen bytes a point,
+    /// allocated and copied on every refill, and a refill is what recolouring
+    /// cost.
+    ///
+    /// **The values are borrowed.** See PlotLine. This object clears whatever
+    /// it last filled before anything can free or prune those vectors, which
+    /// is why there are exactly two places in the .cpp that destroy a line and
+    /// both of them release first.
+    Q_INVOKABLE void fill(gui::PlotItem* target);
+
+    /// Line `series` of the table as a renderer would be given it, drawn or
+    /// not, and the axis it is drawn against.
+    ///
+    /// The seam the suites assert the x arithmetic through, and the only
+    /// reason it is public: gui::samplesOf() over these two is what fill()
+    /// used to put in a QXYSeries, so a test can read the points without a
+    /// window, an engine or a scene graph.
+    [[nodiscard]] PlotLine lineOf(int series) const;
+    [[nodiscard]] PlotAxis drawingAxis() const;
+
     /// Drop the cached lines. The next reader re-reads the file.
     void invalidate();
 
@@ -173,6 +200,15 @@ private:
     /// Put the drawn set back to where a new table starts it: its first
     /// kMaxInitialSeries lines.
     void reseed();
+    /// Stop whatever was last filled from reading `lines_`.
+    ///
+    /// The borrow contract, honoured. Called from the only two places that can
+    /// destroy a held line -- invalidate(), which clears the cache, and
+    /// ensure(), which prunes it down to the drawn set -- so that a renderer
+    /// holding a pointer into one of those vectors is emptied before the vector
+    /// goes. Everything else in here only ever inserts, and std::map keeps a
+    /// mapped value where it put it.
+    void releaseDrawing() const;
 
     DatasetTableModel* table_ = nullptr;
     bool seriesFromRows_ = true;
@@ -196,6 +232,10 @@ private:
     mutable bool hasFinite_ = false;
     mutable QString error_;
     mutable bool sampled_ = false;
+    /// What fill() last handed the lines to, so that it can be emptied before
+    /// they are freed. A QPointer because the item belongs to a QML scene that
+    /// is torn down and rebuilt without telling this object.
+    mutable QPointer<PlotItem> drawing_;
 
 public:
     /// Points per line. Beyond a couple of thousand a line plot is drawing

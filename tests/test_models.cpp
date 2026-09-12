@@ -8,6 +8,8 @@
 #include "gui/AttributeTableModel.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
+#include "gui/PlotItem.hpp"
+#include "gui/PlotProjection.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/ObjectInfoModel.hpp"
@@ -1983,6 +1985,122 @@ TEST_CASE_METHOD(ControllerFixture, "the plot reads the table as lines", "[plot]
         setup()->setMode(2, gui::TableSetupModel::Index);
         REQUIRE(spy.count() > 0);
         REQUIRE(plot->seriesCount() == 6);
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
+                 "[plot]")
+{
+    // fill() gives the item pointers straight into the plot's own cache and
+    // copies nothing: a QList<QPointF> per line was sixteen bytes a point,
+    // built and thrown away on every refill, and a refill is what recolouring
+    // used to cost. The price is a contract the compiler cannot check, so it is
+    // asserted here instead.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2x3x4 -> 6 rows of 4
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    CHECK(item.lineCount() == 6);
+
+    SECTION("a line carries the values the plot read, at the plot's own x")
+    {
+        const gui::PlotLine line = plot->lineOf(0);
+        REQUIRE(line.count == 4);
+        CHECK(line.values[0] == 0.0);
+        CHECK(line.values[3] == 3.0);
+
+        // The default axis is the element's own index, which is what the
+        // grid's column headers count.
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK_FALSE(axis.explicitX());
+        CHECK(gui::xOf(line, axis, 0) == 0.0);
+        CHECK(gui::xOf(line, axis, 3) == 3.0);
+
+        // ...and it moves with the stated range, without a re-read.
+        plot->setXStart(10.0);
+        plot->setXStep(0.5);
+        CHECK(gui::xOf(line, plot->drawingAxis(), 2) == 11.0);
+    }
+
+    SECTION("only the lines that are drawn are handed over")
+    {
+        plot->selectFirst(2);
+        plot->fill(&item);
+        CHECK(item.lineCount() == 2);
+
+        plot->selectNone();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("a line the table does not have is empty rather than absent")
+    {
+        const gui::PlotLine missing = plot->lineOf(999);
+        CHECK(missing.values == nullptr);
+        CHECK(missing.count == 0);
+        CHECK(gui::samplesOf(missing, plot->drawingAxis()).empty());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "what the plot filled is emptied before it is freed",
+                 "[plot]")
+{
+    // The two places a held line can be destroyed: the cache being cleared,
+    // and the cache being pruned down to the drawn set. Both release first, and
+    // the item reporting no lines is the observable form of "it stopped
+    // reading".
+    auto* plot = controller.datasetPlot();
+    gui::PlotItem item;
+
+    SECTION("selecting another dataset")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        REQUIRE(h5test::selectAndSettle(controller, "/compressed"));
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("rearranging the table under it")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/hypercube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() > 0);
+        setup()->setMode(2, gui::TableSetupModel::Index);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("hiding a line, which prunes the cache down to what is drawn")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        plot->setSeriesVisible(3, false);
+        // The prune happens lazily, on the next question anyone asks -- so ask
+        // one, exactly as a binding would.
+        (void)plot->minimum();
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("transposing, which renames every line")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        plot->setSeriesFromRows(false);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("closing the file")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        controller.closeFile();
+        h5test::settle();
+        CHECK(item.lineCount() == 0);
     }
 }
 

@@ -9,11 +9,12 @@
 // survives a file being swapped underneath it. The QML suite covers the
 // chrome -- the strip, the rails, the menus -- and none of this.
 //
-// The points are asserted through fill(), which is the only place the x
-// arithmetic is observable, and it is observable there because that is where
-// it belongs: the values never cross into QML, so a bulk replace into a series
-// is the whole of the boundary. A QLineSeries is a QObject and needs no graph
-// to be filled, which is what lets this suite stay free of a QML engine.
+// The points are asserted through lineOf() and drawingAxis(), which together
+// are what fill() hands a renderer, and gui::samplesOf() over the pair is
+// exactly what fill() used to put into a QXYSeries. That is the whole of the
+// boundary -- the values never cross into QML -- and asserting it here rather
+// than through something rendered is what lets this suite stay free of a QML
+// engine, a window and a scene graph.
 
 #include "gui/AppController.hpp"
 #include "gui/CustomPlot.hpp"
@@ -21,6 +22,8 @@
 #include "gui/DatasetLookup.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/PlotItem.hpp"
+#include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "support/AsyncModels.hpp"
@@ -36,7 +39,6 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
-#include <QtGraphs/QLineSeries>
 
 #include <cmath>
 
@@ -89,12 +91,18 @@ struct PlotFixture {
         settleAll();
     }
 
-    /// The points fill() puts into a series, which is what the graph draws.
+    /// The points fill() hands a renderer, in data coordinates: where each
+    /// sample of entry `series` lands along x, with the undrawable ones absent.
     [[nodiscard]] static QList<QPointF> drawn(gui::CustomPlot* plot, int series)
     {
-        QLineSeries line;
-        plot->fill(&line, series);
-        return line.points();
+        const std::vector<QPointF> points =
+            gui::samplesOf(plot->lineOf(series), plot->drawingAxis());
+        QList<QPointF> out;
+        out.reserve(static_cast<qsizetype>(points.size()));
+        for (const QPointF& point : points) {
+            out.append(point);
+        }
+        return out;
     }
 
     [[nodiscard]] static QString errorOf(const gui::CustomPlot* plot, int row)
@@ -1061,5 +1069,161 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
         plot->setSeriesVisible(3, false);
         settleAll();
         CHECK(gui::H5Thread::instance().crossings() - mark == 0);
+    }
+}
+
+// --- the hand-over to a renderer ------------------------------------------
+//
+// fill() gives a PlotItem pointers straight into the entries' own vectors and
+// copies nothing, which is the whole reason a ten-thousand-line selection does
+// not cost a second hundred and sixty megabytes. The price is a contract the
+// compiler cannot check: whatever was filled must be emptied before those
+// vectors are freed. These cases are that contract, asserted rather than
+// commented.
+
+TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at once",
+                 "[custom]")
+{
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    CHECK(item.lineCount() == 2);
+
+    SECTION("a hidden entry is not handed over")
+    {
+        plot->setSeriesVisible(0, false);
+        settleAll();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 1);
+    }
+
+    SECTION("an empty tab hands over nothing")
+    {
+        plot->clearEntries();
+        settleAll();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 0);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is freed",
+                 "[custom]")
+{
+    // Every one of these is a way an entry's values are destroyed while a
+    // renderer may still be holding a pointer into them. The item reports no
+    // lines afterwards, which is the observable form of "it stopped reading".
+    gui::PlotItem item;
+
+    SECTION("removing the row it was drawing")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->removeEntry(0);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("clearing the tab")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->clearEntries();
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("retyping an expression, which re-reads every value")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->setExpression(0, QStringLiteral("/series/b[:]"));
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("reordering, which moves the values out from under the drawing order")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        add(plot, QStringLiteral("/series/b[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 2);
+        plot->moveEntry(0, 1);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("the read that replaces every value when it lands")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->invalidate();
+        settleAll();
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("hiding the line it was drawing")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->setSeriesVisible(0, false);
+        CHECK(item.lineCount() == 0);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "the axis handed over is the one the tab is drawn against",
+                 "[custom]")
+{
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+
+    SECTION("a stated range is a start and a step")
+    {
+        plot->setXStart(100.0);
+        plot->setXStep(0.25);
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK_FALSE(axis.explicitX());
+        CHECK(axis.start == 100.0);
+        CHECK(axis.step == 0.25);
+    }
+
+    SECTION("a time base is an array, and the line reads it point for point")
+    {
+        plot->setXMode(gui::CustomPlot::Dataset);
+        plot->setXExpression(QStringLiteral("/series/b[:]"));
+        settleAll();
+        REQUIRE(plot->xReady());
+
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK(axis.explicitX());
+        CHECK(axis.count == 64);
+        // series_b is 100 - i, so the first sample of series_a sits at x = 100.
+        CHECK(gui::xOf(plot->lineOf(0), axis, 0) == 100.0);
+    }
+
+    SECTION("a time base that has not read draws nothing at all")
+    {
+        // Rather than falling back to positions: the reader asked for these
+        // values against *those* x, and the same line on an axis of indices is
+        // a different plot wearing the same label.
+        plot->setXMode(gui::CustomPlot::Dataset);
+        plot->setXExpression(QStringLiteral("/nothing/here[:]"));
+        settleAll();
+        REQUIRE_FALSE(plot->xReady());
+        CHECK(plot->lineOf(0).count == 0);
+
+        gui::PlotItem item;
+        plot->fill(&item);
+        CHECK(item.drawnPointCount() == 0);
     }
 }

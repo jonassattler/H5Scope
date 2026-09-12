@@ -55,12 +55,14 @@ catch_discover_tests(test_plotprojection)
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature
 # whose whole subject is reading several datasets at once, which is the thing
-# every other suite here is arranged not to do. Links Qt6::Graphs because the
-# points are asserted through fill(), and fill() takes the series a graph would
-# have created.
+# every other suite here is arranged not to do. It used to link Qt6::Graphs, on
+# the grounds that the points were asserted through fill() and fill() took the
+# series a graph would have created; the points are now asserted through
+# lineOf() and gui::samplesOf(), which is a better seam for the same assertions
+# and needs no library to draw with.
 add_executable(test_customplot test_customplot.cpp)
 target_link_libraries(test_customplot PRIVATE
-  gui test_support test_main Qt6::Test Qt6::Graphs
+  gui test_support test_main Qt6::Test
 )
 catch_discover_tests(test_customplot)
 

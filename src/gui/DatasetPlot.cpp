@@ -43,8 +43,17 @@ DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent)
     });
 }
 
+void DatasetPlot::releaseDrawing() const
+{
+    if (drawing_ != nullptr) {
+        drawing_->clear();
+        drawing_ = nullptr;
+    }
+}
+
 void DatasetPlot::invalidate()
 {
+    releaseDrawing();
     lines_.clear();
     // The geometry of the table went with them. Unlike the extent below, these
     // two are not recomputed on every ensure() -- they belong to the table
@@ -210,6 +219,13 @@ void DatasetPlot::ensure() const
     // What is no longer drawn is no longer held: the cache exists to spare a
     // re-read of a line still on screen, not to accumulate every line the
     // reader has ever ticked.
+    //
+    // Which makes this one of the two places a held line can be destroyed, so
+    // it is one of the two places the drawing is released first. Everything
+    // that clears `sampled_` emits changed() with it, so QML is already on its
+    // way to re-filling; the frames in between draw nothing rather than
+    // reading a vector that has gone.
+    releaseDrawing();
     for (auto it = lines_.begin(); it != lines_.end();) {
         it = seriesVisible(it->first) ? std::next(it) : lines_.erase(it);
     }
@@ -332,6 +348,47 @@ QString DatasetPlot::seriesLabel(int series) const
     // An axis carrying no dimension has no tuple to print -- a vector plotted
     // as one line is the case -- and a line still has to be called something.
     return label.isEmpty() ? QString::number(series) : label;
+}
+
+PlotLine DatasetPlot::lineOf(int series) const
+{
+    ensure();
+    PlotLine line;
+    const auto held = lines_.find(series);
+    if (held == lines_.end() || points_ <= 0) {
+        return line;
+    }
+    line.values = held->second.data();
+    line.count = static_cast<qsizetype>(held->second.size());
+    // Where the element sits, not where the drawn point sits: a thinned line
+    // skips stride_ elements between one drawn point and the next, so its x has
+    // to skip the same distance. With the default axis this is the element's
+    // own index, which is what the grid's column headers count.
+    line.positionStep = static_cast<double>(stride_);
+    return line;
+}
+
+PlotAxis DatasetPlot::drawingAxis() const
+{
+    PlotAxis axis;
+    axis.start = xStart_;
+    axis.step = xStep_;
+    return axis;
+}
+
+void DatasetPlot::fill(PlotItem* target)
+{
+    if (target == nullptr) {
+        return;
+    }
+    ensure();
+    std::vector<PlotLine> lines;
+    lines.reserve(drawn_.size());
+    for (const int series : drawn_) {
+        lines.push_back(lineOf(series));
+    }
+    target->setLines(std::move(lines), drawingAxis());
+    drawing_ = target;
 }
 
 void DatasetPlot::fill(QAbstractSeries* target, int series)

@@ -5,6 +5,7 @@
 
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
+#include "PlotItem.hpp"
 
 #include <QAbstractListModel>
 #include <QString>
@@ -12,6 +13,7 @@
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QPointer>
 #include <QtGraphs/QAbstractSeries>
 #include <QtQml/qqmlregistration.h>
 
@@ -228,6 +230,20 @@ public:
     /// Load entry `series` into `target`, which QML created on its graph.
     Q_INVOKABLE void fill(QAbstractSeries* target, int series);
 
+    /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
+    /// crossing, no points built on the way, and the values are **borrowed**.
+    Q_INVOKABLE void fill(gui::PlotItem* target);
+
+    /// Entry `series` as a renderer would be given it, drawn or not, and the
+    /// axis the tab is drawn against -- which is a time base in Dataset mode
+    /// and a start and a step otherwise.
+    ///
+    /// The seam tests/test_customplot.cpp asserts the three x modes through.
+    /// gui::samplesOf() over these two is what fill() used to put in a
+    /// QXYSeries, so the suite reads the points with no engine and no graph.
+    [[nodiscard]] PlotLine lineOf(int series) const;
+    [[nodiscard]] PlotAxis drawingAxis() const;
+
     // --- saved views -------------------------------------------------------
     /// Everything about this tab that is not the drawing: the entries, their
     /// scaling and what is drawn, and the x axis. Plain data, so a saved view
@@ -288,6 +304,17 @@ private:
     void recount();
     /// Where point `at` of `entry` sits along the axis, in axis positions.
     [[nodiscard]] double positionOf(const Entry& entry, std::size_t at) const;
+    /// Stop whatever was last filled from reading the entries' values.
+    ///
+    /// The borrow contract, honoured -- see DatasetPlot::releaseDrawing. Here
+    /// there are more ways to destroy a line, because an entry is a row the
+    /// reader can remove, reorder or retype, so this is called from
+    /// invalidate(), from announce() and from the top of the read that
+    /// replaces the values.
+    void releaseDrawing();
+    /// Release the drawing and say that the lines changed. Every path that
+    /// changes what is drawn or what it holds ends here.
+    void announce();
     /// Whether align and stretch differ for this entry.
     [[nodiscard]] bool scalable(const Entry& entry) const;
 
@@ -310,6 +337,10 @@ private:
     double minimum_ = 0.0;
     double maximum_ = 0.0;
     bool hasFinite_ = false;
+
+    /// What fill() last handed the entries to, so it can be emptied before
+    /// they are freed.
+    QPointer<PlotItem> drawing_;
 
     H5Requests requests_;
     /// Fires once per turn of the event loop however many edits landed in it.

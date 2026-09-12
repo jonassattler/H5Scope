@@ -347,7 +347,7 @@ void CustomPlot::moveEntry(int from, int to)
     endMoveRows();
     // The order is the drawing order and so the colour order, and nothing was
     // re-read: the values travelled with the row.
-    emit changed();
+    announce();
 }
 
 void CustomPlot::clearEntries()
@@ -405,7 +405,7 @@ void CustomPlot::setAlias(int row, const QString& text)
     touch(row, {AliasRole});
     // Nothing is re-read and no point moves; the legend simply calls it
     // something else. `changed` is what the legend listens to.
-    emit changed();
+    announce();
 }
 
 void CustomPlot::setScaling(int row, Scaling scaling)
@@ -536,7 +536,7 @@ void CustomPlot::setSeriesVisible(int series, bool visible)
     entry.drawn = visible;
     touch(series, {DrawnRole});
     recount();
-    emit changed();
+    announce();
 }
 
 void CustomPlot::selectAll()
@@ -551,7 +551,7 @@ void CustomPlot::selectAll()
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
 }
 
 void CustomPlot::selectNone()
@@ -566,7 +566,7 @@ void CustomPlot::selectNone()
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
 }
 
 void CustomPlot::selectFirst(int count)
@@ -576,7 +576,7 @@ void CustomPlot::selectFirst(int count)
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
 }
 
 bool CustomPlot::scalable(const Entry& entry) const
@@ -601,6 +601,82 @@ double CustomPlot::positionOf(const Entry& entry, std::size_t at) const
     // element covers stride axis positions between one drawn point and the
     // next.
     return static_cast<double>(at) * static_cast<double>(entry.stride);
+}
+
+void CustomPlot::releaseDrawing()
+{
+    if (drawing_ != nullptr) {
+        drawing_->clear();
+        drawing_ = nullptr;
+    }
+}
+
+void CustomPlot::announce()
+{
+    releaseDrawing();
+    emit changed();
+}
+
+PlotLine CustomPlot::lineOf(int series) const
+{
+    PlotLine line;
+    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+        return line;
+    }
+    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    if (entry.values.empty()) {
+        return line;
+    }
+    // A tab drawn against a time base that has not read draws nothing at all,
+    // rather than falling back to positions: the reader asked for these values
+    // against *those* x, and an axis of indices with the same line on it is a
+    // different plot wearing the same label.
+    if (xMode_ == Dataset && xValues_.empty()) {
+        return line;
+    }
+
+    line.values = entry.values.data();
+    line.count = static_cast<qsizetype>(entry.values.size());
+    // The same affine map positionOf() applies, written once as a start and a
+    // step. Stretch spreads the line over the whole axis -- its first sample at
+    // the start and its last at the end, whatever is in between -- and align
+    // covers the elements the thinning skipped.
+    const auto drawn = static_cast<double>(entry.values.size());
+    if (entry.scaling == Stretch && drawn > 1.0) {
+        line.positionStep =
+            static_cast<double>(sourcePointCount() - 1) / (drawn - 1.0);
+    } else {
+        line.positionStep = static_cast<double>(entry.stride);
+    }
+    return line;
+}
+
+PlotAxis CustomPlot::drawingAxis() const
+{
+    PlotAxis axis;
+    axis.start = xStart_;
+    axis.step = xStep_;
+    if (xMode_ == Dataset) {
+        axis.values = xValues_.data();
+        axis.count = static_cast<qsizetype>(xValues_.size());
+    }
+    return axis;
+}
+
+void CustomPlot::fill(PlotItem* target)
+{
+    if (target == nullptr) {
+        return;
+    }
+    std::vector<PlotLine> lines;
+    lines.reserve(entries_.size());
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].drawn) {
+            lines.push_back(lineOf(static_cast<int>(i)));
+        }
+    }
+    target->setLines(std::move(lines), drawingAxis());
+    drawing_ = target;
 }
 
 void CustomPlot::fill(QAbstractSeries* target, int series)
@@ -683,6 +759,13 @@ QStringList CustomPlot::paths() const
 
 void CustomPlot::invalidate()
 {
+    // The caller has just added, removed, reordered or retyped a row, so
+    // whatever was drawing is drawing from entries that are no longer the
+    // entries. Released here rather than at each of those call sites, which is
+    // the same arrangement as DatasetPlot's and for the same reason: the
+    // places that can free a value are a list, and a list is something that
+    // rots.
+    releaseDrawing();
     coalesce_.start();
 }
 
@@ -779,7 +862,7 @@ void CustomPlot::refresh()
         xValues_.clear();
         xSourceLength_ = 0;
         recount();
-        emit changed();
+        announce();
         return;
     }
 
@@ -806,6 +889,9 @@ void CustomPlot::refresh()
             return reply;
         },
         [this, wantsX](Reply reply) {
+            // Every entry's values are about to be replaced, which frees the
+            // buffers a renderer may be holding a pointer into.
+            releaseDrawing();
             for (auto& learned : reply.learned) {
                 lookup_->remember(learned.first, std::move(learned.second));
             }
@@ -839,7 +925,7 @@ void CustomPlot::refresh()
 
             recount();
             touch(-1, {ErrorRole, PointsRole, SourcePointsRole, ScalableRole});
-            emit changed();
+            announce();
         });
 }
 
