@@ -34,6 +34,9 @@ jobs:
       - name: Nothing elides without a tooltip to read it in full
         run: bash tools/check-elided-text.sh src/qml
 
+      - name: The release-notes gate still refuses what it should
+        run: bash tools/test-release-notes.sh
+
       # A tag is a release, and a release says what changed in it. Checked in
       # this job rather than in the one that publishes: that one runs after
       # both builds, so a tag pushed without notes would fail twenty-six

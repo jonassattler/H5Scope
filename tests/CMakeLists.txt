@@ -165,6 +165,15 @@ add_test(NAME elided_text
                ${CMAKE_SOURCE_DIR}/src/qml
 )
 
+# The release-notes gate, against the four ways a release page goes wrong. It
+# runs once per release on a runner, so the only time anybody would find out it
+# had stopped working is the release it failed to stop; these are the
+# changelogs that exercise it. Not a check of *this* tree's notes -- see the
+# script's header for why that would fail on every machine every day.
+add_test(NAME release_notes
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tools/test-release-notes.sh
+)
+
 # --- the README's pictures can still be taken ------------------------------
 # tools/make-screenshots drives the whole application -- the QML root, the tree,
 # the three views -- and photographs it, which makes it the one thing here that

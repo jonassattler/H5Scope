@@ -29,9 +29,15 @@ Three steps, and the first is the one that is easy to forget.
 1. **Write the notes.** Add a `## MAJOR.MINOR.PATCH` section to `CHANGELOG.md`
    saying what changed, in a handful of lines. That section is the release page
    — CI publishes it and adds only a short note about which file is which — so
-   a version with no section cannot be released. `tools/release-notes.sh 0.4.0`
-   prints what will be published; `--check` says nothing and exits non-zero if
-   there is nothing to print.
+   a version cannot be released until the section is there and says something.
+   Missing, empty, duplicated, or copied word for word from another version are
+   all refused: the last of those is the one that matters, because last
+   release's notes under a new number are wrong rather than absent.
+
+   ```sh
+   tools/release-notes.sh 0.4.0            # what will be published
+   tools/release-notes.sh 0.4.0 --check    # silent; non-zero if it will not do
+   ```
 
 2. **Know the number.** It is not a guess: the patch counts the releases already
    cut in the series, so the tag to push is whatever the build already calls

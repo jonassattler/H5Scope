@@ -118,9 +118,12 @@ tests and `make-screenshots` never touch the user's settings.
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
 8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`
    and short. It *is* the release page: `tools/release-notes.sh` pulls it out
-   and CI publishes it. A tag with no section fails the design-checks job six
-   seconds in rather than after both builds, so a release whose notes nobody
-   wrote cannot be published.
+   and CI publishes it. That script refuses a section that is missing, empty,
+   duplicated or word for word another version's, and it runs in the
+   design-checks job on a tag push — six seconds in, rather than after both
+   builds — so notes nobody wrote and notes nobody rewrote both stop the
+   release rather than reaching the page. `tools/test-release-notes.sh` is the
+   `release_notes` ctest test and covers all four.
 
 ## Conventions
 

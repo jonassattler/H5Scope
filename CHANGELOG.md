@@ -2,10 +2,14 @@
 
 One section per released version, newest first, and **every tag has one**. It
 is what the release page says about itself: the GitHub release is published
-with the contents of the matching section and nothing else, so a version with
-no section here is a version that cannot be released — `tools/release-notes.sh`
-refuses, and CI runs it on a tag push in its first job rather than after half an
-hour of building.
+with the contents of the matching section, so a version whose section is missing
+— or empty, or duplicated, or word for word another version's — is a version
+that cannot be released. `tools/release-notes.sh` refuses all four, and CI runs
+it on a tag push in its first job rather than after half an hour of building.
+
+The copied case is the one worth naming. Last release's notes with a new number
+over them are worse than no notes at all: they are wrong rather than absent, and
+they read as deliberate.
 
 Short and concise. A reader lands here to find out whether the release is worth
 taking and what will be different if they do, which is a handful of lines: what
