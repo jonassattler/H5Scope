@@ -45,7 +45,9 @@ Item {
     /// plot answers it for itself.
     property bool sourceUsable: AppController.datasetIsNumeric
     readonly property bool drawable: active && surface.sourceUsable
-                                     && plot.hasData
+                                     && surface.plot !== null
+                                     && surface.plot !== undefined
+                                     && surface.plot.hasData
 
     /// Which group the reader's settings are filed under, per dataset. Empty
     /// disables the memory entirely -- see DatasetMemory, which does nothing
@@ -87,7 +89,12 @@ Item {
     /// deliberately not guarded by `drawable`: it is a column count, not a
     /// sample, so nothing here reaches the file. One keeps the axis drawable
     /// while there is no dataset.
-    readonly property int dataLength: Math.max(surface.plot.sourcePointCount, 1)
+    ///
+    /// Overridable, because a custom plot's axis is as long as its longest
+    /// entry -- or as long as its time base -- rather than as long as one
+    /// table's rows.
+    property int dataLength:
+        surface.plot ? Math.max(surface.plot.sourcePointCount, 1) : 1
 
     function locked(which) { return xAxis.locked(which) }
     function lock(which) { xAxis.lock(which) }
@@ -727,6 +734,43 @@ Item {
         function onXAxisChanged() { Qt.callLater(surface.restyle) }
     }
 
+    /// The properties a saved view keeps.
+    ///
+    /// How the lines are drawn and where the x axis runs -- not the zoom, the
+    /// pan or the highlighted line, which are where the reader happens to be
+    /// looking rather than what they arranged. Restoring a view should put the
+    /// picture back, not the scroll position.
+    readonly property var drawingSettingNames: [
+        "rangeStart", "rangeStep", "rangeStop", "locks",
+        "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
+        "colorsReversed", "colorFrom", "colorTo",
+        "showGrid", "showMarkers"
+    ]
+
+    /// Those properties as plain data, for something to write down.
+    function drawingSettings() {
+        const values = {}
+        for (let i = 0; i < surface.drawingSettingNames.length; ++i) {
+            const name = surface.drawingSettingNames[i]
+            values[name] = surface[name]
+        }
+        return values
+    }
+
+    /// ...and back again. Names this build does not know are passed over
+    /// rather than refused, which is the stance the pipeline takes on a
+    /// remembered step it cannot read: a setting that has gone away costs the
+    /// reader that setting, not the whole of what they saved.
+    function applyDrawingSettings(values) {
+        if (!values)
+            return
+        for (let i = 0; i < surface.drawingSettingNames.length; ++i) {
+            const name = surface.drawingSettingNames[i]
+            if (values.hasOwnProperty(name))
+                surface[name] = values[name]
+        }
+    }
+
     // A window onto one dataset says nothing about the next one, and neither
     // does an x axis, a colour cycle or a line picked out of the bundle. All of
     // them are in the list below, so a fresh dataset opens on the defaults and
@@ -832,11 +876,12 @@ Item {
         anchors.leftMargin: surface.contentLeft
         visible: !surface.drawable
         title: qsTr("nothing to plot")
-        warning: surface.active && surface.plot.error !== ""
+        warning: surface.active && surface.plot
+                 && surface.plot.error !== ""
         text: {
             // Reading `error` samples, so nothing is asked of a plot that is
             // not the presentation on screen.
-            if (!surface.active)
+            if (!surface.active || !surface.plot)
                 return ""
             if (surface.plot.error !== "")
                 return surface.plot.error

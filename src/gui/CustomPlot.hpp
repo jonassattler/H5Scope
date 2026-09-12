@@ -65,6 +65,12 @@ class CustomPlot : public QAbstractListModel
     Q_PROPERTY(QString xError READ xError NOTIFY changed)
     /// Whether a time base has been read and can be drawn against.
     Q_PROPERTY(bool xReady READ xReady NOTIFY changed)
+    /// The extent of the time base, when there is one. The axis is drawn
+    /// against these rather than against a start and a step, because a time
+    /// base need not be evenly spaced and need not start at anything in
+    /// particular -- which is most of why a reader reaches for one.
+    Q_PROPERTY(double xMinimum READ xMinimum NOTIFY changed)
+    Q_PROPERTY(double xMaximum READ xMaximum NOTIFY changed)
 
     // --- the DatasetPlot-shaped face the surface draws --------------------
     Q_PROPERTY(QVariantList drawnSeries READ drawnSeries NOTIFY changed)
@@ -144,6 +150,8 @@ public:
     void setXExpression(const QString& text);
     [[nodiscard]] QString xError() const { return xProblem_; }
     [[nodiscard]] bool xReady() const { return !xValues_.empty(); }
+    [[nodiscard]] double xMinimum() const { return xMinimum_; }
+    [[nodiscard]] double xMaximum() const { return xMaximum_; }
 
     /// Why a line typed into the time-base box will not read, checked without
     /// applying it. The counterpart of `entryError` for the one expression
@@ -271,6 +279,8 @@ private:
     QString xProblem_;
     std::vector<double> xValues_;
     int xSourceLength_ = 0;
+    double xMinimum_ = 0.0;
+    double xMaximum_ = 1.0;
     double xStart_ = 0.0;
     double xStep_ = 1.0;
 

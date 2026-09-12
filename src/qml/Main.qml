@@ -65,17 +65,59 @@ ApplicationWindow {
 
     color: Theme.background
 
-    readonly property var tabs: [
+    /// The four the window has always had: one reading of whatever the tree
+    /// has selected, apiece.
+    readonly property var fixedTabs: [
         { id: "info",  label: qsTr("information") },
         { id: "table", label: qsTr("table") },
         { id: "plot",  label: qsTr("plot") },
         { id: "image", label: qsTr("image") }
     ]
 
+    /// ...and the custom plots after them, which are about no selection at all.
+    ///
+    /// Ids are "custom:<position>" rather than the tab's name, because a name
+    /// is the one thing about a custom tab the reader can change and an id
+    /// that moved when they renamed it would not be an id. The position is
+    /// stable enough for the same reason the strip is: CustomPlotSet keeps
+    /// `activeIndex` on the same plot through a reorder, so the tab the reader
+    /// was looking at is the tab they are still looking at.
+    readonly property var tabs: {
+        // Read so that the binding depends on it. `count` announces itself and
+        // the rest of what is below does not: a rename and a tear-off are both
+        // dataChanged on a row, which a function call cannot see.
+        void window.tabRevision
+        const all = window.fixedTabs.slice()
+        for (let i = 0; i < customPlots.count; ++i) {
+            // A tab showing in a window of its own has left the strip. One
+            // plot lives in one place.
+            if (customPlots.detached(i))
+                continue
+            const plot = customPlots.plotAt(i)
+            all.push({ id: "custom:" + i,
+                       label: plot ? plot.name : "",
+                       custom: true,
+                       index: i })
+        }
+        return all
+    }
+
+    /// Bumped by anything that changes the strip, because `tabs` above is
+    /// built by a function and QML cannot see through one to the model
+    /// underneath it.
+    property int tabRevision: 0
+
+    readonly property var customPlots: AppController.customPlots
+
     /// Whether the information view is the one showing. Which of the other
     /// three is showing is DataView's own state and stays there: it is the
     /// thing that has to drop out of the plot when the selection turns out to
     /// be text, and a copy of that state up here could only disagree with it.
+    ///
+    /// Which *custom* tab is showing is CustomPlotSet's, and for a third
+    /// reason: two things outside this window need it -- the tree's plus and
+    /// the menu entry that names a time base -- and both would otherwise have
+    /// to be handed the answer from here.
     property bool informationSelected: true
 
     /// Whether the tree draws the tags beside its names. View -> Tree Tags
@@ -84,22 +126,63 @@ ApplicationWindow {
 
     /// Which tab is selected, by stable id rather than by position.
     readonly property string currentTabId:
-        informationSelected ? "info" : dataView.viewMode
+        window.informationSelected ? "info"
+        : window.customPlots.activeIndex >= 0
+          ? "custom:" + window.customPlots.activeIndex
+          : dataView.viewMode
 
     /// The plot and the image are for numbers; the table serves every datatype
     /// and the information view needs no dataset at all. An unavailable tab is
     /// shown greyed rather than removed, so the strip keeps its shape and the
     /// reader can see what this selection does not offer.
     function tabAvailable(id) {
+        // A custom plot is about no dataset, so there is no selection that can
+        // fail to offer it. That is the whole of why these tabs exist.
+        if (id.startsWith("custom:"))
+            return true
         return id === "info" || id === "table" || AppController.datasetIsNumeric
     }
 
     function selectTab(id) {
         if (!window.tabAvailable(id))
             return
+        if (id.startsWith("custom:")) {
+            window.informationSelected = false
+            window.customPlots.activeIndex = parseInt(id.substring(7))
+            return
+        }
+        window.customPlots.activeIndex = -1
         window.informationSelected = id === "info"
         if (id !== "info")
             dataView.show(id)
+    }
+
+    /// Make a tab, name it and show it. The "+" at the end of the strip, the
+    /// View menu's entry and make-screenshots all come through here.
+    function addCustomTab() {
+        const index = window.customPlots.addPlot()
+        window.selectTab("custom:" + index)
+        return index
+    }
+
+    /// Close the tab at `index`, and leave the reader somewhere sensible.
+    function closeCustomTab(index) {
+        const wasShowing = window.customPlots.activeIndex === index
+        window.customPlots.removePlot(index)
+        if (wasShowing && window.customPlots.activeIndex < 0)
+            window.selectTab("table")
+    }
+
+    Connections {
+        target: window.customPlots
+
+        function onNamesChanged() { window.tabRevision++ }
+        function onCountChanged() { window.tabRevision++ }
+        function onDataChanged() { window.tabRevision++ }
+        function onModelReset() { window.tabRevision++ }
+        // A reorder is rowsMoved and nothing else: no row was added, removed
+        // or edited, and the strip still has to relabel itself.
+        function onRowsMoved() { window.tabRevision++ }
     }
 
     // --- the device pixel grid -------------------------------------------
@@ -197,6 +280,8 @@ ApplicationWindow {
                 Row {
                     id: tabBar
 
+                    objectName: "tabBar"
+
                     anchors.left: parent.left
                     anchors.leftMargin: Theme.gapS
                     height: parent.height
@@ -204,16 +289,118 @@ ApplicationWindow {
                     // Exposed for the QML tests, which assert tab visibility.
                     readonly property int count: window.tabs.length
 
+                    /// Which custom tab a dragged one should land on, given
+                    /// where its centre has got to along the strip.
+                    ///
+                    /// By the slot the centre is over rather than by an offset
+                    /// in tab widths, because these tabs are not the same
+                    /// width: they are named, and "Custom 1" and "pressure vs
+                    /// time" are not the same number of pixels. A drop past
+                    /// either end clamps to the tab at that end.
+                    function dropTarget(centre) {
+                        let first = -1
+                        let last = -1
+                        for (let i = 0; i < tabBar.children.length; ++i) {
+                            const child = tabBar.children[i]
+                            if (child.customIndex === undefined
+                                || child.customIndex < 0)
+                                continue
+                            if (first < 0)
+                                first = child.customIndex
+                            last = child.customIndex
+                            if (centre >= child.x && centre < child.x + child.width)
+                                return child.customIndex
+                        }
+                        if (first < 0)
+                            return -1
+                        return centre < 0 ? first : last
+                    }
+
                     Repeater {
                         model: window.tabs
 
                         delegate: AppTabButton {
+                            id: tabButton
+
                             required property var modelData
+
+                            /// Its place among the custom plots, or -1 for one
+                            /// of the four the window has always had. Read by
+                            /// dropTarget above, off the sibling list.
+                            readonly property int customIndex:
+                                modelData.custom === true ? modelData.index : -1
 
                             text: modelData.label
                             selected: window.currentTabId === modelData.id
                             enabled: window.tabAvailable(modelData.id)
+                            closable: tabButton.customIndex >= 0
                             onClicked: window.selectTab(modelData.id)
+                            onCloseRequested: window.closeCustomTab(tabButton.customIndex)
+
+                            // Lifted while it is being carried, and put down
+                            // between one frame and the next: this application
+                            // animates nothing, so a dragged tab is where the
+                            // pointer is and nowhere else.
+                            transform: Translate { x: tabButton.carried }
+                            z: dragger.active ? 1 : 0
+
+                            /// How far the pointer has taken it from where it
+                            /// sits. Zero unless it is being dragged.
+                            property real carried: 0
+
+                            DragHandler {
+                                id: dragger
+
+                                enabled: tabButton.customIndex >= 0
+                                target: null
+                                yAxis.enabled: false
+                                cursorShape: active ? Qt.ClosedHandCursor
+                                                    : Qt.ArrowCursor
+
+                                // The travelled distance off the centroid
+                                // rather than off activeTranslation, for the
+                                // reason the pipeline's drag handle gives:
+                                // activeTranslation is measured against a
+                                // target this handler does not have.
+                                onActiveChanged: {
+                                    if (dragger.active)
+                                        return
+                                    const centre = tabButton.x + tabButton.carried
+                                                 + tabButton.width / 2
+                                    const to = tabBar.dropTarget(centre)
+                                    tabButton.carried = 0
+                                    if (to >= 0 && to !== tabButton.customIndex)
+                                        window.customPlots.movePlot(tabButton.customIndex, to)
+                                }
+                                onCentroidChanged: {
+                                    if (dragger.active) {
+                                        tabButton.carried =
+                                            dragger.centroid.scenePosition.x
+                                            - dragger.centroid.scenePressPosition.x
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // The way to a tab that is about no dataset at all. At the
+                    // end of the strip because that is where the tab it makes
+                    // will appear, and because the four before it are fixed:
+                    // a plus in front of them would read as adding one there.
+                    AppTabButton {
+                        objectName: "addCustomTab"
+
+                        glyph: "plus"
+                        ink: Theme.positive
+                        enabled: AppController.hasFile
+                        onClicked: window.addCustomTab()
+
+                        AppToolTip {
+                            shown: parent.hovered
+                            text: AppController.hasFile
+                                  ? qsTr("a new plot, for lines from anywhere " +
+                                         "in this file")
+                                  : qsTr("open a file first")
                         }
                     }
                 }
@@ -222,7 +409,8 @@ ApplicationWindow {
             StackLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: window.informationSelected ? 0 : 1
+                currentIndex: window.informationSelected ? 0
+                            : window.customPlots.activeIndex >= 0 ? 2 : 1
 
                 InfoView {}
                 DataView {
@@ -231,6 +419,39 @@ ApplicationWindow {
                     // Named so the QML suite can reach the views' shared
                     // state, as the surfaces inside it are.
                     objectName: "dataView"
+                }
+
+                // A plain Item holding one CustomView per tab, `visible`-gated
+                // rather than a second StackLayout: a StackLayout derives its
+                // own size from every child it holds, and these are built and
+                // torn down as the reader makes and closes tabs. DataView's
+                // rail is arranged the same way for the same reason.
+                Item {
+                    id: customViews
+
+                    objectName: "customViews"
+
+                    Repeater {
+                        model: window.customPlots
+
+                        delegate: CustomView {
+                            id: customView
+
+                            required property int index
+                            required property bool detached
+
+                            anchors.fill: parent
+                            objectName: "customView"
+                            plot: window.customPlots.plotAt(customView.index)
+                            plotIndex: customView.index
+                            // Only the one on screen samples the file. A tab
+                            // the reader is not looking at costs nothing, which
+                            // is what lets there be a dozen of them.
+                            active: !customView.detached
+                                    && window.customPlots.activeIndex === customView.index
+                            visible: customView.active
+                        }
+                    }
                 }
             }
         }

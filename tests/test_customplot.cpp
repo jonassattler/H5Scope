@@ -106,8 +106,8 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets to
     REQUIRE(plot != nullptr);
     REQUIRE(plot->empty());
 
-    add(plot, QStringLiteral("/series_a[:]"));
-    add(plot, QStringLiteral("/series_b[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
 
     CHECK(plot->sourceSeriesCount() == 2);
     CHECK(plot->seriesCount() == 2);
@@ -125,8 +125,8 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets to
 
     SECTION("the entries keep the names they were written under")
     {
-        CHECK(plot->seriesLabel(0) == QStringLiteral("/series_a[:]"));
-        CHECK(plot->seriesLabel(1) == QStringLiteral("/series_b[:]"));
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/series/a[:]"));
+        CHECK(plot->seriesLabel(1) == QStringLiteral("/series/b[:]"));
     }
 
     SECTION("hiding one takes it out of the drawn set and out of the extent")
@@ -143,7 +143,7 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets to
         plot->removeEntry(0);
         settleAll();
         CHECK(plot->sourceSeriesCount() == 1);
-        CHECK(plot->seriesLabel(0) == QStringLiteral("/series_b[:]"));
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/series/b[:]"));
         CHECK(plot->minimum() == 37.0);
     }
 }
@@ -198,7 +198,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
 
     SECTION("an unbalanced bracket is reported in the subscript parser's words")
     {
-        add(plot, QStringLiteral("/series_a[:"));
+        add(plot, QStringLiteral("/series/a[:"));
         CHECK_THAT(errorOf(plot, 0).toStdString(),
                    ContainsSubstring("never closed"));
     }
@@ -206,7 +206,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("a bad entry does not stop a good one being drawn")
     {
         add(plot, QStringLiteral("/matrix[:, :]"));
-        add(plot, QStringLiteral("/series_a[:]"));
+        add(plot, QStringLiteral("/series/a[:]"));
         CHECK_FALSE(errorOf(plot, 0).isEmpty());
         CHECK(errorOf(plot, 1).isEmpty());
         CHECK(plot->hasData());
@@ -217,7 +217,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
 TEST_CASE_METHOD(PlotFixture, "a bare path is the whole of the dataset", "[custom]")
 {
     gui::CustomPlot* plot = tab();
-    add(plot, QStringLiteral("/series_a"));
+    add(plot, QStringLiteral("/series/a"));
 
     CHECK(errorOf(plot, 0).isEmpty());
     CHECK(plot->pointCount() == 64);
@@ -232,13 +232,13 @@ TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would
     {
         // Through the set rather than the plot, because that is the call the
         // tree's plus makes: it has an index, not an object.
-        set()->addDatasetTo(0, QStringLiteral("/series_a"));
+        set()->addDatasetTo(0, QStringLiteral("/series/a"));
         settleAll();
         CHECK(plot->sourceSeriesCount() == 1);
         // Spelt "[:]" rather than left bare. The two select the same elements,
         // and the written form is the one a reader can edit into something
         // else without first working out what it was.
-        CHECK(plot->seriesLabel(0) == QStringLiteral("/series_a[:]"));
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/series/a[:]"));
     }
 
     SECTION("a cube is one line per leading coordinate, last dimension along x")
@@ -271,7 +271,7 @@ TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is cho
                  "[custom]")
 {
     gui::CustomPlot* plot = tab();
-    add(plot, QStringLiteral("/series_a[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
 
     SECTION("by default the element's own index")
     {
@@ -296,7 +296,7 @@ TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is cho
 
     SECTION("a time series dataset puts each point at that dataset's value")
     {
-        plot->setXExpression(QStringLiteral("/series_t[:]"));
+        plot->setXExpression(QStringLiteral("/series/time[:]"));
         plot->setXMode(gui::CustomPlot::Dataset);
         settleAll();
 
@@ -329,8 +329,8 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
                  "[custom]")
 {
     gui::CustomPlot* plot = tab();
-    add(plot, QStringLiteral("/series_a[:]"));    // 64 samples, sets the axis
-    add(plot, QStringLiteral("/series_half[:]")); // 32 samples, value 2 * i
+    add(plot, QStringLiteral("/series/a[:]"));    // 64 samples, sets the axis
+    add(plot, QStringLiteral("/series/half[:]")); // 32 samples, value 2 * i
 
     REQUIRE(plot->sourcePointCount() == 64);
 
@@ -368,7 +368,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
 
     SECTION("stretch against a time series reads the time base at the same share")
     {
-        plot->setXExpression(QStringLiteral("/series_t[:]"));
+        plot->setXExpression(QStringLiteral("/series/time[:]"));
         plot->setXMode(gui::CustomPlot::Dataset);
         settleAll();
         plot->setScaling(1, gui::CustomPlot::Stretch);
@@ -383,7 +383,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
 
     SECTION("align against a shorter time base cuts the line where it ends")
     {
-        plot->setXExpression(QStringLiteral("/series_half[:]"));
+        plot->setXExpression(QStringLiteral("/series/half[:]"));
         plot->setXMode(gui::CustomPlot::Dataset);
         settleAll();
 
@@ -427,19 +427,19 @@ TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path 
 
     // Nothing is known about the file yet, so nothing is claimed to be wrong:
     // a path this session has never resolved is a question, not a mistake.
-    CHECK(plot->entryError(0, QStringLiteral("/series_a[:, :]")).isEmpty());
+    CHECK(plot->entryError(0, QStringLiteral("/series/a[:, :]")).isEmpty());
 
     // A malformed line needs no file at all.
     CHECK_THAT(plot->entryError(0, QStringLiteral("series_a[:]")).toStdString(),
                ContainsSubstring("starts at the root"));
-    CHECK_THAT(plot->entryError(0, QStringLiteral("/series_a[:]]")).toStdString(),
+    CHECK_THAT(plot->entryError(0, QStringLiteral("/series/a[:]]")).toStdString(),
                ContainsSubstring("never opened"));
 
     // Once the path has been read for real, the subscript is checked against
     // its actual shape on every keystroke.
-    add(plot, QStringLiteral("/series_a[:]"));
-    CHECK(plot->entryError(0, QStringLiteral("/series_a[0:8]")).isEmpty());
-    CHECK_THAT(plot->entryError(0, QStringLiteral("/series_a[:, :]")).toStdString(),
+    add(plot, QStringLiteral("/series/a[:]"));
+    CHECK(plot->entryError(0, QStringLiteral("/series/a[0:8]")).isEmpty());
+    CHECK_THAT(plot->entryError(0, QStringLiteral("/series/a[:, :]")).toStdString(),
                ContainsSubstring("dim"));
 }
 
@@ -450,9 +450,9 @@ TEST_CASE_METHOD(PlotFixture, "a tab holds as many lines as one plot draws and n
     QSignalSpy said(plot, &gui::CustomPlot::notice);
 
     for (int i = 0; i < gui::CustomPlot::kMaxEntries; ++i) {
-        REQUIRE(plot->addExpression(QStringLiteral("/series_a[:]")) == i);
+        REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == i);
     }
-    CHECK(plot->addExpression(QStringLiteral("/series_a[:]")) == -1);
+    CHECK(plot->addExpression(QStringLiteral("/series/a[:]")) == -1);
     CHECK(plot->sourceSeriesCount() == gui::CustomPlot::kMaxEntries);
     REQUIRE(said.count() == 1);
     CHECK_THAT(said.at(0).at(0).toString().toStdString(),
@@ -513,7 +513,7 @@ TEST_CASE_METHOD(PlotFixture, "the tabs are named, unique and reorderable", "[cu
 TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[custom]")
 {
     gui::CustomPlot* plot = tab();
-    add(plot, QStringLiteral("/series_a[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
     REQUIRE(set()->count() == 1);
     REQUIRE(set()->saveView(QStringLiteral("both"), 0, {}).isEmpty());
 
@@ -533,10 +533,10 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
     const int source = plots->addPlot();
     settleAll();
     gui::CustomPlot* from = plots->plotAt(source);
-    add(from, QStringLiteral("/series_a[:]"));
-    add(from, QStringLiteral("/series_half[:]"));
+    add(from, QStringLiteral("/series/a[:]"));
+    add(from, QStringLiteral("/series/half[:]"));
     from->setScaling(1, gui::CustomPlot::Stretch);
-    from->setXExpression(QStringLiteral("/series_t[:]"));
+    from->setXExpression(QStringLiteral("/series/time[:]"));
     from->setXMode(gui::CustomPlot::Dataset);
     settleAll();
 
@@ -555,11 +555,11 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
 
         gui::CustomPlot* into = plots->plotAt(target);
         CHECK(into->sourceSeriesCount() == 2);
-        CHECK(into->seriesLabel(1) == QStringLiteral("/series_half[:]"));
+        CHECK(into->seriesLabel(1) == QStringLiteral("/series/half[:]"));
         CHECK(into->data(into->index(1, 0), gui::CustomPlot::ScalingRole).toInt()
               == static_cast<int>(gui::CustomPlot::Stretch));
         CHECK(into->xMode() == gui::CustomPlot::Dataset);
-        CHECK(into->xExpression() == QStringLiteral("/series_t[:]"));
+        CHECK(into->xExpression() == QStringLiteral("/series/time[:]"));
         CHECK(into->pointCount() == 96);
 
         // The drawing settings were QML's, so they go back to QML rather than
@@ -583,7 +583,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
     {
         gui::CustomPlot* broken = plots->plotAt(plots->addPlot());
         settleAll();
-        add(broken, QStringLiteral("/series_a[:]"));
+        add(broken, QStringLiteral("/series/a[:]"));
         add(broken, QStringLiteral("/gone[:]"));
         add(broken, QStringLiteral("/matrix[:, :]"));
         REQUIRE(plots->saveView(QStringLiteral("stale"),
@@ -619,10 +619,10 @@ TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom
 
     SECTION("a vector is its own time base")
     {
-        plots->setTimeSeriesOf(index, QStringLiteral("/series_t"));
+        plots->setTimeSeriesOf(index, QStringLiteral("/series/time"));
         settleAll();
         CHECK(plots->plotAt(index)->xMode() == gui::CustomPlot::Dataset);
-        CHECK(plots->plotAt(index)->xExpression() == QStringLiteral("/series_t"));
+        CHECK(plots->plotAt(index)->xExpression() == QStringLiteral("/series/time"));
     }
 
     SECTION("anything else takes the line the plot tab would have drawn first")
@@ -644,9 +644,9 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
     // custom tab would reintroduce it.
     gui::CustomPlot* plot = tab();
     for (int i = 0; i < 8; ++i) {
-        REQUIRE(plot->addExpression(QStringLiteral("/series_a[:]")) == i);
+        REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == i);
     }
-    REQUIRE(plot->addExpression(QStringLiteral("/series_b[:]")) == 8);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/b[:]")) == 8);
 
     const long long before = gui::H5Thread::instance().crossings();
     settleAll();
@@ -657,7 +657,7 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
 
     SECTION("and so is a read with a time base in it")
     {
-        plot->setXExpression(QStringLiteral("/series_t[:]"));
+        plot->setXExpression(QStringLiteral("/series/time[:]"));
         plot->setXMode(gui::CustomPlot::Dataset);
         const long long mark = gui::H5Thread::instance().crossings();
         settleAll();
@@ -666,8 +666,8 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
 
     SECTION("several edits in one turn of the loop are still one read")
     {
-        plot->setExpression(0, QStringLiteral("/series_b[:]"));
-        plot->setExpression(1, QStringLiteral("/series_b[:]"));
+        plot->setExpression(0, QStringLiteral("/series/b[:]"));
+        plot->setExpression(1, QStringLiteral("/series/b[:]"));
         plot->removeEntry(2);
         const long long mark = gui::H5Thread::instance().crossings();
         settleAll();

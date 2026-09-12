@@ -714,6 +714,33 @@ void CustomPlot::recount()
     if (xMode_ == Dataset && xValues_.empty()) {
         hasFinite_ = false;
     }
+
+    // The time base's own extent, which is what the axis is drawn between. Its
+    // ends rather than its first and last value: a time base is usually
+    // ascending and is not required to be, and an axis drawn from the first to
+    // the last of a run that doubles back would leave half the points outside
+    // the frame.
+    xMinimum_ = 0.0;
+    xMaximum_ = 1.0;
+    bool seen = false;
+    for (const double value : xValues_) {
+        if (!std::isfinite(value)) {
+            continue;
+        }
+        if (!seen) {
+            xMinimum_ = value;
+            xMaximum_ = value;
+            seen = true;
+        } else {
+            xMinimum_ = std::min(xMinimum_, value);
+            xMaximum_ = std::max(xMaximum_, value);
+        }
+    }
+    if (seen && xMaximum_ <= xMinimum_) {
+        // A flat time base has no extent to draw against; give it a unit of
+        // room rather than an axis of zero width.
+        xMaximum_ = xMinimum_ + 1.0;
+    }
 }
 
 void CustomPlot::refresh()
