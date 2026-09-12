@@ -211,6 +211,7 @@ int main(int argc, char** argv)
         const int points = columnOf(bench, "points");
         const int real = columnOf(bench, "real");
         const int skipped = columnOf(bench, "skipped");
+        const int note = columnOf(bench, "note");
         const QStringList renderers = renderersIn(bench, renderer);
 
         struct Column {
@@ -261,9 +262,18 @@ int main(int argc, char** argv)
                             || at(other, points) != at(row, points)) {
                             continue;
                         }
-                        cell = at(other, skipped) == QLatin1String("1")
-                                   ? QStringLiteral("_skipped_")
-                                   : at(other, field);
+                        if (at(other, skipped) == QLatin1String("1")) {
+                            // A skipped cell says *why*. Past the budget and
+                            // "killed: out of memory" are not the same result,
+                            // and a table that printed one word for both would
+                            // be hiding the more interesting half.
+                            const QString reason = at(other, note);
+                            cell = reason.isEmpty()
+                                       ? QStringLiteral("_skipped_")
+                                       : QStringLiteral("**%1**").arg(reason);
+                        } else {
+                            cell = at(other, field);
+                        }
                         break;
                     }
                     out << ' ' << cell << " |";

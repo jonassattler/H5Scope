@@ -126,9 +126,18 @@ std::vector<Finding> verify(Surface& surface, const Options& options)
             finding.verdict =
                 (fraction < 0.12 && std::abs(found - where) < 0.08) ? "pass"
                                                                     : "fail";
-            finding.detail = "topmost ink as a fraction of pane height (found "
-                             "at x=" + std::to_string(found) + ", spike is at "
-                             + std::to_string(where) + ")";
+            // Generic, and deliberately so: the gallery prints one `detail`
+            // per check rather than one per renderer, so a string carrying
+            // this renderer's own measurements would be captioning the other
+            // two with numbers that are not theirs.
+            finding.detail = "topmost ink as a fraction of pane height; under "
+                             "0.12 and within a twelfth of the width of where "
+                             "the spike is means it survived";
+            if (finding.verdict == "fail") {
+                std::fprintf(stderr,
+                             "  %s: highest ink at x=%.3f, spike is at %.3f\n",
+                             renderer.c_str(), found, where);
+            }
         }
         findings.push_back(finding);
     }

@@ -115,10 +115,24 @@ spike in `spikes/plotting/scenegraph`.
 
 ## The shape of the answer
 
-Counting the rows above: Qt Graphs provides **21** of the 33 capabilities,
-QCustomPlot **31**, and the scene-graph route **8 as written, with the rest
-ours**. But the count is the wrong summary, because the rows are not equal in
-weight and three of them decide it:
+Counting the 33 rows above — mechanically, from the table itself:
+
+| | provides it | partial | absent | ours to write |
+|---|---|---|---|---|
+| Qt Graphs | 18 | 3 | 11 | 1 |
+| QCustomPlot | 32 | 1 | 0 | 0 |
+| scene graph | — | 1 | 0 | 32, of which **14 are already written** in the spike |
+| *H5Scope today* | 6 | 4 | 19 | 4 already written |
+
+The fourteen the spike already has are the linear and **logarithmic** axes,
+tick spacing that follows the visible range, the grid, lines, lines through
+non-monotonic x, wheel zoom, drag pan, reset, envelope decimation, the NaN gap,
+double-precision projection, every line drawn, and device pixel ratio — which
+is to say: everything H5Scope uses today except markers, plus the two things it
+most conspicuously lacks.
+
+But the count is the wrong summary, because the rows are not equal in weight
+and three of them decide it:
 
 - The two capabilities H5Scope most visibly lacks — a **logarithmic axis** and a
   **crosshair readout** — split differently. QCustomPlot has both. Qt Graphs has

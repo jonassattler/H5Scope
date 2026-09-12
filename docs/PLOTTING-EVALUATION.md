@@ -94,6 +94,101 @@ reported a **build of 495 574 ms** for sixty-four lines. It was not building
 anything; it was discarding the ten thousand graphs the previous cell left
 behind. Teardown is now its own column.
 
+## Is it fast enough?
+
+Milliseconds inside one frame, median over a scripted pan-and-zoom of forty
+frames — the work the renderer does to turn data into draw calls, with the
+buffer swap excluded. One process per cell, so every peak-memory figure is that
+cell's own rather than a high-water mark left by the one before it.
+
+| series × points | scene graph | …batched | QCustomPlot | …no adaptive | **Qt Graphs** |
+|---|---|---|---|---|---|
+| 1 × 1 000 | 0.09 | 0.09 | 0.65 | 0.64 | 0.16 |
+| 1 × 100 000 | 0.10 | 0.12 | 0.85 | 0.88 | 36.87 |
+| 1 × 1 000 000 | 0.17 | 0.17 | 0.87 | 2.99 | 601.89 |
+| 1 × 10 000 000 | 0.90 | 0.92 | 2.35 | 29.19 | **SIGSEGV** |
+| 8 × 1 000 | 0.09 | 0.09 | 0.78 | 0.77 | 0.53 |
+| 8 × 100 000 | 0.22 | 0.41 | 1.63 | 2.43 | 325.23 |
+| 8 × 1 000 000 | 0.80 | 0.92 | 2.71 | 17.79 | **600 s timeout** |
+| 64 × 1 000 | 0.24 | 0.14 | 1.29 | 1.32 | 5.61 |
+| 64 × 100 000 | 1.06 | 2.06 | 8.71 | 14.95 | 1975.62 |
+| 256 × 1 000 | 1.51 | 0.34 | 3.38 | 3.28 | 25.26 |
+| 256 × 100 000 | 5.12 | 8.42 | 28.15 | 57.80 | **out of memory** |
+| 1024 × 1 000 | 8.20 | 0.96 | 10.68 | 10.81 | 96.77 |
+| 10000 × 1 000 | 346.85 | 12.05 | 99.25 | 99.38 | **600 s timeout** |
+| **64 × 2048** | **0.26** | **0.19** | **1.47** | 1.46 | **10.78** |
+| **10000 × 2048** | **341.65** | **52.38** | **125.87** | 125.08 | **600 s timeout** |
+
+The two bold rows are not hypotheses about scale. `64 × 2048` is the view a
+reader gets by clicking a dataset — `kMaxInitialSeries` lines at `kMaxPoints`
+points. `10000 × 2048` is what the legend's `all` does to a ten-thousand-row
+table, which `PlotLegend.qml` warns about and permits.
+
+### Qt Graphs has a ceiling, and the application is sitting on it
+
+Five of fifteen cells did not produce a number, in three different ways —
+a segmentation fault inside `QSGCurveStrokeNode::cookGeometry`, three runs that
+could not draw fifty frames in ten minutes, and one killed by the out-of-memory
+killer. They are one failure, not three. Qt Graphs holds every point it is
+given, in triangulated stroke geometry, and the memory is the story:
+
+| total points on screen | frame | peak resident |
+|---|---|---|
+| 64 × 1 000 = 64 k | 5.61 ms | 449 MiB |
+| 1 × 100 000 = 100 k | 36.87 ms | 831 MiB |
+| **64 × 2048 = 131 k** | **10.78 ms** | **616 MiB** |
+| 1 × 1 000 000 = 1 M | 601.89 ms | 4 979 MiB |
+| 64 × 100 000 = 6.4 M | 1 975.62 ms | **27 789 MiB** |
+| 256 × 100 000 = 25.6 M | — | killed |
+
+Twenty-seven gigabytes to draw six and a half million points. Above the process
+floor it settles at roughly four kilobytes of resident memory per drawn point,
+which is what makes 25.6 M points an impossible request rather than a slow one.
+
+And the application's default view is at 131 072 points — just past the place
+where this becomes tens of milliseconds a frame. **`kMaxPoints = 2048` is not a
+nicety; it is the cap that keeps the current renderer inside its envelope.** The
+same cap is what loses a one-sample spike.
+
+### Where the scene graph wins, and where its spike is naive
+
+Against Qt Graphs it is between 1.8× and 1 800× faster, and it never fails a
+cell. Against QCustomPlot it is 5–7× faster in the ordinary range. Neither of
+those is the interesting part. Two things are:
+
+**At ten thousand lines, the bottleneck is draw calls.** One node per series is
+346.85 ms; one batched buffer is 12.05 ms — 29× — because the first issues ten
+thousand draw calls and the second issues one.
+
+**And this spike's batching is the naive kind.** It draws disjoint segments with
+20-byte coloured vertices, so it doubles the vertex count to buy the draw-call
+saving, and the memory says so: 3 871 MiB at `10000 × 2048` against QCustomPlot's
+618 MiB for the same picture. A production version would want batched *strips*
+with index buffers. The 29× is real and the way it is currently bought is not
+the way to buy it.
+
+### Allocations, which do not depend on this machine
+
+Over the same forty frames, and this is the column `tests/test_cost.cpp` would
+recognise — a count, not a duration:
+
+| | 64 × 2048 | 1024 × 1 000 |
+|---|---|---|
+| scene graph | 54 936 | 64 970 |
+| scene graph, batched | 54 953 | 53 195 |
+| QCustomPlot | 18 096 | 210 068 |
+| **Qt Graphs** | **392 626** | **84 661 844** |
+
+Qt Graphs performs **2.1 million allocations per frame** at a thousand lines,
+and about ten thousand per frame at the application's default. It is rebuilding
+its geometry from nothing every time the axis range moves — which is exactly
+what `PlotSurface.qml:615-622` already works around from the other side, having
+found that a recoloured series keeps its old stroke until it is re-filled.
+
+The scene graph's own ~1 300 per frame are almost all the QML chrome: the tick
+`Repeater`s rebuild their delegates whenever the view changes. That is
+application code, it is the same in every candidate, and it is fixable.
+
 ## Is the picture true?
 
 Eight checks, each asserting a property of the pixels rather than comparing
@@ -212,3 +307,132 @@ What a library would genuinely save is the part H5Scope has *not* written:
 markers and scatter styles, error bars, a crosshair with a snapping readout,
 annotations, export. QCustomPlot has all of those. Qt Graphs has almost none of
 them, and cannot be given a logarithmic axis at any price.
+
+## What to do
+
+Three recommendations, in the order they should be acted on. The first is
+independent of the other two and should happen whatever is decided about the
+renderer.
+
+### 1. Fix what is ours, first
+
+None of this needs a library decision, and two of the three are correctness
+rather than taste.
+
+- **Thin by min/max envelope, not by stride.** `DatasetLookup::thinToPoints`
+  and `DatasetTableModel::sampleFrom` select every *n*-th index; selecting the
+  smallest and largest in each pixel column instead reads the same number of
+  elements, draws the same number of points, and cannot lose an extremum,
+  because the extremum is what it selects. `DatasetTableModel.hpp:205-213`
+  already calls this "the place to start if the plot ever needs to be exact at
+  a glance". It is the single largest honesty win available and it is worth
+  roughly a day.
+- **Draw a gap where the data is missing.** `DatasetPlot::fill` drops
+  non-finite values, and the renderer joins what is left — see
+  `spikes/plotting/results/qtgraphs-gap.png`, a straight diagonal across ten
+  thousand samples nobody measured. This one *is* partly blocked on the
+  renderer: `QXYSeries` has no way to express a break, so on Qt Graphs the only
+  fix is one series per run.
+- **Fix the grid.** With the pinned 6.11.1 a `GraphsView` configured the way
+  the application configures it draws its grid; something in H5Scope's own
+  setup suppresses it, and the settings panel currently has a checkbox that
+  does nothing. See the note in `docs/PLOTTING-FEATURES.md` for a lead.
+
+### 2. Replace the renderer with our own scene-graph item
+
+On the numbers this is not close. At the view a reader actually gets, it is
+**40× faster and uses a fifth of the memory**; it is the only candidate that
+never failed a cell; it removes 23.2 MiB from the binary along with `qtquick3d`
+and `meshoptimizer`; and it is the only option that leaves **no GPL-only
+dependency in the tree**, which turns H5Scope's licence from a constraint into
+a choice.
+
+It also already does the two things the reader most wants and the incumbent
+cannot be given: a logarithmic axis, and a decimator that keeps spikes.
+
+What it costs is honest and should not be minimised: **everything is ours.**
+Markers, a crosshair readout, export, axis titles, error bars and annotations
+are all work — and so is the maintenance of a renderer, forever. Three things
+make that bearable here rather than reckless:
+
+- The spike is about 400 lines of C++ and 170 of QML, and it already covers
+  everything the application draws today except markers.
+- H5Scope has *already* written most of the chrome a library would supply —
+  `niceStep()`, the zoom arithmetic, the pan clamp, and a legend neither
+  library comes close to. Adopting a library competes with that work rather
+  than recovering it.
+- The seam is one function. `fill(QAbstractSeries*, int)` appears exactly
+  twice.
+
+Two things in the spike must not be carried over as written: batch into
+**strips with index buffers**, not disjoint segments, or the memory at ten
+thousand lines is worse than the incumbent's; and keep the double-precision
+projection, because a float32 vertex turns an epoch timestamp into a staircase.
+
+### 3. If the priority is features soonest, the answer is different
+
+This is the honest counter-argument and it deserves stating plainly. If what
+matters most is having error bars, annotations, a snapping cursor, PDF export
+and a dozen axis tickers *this quarter*, **QCustomPlot delivers 32 of the 33
+capabilities today** and it is fast enough — 1.47 ms at the default view, and it
+completed every cell in the grid.
+
+What you would be buying it with: a `QApplication` and the Qt Widgets stack
+under the QML; a full-surface rasterisation, blit and texture upload every
+frame whether or not anything changed; every mouse and wheel event forwarded by
+hand; chrome that cannot read a single value from `Theme.qml`; and a second
+GPL-only dependency in place of the first. For a widgets application it would
+be the obvious answer. For this one it is the wrong shape, and the measured
+6–8× frame-time gap is the smallest of the reasons.
+
+## What moving would cost
+
+`Qt6::Graphs` is named in six build files and two manifests:
+
+| where | what |
+|---|---|
+| `CMakeLists.txt:189` | `find_package(... Graphs ...)` |
+| `src/gui/CMakeLists.txt:127` | `gui` links it PUBLIC, because `DatasetPlot.hpp` exposes it |
+| `src/qml/CMakeLists.txt:103` | `appqml` links it for `PlotSurface.qml`'s import |
+| `tests/CMakeLists.txt:53, 86, 117` | three suites |
+| `tools/CMakeLists.txt:21, 55` | `inspect-file`, `make-screenshots` |
+| `vcpkg.json:74` | the `qtgraphs` dependency |
+| `cmake/ThirdPartyLicenses.cmake:48-49` | `qtgraphs` and `qtquick3d`, plus `meshoptimizer` at `:44` |
+
+Plus `THIRD-PARTY-NOTICES.md`, which describes the GPL-only group in four
+places and would lose it.
+
+The code is narrower than that list suggests:
+
+- **One QML file.** `PlotSurface.qml` holds the only `import QtGraphs` in the
+  repository. `PlotLegend.qml`, `PlotSettingsPanel.qml`, `RangeAxis.qml`,
+  `CustomView.qml` and `DataView.qml` never mention it.
+- **One C++ signature, twice.** `DatasetPlot.cpp:337` and `CustomPlot.cpp:606`.
+  Both cast to `QXYSeries` and call `replace()`. A scene-graph item wants the
+  `std::vector<double>` the model already holds, so both get *simpler*.
+- **One test seam.** `tests/test_customplot.cpp:93-98` fills a bare
+  `QLineSeries` with no QML engine, which is the only reason that suite links
+  Qt Graphs. A replacement must keep a fill target that works headless — which
+  a plain data handover does more easily than a `QObject` series did.
+
+Everything else survives untouched: the whole read path, `H5Thread`, the
+batching, `thinToPoints`, both plot models' property surfaces, the legend, the
+settings panel, `RangeAxis.qml`'s two-of-three solver, and every one of
+`Theme.qml`'s palettes.
+
+## Reproducing any of this
+
+```sh
+cd spikes && cmake --preset spike-release && cmake --build --preset spike-release
+cd .. && R=spikes/plotting/results
+for b in scenegraph qcustomplot qtgraphs; do
+  build/spike-release/bin/spike-$b --verify --out $R
+done
+build/spike-release/bin/spike-qtgraphs --bench --cell 64x2048 --out $R
+build/spike-release/bin/plot-gallery --out $R
+```
+
+`spikes/plotting/results/gallery.md` is generated from the two `.tsv` files and
+the images; `results.tsv` is one process per cell and `results-sequential.tsv`
+is the whole grid in one process, which is where the teardown column means
+something. `spikes/README.md` has the rest.
