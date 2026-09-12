@@ -42,6 +42,16 @@ add_executable(test_models test_models.cpp)
 target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
+# --- what the plot decides before a pixel is touched ----------------------
+# Arithmetic only: gui::projectLine takes doubles and fills two vectors, so
+# this needs no window, no engine and no file. That is the point of having
+# split PlotProjection out of PlotItem -- the four things the plot got wrong
+# for as long as it drew through Qt Graphs are all decided here, and a grab of
+# something rendered is a poor way to assert any of them.
+add_executable(test_plotprojection test_plotprojection.cpp)
+target_link_libraries(test_plotprojection PRIVATE gui Catch2::Catch2WithMain)
+catch_discover_tests(test_plotprojection)
+
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature
 # whose whole subject is reading several datasets at once, which is the thing

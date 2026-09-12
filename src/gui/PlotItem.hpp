@@ -5,38 +5,32 @@
 
 // A line plot drawn directly on the Qt Quick scene graph.
 //
-// Carried over from spikes/plotting/scenegraph on the plot-library-evaluation
-// branch, where it was measured against Qt Graphs and QCustomPlot over a
-// fifteen-cell grid. Nothing here is wired into the application yet: the item
-// compiles, registers into H5Scope.Backend, and waits for PlotSurface.qml to
-// stop importing QtGraphs. The migration is written down in
-// instructions/scene-graph-migration.md.
+// The arithmetic is next door in PlotProjection.hpp, which has no renderer in
+// it and says why the plot is ours at all. This file is the part that has a
+// window: it holds the lines, turns them into geometry once a frame, and hands
+// QML the two questions the chrome has to ask -- where does a value sit, and
+// what value sits there -- so that the ticks and the curve cannot disagree.
 //
-// It exists because four things a scientific plot needs are things no library
-// on offer gets right, and all four are cheap once the projection is ours:
+// It carries **two** renderers, and that is not a hedge:
 //
-// 1. Decimation to the pixel width, by min/max envelope rather than by stride.
-//    The application thins by stride today, and DatasetTableModel.hpp:205-213
-//    names the cost: "a spike narrower than one stride is not drawn". An
-//    envelope draws the same number of points and cannot lose an extremum,
-//    because the extremum is what it selects.
+//   * A single QSGGeometryNode of mitred triangle strips, which is what runs
+//     on a machine with a graphics API. One node and one draw call for the
+//     whole plot: measured on the evaluation branch at ten thousand lines,
+//     346.85 ms a frame with a node per line against 12.05 ms batched.
 //
-// 2. Double precision on the way to the vertex. QSGGeometry stores float32.
-//    An x of 1.7e9 -- seconds since the epoch, which is what every logger in
-//    the world writes -- has a float spacing of 128, so a line sampled every
-//    millisecond collapses into a staircase of flat treads. The fix is not to
-//    store doubles; it is to project in double and cast the *result*, because
-//    a pixel coordinate is at most a few thousand. That is why this item does
-//    its own projection instead of uploading data coordinates and letting a
-//    matrix in the vertex shader do it, which is the faster arrangement and the
-//    one that loses the data.
+//   * A QPainter fallback, which is what runs under Qt Quick's software
+//     renderer. That renderer draws no custom geometry at all -- it knows
+//     rectangles, images, nine-patches and glyphs, and silently drops
+//     everything else. The offscreen platform declares no RHI capability, so
+//     the whole QML suite and tools/make-screenshots run on exactly that
+//     renderer, and an item that drew nothing there would take twenty pixel
+//     tests with it. The projection is shared, so the fallback is the last
+//     twenty lines of drawing and not a second plot.
 //
-// 3. A gap where the data is absent. Dropping non-finite points and handing
-//    the rest to a line renderer -- which is what DatasetPlot::fill does --
-//    draws a straight line *across* the missing data rather than a gap. Here a
-//    run of non-finite values ends the strip and the next run starts a new one.
-//
-// 4. A logarithmic y axis, which 2-D Qt Graphs cannot do at any price.
+// Nothing else in this application needs a fallback, because nothing else in
+// it draws anything a rectangle cannot.
+
+#include "gui/PlotProjection.hpp"
 
 #include <QtGui/QColor>
 #include <QtQml/qqmlregistration.h>
@@ -46,92 +40,115 @@
 
 namespace gui {
 
-/// One line to draw.
-///
-/// `values` is **borrowed**: this item reads it on every frame and never
-/// copies it. The owner is whoever handed it over -- DatasetPlot and
-/// CustomPlot both already hold their lines as `std::vector<double>`, and a
-/// copy of a ten-thousand-line selection would be a hundred and sixty
-/// megabytes of it -- so the contract is that the owner calls clear() before
-/// it touches the vectors again. There is no way for the item to notice; that
-/// is the price of not copying, and it is the reason this struct says so here
-/// rather than leaving it to be discovered.
-struct PlotLine {
-    const double* values = nullptr;
-    qsizetype count = 0;
-    /// Supplied by the caller rather than chosen here: every colour in this
-    /// application resolves through Theme.qml, and a renderer that picked its
-    /// own would be the one place that did not.
-    QColor colour;
-};
-
 class PlotItem : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
 
     /// The window the item is showing, in data coordinates. Written by QML;
-    /// the existing zoom and pan arithmetic in PlotSurface.qml:284-405 already
-    /// resolves to exactly this pair of ranges.
+    /// the zoom and pan arithmetic in PlotSurface.qml already resolves to
+    /// exactly this pair of ranges.
     Q_PROPERTY(double xMin READ xMin WRITE setXMin NOTIFY viewChanged FINAL)
     Q_PROPERTY(double xMax READ xMax WRITE setXMax NOTIFY viewChanged FINAL)
     Q_PROPERTY(double yMin READ yMin WRITE setYMin NOTIFY viewChanged FINAL)
     Q_PROPERTY(double yMax READ yMax WRITE setYMax NOTIFY viewChanged FINAL)
 
-    /// A logarithmic y axis. The chrome has to agree -- decade ticks, and a
-    /// label format to match -- or the grid lies about where the curve is.
+    /// A logarithmic y axis, which is one of the two things the plot could not
+    /// do before. The chrome has to agree -- decade ticks, and a label format
+    /// to match -- or the grid lies about where the curve is, which is what
+    /// viewLow/viewHigh and yFraction() below are for.
     Q_PROPERTY(bool logY READ logY WRITE setLogY NOTIFY viewChanged FINAL)
 
-    /// One draw call for the whole plot instead of one per line.
+    /// The values at the bottom and the top of the pane.
     ///
-    /// Measured on the evaluation branch at ten thousand lines of a thousand
-    /// points: 346.85 ms a frame with a node per line, 12.05 ms batched. And
-    /// measured again on memory, where it is the wrong way round: 3871 MiB
-    /// against 1282. This implementation batches into *disjoint segments* with
-    /// twenty-byte coloured vertices, which doubles the vertex count to buy the
-    /// draw call. Batched strips with an index buffer would buy the same thing
-    /// for less, and that is the work the migration plan schedules before this
-    /// mode becomes the default.
-    Q_PROPERTY(bool batched READ batched WRITE setBatched NOTIFY batchedChanged FINAL)
+    /// The same as yMin and yMax on a linear axis, and pointedly not the same
+    /// on a logarithmic one: a log axis whose data reaches zero has to put its
+    /// floor somewhere, and these are where it put it. The chrome binds to
+    /// these rather than to yMin/yMax so that it draws the axis the curve was
+    /// drawn against.
+    Q_PROPERTY(double viewLow READ viewLow NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double viewHigh READ viewHigh NOTIFY viewChanged FINAL)
 
-    /// Vertices submitted for the last frame. The count that travels -- it does
-    /// not depend on the machine, it is bounded by the item's pixel width
-    /// rather than by the dataset, and a change that makes it scale with the
-    /// file is a change that has broken the decimation. tests/test_cost.cpp is
-    /// where an assertion on it belongs.
-    Q_PROPERTY(int vertexCount READ vertexCount NOTIFY drew FINAL)
+    /// Points projected for the last frame, over every line together.
+    ///
+    /// The count that travels. It does not depend on the machine, it is
+    /// bounded by the pane rather than by the file, and a change that makes it
+    /// scale with the dataset is a change that has broken the decimation.
+    /// tests/test_cost.cpp is where an assertion on it belongs.
+    ///
+    /// Reported rather than the vertex count because the vertex count is
+    /// backend-dependent -- the software fallback submits none -- and this is
+    /// the same number on both, with the geometry exactly twice it.
+    Q_PROPERTY(int drawnPointCount READ drawnPointCount NOTIFY drew FINAL)
+
+    /// Unbroken strokes drawn for the last frame. One per line when nothing is
+    /// missing, and one more for every gap, which is how a test asserts that a
+    /// run of NaN produced a gap rather than a line drawn across it.
+    Q_PROPERTY(int drawnRunCount READ drawnRunCount NOTIFY drew FINAL)
 
 public:
     explicit PlotItem(QQuickItem* parent = nullptr);
     ~PlotItem() override;
 
-    /// Hand over the lines to draw. See PlotLine: the values are borrowed.
-    void setLines(std::vector<PlotLine> lines, double xStart, double xStep);
+    /// Hand over the lines to draw, and the axis they are drawn against.
+    ///
+    /// See PlotLine: the values are borrowed and never copied, so the owner
+    /// must call clear() before it touches them again.
+    void setLines(std::vector<PlotLine> lines, const PlotAxis& axis);
 
     /// Draw nothing, and stop reading whatever was handed over. Must be called
     /// before the owner of those vectors modifies or frees them.
-    void clear();
+    Q_INVOKABLE void clear();
 
-    [[nodiscard]] double xMin() const { return xMin_; }
-    [[nodiscard]] double xMax() const { return xMax_; }
-    [[nodiscard]] double yMin() const { return yMin_; }
-    [[nodiscard]] double yMax() const { return yMax_; }
-    [[nodiscard]] bool logY() const { return logY_; }
-    [[nodiscard]] bool batched() const { return batched_; }
-    [[nodiscard]] int vertexCount() const { return vertices_; }
+    /// How many lines were handed over. QML needs it to drive the loops below
+    /// without holding a second copy of the drawn set.
+    [[nodiscard]] Q_INVOKABLE int lineCount() const;
+
+    /// Restyle one line without re-reading or re-filling anything.
+    ///
+    /// This is what the plot could not do before. Qt Graphs redraws a series
+    /// when its *points* change and not when its colour does, so recolouring
+    /// meant re-filling every series from the model -- sixty-four crossings
+    /// into C++, each building a QList<QPointF> of a couple of thousand points,
+    /// to change a hue. Here a colour is a property of the line and the frame
+    /// is rebuilt from the values already in hand.
+    Q_INVOKABLE void setSeriesColor(int index, const QColor& colour);
+    Q_INVOKABLE void setSeriesOpacity(int index, double opacity);
+    Q_INVOKABLE void setSeriesWidth(int index, double width);
+
+    /// Where `value` sits up the pane, as a fraction from the bottom, and back
+    /// again. The chrome's ticks go through these rather than deriving the
+    /// mapping a second time, because a tick drawn where the curve is not is
+    /// worse than no tick at all.
+    [[nodiscard]] Q_INVOKABLE double yFraction(double value) const;
+    [[nodiscard]] Q_INVOKABLE double valueAt(double fraction) const;
+    [[nodiscard]] Q_INVOKABLE double xFraction(double x) const;
+    [[nodiscard]] Q_INVOKABLE double xAt(double fraction) const;
+
+    /// The sample of line `index` nearest to `x`, as { x, y, valid }, for the
+    /// crosshair to snap to. Empty when the line has no drawable sample there.
+    [[nodiscard]] Q_INVOKABLE QVariantMap sampleNear(int index, double x) const;
+
+    [[nodiscard]] double xMin() const { return view_.xMin; }
+    [[nodiscard]] double xMax() const { return view_.xMax; }
+    [[nodiscard]] double yMin() const { return view_.yMin; }
+    [[nodiscard]] double yMax() const { return view_.yMax; }
+    [[nodiscard]] bool logY() const { return view_.logY; }
+    [[nodiscard]] double viewLow() const { return valueAt(0.0); }
+    [[nodiscard]] double viewHigh() const { return valueAt(1.0); }
+    [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
+    [[nodiscard]] int drawnRunCount() const { return drawnRuns_; }
 
     void setXMin(double value);
     void setXMax(double value);
     void setYMin(double value);
     void setYMax(double value);
     void setLogY(bool on);
-    void setBatched(bool on);
 
 Q_SIGNALS:
     void viewChanged();
-    void batchedChanged();
     /// Emitted after a frame's geometry has been built, so anything reading
-    /// vertexCount reports the frame on screen rather than the one before it.
+    /// the counts above reports the frame on screen rather than the one before.
     void drew();
 
 protected:
@@ -139,35 +156,38 @@ protected:
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
 
 private:
-    /// One run of consecutive, drawable vertices. A line with two gaps in it
-    /// is three runs.
-    struct Run {
-        int first = 0;
-        int count = 0;
-    };
+    /// Which of the two renderers built the child node. Switching is not
+    /// something that happens at run time -- the graphics API is settled before
+    /// the first frame -- but the node has to be discarded rather than cast if
+    /// it ever did.
+    enum class Drawn { Nothing, Geometry, Painted };
 
-    /// Project one line into `points_` in item coordinates, splitting at gaps,
-    /// and append the runs to `runs_`. Returns how many runs it added.
-    int project(const PlotLine& line);
+    /// The view, with the pane's measurements and the decimation budget filled
+    /// in. Kept as the projection's own struct rather than as loose members so
+    /// that there is one description of the view and not two.
+    [[nodiscard]] PlotView viewForFrame() const;
+    /// Project every line into points_ / runs_ / lineRuns_.
+    void projectAll();
+    QSGNode* buildGeometry(QSGNode* root);
+    QSGNode* buildPainted(QSGNode* root);
 
     std::vector<PlotLine> lines_;
-    double xStart_ = 0.0;
-    double xStep_ = 1.0;
-    double xMin_ = 0.0;
-    double xMax_ = 1.0;
-    double yMin_ = 0.0;
-    double yMax_ = 1.0;
-    bool logY_ = false;
-    bool batched_ = false;
-    int vertices_ = 0;
+    PlotAxis axis_;
+    PlotView view_;
+    Drawn drawn_ = Drawn::Nothing;
+    int drawnPoints_ = 0;
+    int drawnRuns_ = 0;
 
-    // Reused between frames. The whole point of the envelope is that the
-    // vertex count is bounded by the width of the item, so these settle at a
-    // few thousand entries on the first frame and never grow again -- which is
-    // what keeps the per-frame allocation count flat as the file gets bigger.
+    // Reused between frames. The whole point of the envelope is that the point
+    // count is bounded by the pane, so these settle at a few thousand entries
+    // on the first frame and never grow again -- which is what keeps the
+    // per-frame allocation count flat as the file gets bigger.
     std::vector<QPointF> points_;
-    std::vector<Run> runs_;
-    std::vector<int> runStart_;
+    std::vector<PlotRun> runs_;
+    /// Where each line's runs start in runs_, with one past the end appended,
+    /// so the drawing loops can find a line's strokes without searching.
+    std::vector<int> lineRuns_;
+    std::vector<QPointF> stroke_;
 };
 
 } // namespace gui
