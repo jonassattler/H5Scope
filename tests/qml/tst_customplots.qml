@@ -564,6 +564,99 @@ TestCase {
                "the reason must say what it is not: " + refusal)
     }
 
+    // --- a window of its own -----------------------------------------------
+
+    function test_a_torn_off_plot_leaves_the_strip_and_comes_back() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        compare(win.tabs.length, 5)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        AppController.customPlots.setDetached(0, true)
+        waitForRendering(win.contentItem)
+
+        // One plot lives in one place: while its own window is up the strip
+        // does not list it, and the strip is no longer showing it.
+        verify(AppController.customPlots.detached(0))
+        compare(win.tabs.length, 4)
+        compare(AppController.customPlots.activeIndex, -1)
+        // The plot itself is untouched -- the window is where it is being
+        // shown, not where it lives.
+        compare(plot.sourceSeriesCount, 1)
+        compare(plot.pointCount, 64)
+
+        AppController.customPlots.setDetached(0, false)
+        waitForRendering(win.contentItem)
+
+        compare(win.tabs.length, 5)
+        compare(win.tabs[4].label, "Custom 1")
+        compare(plot.sourceSeriesCount, 1)
+    }
+
+    function test_the_torn_off_window_draws_the_same_plot() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        AppController.customPlots.setDetached(0, true)
+        waitForRendering(win.contentItem)
+        wait(0)
+
+        // A Window is not in the item tree, so it is reached through the
+        // Instantiator that made it rather than by walking children.
+        const torn = win.plotWindows.objectAt(0)
+        verify(torn, "there must be a window for the plot")
+        verify(torn.visible, "the torn-off window must be on screen")
+        compare(torn.plotIndex, 0)
+        verify(torn.title.indexOf("Custom 1") >= 0,
+               "the window is named for the plot: " + torn.title)
+
+        // ...and the view inside it is the same plot, drawn.
+        const inside = findAllOf(torn.contentItem, "customWindowView")
+        compare(inside.length, 1)
+        compare(inside[0].plot, plot)
+        verify(inside[0].detached, "it offers no second tear-off")
+        compare(findAllOf(inside[0], "detachPlot")
+                .filter((b) => b.visible).length, 0)
+
+        AppController.customPlots.setDetached(0, false)
+        waitForRendering(win.contentItem)
+        verify(!torn.visible, "and it goes away when the tab comes back")
+    }
+
+    function test_the_view_menu_lists_the_custom_plots_and_makes_one() {
+        const win = openWindow()
+        const bar = win.menuBar
+        verify(bar, "the window must have a menu bar")
+
+        bar.newCustomPlotRequested()
+        waitForRendering(win.contentItem)
+        compare(AppController.customPlots.count, 1)
+        compare(win.currentTabId, "custom:0")
+
+        compare(AppController.customPlots.setName(0, "pressure"), "")
+        waitForRendering(win.contentItem)
+
+        // The drawer lists it after the four fixed rows, and marks it while
+        // it is the tab on screen.
+        const row = bar.customTabRow(0)
+        verify(row, "the View menu must list the custom plot")
+        compare(row.text, "pressure")
+        verify(row.marked, "and mark the one showing")
+
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+        verify(!row.marked, "and stop marking it when it is not")
+    }
+
     function test_the_footer_counts_entries_and_datapoints() {
         const win = openWindow()
         win.addCustomTab()

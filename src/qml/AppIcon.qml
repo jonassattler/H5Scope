@@ -20,7 +20,7 @@ Item {
     id: icon
 
     /// "rotateLeft" | "rotateRight" | "flipHorizontal" | "flipVertical"
-    /// | "close" | "grip" | "plus"
+    /// | "close" | "grip" | "plus" | "detach"
     property string name
     property color color: Theme.textPrimary
     /// Stroke weight on the 24-unit grid; 2 is the system's line icon weight.
@@ -42,6 +42,7 @@ Item {
             case "close":          return closeIcon
             case "grip":           return gripIcon
             case "plus":           return plusIcon
+            case "detach":         return detachIcon
             default:               return null
             }
         }
@@ -114,6 +115,59 @@ Item {
                 startX: 6 * icon.unit
                 startY: 12 * icon.unit
                 PathLine { x: 18 * icon.unit; y: 12 * icon.unit }
+            }
+        }
+    }
+
+    // A frame with an arrow leaving it through the corner, which is what every
+    // application draws for "this opens somewhere else". The frame is drawn
+    // open on the side the arrow leaves by, so the two read as one gesture
+    // rather than as a box with a tick next to it.
+    Component {
+        id: detachIcon
+
+        Shape {
+            preferredRendererType: Shape.CurveRenderer
+
+            // The frame, missing its top-right corner.
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 14 * icon.unit
+                startY: 5 * icon.unit
+                PathLine { x: 5 * icon.unit;  y: 5 * icon.unit }
+                PathLine { x: 5 * icon.unit;  y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 10 * icon.unit }
+            }
+
+            // ...and the arrow going out through it.
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+
+                startX: 11 * icon.unit
+                startY: 13 * icon.unit
+                PathLine { x: 20 * icon.unit; y: 4 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 14 * icon.unit
+                startY: 4 * icon.unit
+                PathLine { x: 20 * icon.unit; y: 4 * icon.unit }
+                PathLine { x: 20 * icon.unit; y: 10 * icon.unit }
             }
         }
     }

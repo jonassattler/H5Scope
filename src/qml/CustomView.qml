@@ -42,6 +42,9 @@ Rectangle {
     /// Whether this is the tab on screen. The surface samples the file to
     /// answer what it would draw, so it is told rather than guessing.
     property bool active: true
+    /// Whether this is being shown in a window of its own, in which case the
+    /// control that would put it there has nothing left to offer.
+    property bool detached: false
 
     /// Which panel the rail is showing: "" | "data" | "plot".
     property string rail: ""
@@ -59,6 +62,7 @@ Rectangle {
         + Theme.sliceWellMinimum
         + dataSettingsButton.implicitWidth
         + viewSettingsButton.implicitWidth
+        + detachButton.implicitWidth
 
     color: Theme.background
 
@@ -190,6 +194,30 @@ Rectangle {
                     opens: "panel"
                     open: root.rail === "plot"
                     onClicked: root.toggleRail("plot")
+                }
+
+                // Take this plot out of the strip and put it in a window of
+                // its own. At the end of the bar and drawn rather than
+                // labelled, because it is the one control here that is about
+                // the tab rather than about what the tab is showing -- and
+                // because the two beside it are already the widest things in
+                // the bar.
+                //
+                // Absent in a torn-off window: the way back is closing it, and
+                // a button offering to do again what has been done is a button
+                // the reader has to work out.
+                AppIconButton {
+                    id: detachButton
+
+                    objectName: "detachPlot"
+
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: !root.detached && root.plotIndex >= 0
+                    glyph: "detach"
+                    bare: true
+                    hint: qsTr("open this plot in a window of its own")
+                    onClicked: AppController.customPlots.setDetached(
+                                   root.plotIndex, true)
                 }
             }
 

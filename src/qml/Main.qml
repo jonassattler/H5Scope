@@ -109,6 +109,11 @@ ApplicationWindow {
 
     readonly property var customPlots: AppController.customPlots
 
+    /// The torn-off windows, by position. Exposed because a Window is not in
+    /// the item tree, so the QML suite -- which finds things by walking it --
+    /// cannot reach one any other way.
+    readonly property alias plotWindows: plotWindows
+
     /// Whether the information view is the one showing. Which of the other
     /// three is showing is DataView's own state and stays there: it is the
     /// thing that has to drop out of the plot when the selection turns out to
@@ -221,6 +226,7 @@ ApplicationWindow {
         onTreeTagsRequested: window.treeTagsVisible = !window.treeTagsVisible
         onAboutRequested: aboutDialog.open()
         onTabRequested: (id) => window.selectTab(id)
+        onNewCustomPlotRequested: window.addCustomTab()
     }
 
     // --- fixed chrome below ----------------------------------------------
@@ -454,6 +460,30 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    // --- the torn-off plots ----------------------------------------------
+    // An Instantiator rather than a Repeater, because a Repeater builds Items
+    // and a Window is not one.
+    //
+    // One per plot, shown only while that plot is detached. A Window that is
+    // never made visible is a QQuickWindow and no platform window at all, so
+    // the ones the reader has not torn off cost an object apiece and nothing
+    // on screen -- which is cheaper than tearing the view down and building it
+    // again every time one is opened.
+    Instantiator {
+        id: plotWindows
+
+        model: window.customPlots
+
+        delegate: CustomPlotWindow {
+            required property int index
+            required property bool detached
+
+            plot: window.customPlots.plotAt(index)
+            plotIndex: index
+            visible: detached
         }
     }
 
