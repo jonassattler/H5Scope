@@ -44,6 +44,26 @@ Button {
 
     signal closeRequested()
 
+    /// How far above the line box the strip's lettering actually sits.
+    ///
+    /// A Text centred in an item centres its *line box*, which reserves room
+    /// under the baseline for descenders. A machine label is all capitals and
+    /// has none, so its letters sit half a descent above the middle of the
+    /// item -- and a glyph centred on the item lands that far below the words
+    /// beside it, which at 28 pixels is a mark the eye reads as dropped.
+    ///
+    /// Only for the capitals. A tab the reader has named is set as they wrote
+    /// it, descenders and all, so there the line box is the right thing to
+    /// centre on and this is zero.
+    readonly property real inkOffset:
+        control.verbatimLabel ? 0 : -Math.round(capitals.descent / 2)
+
+    FontMetrics {
+        id: capitals
+
+        font: Theme.label
+    }
+
     // Carried by the control rather than set on the label inside it, which is
     // how Qt Quick Controls means a font to be handed down: anything asking
     // this button what it is set in -- the suite that pins the strip's
@@ -59,7 +79,13 @@ Button {
     hoverEnabled: true
 
     background: Rectangle {
-        color: "transparent"
+        // A tab carries no ground of its own, and the glyph button in the
+        // strip is not a tab: it is a control that happens to live there, and
+        // with no label to lift under the pointer it has nothing else to
+        // answer with. The four real tabs keep the transparent ground the
+        // design gives them.
+        color: (control.glyph !== "" && control.hovered)
+               ? Theme.surfaceHover : "transparent"
 
         Rectangle {
             anchors.left: parent.left
@@ -76,6 +102,7 @@ Button {
 
         AppIcon {
             anchors.centerIn: parent
+            anchors.verticalCenterOffset: control.inkOffset
             visible: control.glyph !== ""
             name: control.glyph
             // Dimmed at rest and full strength under the pointer, which is the
@@ -124,6 +151,7 @@ Button {
 
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: control.inkOffset
             // The icon at its own size with no rim. A cross drawn into twelve
             // pixels on a 24-unit grid is a one-pixel stroke inset to eight of
             // them, which is a smudge rather than a cross and a target the
@@ -135,7 +163,6 @@ Button {
             glyph: "close"
             bare: true
             ink: Theme.danger
-            hint: qsTr("close this plot")
             onClicked: control.closeRequested()
         }
     }

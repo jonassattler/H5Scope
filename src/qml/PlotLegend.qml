@@ -65,6 +65,35 @@ Rectangle {
         return ""
     }
 
+    /// Widen or narrow the panel by `amount`, within its bounds.
+    ///
+    /// Clamped against the same bounds `width` is, so that dragging past an
+    /// end and back again returns the edge to the pointer rather than leaving
+    /// it behind by however far the drag overshot.
+    function resizeBy(amount) {
+        legend.panelWidth = Math.max(
+            legend.minimumWidth,
+            Math.min(legend.width + amount, legend.maximumWidth))
+    }
+
+    /// `text` with its leading path taken off: "…/pressure[0:2048]".
+    ///
+    /// What a legend row drops first when it will not fit. A slice's name is
+    /// the last thing in it and its subscript is the last thing after that,
+    /// and those two are what tell one line from another -- the group it sits
+    /// in is usually the same for every line in the list, so it is the part
+    /// that carries no information and the part to lose. What is left is then
+    /// elided down the middle, which keeps the beginning and the end of the
+    /// name itself.
+    function withoutPath(text) {
+        const cut = text.lastIndexOf("/")
+        return cut > 0 ? "…" + text.substring(cut) : text
+    }
+
+    /// What a line can be taken to, exposed for the QML suite: a Popup is not
+    /// in the item tree, so there is no walking to one.
+    readonly property alias lineMenu: lineMenu
+
     /// Open the line menu over line `index`.
     function openRowMenu(index) {
         lineMenu.series = index
@@ -75,7 +104,24 @@ Rectangle {
     /// than a role, so nothing else would tell a delegate's tick to update.
     property int revision: 0
 
-    width: Theme.railWidth
+    /// How wide the panel is, which the reader can drag.
+    ///
+    /// A legend lists slices, and a slice is as long as the path that names
+    /// it: `/run/2026-03-11/sensors/pressure[0:2048]` does not go in 212
+    /// pixels and no amount of eliding makes it. Every other panel in this
+    /// window is a fixed width because every other panel holds controls, whose
+    /// widths this file decides; this one holds the file's own names, whose
+    /// widths it does not.
+    property real panelWidth: Theme.railWidth
+    /// Narrow enough to be worth doing, and wide enough that a legend cannot
+    /// be dragged over the whole plot it is describing.
+    readonly property real minimumWidth: Theme.railWidth / 2
+    readonly property real maximumWidth:
+        legend.parent ? Math.max(legend.minimumWidth, legend.parent.width * 0.7)
+                      : Theme.railWidthWide
+
+    width: Math.max(legend.minimumWidth,
+                    Math.min(legend.panelWidth, legend.maximumWidth))
     color: Theme.surface
     visible: x > -width
 
@@ -129,15 +175,56 @@ Rectangle {
         }
     }
 
-    // The edge against the plot. The rail's own seam is `borderStrong`; this
-    // one matches it, because it is the same kind of boundary.
-    Rectangle {
+    // The edge against the plot, which is also what widens the panel.
+    //
+    // The rail's own seam is `borderStrong` and this matches it, because it is
+    // the same kind of boundary -- but it is a grab target four pixels wide
+    // painted as a hairline, exactly as the window's own splitter is, so the
+    // seam reads the same until it is touched.
+    Item {
+        id: grip
+
+        objectName: "legendGrip"
+
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        width: Theme.borderWidth
-        color: Theme.borderStrong
+        width: Theme.splitHandleWidth
         z: 1
+
+        HoverHandler {
+            id: gripHover
+
+            cursorShape: Qt.SizeHorCursor
+        }
+
+        DragHandler {
+            id: gripDrag
+
+            target: null
+            yAxis.enabled: false
+            cursorShape: Qt.SizeHorCursor
+
+            /// The movement already applied. DragHandler reports the whole of
+            /// it since the press, and the width wants the step.
+            property real applied: 0
+
+            onActiveChanged: applied = 0
+            onActiveTranslationChanged: {
+                legend.resizeBy(activeTranslation.x - gripDrag.applied)
+                gripDrag.applied = activeTranslation.x
+            }
+        }
+
+        Rectangle {
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Theme.borderWidth
+            color: gripDrag.active ? Theme.accent
+                 : gripHover.hovered ? Theme.borderGuide
+                                     : Theme.borderStrong
+        }
     }
 
     ColumnLayout {
@@ -220,6 +307,10 @@ Rectangle {
                 readonly property bool picked:
                     legend.target && legend.target.highlighted === row.index
 
+                /// What this line is called, whole.
+                readonly property string label:
+                    legend.plot ? legend.plot.seriesLabel(row.index) : ""
+
                 width: lines.width
                 height: Theme.treeRowHeight
 
@@ -271,12 +362,35 @@ Rectangle {
                         visible: !row.drawn
                     }
 
+                    // advanceWidth, not width: TextMetrics.width rounds down
+                    // to whole pixels and a Text elides the moment it is given
+                    // half a pixel less than it needs, which costs a whole
+                    // character and an ellipsis on top of it. The tree's
+                    // readout is measured the same way for the same reason.
+                    TextMetrics {
+                        id: whole
+
+                        font: name.font
+                        text: row.label
+                    }
+
                     Text {
                         id: name
 
+                        // A preferred width of one is what keeps this from
+                        // measuring itself: with fillWidth and no preferred
+                        // width a RowLayout asks the item how wide it would
+                        // like to be, which here depends on the text, which
+                        // below depends on the width. That is a binding loop,
+                        // and this application treats a QML warning as a build
+                        // failure.
                         Layout.fillWidth: true
+                        Layout.preferredWidth: 1
                         Layout.fillHeight: true
-                        text: legend.plot ? legend.plot.seriesLabel(row.index) : ""
+                        /// The path goes before the name does. See
+                        /// legend.withoutPath.
+                        text: whole.advanceWidth <= name.width
+                              ? row.label : legend.withoutPath(row.label)
                         font: Theme.monoSmall
                         color: row.picked ? Theme.textEmphasis
                              : row.drawn ? Theme.textPrimary : Theme.textDisabled
@@ -284,9 +398,10 @@ Rectangle {
                         verticalAlignment: Text.AlignVCenter
 
                         AppToolTip {
-                            shown: name.truncated && rowHover.hovered
+                            shown: rowHover.hovered
+                                   && (name.truncated || name.text !== row.label)
                             verbatim: true
-                            text: name.text
+                            text: row.label
                         }
                     }
                 }

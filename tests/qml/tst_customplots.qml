@@ -866,6 +866,180 @@ TestCase {
         compare(plot.seriesCount, 2)
     }
 
+    // --- the legend's own menu ---------------------------------------------
+
+    function test_the_line_menu_carries_no_blank_row() {
+        const win = openWindow()
+        win.addCustomTab()
+        select("/cube")
+        win.selectTab("plot")
+        waitForRendering(win.contentItem)
+
+        const legend = findAllOf(win.contentItem, "plotLegend")
+                       .filter((l) => l.offersCustom)[0]
+        const menu = legend.lineMenu
+        menu.series = 0
+
+        // Opened, because a Menu lays its rows out only when it is: the whole
+        // question is what the drawer looks like in front of a reader.
+        menu.popup()
+        tryVerify(() => menu.opened, 5000, "the drawer must open")
+        waitForRendering(win.contentItem)
+
+        // Nothing to refuse, so the row that would have said why takes no
+        // height at all. An invisible item is laid out as a full-height blank
+        // line otherwise, which is what the drawer was showing.
+        compare(legend.customRefusal(0), "")
+        compare(menu.count, 2)
+        verify(!menu.itemAt(1).visible, "there is nothing to explain")
+        compare(menu.itemAt(1).height, 0)
+        // ...and the drawer is exactly as tall as its one real row.
+        compare(menu.contentItem.contentHeight, menu.itemAt(0).height)
+        menu.close()
+
+        // ...and when there is, the row is there and says it, and the thing it
+        // is about is greyed rather than hidden.
+        AppController.postprocessModel.enabled = true
+        AppController.postprocessModel.addStep("max")
+        AppController.postprocessModel.setArgument(2, "0")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        verify(AppController.postprocessActive)
+        menu.popup()
+        tryVerify(() => menu.opened, 5000, "the drawer must open again")
+        waitForRendering(win.contentItem)
+
+        verify(menu.itemAt(1).visible, "the reason must be there")
+        verify(menu.itemAt(1).height > 0)
+        verify(!menu.itemAt(0).enabled, "and the option greyed out")
+        verify(menu.itemAt(1).text.indexOf("post-processed") >= 0)
+        menu.close()
+
+        AppController.postprocessModel.enabled = false
+        settleReads()
+    }
+
+    function test_an_alias_is_what_the_legend_calls_the_line() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        const alias = findAllOf(view, "entryAlias")[0]
+        verify(alias, "the card must offer a name")
+        compare(alias.text, "")
+
+        alias.forceActiveFocus()
+        alias.text = "morning"
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(plot.seriesLabel(0), "morning")
+        // The slice is what is actually read, so the box above still holds it.
+        compare(findAllOf(view, "entryBox")[0].text, "/series/a[:]")
+        compare(plot.pointCount, 64)
+    }
+
+    function test_the_scaling_row_is_only_there_when_it_decides_something() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        // One line, so it is the axis's own length: align and stretch put the
+        // points in the same places and there is nothing to choose.
+        compare(findAllOf(view, "scalingAlign").filter((r) => r.visible).length, 0)
+
+        // A second line half as long, and the question means something.
+        plot.addExpression("/series/half[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const shown = findAllOf(view, "scalingAlign").filter((r) => r.visible)
+        compare(shown.length, 1)
+        verify(shown[0].checked, "align is where a line starts")
+
+        const stretch = findAllOf(view, "scalingStretch").filter((r) => r.visible)
+        compare(stretch.length, 1)
+        mouseClick(stretch[0])
+        waitForRendering(win.contentItem)
+        compare(plot.data(plot.index(1, 0), CustomPlot.ScalingRole),
+                CustomPlot.Stretch)
+    }
+
+    function test_a_legend_name_loses_its_path_before_its_name() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/group/nested/leaf[:]")
+        settleReads()
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        surface.legendOpen = true
+        waitForRendering(win.contentItem)
+
+        const legend = findAllOf(view, "plotLegend")[0]
+        compare(legend.width, Theme.railWidth)
+
+        // The group a line sits in is usually the same for every line in the
+        // list, so it is the part that carries no information and the part to
+        // lose. What is left keeps the name and the subscript.
+        compare(legend.withoutPath("/group/nested/leaf[:]"), "…/leaf[:]")
+        // Nothing to drop when there is no path in front of the name.
+        compare(legend.withoutPath("[4,_,_,2]"), "[4,_,_,2]")
+        compare(legend.withoutPath("/leaf[:]"), "/leaf[:]")
+    }
+
+    function test_the_legend_can_be_made_wider() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        AppController.customPlots.plotAt(0).addExpression("/series/a[:]")
+        settleReads()
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        surface.legendOpen = true
+        waitForRendering(win.contentItem)
+
+        const legend = findAllOf(view, "plotLegend")[0]
+        const grip = findAllOf(legend, "legendGrip")[0]
+        verify(grip, "the edge must be grabbable")
+        compare(legend.width, Theme.railWidth)
+
+        // A legend lists slices, and a slice is as long as the path naming it.
+        legend.resizeBy(120)
+        compare(legend.width, Theme.railWidth + 120)
+        // The graph starts where the legend stops, so widening it moves the
+        // picture rather than covering it.
+        compare(surface.contentLeft, legend.width)
+
+        // Dragged past either end it stops rather than running on.
+        legend.resizeBy(-10000)
+        compare(legend.width, legend.minimumWidth)
+        legend.resizeBy(10000)
+        compare(legend.width, legend.maximumWidth)
+    }
+
     function test_the_footer_counts_entries_and_datapoints() {
         const win = openWindow()
         win.addCustomTab()

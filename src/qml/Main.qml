@@ -435,14 +435,6 @@ ApplicationWindow {
                         ink: Theme.accent
                         enabled: AppController.hasFile
                         onClicked: window.addCustomTab()
-
-                        AppToolTip {
-                            shown: parent.hovered
-                            text: AppController.hasFile
-                                  ? qsTr("a new plot, for lines from anywhere " +
-                                         "in this file")
-                                  : qsTr("open a file first")
-                        }
                     }
                 }
             }

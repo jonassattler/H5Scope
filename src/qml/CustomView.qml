@@ -267,10 +267,16 @@ Rectangle {
                     rangeDrivesX: root.plot
                                   && root.plot.xMode === CustomPlot.Range
                     dataLength: root.plot ? root.plot.sourcePointCount : 1
+                    // Three axes, one apiece. A time base runs between its own
+                    // ends; a stated range runs where it was stated to; and
+                    // the index runs 0 to the longest line drawn, which is
+                    // what "index" means and is not whatever range the reader
+                    // stated before they switched back to it.
                     axisMinX: internal.againstDataset ? root.plot.xMinimum
-                                                      : xAxis.minimum
+                            : internal.statedRange ? xAxis.minimum : 0
                     axisMaxX: internal.againstDataset ? root.plot.xMaximum
-                                                      : xAxis.maximum
+                            : internal.statedRange ? xAxis.maximum
+                                                   : plotSurface.dataLength
 
                     idleReason: {
                         if (!root.plot)
@@ -355,6 +361,8 @@ Rectangle {
 
         readonly property bool againstDataset:
             root.plot && root.plot.xMode === CustomPlot.Dataset
+        readonly property bool statedRange:
+            root.plot && root.plot.xMode === CustomPlot.Range
 
         function checkName() {
             if (!root.plot || root.plotIndex < 0) {

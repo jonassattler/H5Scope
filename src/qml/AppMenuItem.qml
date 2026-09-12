@@ -87,6 +87,12 @@ MenuItem {
     }
 
     implicitHeight: Theme.tinyControlHeight
+    // A drawer lays its rows out with a ListView over its own content model,
+    // and that model does not skip a row for being invisible: it lays out a
+    // full-height item with nothing drawn in it, which is a blank line the
+    // reader reads as a broken entry and tries to press. Height is what
+    // actually takes a row out.
+    height: control.visible ? control.implicitHeight : 0
     // Padding, the mark gutter, the two RowLayout gaps, and the two columns.
     implicitWidth: Theme.gapL * 2 + Theme.menuMarkWidth + Theme.gapL * 2
                    + control.measured(labelMetrics) + control.trailingWidth

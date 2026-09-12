@@ -217,6 +217,45 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     }
 }
 
+TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its slice",
+                 "[custom]")
+{
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+
+    // A slice says exactly what a line is and nothing about what it means,
+    // which is the right default and the wrong label on a plot of six.
+    CHECK(plot->seriesLabel(0) == QStringLiteral("/series/a[:]"));
+
+    plot->setAlias(0, QStringLiteral("morning"));
+    CHECK(plot->seriesLabel(0) == QStringLiteral("morning"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::AliasRole).toString()
+          == QStringLiteral("morning"));
+    // The other line is untouched, and so is what is actually read: the entry
+    // still holds the slice, because that is what the file is asked for.
+    CHECK(plot->seriesLabel(1) == QStringLiteral("/series/b[:]"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
+          == QStringLiteral("/series/a[:]"));
+    CHECK(plot->pointCount() == 128);
+
+    SECTION("an empty alias hands the slice back")
+    {
+        plot->setAlias(0, QStringLiteral("   "));
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/series/a[:]"));
+    }
+
+    SECTION("and it travels with a saved view")
+    {
+        REQUIRE(set()->saveView(QStringLiteral("named"), 0, {}).isEmpty());
+        const int target = set()->addPlot();
+        settleAll();
+        set()->restoreView(QStringLiteral("named"), target);
+        settleAll();
+        CHECK(set()->plotAt(target)->seriesLabel(0) == QStringLiteral("morning"));
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "a bare path is the whole of the dataset", "[custom]")
 {
     gui::CustomPlot* plot = tab();
@@ -295,6 +334,24 @@ TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is cho
         CHECK(line.first().x() == 10.0);
         CHECK(line.at(4).x() == 12.0);
         CHECK(line.at(4).y() == 4.0);
+    }
+
+    SECTION("going back to the index puts the points back on their own places")
+    {
+        // The surface stops pushing a start and a step down in index mode, so
+        // without this the last two it pushed would simply stay and "index"
+        // would draw whatever range the reader had stated before it.
+        plot->setXMode(gui::CustomPlot::Range);
+        plot->setXStart(10.0);
+        plot->setXStep(0.5);
+        REQUIRE(drawn(plot, 0).first().x() == 10.0);
+
+        plot->setXMode(gui::CustomPlot::Index);
+        const QList<QPointF> line = drawn(plot, 0);
+        REQUIRE(line.size() == 64);
+        CHECK(line.first().x() == 0.0);
+        CHECK(line.at(7).x() == 7.0);
+        CHECK(line.last().x() == 63.0);
     }
 
     SECTION("a time series dataset puts each point at that dataset's value")

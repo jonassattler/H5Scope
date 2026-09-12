@@ -35,6 +35,7 @@ SettingsPanel {
     /// The surface, which is what the range axis controls write to.
     property var surface
 
+
     title: qsTr("data settings")
 
     // --- the views -------------------------------------------------------
@@ -130,7 +131,15 @@ SettingsPanel {
                     id: viewLine
 
                     anchors.fill: parent
-                    anchors.margins: Theme.gapS
+                    anchors.leftMargin: Theme.gapS
+                    anchors.topMargin: Theme.gapS
+                    anchors.bottomMargin: Theme.gapS
+                    // Flush right, where every other rightmost control in this
+                    // panel is. A card inset on this side too would put its
+                    // cross eight pixels in from the crosses on the entry rows
+                    // below it, and two columns of the same glyph that nearly
+                    // line up read worse than one that does.
+                    anchors.rightMargin: 0
                     spacing: Theme.gapS
 
                     Text {
@@ -174,7 +183,6 @@ SettingsPanel {
                         glyph: "close"
                         ink: Theme.danger
                         bare: true
-                        hint: qsTr("forget this view")
                         onClicked: AppController.customPlots.removeView(
                                        viewRow.modelData)
                     }
@@ -286,40 +294,51 @@ SettingsPanel {
     SettingRow {
         label: qsTr("y axis")
 
-        Repeater {
-            id: entries
+        // A Column of its own, because SettingRow spaces its children at
+        // gapXS -- right for a caption under a control, too tight for a stack
+        // of cards to read as separate ones. The same arrangement the saved
+        // views above take.
+        Column {
+            width: parent.width
+            spacing: Theme.gapS
 
-            objectName: "entryRows"
+            Repeater {
+                id: entries
 
-            model: panel.plot
+                objectName: "entryRows"
 
-            // A plain wrapper taking the roles off the model and handing them
-            // down, because a required property cannot also be one the
-            // component already declares. PostprocessPanel does the same.
-            delegate: Item {
-                id: holder
+                model: panel.plot
 
-                required property int index
-                required property string expression
-                required property string error
-                required property int scaling
-                required property bool scalable
-                required property bool drawn
+                // A plain wrapper taking the roles off the model and handing
+                // them down, because a required property cannot also be one the
+                // component already declares. PostprocessPanel does the same.
+                delegate: Item {
+                    id: holder
 
-                width: parent ? parent.width : 0
-                implicitHeight: entry.implicitHeight
+                    required property int index
+                    required property string expression
+                    required property string alias
+                    required property string error
+                    required property int scaling
+                    required property bool scalable
+                    required property bool drawn
 
-                CustomEntryRow {
-                    id: entry
+                    width: parent ? parent.width : 0
+                    implicitHeight: entry.implicitHeight
 
-                    width: holder.width
-                    plot: panel.plot
-                    rowIndex: holder.index
-                    expression: holder.expression
-                    error: holder.error
-                    scaling: holder.scaling
-                    scalable: holder.scalable
-                    drawn: holder.drawn
+                    CustomEntryRow {
+                        id: entry
+
+                        width: holder.width
+                        plot: panel.plot
+                        rowIndex: holder.index
+                        expression: holder.expression
+                        alias: holder.alias
+                        error: holder.error
+                        scaling: holder.scaling
+                        scalable: holder.scalable
+                        drawn: holder.drawn
+                    }
                 }
             }
         }

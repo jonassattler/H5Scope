@@ -119,6 +119,9 @@ public:
 
     enum Roles {
         ExpressionRole = Qt::UserRole + 1,
+        /// What the reader would rather this line were called. Empty means the
+        /// expression speaks for itself.
+        AliasRole,
         /// Why this entry will not draw, or empty. What the row prints in
         /// amber under the box.
         ErrorRole,
@@ -184,6 +187,14 @@ public:
     /// see DatasetLookup.
     Q_INVOKABLE [[nodiscard]] QString entryError(int row, const QString& text) const;
     Q_INVOKABLE void setScaling(int row, Scaling scaling);
+    /// Give a line a name of its own.
+    ///
+    /// `/committed/morning[0:24]` says exactly what a line is and nothing
+    /// about what it means, which is the right default and the wrong label on
+    /// a plot of six of them. An alias replaces it in the legend and nowhere
+    /// else: the entry box still holds the slice, because that is what is
+    /// actually being read and the reader has to be able to edit it.
+    Q_INVOKABLE void setAlias(int row, const QString& text);
 
     // --- what the surface and the legend ask -------------------------------
     [[nodiscard]] QVariantList drawnSeries() const;
@@ -250,6 +261,8 @@ signals:
 private:
     struct Entry {
         QString expression;
+        /// What the legend calls it, when the expression will not do.
+        QString alias;
         Scaling scaling = Align;
         bool drawn = true;
 

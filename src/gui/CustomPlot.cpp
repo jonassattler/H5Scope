@@ -154,6 +154,8 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
     switch (role) {
     case ExpressionRole:
         return entry.expression;
+    case AliasRole:
+        return entry.alias;
     case ErrorRole:
         return entry.problem;
     case PointsRole:
@@ -174,6 +176,7 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
 QHash<int, QByteArray> CustomPlot::roleNames() const
 {
     return {{ExpressionRole, "expression"},
+            {AliasRole, "alias"},
             {ErrorRole, "error"},
             {PointsRole, "points"},
             {SourcePointsRole, "sourcePoints"},
@@ -197,6 +200,16 @@ void CustomPlot::setXMode(XMode mode)
         return;
     }
     xMode_ = mode;
+    // Index means the element's own position and nothing else: 0, 1, 2 ... A
+    // reader who stated a range, looked at it, and went back to the index
+    // would otherwise still be looking at that range, because the surface
+    // stops pushing a start and a step down here rather than pushing the
+    // default ones -- so the last two it pushed would simply stay.
+    if (xMode_ == Index) {
+        xStart_ = 0.0;
+        xStep_ = 1.0;
+        emit xAxisChanged();
+    }
     emit xSourceChanged();
     // Every entry's x moves, and in Dataset mode there is a line to read that
     // was not being read before.
@@ -378,6 +391,23 @@ QString CustomPlot::entryError(int row, const QString& text) const
     return expressionProblem(text, *lookup_);
 }
 
+void CustomPlot::setAlias(int row, const QString& text)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    const QString trimmed = text.trimmed();
+    if (entry.alias == trimmed) {
+        return;
+    }
+    entry.alias = trimmed;
+    touch(row, {AliasRole});
+    // Nothing is re-read and no point moves; the legend simply calls it
+    // something else. `changed` is what the legend listens to.
+    emit changed();
+}
+
 void CustomPlot::setScaling(int row, Scaling scaling)
 {
     if (row < 0 || row >= static_cast<int>(entries_.size())) {
@@ -482,7 +512,8 @@ QString CustomPlot::seriesLabel(int series) const
     if (series < 0 || series >= static_cast<int>(entries_.size())) {
         return {};
     }
-    return entries_[static_cast<std::size_t>(series)].expression;
+    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    return entry.alias.isEmpty() ? entry.expression : entry.alias;
 }
 
 bool CustomPlot::seriesVisible(int series) const
@@ -819,6 +850,7 @@ QVariantMap CustomPlot::state() const
     for (const Entry& entry : entries_) {
         rows.append(QVariantMap{
             {QStringLiteral("expression"), entry.expression},
+            {QStringLiteral("alias"), entry.alias},
             {QStringLiteral("scaling"),
              entry.scaling == Stretch ? QStringLiteral("stretch")
                                       : QStringLiteral("align")},
@@ -857,6 +889,7 @@ void CustomPlot::setState(const QVariantMap& state)
         }
         Entry entry;
         entry.expression = expression;
+        entry.alias = fields.value(QStringLiteral("alias")).toString().trimmed();
         entry.scaling =
             fields.value(QStringLiteral("scaling")).toString()
                     == QStringLiteral("stretch")

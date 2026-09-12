@@ -18,6 +18,13 @@ Button {
     property string glyph
     /// What it does, in words, for the tooltip. `text` stays empty: a Button
     /// with text would size itself around it.
+    ///
+    /// Left empty for a glyph that needs no explaining. A cross closes the
+    /// thing it is on and a plus adds one, and a tip that says so is a panel
+    /// popping up over the list every time the pointer crosses a row of them
+    /// -- which is what a reader moving down a column of crosses actually
+    /// experiences. Those take the hover slab above instead, which says
+    /// "this one" without covering the next three.
     property string hint
     /// Drawn as pressed while some state it toggles is on.
     property bool active: false
@@ -55,7 +62,13 @@ Button {
     transform: Translate { y: control.down ? 1 : 0 }
 
     background: Rectangle {
-        visible: !control.bare
+        // A bare glyph still takes the slab under the pointer.
+        //
+        // "Bare" is about how it rests, not about how it answers: a column of
+        // these down the side of a list should draw no rims at all until one
+        // is aimed at, and then it should be unmistakable which one. That
+        // matters most where there is no tooltip to confirm it -- see `hint`.
+        visible: !control.bare || control.hovered || control.down
         radius: Theme.radiusS
         color: control.active ? Theme.accent
              : control.down ? Theme.surfaceActive
@@ -73,7 +86,7 @@ Button {
     }
 
     AppToolTip {
-        shown: control.hovered
+        shown: control.hovered && control.hint !== ""
         text: control.hint
     }
 }
