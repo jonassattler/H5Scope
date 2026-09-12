@@ -7,6 +7,7 @@
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
 #include "gui/EmbeddedIcon.hpp"
+#include "gui/Rendering.hpp"
 #include "h5core/Error.hpp"
 
 #include <QCommandLineParser>
@@ -187,6 +188,12 @@ int main(int argc, char* argv[])
     } else {
         QGuiApplication::setWindowIcon(icon);
     }
+
+    // Four samples, for the one thing in here that is not a rectangle or a
+    // glyph: the plot's strokes are triangles and are rasterised by coverage,
+    // so a hairline across a true-black ground is a staircase without this.
+    // See gui::askForMultisampling. Before any window exists.
+    gui::askForMultisampling();
 
     // Basic is the only style with no platform-specific behaviour: it renders
     // identically on every OS, which is what makes the Theme singleton the

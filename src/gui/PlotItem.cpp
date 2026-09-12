@@ -172,6 +172,24 @@ void PlotItem::setLogY(bool on)
     }
 }
 
+void PlotItem::setMarkers(bool on)
+{
+    if (markers_ != on) {
+        markers_ = on;
+        Q_EMIT markersChanged();
+        update();
+    }
+}
+
+void PlotItem::setMarkerSize(double size)
+{
+    if (markerSize_ != size) {
+        markerSize_ = size;
+        Q_EMIT markersChanged();
+        update();
+    }
+}
+
 double PlotItem::yFraction(double value) const
 {
     return yFractionOf(value, view_);
@@ -280,9 +298,11 @@ void PlotItem::projectAll()
     const auto lines = static_cast<std::size_t>(lineCount());
     const PlotView view = viewForFrame();
     lineRuns_.assign(lines + 1, 0);
+    lineDecimated_.assign(lines, false);
     for (std::size_t line = 0; line < lines; ++line) {
         lineRuns_[line] = static_cast<int>(runs_.size());
-        projectLine(lines_[line], axis_, view, points_, runs_);
+        lineDecimated_[line] =
+            projectLine(lines_[line], axis_, view, points_, runs_).decimated;
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
 
@@ -315,15 +335,39 @@ QSGNode* PlotItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
     return software ? buildPainted(root) : buildGeometry(root);
 }
 
+bool PlotItem::marksLine(std::size_t line) const
+{
+    return markers_ && markerSize_ > 0.0 && !lineDecimated_[line];
+}
+
 QSGNode* PlotItem::buildGeometry(QSGNode* root)
 {
-    // One node, one draw call, one buffer. The strokes are chained into a
-    // single triangle strip, and every break in it -- between two runs of one
-    // line as much as between two lines -- is bridged by a pair of repeated
-    // vertices, which makes two triangles of no area that rasterise to nothing.
-    const auto runs = static_cast<int>(runs_.size());
+    // One node, one draw call, one buffer. Everything is chained into a single
+    // triangle strip, and every break in it -- between two runs of one line, or
+    // between a line and the next, or between two markers -- is bridged by a
+    // pair of repeated vertices, which makes two triangles of no area that
+    // rasterise to nothing.
+    //
+    // The count is worked out here rather than by building into a scratch
+    // buffer and measuring it, which would be a second copy of the vertex data
+    // at every size. It is exact because the two things that emit vertices
+    // both emit a fixed number: strokeRun two per station, markerAt
+    // kMarkerSides, and tests/test_plotprojection.cpp asserts both.
+    int marked = 0;
+    for (std::size_t line = 0; line < lines_.size(); ++line) {
+        if (!marksLine(line)) {
+            continue;
+        }
+        for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
+            marked += runs_[static_cast<std::size_t>(r)].count;
+        }
+    }
+
+    const int strips = static_cast<int>(runs_.size()) + marked;
     const int vertices =
-        runs > 0 ? 2 * static_cast<int>(points_.size()) + 2 * (runs - 1) : 0;
+        strips > 0 ? 2 * static_cast<int>(points_.size()) + kMarkerSides * marked
+                         + 2 * (strips - 1)
+                   : 0;
 
     if (root->childCount() == 0) {
         auto* fresh = new QSGGeometryNode;
@@ -377,6 +421,32 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
             started = true;
         }
     }
+
+    // The markers, after every line, so a dot is never drawn under a stroke it
+    // belongs to.
+    for (std::size_t line = 0; line < lines_.size(); ++line) {
+        if (!marksLine(line)) {
+            continue;
+        }
+        const Ink ink = inkFor(lines_[line]);
+        for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
+            const PlotRun& run = runs_[static_cast<std::size_t>(r)];
+            for (int i = 0; i < run.count; ++i) {
+                stroke_.clear();
+                markerAt(points_[static_cast<std::size_t>(run.first + i)],
+                         markerSize_ / 2.0, stroke_);
+                if (started) {
+                    vertex[at] = vertex[at - 1];
+                    ++at;
+                    place(stroke_.front(), ink);
+                }
+                for (const QPointF& point : stroke_) {
+                    place(point, ink);
+                }
+                started = true;
+            }
+        }
+    }
     // A run that produced no stroke would leave the tail of the buffer
     // unwritten, and an unwritten vertex is whatever the allocation happened to
     // hold. Collapse the strip onto its last real vertex rather than ship it.
@@ -417,6 +487,19 @@ QSGNode* PlotItem::buildPainted(QSGNode* root)
                 painter.drawPolyline(&points_[static_cast<std::size_t>(run.first)],
                                      run.count);
             }
+            if (!marksLine(line)) {
+                continue;
+            }
+            painter.setBrush(colour);
+            painter.setPen(Qt::NoPen);
+            for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
+                const PlotRun& run = runs_[static_cast<std::size_t>(r)];
+                for (int i = 0; i < run.count; ++i) {
+                    painter.drawEllipse(points_[static_cast<std::size_t>(run.first + i)],
+                                        markerSize_ / 2.0, markerSize_ / 2.0);
+                }
+            }
+            painter.setBrush(Qt::NoBrush);
         }
     }
 

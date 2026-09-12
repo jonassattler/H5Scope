@@ -69,6 +69,25 @@ class PlotItem : public QQuickItem
     Q_PROPERTY(double viewLow READ viewLow NOTIFY viewChanged FINAL)
     Q_PROPERTY(double viewHigh READ viewHigh NOTIFY viewChanged FINAL)
 
+    /// Punctuation on the line: a dot at every sample.
+    ///
+    /// Only where the line is drawn sample for sample. Once the envelope is
+    /// summarising, a drawn point is two samples out of a column of a thousand
+    /// and a dot on it would mark nothing -- so a decimated line carries no
+    /// markers however this is set, and zooming in is what brings them back.
+    Q_PROPERTY(bool markers READ markers WRITE setMarkers NOTIFY markersChanged FINAL)
+    /// How wide a marker is, across. Theme.plotMarkerSize.
+    Q_PROPERTY(double markerSize READ markerSize WRITE setMarkerSize NOTIFY
+                   markersChanged FINAL)
+
+    /// How far below the largest value a logarithmic axis reaches when the
+    /// data gives no floor, which it does not when the values reach zero.
+    ///
+    /// Exposed because the chrome has to put its ticks where the curve was
+    /// drawn, and the two therefore have to agree about where the bottom of
+    /// the axis is. The constant is shared from here rather than written twice.
+    Q_PROPERTY(double logDecades READ logDecades CONSTANT FINAL)
+
     /// Points projected for the last frame, over every line together.
     ///
     /// The count that travels. It does not depend on the machine, it is
@@ -134,6 +153,9 @@ public:
     [[nodiscard]] double yMin() const { return view_.yMin; }
     [[nodiscard]] double yMax() const { return view_.yMax; }
     [[nodiscard]] bool logY() const { return view_.logY; }
+    [[nodiscard]] bool markers() const { return markers_; }
+    [[nodiscard]] double markerSize() const { return markerSize_; }
+    [[nodiscard]] static double logDecades() { return kLogDecades; }
     [[nodiscard]] double viewLow() const { return valueAt(0.0); }
     [[nodiscard]] double viewHigh() const { return valueAt(1.0); }
     [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
@@ -144,9 +166,12 @@ public:
     void setYMin(double value);
     void setYMax(double value);
     void setLogY(bool on);
+    void setMarkers(bool on);
+    void setMarkerSize(double size);
 
 Q_SIGNALS:
     void viewChanged();
+    void markersChanged();
     /// Emitted after a frame's geometry has been built, so anything reading
     /// the counts above reports the frame on screen rather than the one before.
     void drew();
@@ -168,6 +193,9 @@ private:
     [[nodiscard]] PlotView viewForFrame() const;
     /// Project every line into points_ / runs_ / lineRuns_.
     void projectAll();
+    /// Whether line `line` carries markers this frame: asked for, given a
+    /// size, and drawn sample for sample rather than summarised.
+    [[nodiscard]] bool marksLine(std::size_t line) const;
     QSGNode* buildGeometry(QSGNode* root);
     QSGNode* buildPainted(QSGNode* root);
 
@@ -175,6 +203,8 @@ private:
     PlotAxis axis_;
     PlotView view_;
     Drawn drawn_ = Drawn::Nothing;
+    bool markers_ = false;
+    double markerSize_ = 4.0;
     int drawnPoints_ = 0;
     int drawnRuns_ = 0;
 
@@ -187,6 +217,9 @@ private:
     /// Where each line's runs start in runs_, with one past the end appended,
     /// so the drawing loops can find a line's strokes without searching.
     std::vector<int> lineRuns_;
+    /// Whether each line was summarised rather than drawn sample for sample,
+    /// which is what decides whether it carries markers.
+    std::vector<bool> lineDecimated_;
     std::vector<QPointF> stroke_;
 };
 

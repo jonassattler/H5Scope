@@ -135,25 +135,29 @@ double yFractionOf(double value, const PlotView& view)
     return (mapped - mapping.low) / (mapping.high - mapping.low);
 }
 
-int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
-                std::vector<QPointF>& points, std::vector<PlotRun>& runs)
+PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
+                          const PlotView& view, std::vector<QPointF>& points,
+                          std::vector<PlotRun>& runs)
 {
     const auto startRuns = static_cast<int>(runs.size());
+    const auto added = [&](bool decimated) {
+        return PlotProjected{static_cast<int>(runs.size()) - startRuns, decimated};
+    };
     if (line.values == nullptr || line.count <= 0) {
-        return 0;
+        return {};
     }
     const double w = view.width;
     const double h = view.height;
     if (!(w > 0.0) || !(h > 0.0)) {
-        return 0;
+        return {};
     }
     const double xSpan = view.xMax - view.xMin;
     if (!(xSpan > 0.0)) {
-        return 0;
+        return {};
     }
     const YMapping mapping = mappingFor(view);
     if (!mapping.usable) {
-        return 0;
+        return {};
     }
 
     // Everything below is arithmetic in double, and only the finished pixel
@@ -215,7 +219,7 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
             place(toX(x), toY(value));
         }
         closeRun();
-        return static_cast<int>(runs.size()) - startRuns;
+        return added(false);
     }
 
     // x is affine in the sample index, so the window can be turned back into a
@@ -234,7 +238,7 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
             std::swap(lowAt, highAt);
         }
         if (!std::isfinite(lowAt) || !std::isfinite(highAt)) {
-            return 0;
+            return {};
         }
         const double floorLow = std::floor(lowAt) - 1.0;
         const double ceilHigh = std::ceil(highAt) + 1.0;
@@ -246,7 +250,7 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
             std::clamp(ceilHigh, 0.0, static_cast<double>(count - 1)));
     }
     if (last < first) {
-        return 0;
+        return {};
     }
 
     const std::int64_t visible = last - first + 1;
@@ -268,7 +272,7 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
             place(toX(x0 + static_cast<double>(i) * dx), toY(value));
         }
         closeRun();
-        return static_cast<int>(runs.size()) - startRuns;
+        return added(false);
     }
 
     // The envelope. One column at a time: find the smallest and the largest
@@ -332,7 +336,7 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
         }
     }
     closeRun();
-    return static_cast<int>(runs.size()) - startRuns;
+    return added(true);
 }
 
 void strokeRun(const QPointF* points, int count, double width,
@@ -385,6 +389,35 @@ void strokeRun(const QPointF* points, int count, double width,
         const double oy = offset.y() * half;
         out.emplace_back(points[i].x() + ox, points[i].y() + oy);
         out.emplace_back(points[i].x() - ox, points[i].y() - oy);
+    }
+}
+
+void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out)
+{
+    // The ring, once. Eight sines and cosines per marker would be sixteen
+    // thousand of them on a line of two thousand points, which is a
+    // measurable fraction of a frame spent recomputing a constant.
+    static const std::vector<QPointF> ring = [] {
+        std::vector<QPointF> unit;
+        unit.reserve(kMarkerSides);
+        for (int i = 0; i < kMarkerSides; ++i) {
+            const double angle =
+                2.0 * M_PI * static_cast<double>(i) / static_cast<double>(kMarkerSides);
+            unit.emplace_back(std::cos(angle), std::sin(angle));
+        }
+        return unit;
+    }();
+
+    // Zig-zag around the ring -- 0, n-1, 1, n-2, ... -- which is the triangle
+    // strip of a convex polygon and is why a marker costs its own side count
+    // in vertices and not one more.
+    int low = 0;
+    int high = kMarkerSides - 1;
+    bool fromLow = true;
+    for (int i = 0; i < kMarkerSides; ++i) {
+        const QPointF& at = ring[static_cast<std::size_t>(fromLow ? low++ : high--)];
+        fromLow = !fromLow;
+        out.emplace_back(centre.x() + at.x() * radius, centre.y() + at.y() * radius);
     }
 }
 

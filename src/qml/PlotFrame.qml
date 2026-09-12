@@ -1,0 +1,330 @@
+// SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-License-Identifier: GPL-3.0-only
+
+import QtQuick
+import H5Scope.Backend
+
+/// The plot's frame: the gutters, the rules, the ticks and their labels, with
+/// the drawing surface inside them.
+///
+/// This is the half of a plotting library that is not the plotting. Qt Graphs
+/// drew it, and drawing it here is what the move off Qt Graphs costs -- about
+/// two hundred lines, against a library that could not put a logarithm on an
+/// axis, redrew a series to change its colour, and segfaulted at ten million
+/// points. The tick arithmetic was never Qt Graphs' anyway: niceStep() has been
+/// in PlotSurface since the day it turned out the library spaced its ticks from
+/// the range an axis *declares* rather than the range it is showing, so a
+/// zoomed-in axis kept the spacing of the whole dataset and printed one lonely
+/// tick.
+///
+/// One rule holds this file together: **a tick is drawn where the curve was
+/// drawn, or it is a lie**. The x axis is linear and the arithmetic is a
+/// subtraction, so that half is trivially true. The y axis may be logarithmic,
+/// and there the floor is not in the data -- a log axis whose values reach zero
+/// has to put its bottom somewhere -- so the constant that decides it comes out
+/// of the renderer, as PlotItem.logDecades, rather than being written here a
+/// second time. tst_views asserts that this file's yFraction() and the item's
+/// agree, because that is the one thing that could quietly drift.
+Item {
+    id: frame
+
+    /// The window being shown, in data coordinates. The surface's zoom and pan
+    /// arithmetic resolves to exactly these four numbers.
+    property real viewMinX: 0.0
+    property real viewMaxX: 1.0
+    property real viewMinY: 0.0
+    property real viewMaxY: 1.0
+    property bool logY: false
+
+    property bool showGrid: true
+    /// Roughly how many ticks an axis carries.
+    property int tickTarget: 8
+
+    /// Punctuation on the lines: a dot at every sample, where the line is
+    /// drawn sample for sample rather than summarised.
+    property bool markers: false
+    property real markerSize: Theme.plotMarkerSize
+
+    /// The item the lines are drawn on. Handed out so that whoever owns the
+    /// data can fill it; this file knows nothing about what is in it.
+    readonly property alias lines: plotLines
+
+    /// The plot area, in this item's coordinates: the frame minus the gutters
+    /// the labels live in. Every gesture is measured against it, because a
+    /// fraction of the whole item is not a fraction of the axis.
+    readonly property rect area: Qt.rect(
+        gutterLeft, gutterTop,
+        Math.max(1, frame.width - gutterLeft - gutterRight),
+        Math.max(1, frame.height - gutterTop - gutterBottom))
+
+    // Room where the labels actually are. These were once the other way round
+    // -- air on the top and right, nothing on the left and bottom -- which left
+    // the y axis with no width to print a number in and so with no numbers at
+    // all, and cut the x axis's first tick off at the frame. The right-hand
+    // gutter is room for half of the last x label, which sits centred on the
+    // axis's right end: at a gap's worth of margin half of it fell off.
+    readonly property int gutterLeft: Theme.plotLabelMargin
+    readonly property int gutterRight: Theme.s9
+    readonly property int gutterTop: Theme.gapS
+    /// Measured rather than stated, because it has to hold a line of type and
+    /// the token that used to stand here does not know how tall one is. Qt
+    /// Graphs drew its own labels inside its own margin and got away with
+    /// plotMargin exactly; drawn here, the same number put the last two pixels
+    /// of every x label past the bottom of the frame.
+    readonly property int gutterBottom: Math.ceil(tickMetrics.height) + Theme.gapS
+
+    TextMetrics {
+        id: tickMetrics
+
+        font: Theme.readout
+        text: "0.0"
+    }
+
+    // --- where a value sits ----------------------------------------------
+    /// The bottom and the top of the y axis, as values.
+    ///
+    /// The same as viewMinY and viewMaxY on a linear axis, and not the same on
+    /// a logarithmic one whose data reaches zero: there is no logarithm of
+    /// zero, so the axis takes a floor of `logDecades` below its top. The rule
+    /// is three lines and the constant is the renderer's, which is the only
+    /// part of it that could be got wrong in one place and not the other.
+    readonly property real axisHigh:
+        frame.logY ? Math.max(frame.viewMaxY, Number.MIN_VALUE) : frame.viewMaxY
+    readonly property real axisLow: {
+        if (!frame.logY)
+            return frame.viewMinY
+        return frame.viewMinY > 0 ? frame.viewMinY
+                                  : frame.axisHigh * Math.pow(10, -plotLines.logDecades)
+    }
+
+    /// Where `value` sits up the pane, as a fraction from the bottom.
+    function yFraction(value) {
+        if (!frame.logY) {
+            const span = frame.axisHigh - frame.axisLow
+            return span > 0 ? (value - frame.axisLow) / span : 0
+        }
+        const low = Math.log(frame.axisLow) / Math.LN10
+        const high = Math.log(frame.axisHigh) / Math.LN10
+        return high > low ? (Math.log(value) / Math.LN10 - low) / (high - low) : 0
+    }
+
+    /// ...and along it.
+    function xFraction(value) {
+        const span = frame.viewMaxX - frame.viewMinX
+        return span > 0 ? (value - frame.viewMinX) / span : 0
+    }
+
+    // --- which ticks ------------------------------------------------------
+    /// A round tick spacing giving roughly `target` ticks across `span`: 1, 2
+    /// or 5 times a power of ten, which is what every axis in every plotting
+    /// library settles on and what a reader can add up in their head.
+    function niceStep(span, target) {
+        if (!(span > 0))
+            return 0
+        const raw = span / Math.max(1, target)
+        const magnitude = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10))
+        const scaled = raw / magnitude
+        return magnitude * (scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10)
+    }
+
+    /// Enough decimals to tell two ticks apart, and no more: a span of 100
+    /// wants none, a span of a thousandth wants five. A fixed count prints
+    /// either noise or "0.0" all the way up the axis. Taken off the visible
+    /// span, so zooming in adds digits as the ticks close up.
+    function decimalsFor(span) {
+        const width = Math.abs(span)
+        if (!(width > 0))
+            return 0
+        return Math.max(0, Math.min(6,
+            Math.ceil(-Math.log(width) / Math.LN10) + 2))
+    }
+
+    /// The round values in `low`..`high`, stepping by `step`.
+    ///
+    /// Counted from a first tick rather than accumulated, because adding a
+    /// step to itself a hundred times is a hundred roundings and the last tick
+    /// comes out at 99.99999999999999. The ceiling on the count is not a
+    /// design choice -- it is what stops a span that has gone to zero or NaN
+    /// under a bad binding from asking for an unbounded Repeater.
+    function ticksBetween(low, high, step) {
+        const found = []
+        if (!(step > 0) || !(high > low))
+            return found
+        const first = Math.ceil(low / step)
+        for (let i = 0; i < 512; ++i) {
+            const value = (first + i) * step
+            if (value > high)
+                break
+            found.push(value)
+        }
+        return found
+    }
+
+    /// The decades in `low`..`high`, thinned so that a range of thirty of them
+    /// does not print thirty labels on top of one another.
+    function decadesBetween(low, high) {
+        const found = []
+        if (!(low > 0) || !(high > low))
+            return found
+        const first = Math.ceil(Math.log(low) / Math.LN10)
+        const last = Math.floor(Math.log(high) / Math.LN10)
+        const every = Math.max(1, Math.ceil((last - first + 1) / frame.tickTarget))
+        for (let d = first; d <= last; d += every)
+            found.push({ power: d, value: Math.pow(10, d) })
+        return found
+    }
+
+    /// One entry per tick, carrying where it goes as well as what it says.
+    ///
+    /// The position is computed here rather than in the delegate's binding so
+    /// that a tick depends on nothing but its own entry and the pane: a
+    /// delegate that reached back out for the view would be re-evaluated in
+    /// whatever order the bindings happened to settle in, and half a frame of
+    /// ticks drawn against the previous window is exactly the lie this file is
+    /// arranged to prevent.
+    readonly property var xTicks: {
+        const step = frame.niceStep(frame.viewMaxX - frame.viewMinX, frame.tickTarget)
+        const decimals = frame.decimalsFor(frame.viewMaxX - frame.viewMinX)
+        const values = frame.ticksBetween(frame.viewMinX, frame.viewMaxX, step)
+        const out = []
+        for (let i = 0; i < values.length; ++i) {
+            out.push({ at: frame.xFraction(values[i]),
+                       text: values[i].toFixed(decimals) })
+        }
+        return out
+    }
+
+    readonly property var yTicks: {
+        const out = []
+        if (frame.logY) {
+            const decades = frame.decadesBetween(frame.axisLow, frame.axisHigh)
+            for (let i = 0; i < decades.length; ++i) {
+                const power = decades[i].power
+                out.push({ at: frame.yFraction(decades[i].value),
+                           // Plain digits where they are short enough to read
+                           // at a glance, and a power everywhere else. A log
+                           // axis spanning six decades printing "0.000001" up
+                           // its side is an axis nobody reads.
+                           text: (power >= -3 && power <= 4)
+                                 ? decades[i].value.toString()
+                                 : "1e" + power })
+            }
+            return out
+        }
+        const step = frame.niceStep(frame.axisHigh - frame.axisLow, frame.tickTarget)
+        const decimals = frame.decimalsFor(frame.axisHigh - frame.axisLow)
+        const values = frame.ticksBetween(frame.axisLow, frame.axisHigh, step)
+        for (let i = 0; i < values.length; ++i) {
+            out.push({ at: frame.yFraction(values[i]),
+                       text: values[i].toFixed(decimals) })
+        }
+        return out
+    }
+
+    // --- the drawing ------------------------------------------------------
+    // A step stronger than a table's rules, for the same reason the table's own
+    // went up: this plot's ground is the inset, which is true black, and a
+    // hairline at line-1 against it is a line nobody can see. The axis rules go
+    // a step further again, so the frame reads as the frame.
+    Repeater {
+        model: frame.showGrid ? frame.yTicks : []
+
+        Rectangle {
+            required property var modelData
+
+            x: frame.area.x
+            y: Math.round(frame.area.y + (1 - modelData.at) * frame.area.height)
+            width: frame.area.width
+            height: Theme.hairline
+            color: Theme.borderStrong
+        }
+    }
+
+    Repeater {
+        model: frame.showGrid ? frame.xTicks : []
+
+        Rectangle {
+            required property var modelData
+
+            x: Math.round(frame.area.x + modelData.at * frame.area.width)
+            y: frame.area.y
+            width: Theme.hairline
+            height: frame.area.height
+            color: Theme.borderStrong
+        }
+    }
+
+    // The two rules the readings are read against, which are the frame itself.
+    Rectangle {
+        x: frame.area.x
+        y: frame.area.y
+        width: Theme.hairline
+        height: frame.area.height
+        color: Theme.borderGuide
+    }
+
+    Rectangle {
+        x: frame.area.x
+        y: frame.area.y + frame.area.height
+        width: frame.area.width
+        height: Theme.hairline
+        color: Theme.borderGuide
+    }
+
+    /// The lines. Clipped, so a zoomed-in stroke stops at the frame rather
+    /// than being drawn across the axis labels.
+    PlotItem {
+        id: plotLines
+
+        objectName: "plotLines"
+
+        x: frame.area.x
+        y: frame.area.y
+        width: frame.area.width
+        height: frame.area.height
+        clip: true
+
+        xMin: frame.viewMinX
+        xMax: frame.viewMaxX
+        yMin: frame.viewMinY
+        yMax: frame.viewMaxY
+        logY: frame.logY
+        markers: frame.markers
+        markerSize: frame.markerSize
+    }
+
+    // --- the labels -------------------------------------------------------
+    // Drawn last, so that nothing is drawn over a number. They sit in the
+    // gutters and never inside the pane, which is what the gutters are for.
+    Repeater {
+        model: frame.yTicks
+
+        Text {
+            required property var modelData
+
+            anchors.right: undefined
+            x: frame.area.x - width - Theme.gapS
+            y: Math.round(frame.area.y + (1 - modelData.at) * frame.area.height)
+               - height / 2
+            text: modelData.text
+            font: Theme.readout
+            color: Theme.textSecondary
+            horizontalAlignment: Text.AlignRight
+        }
+    }
+
+    Repeater {
+        model: frame.xTicks
+
+        Text {
+            required property var modelData
+
+            x: Math.round(frame.area.x + modelData.at * frame.area.width) - width / 2
+            y: frame.area.y + frame.area.height + Theme.s3
+            text: modelData.text
+            font: Theme.readout
+            color: Theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+        }
+    }
+}

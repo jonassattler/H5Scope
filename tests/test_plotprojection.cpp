@@ -923,3 +923,88 @@ TEST_CASE("a stroke of no width still has area", "[plot]")
     REQUIRE(stroke.size() == 4);
     CHECK(std::abs(stroke[0].y() - stroke[1].y()) > 0.0);
 }
+
+// --- markers ---------------------------------------------------------------
+
+TEST_CASE("a marker is exactly as many vertices as PlotItem sized room for",
+          "[plot]")
+{
+    // PlotItem works the vertex count out arithmetically rather than by
+    // building into a scratch buffer and measuring it, which would be a second
+    // copy of the vertex data at every size. That is only safe while the two
+    // things that emit vertices emit a fixed number each, so both are pinned
+    // here: this one and "every station of a stroke contributes exactly two".
+    std::vector<QPointF> out;
+    gui::markerAt(QPointF(10.0, 20.0), 2.0, out);
+    CHECK(out.size() == static_cast<std::size_t>(gui::kMarkerSides));
+
+    gui::markerAt(QPointF(0.0, 0.0), 2.0, out);
+    CHECK(out.size() == static_cast<std::size_t>(gui::kMarkerSides) * 2);
+}
+
+TEST_CASE("a marker is round and centred on its sample", "[plot]")
+{
+    // What it replaces was a QML Rectangle with a radius of half its width, so
+    // it has to read as a dot and not as a lozenge.
+    std::vector<QPointF> out;
+    gui::markerAt(QPointF(100.0, 50.0), 3.0, out);
+
+    REQUIRE(out.size() == static_cast<std::size_t>(gui::kMarkerSides));
+    double sumX = 0.0;
+    double sumY = 0.0;
+    for (const QPointF& vertex : out) {
+        CHECK(std::hypot(vertex.x() - 100.0, vertex.y() - 50.0) == Approx(3.0));
+        sumX += vertex.x();
+        sumY += vertex.y();
+    }
+    CHECK(sumX / static_cast<double>(out.size()) == Approx(100.0));
+    CHECK(sumY / static_cast<double>(out.size()) == Approx(50.0));
+}
+
+TEST_CASE("the projection says whether a point is a sample or a summary",
+          "[plot]")
+{
+    // Which is what decides whether a line carries markers. A dot on an
+    // envelope point marks two samples out of a column of a thousand, which
+    // says nothing and is not what the setting means.
+    std::vector<double> values(100000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sin(static_cast<double>(i) / 100.0);
+    }
+
+    std::vector<QPointF> points;
+    std::vector<gui::PlotRun> runs;
+
+    const gui::PlotProjected whole = gui::projectLine(
+        lineOver(values), gui::PlotAxis{}, paneOver(0.0, 100000.0, -1.0, 1.0), points,
+        runs);
+    CHECK(whole.decimated);
+    CHECK(whole.runs == 1);
+
+    points.clear();
+    runs.clear();
+    // Zoomed to twenty samples, which is fewer than the pane has columns.
+    const gui::PlotProjected close = gui::projectLine(
+        lineOver(values), gui::PlotAxis{}, paneOver(500.0, 520.0, -1.0, 1.0), points,
+        runs);
+    CHECK_FALSE(close.decimated);
+    CHECK(close.runs == 1);
+}
+
+TEST_CASE("a line drawn against a time base is never a summary", "[plot]")
+{
+    // It is drawn sample for sample by construction, so every point on it is a
+    // sample and every one of them can carry a marker.
+    const std::vector<double> times{0.0, 1.0, 2.0, 3.0};
+    const std::vector<double> values{1.0, 2.0, 3.0, 4.0};
+
+    gui::PlotAxis axis;
+    axis.values = times.data();
+    axis.count = static_cast<qsizetype>(times.size());
+
+    std::vector<QPointF> points;
+    std::vector<gui::PlotRun> runs;
+    const gui::PlotProjected drawn = gui::projectLine(
+        lineOver(values), axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
+    CHECK_FALSE(drawn.decimated);
+}

@@ -152,6 +152,20 @@ struct PlotRun {
     int count = 0;
 };
 
+/// What projecting one line produced.
+struct PlotProjected {
+    /// Strokes appended to `runs`.
+    int runs = 0;
+    /// Whether the envelope was used, which is to say whether a drawn point is
+    /// a sample or a summary of several.
+    ///
+    /// Markers are the reason this is reported. A marker is punctuation on a
+    /// line and it marks a *sample*; drawing one per envelope point would put
+    /// two dots in every pixel column, which says nothing and is not what the
+    /// setting means.
+    bool decimated = false;
+};
+
 /// Where sample `at` of `line` sits along x -- or NaN when it sits nowhere,
 /// which is a sample past the end of a time base or one whose x did not read.
 [[nodiscard]] double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at);
@@ -183,9 +197,9 @@ struct PlotRun {
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
 /// set of lines projects into one pair of buffers.
 ///
-/// Returns how many runs were added.
-int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
-                std::vector<QPointF>& points, std::vector<PlotRun>& runs);
+PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis,
+                          const PlotView& view, std::vector<QPointF>& points,
+                          std::vector<PlotRun>& runs);
 
 /// Expand `count` projected points into a triangle strip `width` pixels wide,
 /// appending two vertices per station to `out`.
@@ -203,5 +217,19 @@ int projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view
 /// have drawn anyway.
 void strokeRun(const QPointF* points, int count, double width,
                std::vector<QPointF>& out);
+
+/// How many sides a marker is drawn with.
+///
+/// A marker is four pixels across and the one it replaces was a QML Rectangle
+/// with a radius of half its width -- a circle. Eight sides is a circle at that
+/// size and six is a visible hexagon; the count is stated here because
+/// PlotItem sizes its vertex buffer from it, and a buffer sized from a
+/// different number than the one that fills it is a write past the end of a
+/// mapped range.
+inline constexpr int kMarkerSides = 8;
+
+/// Append one marker of `radius` at `centre`, as exactly kMarkerSides vertices
+/// in triangle-strip order.
+void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out);
 
 } // namespace gui

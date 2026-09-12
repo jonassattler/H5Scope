@@ -29,6 +29,7 @@
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
 #include "gui/H5Thread.hpp"
+#include "gui/Rendering.hpp"
 #include "h5core/Error.hpp"
 
 #include <QByteArray>
@@ -503,6 +504,7 @@ int main(int argc, char* argv[])
     // when it cannot rather than quietly producing the lesser picture.
     if (canRender()) {
         QQuickWindow::setSceneGraphBackend(QStringLiteral("rhi"));
+        gui::askForMultisampling();
     } else {
         // On stdout beside the pictures rather than on stderr: it is not a
         // failure, it is what this run produced.

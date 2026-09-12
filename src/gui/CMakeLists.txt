@@ -14,6 +14,7 @@ qt_add_library(gui STATIC
   DatasetPlot.cpp
   PlotItem.cpp
   PlotProjection.cpp
+  Rendering.cpp
   DatasetImage.cpp
   DatasetImageProvider.cpp
   TableLayout.cpp

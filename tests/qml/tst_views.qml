@@ -1679,20 +1679,143 @@ TestCase {
         }
         verify(vector > 20, "a vector's one line must be drawn")
 
-        // ...and nothing of the previous selection is drawn under it. Qt
-        // Graphs keeps what a series last drew, in the pixel coordinates of
-        // the axes it was drawn against, so a graph reused across selections
-        // shows both at once. This corner of the plot area belongs to neither
-        // the vector -- which runs corner to corner -- nor its axes.
+        // ...and nothing of the previous selection is drawn under it. This
+        // corner of the plot area belongs to neither the vector -- which runs
+        // corner to corner -- nor to anything the previous selection should
+        // have left behind.
+        //
+        // Counted in ink rather than in pixels-unlike-the-ground, which is a
+        // change this test needed when the plot stopped drawing through Qt
+        // Graphs. The grid is neutral and the lines are not, and the grid now
+        // reaches this corner: Qt Graphs drew its own grid only through the
+        // graphics API and the software renderer that headless runs get
+        // dropped it, so for as long as this suite has existed the corner was
+        // bare. It is not bare now, and a horizontal rule across it is 420
+        // pixels of perfectly correct drawing.
+        //
+        // What the check is actually about survives that intact. The failure
+        // it was written for was Qt Graphs keeping what a series last drew, in
+        // the pixel coordinates of the axes it was drawn against, so that a
+        // graph reused across selections showed both at once -- and a stale
+        // stroke is a stroke, drawn in whichever colour the cycle gave it.
+        // Ink in this corner means a line in it.
         let ghost = 0
         for (let gx = Math.round(line.width * 0.55); gx < line.width - 30; ++gx) {
             for (let gy = Math.round(line.height * 0.80); gy < line.height - 40; ++gy) {
-                if (line.pixel(gx, gy) !== Theme.surfaceInset)
+                const pixel = line.pixel(gx, gy)
+                if (Math.max(pixel.r, pixel.g, pixel.b)
+                    - Math.min(pixel.r, pixel.g, pixel.b) > 0.06)
                     ++ghost
             }
         }
         verify(ghost < 50,
                "the previous selection must not still be drawn: " + ghost + " px")
+    }
+
+    /// The grid is a control that draws something.
+    ///
+    /// It was not, for as long as the plot drew through Qt Graphs -- not
+    /// because the library refused, but because the library drew it only
+    /// through the graphics API and every headless run falls back to the
+    /// software renderer, which dropped it without a word. A note in
+    /// PlotSurface.qml said for a long time that Qt Graphs drew no grid at
+    /// all; docs/screenshots/plot.png, which is taken with the "rhi" backend
+    /// asked for by name, always had one in it.
+    ///
+    /// Now the rules are this application's own Rectangles and they draw
+    /// wherever anything draws, which is what makes this assertable here at
+    /// last.
+    function test_the_grid_draws_when_it_is_asked_to() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        // A band above the lines' own extent would be ideal and there is no
+        // such band -- the y axis is the extent of the values. So count the
+        // rules instead: a horizontal grid line is a row that is almost
+        // entirely not the ground, and a row a line crosses is a handful of
+        // pixels.
+        const rulesIn = (shot) => {
+            let found = 0
+            for (let y = 0; y < shot.height; ++y) {
+                let across = 0
+                for (let x = Math.round(shot.width * 0.55);
+                     x < shot.width - 40; x += 2) {
+                    if (shot.pixel(x, y) !== Theme.surfaceInset)
+                        ++across
+                }
+                if (across > (shot.width * 0.45 - 40) / 4)
+                    ++found
+            }
+            return found
+        }
+
+        plot.showGrid = true
+        waitForRendering(win.view)
+        const withGrid = rulesIn(grabImage(plot))
+        verify(withGrid >= 3,
+               "the grid must draw its rules: only " + withGrid + " found")
+
+        plot.showGrid = false
+        waitForRendering(win.view)
+        const without = rulesIn(grabImage(plot))
+        verify(without < withGrid,
+               "turning the grid off must take rules away: " + without
+               + " of " + withGrid + " left")
+
+        plot.showGrid = true
+    }
+
+    /// The ticks are drawn where the curve is.
+    ///
+    /// The chrome and the renderer each map a value to a place on the pane,
+    /// and they are two implementations of one rule -- three lines of it, and
+    /// on a logarithmic axis the floor those three lines choose is not in the
+    /// data at all. If they ever disagree the grid does not look wrong, it
+    /// looks authoritative and reads off by a pixel or by a decade.
+    ///
+    /// So the two are asserted against each other directly. The constant that
+    /// decides the log floor is shared -- PlotItem.logDecades -- and this is
+    /// what watches the arithmetic around it.
+    function test_the_ticks_agree_with_the_renderer_about_where_a_value_sits() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+
+        const agreesOver = (low, high) => {
+            for (let i = 0; i <= 10; ++i) {
+                const value = low + (high - low) * i / 10
+                const mine = lines.parent.yFraction(value)
+                const theirs = lines.yFraction(value)
+                verify(Math.abs(mine - theirs) < 1e-9,
+                       "the chrome puts " + value + " at " + mine
+                       + " and the renderer at " + theirs)
+            }
+        }
+
+        plot.logY = false
+        waitForRendering(win.view)
+        agreesOver(lines.yMin, lines.yMax)
+
+        plot.logY = true
+        waitForRendering(win.view)
+        agreesOver(lines.viewLow, lines.viewHigh)
+        // ...including below the floor a log axis had to invent, which is the
+        // part neither of them could have taken from the data.
+        agreesOver(lines.viewLow / 10, lines.viewHigh)
+
+        plot.logY = false
     }
 
     /// Start, step and stop: any two describe the x axis and the third follows

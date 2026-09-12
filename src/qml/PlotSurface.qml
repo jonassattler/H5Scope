@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import QtQuick
-import QtGraphs
 import H5Scope.Backend
 
 /// The Data Viewer's plot presentation: every row of the table as one line,
@@ -13,19 +12,29 @@ import H5Scope.Backend
 /// a rank-4 dataset plots on the same terms it browses.
 ///
 /// The points never cross into QML. AppController.datasetPlot samples the file
-/// and loads each series through fill(), which is one bulk replace; a graph
-/// filled a point at a time from JavaScript redraws itself on every one of
-/// them, and a dataset has thousands.
+/// and hands every drawn line to the PlotFrame's item in one call -- a pointer
+/// into the cache it already holds, plus the arithmetic that puts a sample at
+/// an x. Nothing is built on the way and nothing is copied.
 ///
-/// Qt Graphs rather than Qt Charts: Charts draws through the Qt Widgets
-/// graphics scene and asserts without a QApplication, which is the whole
-/// widgets stack pulled into a Qt Quick application to draw polylines.
+/// This surface used to draw through Qt Graphs, and most of what is below is
+/// older than that decision: the zoom and pan arithmetic, the two-of-three x
+/// axis, the colour cycles, the legend and the settings are all
+/// library-agnostic and none of them moved. What went is the graph itself, the
+/// Loader that existed only to defeat the library holding on to what a series
+/// last drew, and the re-fill that existed only to make a recoloured line
+/// redraw. See docs on PlotFrame.qml for what replaced the chrome.
 Item {
     id: surface
 
     // --- settings, written by PlotSettingsPanel -------------------------
     property bool showGrid: true
     property bool showMarkers: false
+    /// A logarithmic y axis: the first of the two things this plot could not do
+    /// while it drew through Qt Graphs. 2-D Qt Graphs ships a value axis, a bar
+    /// category axis and a date-time axis, and nothing logarithmic at any
+    /// price -- the only log axis in the module is a formatter for the 3-D
+    /// surfaces.
+    property bool logY: false
 
     /// Whether this is the presentation on screen. Reading `plot.hasData`
     /// samples the file, so every path into the plot is guarded by this: a
@@ -312,9 +321,7 @@ Item {
     /// The plot area, in this item's coordinates: the frame minus the margins
     /// the axis labels live in. Every gesture below is measured against it,
     /// because a fraction of the whole item is not a fraction of the axis.
-    readonly property rect plotRect: graphLoader.item
-        ? graphLoader.item.plotArea
-        : Qt.rect(0, 0, Math.max(width, 1), Math.max(height, 1))
+    readonly property rect plotRect: frame.area
 
     function resetView() {
         zoomX = 1.0
@@ -437,278 +444,79 @@ Item {
         color: Theme.surfaceInset
     }
 
-    // The graph is built rather than declared, and rebuilt rather than
-    // refilled.
+    // The frame and the lines. PlotFrame draws the gutters, the rules, the
+    // ticks and their labels; the item inside it draws the strokes.
     //
-    // Qt Graphs holds on to what a series last drew: reusing one for a new
-    // selection leaves the old path on screen underneath the new one, in the
-    // pixel coordinates of the axes it was drawn against, and neither
-    // emptying the series nor taking it out of the graph clears it. Nor can
-    // the series simply be destroyed -- removeSeries() keeps the raw pointer
-    // in a cleanup list it reads on its next polish, so a series freed before
-    // then takes the application down.
+    // What this replaced was a Loader holding a GraphsView, discarded and
+    // rebuilt on every change of selection. That was not a design -- it was
+    // Qt Graphs tax. A series there held on to what it last drew, so reusing
+    // one left the old path on screen underneath the new one in the pixel
+    // coordinates of the axes it had been drawn against, and neither emptying
+    // it nor taking it out of the graph cleared it; nor could it simply be
+    // destroyed, because removeSeries() kept the raw pointer in a cleanup list
+    // it read on its next polish. Throwing the whole view away answered both
+    // and cost a blank frame every time the reader picked a dataset.
     //
-    // Discarding the whole GraphsView answers both: the series go with their
-    // graph in one teardown, so nothing outlives the list that refers to it,
-    // and every selection draws onto a surface with no history. A graph is
-    // rebuilt when the reader picks a dataset, which is not a rate that needs
-    // optimising.
-    Loader {
-        id: graphLoader
+    // Nothing here retains anything. fill() hands the item a pointer to the
+    // lines and the item projects them; a new selection is a new set of
+    // pointers and the frame after it is the new picture.
+    PlotFrame {
+        id: frame
 
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
-        active: false
-        sourceComponent: graphComponent
+
+        viewMinX: surface.viewMinX
+        viewMaxX: surface.viewMaxX
+        viewMinY: surface.viewMinY
+        viewMaxY: surface.viewMaxY
+        logY: surface.logY
+        showGrid: surface.showGrid
+        tickTarget: surface.tickTarget
+
+        markers: surface.showMarkers
+        markerSize: Theme.plotMarkerSize
     }
 
-    Component {
-        id: graphComponent
-
-        GraphsView {
-            id: graph
-
-            antialiasing: true
-            // Room where the labels actually are. These were the other way
-            // round -- air on the top and right, nothing on the left and
-            // bottom -- which left the y axis with no width to print a number
-            // in and so with no numbers at all, and cut the x axis's first
-            // tick off at the frame.
-            marginTop: Theme.gapS
-            marginBottom: Theme.plotMargin
-            marginLeft: Theme.plotLabelMargin
-            // Room for half of the last x label, which sits centred on the
-            // axis's right end. The axis now runs to `stop` rather than to the
-            // last element, so that label is always drawn -- and at a gap's
-            // worth of margin half of it fell off the frame.
-            marginRight: Theme.s9
-
-            // The plot area is clipped so a zoomed-in line stops at the
-            // frame rather than being drawn across the axis labels.
-            clipPlotArea: true
-
-            axisX: ValueAxis {
-                id: xAxis
-
-                min: surface.axisMinX
-                max: surface.axisMaxX
-                zoom: surface.zoomX
-                pan: surface.panX
-                // A round spacing over what is on screen, always -- and
-                // pointedly *not* the reader's `step`. It used to be that,
-                // back when step was the distance between two ticks; it is now
-                // the distance between two elements, and a dataset of a
-                // thousand points at 0.25 apart would put a thousand labels
-                // along the axis on top of one another.
-                //
-                // Set explicitly rather than left to Qt Graphs because that
-                // computes its automatic spacing from the axis's *declared*
-                // range and not from the range it is showing, so a zoomed-in
-                // axis would keep the spacing of the whole dataset and print
-                // one lonely tick.
-                tickInterval: surface.niceStep(visualMax - visualMin,
-                                               surface.tickTarget)
-                // Enough decimals to tell two ticks apart, and no more -- the
-                // same rule the y axis below applies, and for the same reason.
-                // This axis used to print none at all, which was right only
-                // while it counted whole columns; a step the reader states can
-                // be a thousandth, and eight ticks all reading "0" is an axis
-                // that has stopped saying anything.
-                labelDecimals: {
-                    const span = Math.abs(visualMax - visualMin)
-                    if (!(span > 0))
-                        return 0
-                    return Math.max(0, Math.min(6,
-                        Math.ceil(-Math.log(span) / Math.LN10) + 2))
-                }
-                gridVisible: surface.showGrid
-                subGridVisible: false
-                titleVisible: false
-            }
-
-            axisY: ValueAxis {
-                id: yAxis
-
-                min: surface.lowerBound
-                max: surface.upperBound
-                zoom: surface.zoomY
-                pan: surface.panY
-                tickInterval: surface.niceStep(visualMax - visualMin,
-                                               surface.tickTarget)
-                // Enough decimals to tell two ticks apart, and no more: a span
-                // of 100 wants none, a span of a thousandth wants five. A fixed
-                // count prints either noise or "0.0" all the way up the axis.
-                // Taken off the *visible* span, so zooming in adds digits as
-                // the ticks close up.
-                labelDecimals: {
-                    const span = Math.abs(visualMax - visualMin)
-                    if (!(span > 0))
-                        return 2
-                    return Math.max(0, Math.min(6,
-                        Math.ceil(-Math.log(span) / Math.LN10) + 2))
-                }
-                gridVisible: surface.showGrid
-                subGridVisible: false
-                titleVisible: false
-            }
-
-            // Every colour and font the graph draws comes from Theme, like
-            // every other surface here; nothing is Qt's own palette.
-            theme: GraphsTheme {
-                colorScheme: Theme.dark ? GraphsTheme.ColorScheme.Dark
-                                        : GraphsTheme.ColorScheme.Light
-                backgroundColor: Theme.surfaceInset
-                plotAreaBackgroundColor: Theme.surfaceInset
-                labelTextColor: Theme.textSecondary
-                axisXLabelFont: Theme.readout
-                axisYLabelFont: Theme.readout
-                // A step stronger than a table's rules, for the same reason
-                // the table's own went up: this plot's ground is the inset,
-                // which is true black, and a hairline at line-1 against it is
-                // a line nobody can see. The axis rules go a step further
-                // again, so the frame reads as the frame.
-                //
-                // This used to say that Qt Graphs drew neither the grid nor
-                // the axis rules whatever these were set to, and that "grid
-                // lines" in the settings panel therefore turned on nothing.
-                // Against the pinned 6.11.1 that is not true. Both draw, in
-                // these colours, and docs/screenshots/plot.png is a picture of
-                // them: five horizontal rules and five vertical ones, under
-                // the labels the margins above make room for.
-                //
-                // What is true is that they draw only through the graphics
-                // API. The software renderer that the offscreen platform falls
-                // back to silently drops them -- which is why
-                // tools/make-screenshots.cpp asks for the "rhi" backend by
-                // name, and why nothing in the QML suite has ever been able to
-                // see them. A note written from a headless picture is a note
-                // about the renderer that took it.
-                grid.mainColor: Theme.borderStrong
-                grid.subColor: Theme.border
-                grid.mainWidth: Theme.borderWidth
-                axisX.mainColor: Theme.borderGuide
-                axisY.mainColor: Theme.borderGuide
-                axisX.mainWidth: Theme.borderWidth
-                axisY.mainWidth: Theme.borderWidth
-                axisX.labelTextColor: Theme.textSecondary
-                axisY.labelTextColor: Theme.textSecondary
-                // The fallback only. Every line is given its colour explicitly
-                // when the graph is built, from the cycle the reader picked;
-                // this is what a series would take if one ever were not.
-                seriesColors: [Theme.accent]
-            }
-
-            /// The table lines this graph was built for, in drawing order, so
-            /// restyle() can ask what each of its series is a line *of*.
-            property var drawn: []
-
-            /// Re-colour what is already drawn.
-            ///
-            /// Changing a colour or picking a line out does not change which
-            /// series exist, so it must not go through rebuild(): tearing the
-            /// GraphsView down and building another one blanks the view for a
-            /// frame, and a plot that flashes every time the reader clicks a
-            /// name in the legend is unusable for the one thing the legend is
-            /// for -- following a line through a bundle.
-            function restyle() {
-                for (let i = 0; i < graph.drawn.length; ++i) {
-                    const line = graph.seriesList[i]
-                    if (!line)
-                        continue
-                    line.color = surface.seriesColor(i, graph.drawn.length)
-                    line.opacity = surface.seriesOpacity(graph.drawn[i],
-                                                         graph.drawn.length)
-                    line.width = surface.seriesWidth(graph.drawn[i])
-                    // Qt Graphs redraws a series when its *points* change and
-                    // not when its colour does, so a recoloured line keeps its
-                    // old stroke on screen until something marks it dirty.
-                    // Re-filling is what marks it: the values come from
-                    // DatasetPlot's own cache, so this touches no file and
-                    // nothing is torn down -- which is the whole point of
-                    // restyling rather than rebuilding.
-                    surface.plot.fill(line, graph.drawn[i])
-                }
-            }
-
-            Component.onCompleted: {
-                // The lines the plot is drawing, by their index in the table.
-                // Not 0..seriesCount -- with a line unticked in the middle of
-                // the set, position and index are not the same number, and
-                // filling by position would draw the wrong rows under the
-                // right names.
-                graph.drawn = surface.plot.drawnSeries
-                for (let i = 0; i < graph.drawn.length; ++i) {
-                    const line = lineComponent.createObject(graph)
-                    line.pointDelegate = surface.showMarkers ? line.marker : null
-                    line.color = surface.seriesColor(i, graph.drawn.length)
-                    line.opacity = surface.seriesOpacity(graph.drawn[i],
-                                                         graph.drawn.length)
-                    line.width = surface.seriesWidth(graph.drawn[i])
-                    graph.addSeries(line)
-                    surface.plot.fill(line, graph.drawn[i])
-                }
-            }
+    /// Hand the lines over and dress them.
+    ///
+    /// One crossing into C++ for the whole plot rather than one per line, and
+    /// no points built on the way: see DatasetPlot::fill. The lines are
+    /// borrowed, so the model empties the item before it frees them -- which is
+    /// why there is nothing here to tear down.
+    function refill() {
+        if (!surface.drawable) {
+            frame.lines.clear()
+            return
         }
+        surface.plot.fill(frame.lines)
+        surface.restyle()
     }
 
-    Component {
-        id: lineComponent
-
-        LineSeries {
-            id: line
-
-            color: Theme.accent
-            width: Theme.plotLineWidth
-
-            /// A marker is punctuation on the line, not a second series, so it
-            /// takes the line's colour and the smallest size that still reads
-            /// as a dot.
-            ///
-            /// Declared *inside* the series rather than beside the graph,
-            /// which is the whole trick: a Component's instances resolve names
-            /// in the scope the Component was declared in, so `line` here is
-            /// this series and nothing else. One shared delegate outside had no
-            /// way to know which line it was drawing on -- Qt Graphs passes a
-            /// point's value and its selected state to the delegate, not its
-            /// series -- so every marker on every line came out the same
-            /// colour. Bound rather than assigned, so a marker follows its line
-            /// through a restyle for free.
-            property Component marker: Component {
-                Rectangle {
-                    width: Theme.plotMarkerSize
-                    height: Theme.plotMarkerSize
-                    radius: width / 2
-                    color: line.color
-                }
-            }
-        }
-    }
-
-    /// Discard the graph and build the next one. Toggling `active` is what
-    /// does it: the Loader destroys the item, and its series with it.
-    function rebuild() {
-        graphLoader.active = false
-        graphLoader.active = surface.drawable
-    }
-
-    /// Re-colour what is drawn, without discarding it. The two are separate
-    /// because they cost separate things: rebuild() re-reads the file and
-    /// blanks the view for a frame, restyle() assigns three properties per
-    /// line.
+    /// Re-colour what is drawn, without re-reading or re-filling it.
+    ///
+    /// The line this replaced said: "Qt Graphs redraws a series when its
+    /// points change and not when its colour does, so a recoloured line keeps
+    /// its old stroke on screen until something marks it dirty. Re-filling is
+    /// what marks it." Sixty-four crossings into C++, each building a couple of
+    /// thousand QPointF, to change a hue. A colour is now a property of the
+    /// line and the item redraws from the values it already has.
     function restyle() {
-        if (graphLoader.item)
-            graphLoader.item.restyle()
+        const drawn = surface.plot ? surface.plot.drawnSeries : []
+        for (let i = 0; i < drawn.length; ++i) {
+            frame.lines.setSeriesColor(i, surface.seriesColor(i, drawn.length))
+            frame.lines.setSeriesOpacity(i, surface.seriesOpacity(drawn[i],
+                                                                   drawn.length))
+            frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))
+        }
     }
 
-    Component.onCompleted: surface.rebuild()
-    onActiveChanged: Qt.callLater(surface.rebuild)
-    // A marker delegate is set on the series when it is created, so this one
-    // does have to go the long way round.
-    onShowMarkersChanged: Qt.callLater(surface.rebuild)
+    Component.onCompleted: surface.refill()
+    onActiveChanged: Qt.callLater(surface.refill)
 
-    // Colour and emphasis are assigned to the series rather than bound, because
-    // a series is a Qt Graphs object and not an Item; but which series exist
-    // has not changed, so these restyle rather than rebuild.
+    // Colour and emphasis are assigned to the lines rather than bound, because
+    // a line belongs to a C++ item and not to the QML object tree; but which
+    // lines exist has not changed, so these restyle rather than re-fill.
     onColorModeChanged: surface.restyle()
     onColorSingleChanged: surface.restyle()
     onColorRangeFromChanged: surface.restyle()
@@ -734,11 +542,11 @@ Item {
     Connections {
         target: surface.plot
         enabled: surface.active
-        function onChanged() { Qt.callLater(surface.rebuild) }
-        // The same lines, moved along x. Nothing has to be re-read and no
-        // series has appeared or gone away, so this re-fills what is already
-        // drawn rather than tearing the graph down and building another.
-        function onXAxisChanged() { Qt.callLater(surface.restyle) }
+        function onChanged() { Qt.callLater(surface.refill) }
+        // The same lines, moved along x. Nothing has to be re-read and no line
+        // has appeared or gone away -- but where a point sits along x is the
+        // axis the item was handed, so it has to be handed the new one.
+        function onXAxisChanged() { Qt.callLater(surface.refill) }
     }
 
     /// The properties a saved view keeps.
@@ -751,7 +559,7 @@ Item {
         "rangeStart", "rangeStep", "rangeStop", "locks",
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
-        "showGrid", "showMarkers"
+        "showGrid", "showMarkers", "logY"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -789,7 +597,7 @@ Item {
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
-                "showGrid", "showMarkers", "highlighted",
+                "showGrid", "showMarkers", "logY", "highlighted",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
