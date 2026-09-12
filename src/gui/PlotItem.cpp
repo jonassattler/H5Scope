@@ -223,48 +223,107 @@ double PlotItem::xAt(double fraction) const
     return view_.xMin + fraction * (view_.xMax - view_.xMin);
 }
 
-QVariantMap PlotItem::sampleNear(int index, double x) const
+QVariantMap PlotItem::nearestSample(double px, double py) const
 {
     QVariantMap answer;
     answer.insert(QStringLiteral("valid"), false);
-    if (index < 0 || index >= lineCount()) {
-        return answer;
-    }
-    const PlotLine& line = lines_[static_cast<std::size_t>(index)];
-    if (line.values == nullptr || line.count <= 0) {
-        return answer;
-    }
 
-    // The nearest drawable sample, searched rather than solved: a time base
-    // need not be monotonic, and a search that assumed it was would report a
-    // reading from the wrong end of the line. A plot holds a couple of thousand
-    // points per line and this runs on a pointer move, so the loop costs less
-    // than the arithmetic that would replace it.
+    const double w = width();
+    const double h = height();
+    const double xSpan = view_.xMax - view_.xMin;
+    if (!(w > 0.0) || !(h > 0.0) || !(xSpan > 0.0) || lines_.empty()) {
+        return answer;
+    }
+    const double wanted = view_.xMin + px / w * xSpan;
+
     double bestDistance = std::numeric_limits<double>::infinity();
+    int bestLine = -1;
     double bestX = 0.0;
     double bestY = 0.0;
-    for (qsizetype i = 0; i < line.count; ++i) {
-        const double value = line.values[i];
-        if (!drawable(value, view_.logY)) {
-            continue;
-        }
-        const double at = xOf(line, axis_, i);
-        if (!std::isfinite(at)) {
-            continue;
-        }
-        const double distance = std::abs(at - x);
+    double bestPx = 0.0;
+    double bestPy = 0.0;
+
+    const auto consider = [&](int index, qsizetype at, double x, double value) {
+        const double sx = (x - view_.xMin) / xSpan * w;
+        const double sy = h - yFractionOf(value, view_) * h;
+        const double distance = (sx - px) * (sx - px) + (sy - py) * (sy - py);
         if (distance < bestDistance) {
             bestDistance = distance;
-            bestX = at;
+            bestLine = index;
+            bestX = x;
             bestY = value;
+            bestPx = sx;
+            bestPy = sy;
+        }
+        (void)at;
+    };
+
+    for (int index = 0; index < lineCount(); ++index) {
+        const PlotLine& line = lines_[static_cast<std::size_t>(index)];
+        if (line.values == nullptr || line.count <= 0) {
+            continue;
+        }
+
+        if (axis_.explicitX() || !(std::abs(line.positionStep * axis_.step) > 0.0)) {
+            // A time base need not be monotonic, so there is no index to solve
+            // for and the line is searched. Affordable because a line drawn
+            // against one is a custom plot entry, and those are thinned on the
+            // way out of the file like everything else.
+            for (qsizetype i = 0; i < line.count; ++i) {
+                const double value = line.values[i];
+                if (!drawable(value, view_.logY)) {
+                    continue;
+                }
+                const double x = xOf(line, axis_, i);
+                if (std::isfinite(x)) {
+                    consider(index, i, x, value);
+                }
+            }
+            continue;
+        }
+
+        // x is affine in the index, so the nearest one is arithmetic.
+        const double x0 = axis_.start + line.positionStart * axis_.step;
+        const double dx = line.positionStep * axis_.step;
+        const double exact = (wanted - x0) / dx;
+        if (!std::isfinite(exact)) {
+            continue;
+        }
+        const auto centre = static_cast<qsizetype>(
+            std::clamp(std::llround(exact), 0LL, static_cast<long long>(line.count - 1)));
+
+        // Outward from there until a drawable sample turns up. A gap wider than
+        // this is a gap the crosshair declines to reach across, which is the
+        // same answer the line itself gives: there is nothing drawn there.
+        constexpr qsizetype kReach = 64;
+        for (qsizetype step = 0; step <= kReach; ++step) {
+            bool found = false;
+            for (const qsizetype at : {centre - step, centre + step}) {
+                if (at < 0 || at >= line.count) {
+                    continue;
+                }
+                const double value = line.values[at];
+                if (!drawable(value, view_.logY)) {
+                    continue;
+                }
+                consider(index, at, xOf(line, axis_, at), value);
+                found = true;
+            }
+            if (found) {
+                break;
+            }
         }
     }
-    if (!std::isfinite(bestDistance)) {
+
+    if (bestLine < 0) {
         return answer;
     }
     answer.insert(QStringLiteral("valid"), true);
+    answer.insert(QStringLiteral("line"), bestLine);
     answer.insert(QStringLiteral("x"), bestX);
     answer.insert(QStringLiteral("y"), bestY);
+    answer.insert(QStringLiteral("px"), bestPx);
+    answer.insert(QStringLiteral("py"), bestPy);
     return answer;
 }
 

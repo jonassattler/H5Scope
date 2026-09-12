@@ -1970,6 +1970,117 @@ TestCase {
         compare(plot.rangeMaximum, undefined)
     }
 
+    /// The crosshair reads a sample, not a position.
+    ///
+    /// New with the renderer, and one of the two things the plot could not do
+    /// at all while it drew through Qt Graphs. It snaps: a plot is a picture of
+    /// measurements that were taken, and a readout of the space between two of
+    /// them is a reading of something nobody measured. The same argument the
+    /// time base makes about interpolating an x, and the gap makes about a
+    /// value that would not read.
+    function test_the_crosshair_reads_the_sample_under_the_pointer() {
+        verify(select("/compressed")) // 100 x 100, so x runs 0 .. 99
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+        const frame = lines.parent
+
+        // Nothing until the pointer is over the pane.
+        verify(!frame.reading.valid,
+               "there must be no reading before anything is pointed at")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(frame.reading.valid, "pointing at the plot must produce a reading")
+
+        // Snapped. The default axis is the element's own index, so a reading
+        // that landed on a sample is a whole number and one between two of them
+        // is not.
+        compare(frame.reading.x, Math.round(frame.reading.x))
+        verify(frame.reading.x >= 0 && frame.reading.x <= 99,
+               "the reading must be inside the data: x = " + frame.reading.x)
+        verify(frame.reading.line >= 0,
+               "the reading must say which line it came from")
+
+        // And it follows the pointer.
+        const wasAt = frame.reading.x
+        mouseMove(lines, Math.round(lines.width * 0.7),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(frame.reading.valid)
+        verify(frame.reading.x > wasAt,
+               "moving right must read further along x: " + wasAt + " -> "
+               + frame.reading.x)
+
+        // ...and it is drawn, not merely computed: two rules, a ring on the
+        // sample and a box with the numbers in it are all ink that was not on
+        // the pane before.
+        const busy = (shot) => {
+            let found = 0
+            for (let x = 0; x < shot.width; x += 2) {
+                for (let y = Theme.sliceBarHeight; y < shot.height; y += 2) {
+                    if (shot.pixel(x, y) !== Theme.surfaceInset)
+                        ++found
+                }
+            }
+            return found
+        }
+        const withCrosshair = busy(grabImage(lines.parent))
+
+        mouseMove(lines, -20, -20)
+        waitForRendering(win.view)
+        verify(!frame.reading.valid,
+               "the reading must go when the pointer leaves the pane")
+        verify(busy(grabImage(lines.parent)) < withCrosshair,
+               "the crosshair must leave with it")
+    }
+
+    /// A logarithmic y axis: the other thing the plot could not do. 2-D Qt
+    /// Graphs ships a value axis, a bar category axis and a date-time axis, and
+    /// the only logarithm in the module is a formatter for the 3-D surfaces.
+    function test_the_y_axis_can_be_logarithmic() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+
+        verify(!lines.logY)
+        const linearLow = lines.viewLow
+        const linearHigh = lines.viewHigh
+
+        plot.logY = true
+        waitForRendering(win.view)
+        verify(lines.logY, "the setting must reach the renderer")
+
+        // The decades are evenly spaced, which is the whole of what a log axis
+        // is: the middle of the pane is the geometric mean of its ends, not the
+        // arithmetic one.
+        const low = lines.viewLow
+        const high = lines.viewHigh
+        verify(low > 0, "a logarithmic axis cannot reach zero: " + low)
+        const middle = lines.valueAt(0.5)
+        fuzzyCompare(Math.log(middle),
+                     (Math.log(low) + Math.log(high)) / 2, 1e-6)
+        verify(Math.abs(middle - (low + high) / 2) > 1e-9,
+               "a logarithmic middle must not be the arithmetic one")
+
+        // ...and it is a different picture, not merely a different setting.
+        plot.logY = false
+        waitForRendering(win.view)
+        compare(lines.viewLow, linearLow)
+        compare(lines.viewHigh, linearHigh)
+    }
+
     function test_a_reversed_cycle_runs_the_other_way() {
         verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)

@@ -143,9 +143,17 @@ public:
     [[nodiscard]] Q_INVOKABLE double xFraction(double x) const;
     [[nodiscard]] Q_INVOKABLE double xAt(double fraction) const;
 
-    /// The sample of line `index` nearest to `x`, as { x, y, valid }, for the
-    /// crosshair to snap to. Empty when the line has no drawable sample there.
-    [[nodiscard]] Q_INVOKABLE QVariantMap sampleNear(int index, double x) const;
+    /// The drawn sample nearest to a point in this item, as
+    /// `{ valid, line, x, y, px, py }` -- the line's index in the handed-over
+    /// set, the sample in data coordinates, and where it was drawn.
+    ///
+    /// What the crosshair snaps to, and the reason snapping is done here
+    /// rather than in QML: the values never cross the boundary, so the only
+    /// thing on the other side is a pixel. It is also the only place that can
+    /// do it cheaply. x is affine in the sample index on every axis but a time
+    /// base, so the nearest index is arithmetic rather than a search, and the
+    /// whole answer costs one step per *line* instead of one per sample.
+    [[nodiscard]] Q_INVOKABLE QVariantMap nearestSample(double px, double py) const;
 
     [[nodiscard]] double xMin() const { return view_.xMin; }
     [[nodiscard]] double xMax() const { return view_.xMax; }

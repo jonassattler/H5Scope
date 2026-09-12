@@ -45,6 +45,20 @@ Item {
     property bool markers: false
     property real markerSize: Theme.plotMarkerSize
 
+    /// What the pointer is over, snapped to the nearest drawn sample:
+    /// `{ valid, line, x, y, px, py }`, or an invalid reading when the pointer
+    /// is elsewhere. Read by whoever wants to say what it is a reading *of* --
+    /// this file knows the numbers and not the names.
+    readonly property var reading: pointer.hovered
+        ? plotLines.nearestSample(pointer.point.position.x,
+                                  pointer.point.position.y)
+        : ({ valid: false })
+
+
+    /// What to call the line the reading came from. Supplied, because a line's
+    /// name belongs to whatever is being drawn and not to the drawing.
+    property var labelForLine: null
+
     /// The item the lines are drawn on. Handed out so that whoever owns the
     /// data can fill it; this file knows nothing about what is in it.
     readonly property alias lines: plotLines
@@ -291,6 +305,95 @@ Item {
         logY: frame.logY
         markers: frame.markers
         markerSize: frame.markerSize
+
+        // Inside the item the lines are in, so a pointer position is already
+        // in the coordinates nearestSample answers about.
+        HoverHandler {
+            id: pointer
+        }
+    }
+
+    // --- the reading under the pointer ------------------------------------
+    // A crosshair that snaps to a sample rather than following the pointer
+    // freely. A plot is a picture of measurements that were taken, and a
+    // readout of the space between two of them is a reading of something
+    // nobody measured -- the same argument the time base makes about
+    // interpolating an x, and the gap makes about a value that would not read.
+    //
+    // No setting turns this on. It exists only while the pointer is over the
+    // pane and is gone the moment it leaves, and a control for something that
+    // is only there while you point at it is a control nobody needs.
+    Rectangle {
+        visible: frame.reading.valid
+        x: frame.area.x
+        y: Math.round(frame.area.y + frame.reading.py)
+        width: frame.area.width
+        height: Theme.hairline
+        color: Theme.borderGuide
+    }
+
+    Rectangle {
+        visible: frame.reading.valid
+        x: Math.round(frame.area.x + frame.reading.px)
+        y: frame.area.y
+        width: Theme.hairline
+        height: frame.area.height
+        color: Theme.borderGuide
+    }
+
+    /// The sample itself, so the reader can see which one was taken.
+    Rectangle {
+        visible: frame.reading.valid
+        width: Theme.plotMarkerSize + Theme.borderWidthAccent
+        height: width
+        radius: width / 2
+        x: frame.area.x + frame.reading.px - width / 2
+        y: frame.area.y + frame.reading.py - height / 2
+        color: "transparent"
+        border.width: Theme.borderWidthAccent
+        border.color: Theme.accent
+    }
+
+    /// The numbers, in the corner the pointer is not in.
+    ///
+    /// Pinned to a corner rather than trailing the pointer: a label that
+    /// follows the cursor covers the part of the picture the reader moved the
+    /// cursor there to look at, and one that jumps out of the way is worse
+    /// again. Swapping sides at the middle keeps it out of the way without
+    /// ever moving while the reading is being read.
+    Rectangle {
+        id: readout
+
+        visible: frame.reading.valid
+        width: readoutText.implicitWidth + Theme.gapM * 2
+        height: readoutText.implicitHeight + Theme.gapS * 2
+        x: frame.reading.px > frame.area.width / 2
+           ? frame.area.x + Theme.gapM
+           : frame.area.x + frame.area.width - width - Theme.gapM
+        y: frame.area.y + Theme.gapM
+        color: Theme.surface
+        border.width: Theme.borderWidth
+        border.color: Theme.border
+
+        Text {
+            id: readoutText
+
+            anchors.centerIn: parent
+            font: Theme.readout
+            color: Theme.textPrimary
+            // Not elided and not wrapped: the box is sized to the text, so
+            // there is nothing here for check-elided-text to worry about.
+            text: {
+                if (!frame.reading.valid)
+                    return ""
+                const named = frame.labelForLine
+                              ? frame.labelForLine(frame.reading.line) : ""
+                const numbers = qsTr("x %1   y %2")
+                                .arg(frame.reading.x.toPrecision(6))
+                                .arg(frame.reading.y.toPrecision(6))
+                return named === "" ? numbers : named + "\n" + numbers
+            }
+        }
     }
 
     // --- the labels -------------------------------------------------------

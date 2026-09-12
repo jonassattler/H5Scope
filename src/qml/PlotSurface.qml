@@ -478,6 +478,19 @@ Item {
 
         markers: surface.showMarkers
         markerSize: Theme.plotMarkerSize
+
+        // What to call the line the crosshair landed on. The frame knows the
+        // numbers; only the thing being drawn knows the names, and the index
+        // it hands back is a position in the drawn set rather than a row of
+        // any table.
+        labelForLine: (position) => {
+            if (!surface.plot)
+                return ""
+            const drawn = surface.plot.drawnSeries
+            if (position < 0 || position >= drawn.length)
+                return ""
+            return surface.plot.seriesLabel(drawn[position])
+        }
     }
 
     /// Hand the lines over and dress them.
