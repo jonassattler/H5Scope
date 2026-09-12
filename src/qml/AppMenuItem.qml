@@ -38,6 +38,15 @@ MenuItem {
     /// `checked` so the mark can follow a binding (Theme.dark, the current tab)
     /// that triggering the row would otherwise overwrite.
     property bool marked: false
+    /// What that bullet is drawn in.
+    ///
+    /// The reading ink by default, which is what a mark meaning "this is the
+    /// current one" wants. A row whose subject has a state of its own -- a
+    /// saved view, which says how much of the open file it can still draw --
+    /// sets a state colour here instead, and then owns the inverted case too:
+    /// the default below is the only thing that knows the row is hovered.
+    property color markInk:
+        control.highlighted ? Theme.accentText : Theme.textPrimary
 
     /// Whether this row opens a drawer of its own. Qt sets `subMenu` on the
     /// item it creates for a nested Menu, which is what the caret below reads.
@@ -87,6 +96,12 @@ MenuItem {
     }
 
     implicitHeight: Theme.tinyControlHeight
+    // A drawer lays its rows out with a ListView over its own content model,
+    // and that model does not skip a row for being invisible: it lays out a
+    // full-height item with nothing drawn in it, which is a blank line the
+    // reader reads as a broken entry and tries to press. Height is what
+    // actually takes a row out.
+    height: control.visible ? control.implicitHeight : 0
     // Padding, the mark gutter, the two RowLayout gaps, and the two columns.
     implicitWidth: Theme.gapL * 2 + Theme.menuMarkWidth + Theme.gapL * 2
                    + control.measured(labelMetrics) + control.trailingWidth
@@ -120,7 +135,7 @@ MenuItem {
             Layout.fillHeight: true
             text: control.marked ? "•" : ""
             font: Theme.readout
-            color: control.highlighted ? Theme.accentText : Theme.textPrimary
+            color: control.markInk
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }

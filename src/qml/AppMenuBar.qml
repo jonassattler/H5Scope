@@ -38,11 +38,23 @@ Rectangle {
     signal treeTagsRequested()
     signal aboutRequested()
     signal tabRequested(string id)
+    /// Make a custom plot, and show it.
+    signal newCustomPlotRequested()
 
     /// Which tab the window is showing, so View can mark it.
     property string currentTabId: ""
+    /// How many rows of the View drawer are the window's own fixed tabs. The
+    /// custom plots are inserted after them.
+    readonly property int fixedTabRows: 4
     /// Whether the tree draws its tags, so View can mark that too.
     property bool treeTagsVisible: true
+
+    /// The View drawer's row for custom plot `index`, or null. Exposed for the
+    /// QML suite: the rows are built by an Instantiator, so they are not
+    /// declared anywhere a test could name them.
+    function customTabRow(index) {
+        return customTabRows.objectAt(index)
+    }
 
     /// Exposed for the QML suite, which asserts the bar's shape.
     readonly property alias menus: menuStrip
@@ -118,6 +130,18 @@ Rectangle {
         shortcut: "Ctrl+4"
         enabled: AppController.datasetIsNumeric
         onTriggered: bar.tabRequested("image")
+    }
+
+    Action {
+        id: newCustomPlotAction
+
+        text: qsTr("New Custom Plot")
+        // No shortcut. The four view actions have one each because a reader
+        // flicks between them constantly; making a plot is a thing done once
+        // and then filled, and the "+" at the end of the strip is where the
+        // eye already is.
+        enabled: AppController.hasFile
+        onTriggered: bar.newCustomPlotRequested()
     }
 
     Action {
@@ -275,6 +299,8 @@ Rectangle {
         }
 
         AppMenu {
+            id: customTabs
+
             title: qsTr("View")
 
             AppMenuItem {
@@ -293,6 +319,42 @@ Rectangle {
                 action: imageTabAction
                 marked: bar.currentTabId === "image"
             }
+
+            // ...and the custom plots after the four, in the order the strip
+            // has them. Built by an Instantiator over the set, because these
+            // are the reader's rather than the window's and there is no
+            // Action to declare for a tab that did not exist a moment ago.
+            //
+            // A tab in a window of its own is left out, exactly as it is left
+            // out of the strip: the way to it is the window it is in.
+            Instantiator {
+                id: customTabRows
+
+                model: AppController.customPlots
+
+                // Straight after the four fixed rows, which are always the
+                // first four items of this drawer. Counted from the front
+                // rather than from the back: what follows the custom tabs is
+                // eight more rows and three separators, and an offset from the
+                // end would be wrong the next time one of them moved.
+                onObjectAdded: (index, object) =>
+                    customTabs.insertItem(bar.fixedTabRows + index, object)
+                onObjectRemoved: (index, object) => customTabs.removeItem(object)
+
+                delegate: AppMenuItem {
+                    required property int index
+                    required property string name
+                    required property bool detached
+
+                    text: name
+                    visible: !detached
+                    marked: bar.currentTabId === "custom:" + index
+                    onTriggered: bar.tabRequested("custom:" + index)
+                }
+            }
+
+            AppMenuSeparator {}
+            AppMenuItem { action: newCustomPlotAction }
             AppMenuSeparator {}
             AppMenuItem { action: expandAction }
             AppMenuItem { action: collapseAction }

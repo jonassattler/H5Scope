@@ -718,6 +718,91 @@ QString DatasetTableModel::cellLabel(int row, int column) const
     return labelFor(row, column, true, true);
 }
 
+namespace {
+
+/// One dimension's selection, written as a subscript.
+///
+/// The whole of it in order is ":", a contiguous ascending run is "a:b" with
+/// the exclusive upper bound this application writes everywhere, and anything
+/// else is the indices themselves, bracketed as numpy brackets its fancy
+/// indexing. Never approximated: what comes out selects exactly what went in,
+/// because the reader is going to paste it into a box that reads it back.
+[[nodiscard]] QString writeSelection(const std::vector<hsize_t>& indices,
+                                     hsize_t extent)
+{
+    if (indices.empty()) {
+        return QStringLiteral(":");
+    }
+    bool consecutive = true;
+    for (std::size_t i = 1; i < indices.size(); ++i) {
+        if (indices[i] != indices[i - 1] + 1) {
+            consecutive = false;
+            break;
+        }
+    }
+    if (consecutive) {
+        if (indices.front() == 0 && indices.size() == extent) {
+            return QStringLiteral(":");
+        }
+        return QStringLiteral("%1:%2")
+            .arg(indices.front())
+            .arg(indices.back() + 1);
+    }
+    QStringList written;
+    written.reserve(static_cast<qsizetype>(indices.size()));
+    for (const hsize_t index : indices) {
+        written << QString::number(index);
+    }
+    return QStringLiteral("[%1]").arg(written.join(QStringLiteral(",")));
+}
+
+} // namespace
+
+QString DatasetTableModel::lineExpression(int line, bool fromRows) const
+{
+    const std::size_t rank = axes_.rank();
+    if (!present_ || rank == 0 || sourcePath_.isEmpty()) {
+        return {};
+    }
+
+    const std::vector<std::size_t>& along =
+        fromRows ? axes_.xDims() : axes_.yDims();
+
+    // More than one dimension with something to run along, and the line is the
+    // product of them rather than a slice of any one. See the header.
+    int running = 0;
+    for (const std::size_t d : along) {
+        if (axes_.layout().indices[d].size() > 1) {
+            ++running;
+        }
+    }
+    if (running > 1) {
+        return {};
+    }
+
+    const std::vector<hsize_t> coords =
+        fromRows ? axes_.coordinates(line, 0) : axes_.coordinates(0, line);
+    if (coords.size() != rank) {
+        return {};
+    }
+
+    const std::vector<hsize_t>& shape = info_.shape;
+    QStringList parts;
+    parts.reserve(static_cast<qsizetype>(rank));
+    for (std::size_t d = 0; d < rank; ++d) {
+        const bool runs =
+            std::find(along.begin(), along.end(), d) != along.end();
+        if (runs) {
+            parts << writeSelection(axes_.layout().indices[d],
+                                    d < shape.size() ? shape[d] : 0);
+        } else {
+            parts << QString::number(coords[d]);
+        }
+    }
+    return sourcePath_ + QStringLiteral("[") + parts.join(QStringLiteral(", "))
+           + QStringLiteral("]");
+}
+
 QHash<int, QByteArray> DatasetTableModel::roleNames() const
 {
     // QML's TableView addresses cells through the "display" role by default.

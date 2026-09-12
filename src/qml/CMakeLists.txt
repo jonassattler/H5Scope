@@ -25,6 +25,16 @@ qt_add_qml_module(appqml
     DataView.qml
     TableSurface.qml
     PlotSurface.qml
+    RangeAxis.qml
+    RangeAxisSetting.qml
+    CustomView.qml
+    CustomDataPanel.qml
+    CustomEntryRow.qml
+    AddToCustomMenu.qml
+    SavedViewsMenu.qml
+    CustomPlotWindow.qml
+    RestoreViewDialog.qml
+    CrowdedPlotDialog.qml
     ImageSurface.qml
     ViewFooter.qml
     SliceField.qml

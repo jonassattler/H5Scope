@@ -20,7 +20,7 @@ Item {
     id: icon
 
     /// "rotateLeft" | "rotateRight" | "flipHorizontal" | "flipVertical"
-    /// | "close" | "grip"
+    /// | "close" | "grip" | "plus" | "detach" | "attach"
     property string name
     property color color: Theme.textPrimary
     /// Stroke weight on the 24-unit grid; 2 is the system's line icon weight.
@@ -41,6 +41,9 @@ Item {
             case "flipVertical":   return flipVerticalIcon
             case "close":          return closeIcon
             case "grip":           return gripIcon
+            case "plus":           return plusIcon
+            case "detach":         return detachIcon
+            case "attach":         return attachIcon
             default:               return null
             }
         }
@@ -77,6 +80,165 @@ Item {
                 startX: 17 * icon.unit
                 startY: 7 * icon.unit
                 PathLine { x: 7 * icon.unit; y: 17 * icon.unit }
+            }
+        }
+    }
+
+    // The same two strokes as the close above, turned 45 degrees -- which is
+    // literally what a plus is, and drawing it that way is what keeps the two
+    // the same weight when they sit in the same column.
+    //
+    // Squared off rather than round-capped at the ends: a plus reads as a
+    // crosshair, and the round cap that softens a dismissal makes an add look
+    // like a smudge at 18 pixels.
+    //
+    // Drawn half again as heavy as the rest of the set, and for a reason about
+    // the shape rather than about any one control. Every other icon here
+    // encloses something -- a frame, three stacked rules, a cross whose arms
+    // meet at an angle the eye reads as mass. A plus is two strokes crossing
+    // at right angles and encloses nothing at all, so at the system's line
+    // weight it reads lighter than everything standing beside it: against the
+    // filled outline of a caret in the same strip it all but disappears.
+    //
+    // Drawn across four-fifths of the grid where the close takes five-eighths
+    // of it. The close sits inside a 26px control with a slab to be inset
+    // from; this one stands on its own at 18, and at the close's inset the
+    // cross came out nine pixels across -- smaller than the shape readout it
+    // stands beside, which made it read as a speck rather than a control.
+    Component {
+        id: plusIcon
+
+        Shape {
+            id: plus
+
+            readonly property real weight: icon.thickness * 1.5 * icon.unit
+
+            preferredRendererType: Shape.CurveRenderer
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: plus.weight
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+
+                startX: 12 * icon.unit
+                startY: 4 * icon.unit
+                PathLine { x: 12 * icon.unit; y: 20 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: plus.weight
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+
+                startX: 4 * icon.unit
+                startY: 12 * icon.unit
+                PathLine { x: 20 * icon.unit; y: 12 * icon.unit }
+            }
+        }
+    }
+
+    // A frame with an arrow leaving it through the corner, which is what every
+    // application draws for "this opens somewhere else". The frame is drawn
+    // open on the side the arrow leaves by, so the two read as one gesture
+    // rather than as a box with a tick next to it.
+    Component {
+        id: detachIcon
+
+        Shape {
+            preferredRendererType: Shape.CurveRenderer
+
+            // The frame, missing its top-right corner.
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 14 * icon.unit
+                startY: 5 * icon.unit
+                PathLine { x: 5 * icon.unit;  y: 5 * icon.unit }
+                PathLine { x: 5 * icon.unit;  y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 10 * icon.unit }
+            }
+
+            // ...and the arrow going out through it.
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+
+                startX: 11 * icon.unit
+                startY: 13 * icon.unit
+                PathLine { x: 20 * icon.unit; y: 4 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 14 * icon.unit
+                startY: 4 * icon.unit
+                PathLine { x: 20 * icon.unit; y: 4 * icon.unit }
+                PathLine { x: 20 * icon.unit; y: 10 * icon.unit }
+            }
+        }
+    }
+
+    // The detach mark with its arrow turned round: the same frame, and the
+    // arrow coming back into it rather than leaving. A window put back is the
+    // exact opposite of a window torn off and the two controls sit in the same
+    // place, so one is the other reversed and nothing else.
+    Component {
+        id: attachIcon
+
+        Shape {
+            preferredRendererType: Shape.CurveRenderer
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 14 * icon.unit
+                startY: 5 * icon.unit
+                PathLine { x: 5 * icon.unit;  y: 5 * icon.unit }
+                PathLine { x: 5 * icon.unit;  y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 19 * icon.unit }
+                PathLine { x: 19 * icon.unit; y: 10 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+
+                startX: 20 * icon.unit
+                startY: 4 * icon.unit
+                PathLine { x: 11 * icon.unit; y: 13 * icon.unit }
+            }
+
+            ShapePath {
+                strokeColor: icon.color
+                strokeWidth: icon.thickness * icon.unit
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                startX: 17 * icon.unit
+                startY: 13 * icon.unit
+                PathLine { x: 11 * icon.unit; y: 13 * icon.unit }
+                PathLine { x: 11 * icon.unit; y: 7 * icon.unit }
             }
         }
     }

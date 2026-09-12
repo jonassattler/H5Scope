@@ -7,15 +7,27 @@ import QtQuick.Layouts
 import H5Scope.Backend
 
 /// How the lines are drawn, and which of them. The series settings write
-/// straight to AppController.datasetPlot, because drawing fewer lines means
-/// reading less of the file -- a question about the data rather than about the
-/// frame around it.
+/// straight to the plot object rather than to the surface, because drawing
+/// fewer lines means reading less of the file -- a question about the data
+/// rather than about the frame around it.
+///
+/// Two of the rows are about the *source* rather than about the drawing, and a
+/// custom plot tab switches both off. The x axis is one: a custom plot states
+/// its x in its own data panel, because there it is one of three things and
+/// not always three numbers. "One line per" is the other: a custom plot's
+/// entries are already single lines, so there is no table left to read either
+/// way round. Everything else -- the colours, the view, the drawing -- is the
+/// same question about either plot and is shared rather than copied.
 SettingsPanel {
     id: panel
 
     /// The PlotSurface these settings apply to.
     property var target
-    readonly property var plot: AppController.datasetPlot
+    readonly property var plot: panel.target ? panel.target.plot : null
+
+    /// Whether the two source rows are shown. See the note above.
+    property bool showXAxis: true
+    property bool showOrientation: true
 
     title: qsTr("plot settings")
 
@@ -28,109 +40,11 @@ SettingsPanel {
     // this row never has to know the rule.
     SettingRow {
         label: qsTr("x axis")
+        visible: panel.showXAxis
 
-        Repeater {
-            model: [
-                { key: "start", label: qsTr("start") },
-                { key: "step",  label: qsTr("step") },
-                { key: "stop",  label: qsTr("stop") }
-            ]
-
-            delegate: RowLayout {
-                id: axisRow
-
-                required property var modelData
-
-                readonly property bool pinned:
-                    panel.target ? panel.target.locked(modelData.key) : false
-                /// What the axis is actually using for this one, whether it was
-                /// typed or worked out. A computed box shows its result rather
-                /// than sitting blank, so the reader can see what locking two
-                /// of them did to the third.
-                readonly property real shown: {
-                    if (!panel.target)
-                        return 0
-                    const resolved = panel.target.resolved
-                    return resolved ? resolved[modelData.key] : 0
-                }
-
-                width: parent.width
-                spacing: Theme.gapS
-
-                Text {
-                    Layout.preferredWidth: Theme.s10
-                    text: axisRow.modelData.label
-                    font: Theme.microLabel
-                    color: axisRow.pinned ? Theme.textPrimary : Theme.textDisabled
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                RealField {
-                    Layout.fillWidth: true
-                    value: axisRow.shown
-                    // A value the reader typed is a value they meant, so
-                    // entering one is what pins it. Asking them to tick a box
-                    // first would be asking them to say the same thing twice.
-                    onCommitted: amount => {
-                        if (!panel.target)
-                            return
-                        panel.target[axisRow.modelData.key === "start" ? "rangeStart"
-                                   : axisRow.modelData.key === "step"  ? "rangeStep"
-                                                                       : "rangeStop"] = amount
-                        panel.target.lock(axisRow.modelData.key)
-                    }
-                }
-
-                AppCheckBox {
-                    text: qsTr("lock")
-                    checked: axisRow.pinned
-                    onToggled: {
-                        if (!panel.target)
-                            return
-                        // Pinning from the box takes the value on screen with
-                        // it, or the axis would jump to whatever was last in
-                        // the property behind an unpinned box.
-                        if (checked) {
-                            panel.target[axisRow.modelData.key === "start" ? "rangeStart"
-                                       : axisRow.modelData.key === "step"  ? "rangeStep"
-                                                                           : "rangeStop"] =
-                                axisRow.shown
-                        }
-                        panel.target.setLocked(axisRow.modelData.key, checked)
-                    }
-                }
-            }
-        }
-
-        // Two is the whole of the rule, so it is stated once, here, rather
-        // than left for the reader to infer from a box unticking itself. The
-        // default is stated too, because "0 : 1 : len(data)" is the sentence
-        // that says these numbers are the x values and not a viewport.
-        Text {
+        RangeAxisSetting {
             width: parent.width
-            text: {
-                if (!panel.target)
-                    return ""
-                if (!panel.target.rangeValid)
-                    return qsTr("A step above zero and a stop above the start; showing 0 : 1 : %1 meanwhile.")
-                           .arg(panel.target.dataLength)
-                if (panel.target.locks.length === 0)
-                    return qsTr("x = start + i x step, over %1 elements. Edit two; the third follows.")
-                           .arg(panel.target.dataLength)
-                return qsTr("Editing a third releases the one edited longest ago.")
-            }
-            font: Theme.caption
-            color: (panel.target && !panel.target.rangeValid) ? Theme.warning
-                                                              : Theme.textDisabled
-            wrapMode: Text.WordWrap
-        }
-
-        AppToolButton {
-            width: parent.width
-            text: qsTr("back to 0 : 1 : len(data)")
-            size: "sm"
-            enabled: panel.target ? panel.target.locks.length > 0 : false
-            onClicked: { if (panel.target) panel.target.locks = [] }
+            target: panel.target
         }
     }
 
@@ -393,6 +307,7 @@ SettingsPanel {
 
     SettingRow {
         label: qsTr("one line per")
+        visible: panel.showOrientation
 
         ButtonGroup { id: orientations }
 
@@ -402,14 +317,16 @@ SettingsPanel {
             AppRadioButton {
                 text: qsTr("row")
                 ButtonGroup.group: orientations
-                checked: panel.plot.seriesFromRows
+                checked: (panel.showOrientation && panel.plot)
+                         ? panel.plot.seriesFromRows : true
                 onClicked: panel.plot.seriesFromRows = true
             }
 
             AppRadioButton {
                 text: qsTr("column")
                 ButtonGroup.group: orientations
-                checked: !panel.plot.seriesFromRows
+                checked: (panel.showOrientation && panel.plot)
+                         ? !panel.plot.seriesFromRows : false
                 onClicked: panel.plot.seriesFromRows = false
             }
         }

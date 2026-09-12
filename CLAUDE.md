@@ -62,13 +62,27 @@ ctest --preset release
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `make-screenshots`, the CI scripts and the two design checks. |
-| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`) plus the Qt Quick Test QML suites under `tests/qml/`. |
+| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
 QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
 hang off it as `CONSTANT` properties; `DatasetPlot`, `DatasetImage`,
-`TableSetupModel` and `PostprocessModel` are `QML_UNCREATABLE` and obtained from
-it. `FileSystem` and `FocusRelease` are the other registered types.
+`TableSetupModel`, `PostprocessModel`, `CustomPlotSet` and `CustomPlot` are
+`QML_UNCREATABLE` and obtained from it. `FileSystem` and `FocusRelease` are the
+other registered types.
+
+The custom plot tabs are the one part of the UI that is **not** about the
+selection: `CustomPlotSet` holds the reader's own tabs, each a `CustomPlot` of
+1-D slices named as `path[subscript]` and drawn together. `CustomPlot` is
+deliberately shaped like `DatasetPlot` from the outside, which is what lets
+`PlotSurface.qml`, `PlotLegend.qml` and `PlotSettingsPanel.qml` draw either one
+without being forked. The tabs answer to the *file* rather than to the tree, so
+`AppController::openFile`/`closeFile` empty them — but the **saved views do
+not**: they are written to `QSettings` and outlive both the tabs and the file,
+and each reports how much of whatever is open it can still draw. That and the
+recent-files list are the only two things this program remembers between runs,
+and both are guarded by `QCoreApplication::organizationName().isEmpty()` so the
+tests and `make-screenshots` never touch the user's settings.
 
 ## Invariants worth knowing before editing
 

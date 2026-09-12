@@ -122,6 +122,14 @@ public:
     /// the ones around it.
     Q_INVOKABLE [[nodiscard]] QString seriesLabel(int series) const;
 
+    /// The same line written as a slice of the file: `/cube[1, 2, :]`.
+    ///
+    /// What the legend's "add to a custom plot" puts into the entry it makes.
+    /// Empty when the line is not a slice of one dimension, which is when the
+    /// table has spread two dimensions along the axis the lines run down; the
+    /// menu offers nothing rather than something close.
+    Q_INVOKABLE [[nodiscard]] QString seriesExpression(int series) const;
+
     /// Whether line `series` of the table is drawn.
     Q_INVOKABLE [[nodiscard]] bool seriesVisible(int series) const;
     Q_INVOKABLE void setSeriesVisible(int series, bool visible);

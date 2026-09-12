@@ -3199,13 +3199,15 @@ TestCase {
         const view = bar.menus.menuAt(1)
 
         // One row per tab, in the strip's own order -- Information, Table,
-        // Plot, Image -- then a rule, Expand, Collapse, Tree Tags, a rule,
-        // Dark.
-        compare(view.count, 10)
+        // Plot, Image -- then any custom plots, a rule, New Custom Plot, a
+        // rule, Expand, Collapse, Tree Tags, a rule, Dark. There are no custom
+        // plots here: init() re-opens the file, and that empties them.
+        compare(view.count, 12)
         compare(view.itemAt(0).text, "Information")
         compare(view.itemAt(1).text, "Table")
         compare(view.itemAt(2).text, "Plot")
         compare(view.itemAt(3).text, "Image")
+        compare(view.itemAt(5).text, "New Custom Plot")
 
         // The mark is a bullet the system draws in place of a checkmark, and
         // it follows the window rather than the row's own checked state --
@@ -3221,7 +3223,7 @@ TestCase {
 
         // The tag column's toggle is marked the same way, off the window's
         // own state rather than off the row.
-        const tags = view.itemAt(7)
+        const tags = view.itemAt(9)
         compare(tags.text, "Tree Tags")
         bar.treeTagsVisible = true
         verify(tags.marked)
@@ -3229,7 +3231,7 @@ TestCase {
         verify(!tags.marked)
 
         // Same for the theme toggle, which tracks the Theme singleton itself.
-        const dark = view.itemAt(9)
+        const dark = view.itemAt(11)
         compare(dark.text, "Dark Theme")
         compare(dark.marked, Theme.dark)
     }

@@ -36,6 +36,7 @@ import QtQuick
 ///     --accent-primary     accent             signal white
 ///     --accent-secondary   warning            hazard amber
 ///     --status-crit/info   danger / info
+///     (none)               positive           this project's own; see below
 ///     --s-1 .. --s-14      s1 .. s14          the 2px spacing grid
 ///     --r-0 .. --r-3       radiusNone, radiusS, radiusM, radiusL
 ///     --dur-1 .. --dur-5   dur1 .. dur5
@@ -73,8 +74,8 @@ QtObject {
     readonly property color n11: "#FFFFFF"
 
     // --- signal colours --------------------------------------------------
-    // White IS the accent. Amber, cyan and red are reserved for state and are
-    // never used decoratively.
+    // White IS the accent. Amber, cyan, red and green are reserved for state
+    // and are never used decoratively.
     readonly property color sig500:   "#FFFFFF"
     readonly property color sig200:   "#E4E8EA"
     readonly property color amber500: "#FFB000"
@@ -94,6 +95,30 @@ QtObject {
     /// See the note above the light scope below.
     readonly property color amber700: "#7A5200"
     readonly property color red700:   "#C42000"
+    /// A fourth state colour, and this project's own: the one that means a
+    /// control *adds* something.
+    ///
+    /// Upstream has no green because upstream has no such control. This one
+    /// does -- the plus a tree row offers while a custom plot is open, which
+    /// is the only affordance in the application that puts a dataset somewhere
+    /// rather than showing it -- and drawing it in the accent would have made
+    /// it one more piece of white chrome on a row that already carries two
+    /// inks. Amber would have said something was wrong with the row; cyan
+    /// already means "this is informational"; so the hue had to be new even
+    /// though the rule about spending colour on state did not change. It is
+    /// still state: it appears only where adding is possible.
+    ///
+    /// Green is the one signal hue that mirrors *exactly*, which is why this
+    /// pair is a solve rather than a concession. Amber and red have no deep
+    /// form that is still amber or red, so amber700 and red700 get as close as
+    /// the hue allows and no closer; green has both a bright form and a forest
+    /// one, so both scopes can be solved for the same number. These two are
+    /// pure green channel at 9.0:1 against their own ground -- 8.99 on black
+    /// and 9.01 on white, the difference being where the 8-bit channel lands
+    /// -- which sits between red's 5.9 and amber's 11.5 and so reads as one of
+    /// this set rather than louder than all of it.
+    readonly property color green500: "#00C500"
+    readonly property color green700: "#005600"
 
     // --- the light scope --------------------------------------------------
     //
@@ -269,14 +294,27 @@ QtObject {
     readonly property color rampVeil: dark ? Qt.rgba(0, 0, 0, 0.62)
                                            : Qt.rgba(1, 1, 1, 0.68)
 
-    // Amber, cyan and red are the only colours this system spends on state, so
-    // they are the ones that most have to carry in both themes. Each takes its
-    // bright form on black and its deep form on white; see amber700 and red700
-    // above for why the light forms are darker than upstream's, and cyan900 --
-    // which upstream does define -- for the one it already had.
+    // Amber, cyan, red and green are the only colours this system spends on
+    // state, so they are the ones that most have to carry in both themes. Each
+    // takes its bright form on black and its deep form on white; see amber700
+    // and red700 above for why the light forms are darker than upstream's, and
+    // cyan900 -- which upstream does define -- for the one it already had.
     readonly property color warning: dark ? amber500 : amber700
     readonly property color info:    dark ? cyan500 : cyan900
     readonly property color danger:  dark ? red500 : red700
+    /// What a control that adds something is drawn in. See green500 above.
+    readonly property color positive: dark ? green500 : green700
+    /// The same four, for ink standing on the *inverted* ground -- a menu row
+    /// under the pointer, which this system fills with the accent.
+    ///
+    /// The inversion swaps which of each solved pair reads: a bright hue is
+    /// for a dark ground and a deep one for a light ground, and an inverted
+    /// row is whichever the rest of the window is not. Without these a green
+    /// dot on a hovered row reads at 2.3:1 and the reader loses the one thing
+    /// the dot was there to say at the moment they point at it.
+    readonly property color warningInvert:  dark ? amber700 : amber500
+    readonly property color dangerInvert:   dark ? red700 : red500
+    readonly property color positiveInvert: dark ? green700 : green500
 
     // --- spacing ---------------------------------------------------------
     // The 2px grid, verbatim: 1 2 4 6 8 12 14 18 24 32 44 60 80 112.
@@ -602,6 +640,24 @@ QtObject {
         letterSpacing: 1.32,
         capitalization: Font.AllUppercase
     })
+    /// The same machine label, left as it was written.
+    ///
+    /// Uppercasing is a rendering decision about a *fixed vocabulary*: every
+    /// other label in this application is a word the program chose, and
+    /// drawing "information" as INFORMATION says it is a name of a thing
+    /// rather than a sentence. A custom plot's name is not that -- it is the
+    /// reader's own phrase, typed into a box that shows it back as they typed
+    /// it -- and a strip that shouts it while the box beside it does not is
+    /// one string presented as two different things.
+    ///
+    /// Everything else is identical, so a named tab still sits in the strip as
+    /// a tab and not as a stray piece of body text.
+    readonly property font labelVerbatim: Qt.font({
+        families: theme.monoFamilies,
+        pixelSize: 11,
+        weight: Font.Medium,
+        letterSpacing: 1.32
+    })
     /// The smaller readout: tracked +0.18em (1.8px at 10px).
     readonly property font micro: Qt.font({
         families: theme.monoFamilies,
@@ -749,6 +805,23 @@ QtObject {
     /// order they are argued in above: the long one first, because it is the
     /// one that separates the most lines and the one the plot opens on.
     readonly property var categoricalPaletteNames: ["spectrum", "safe"]
+
+    /// The state colour for "how much of this still fits", which is the
+    /// three-way a saved view reports: 2 is all of it, 1 some of it, 0 none.
+    /// See gui::CustomPlotSet::MatchState.
+    ///
+    /// Here rather than in the panel that draws it because two surfaces draw
+    /// this dot -- the data rail and the drawer at the end of the tab strip --
+    /// and a colour decided in two places is a colour that ends up different
+    /// in the two places. It is the same kind of mapping `categoricalColor`
+    /// below is: an application's question answered in the system's colours.
+    function matchColor(state, inverted) {
+        if (state >= 2)
+            return inverted ? theme.positiveInvert : theme.positive
+        if (state >= 1)
+            return inverted ? theme.warningInvert : theme.warning
+        return inverted ? theme.dangerInvert : theme.danger
+    }
 
     /// A colour `position` of the way along `stops`, interpolated in RGB.
     ///

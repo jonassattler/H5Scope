@@ -35,6 +35,11 @@ private:
 ///   /matrix                  2-D float64 [4x3]
 ///   /cube                    3-D int32 [2x3x4]
 ///   /hypercube               4-D int32 [2x3x4x5]
+///   /series                  group of four runs to draw against one another
+///   /series/a                1-D float64 [64], value i
+///   /series/b                1-D float64 [64], value 100 - i
+///   /series/time             1-D float64 [64], value i / 2 -- a time base
+///   /series/half             1-D float64 [32], value 2 * i -- half as long
 ///   /str_fixed               1-D fixed string [3]
 ///   /str_vlen                1-D variable string [3]
 ///   /str_scalar              scalar variable string, multi-line and long

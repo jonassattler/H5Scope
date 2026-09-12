@@ -94,8 +94,15 @@ struct Shot
     QStringList open;
     /// The object to select.
     const char* path;
-    /// Which of the four tabs is showing: "info", "table", "plot" or "image".
+    /// Which tab is showing: "info", "table", "plot", "image", or
+    /// "custom:<n>" for one of the reader's own.
     const char* tab;
+    /// The lines a custom tab is built with, each written the way the data
+    /// panel writes one. Empty for the four fixed tabs, which are built from
+    /// the selection rather than from a list.
+    QStringList entries;
+    /// What that tab is called. Empty leaves it at "Custom 1".
+    QString plotName;
 };
 
 /// The three the README shows. Adding one is an entry here and a paragraph
@@ -123,6 +130,21 @@ QList<Shot> shots()
          {QStringLiteral("/images")},
          "/images/rgba_128x128x4",
          "image"},
+        // A custom plot, which is the one tab that is not about the selection:
+        // two runs of the same length from two different datasets, drawn
+        // together. The same pair the Plot view's picture is taken on, so a
+        // reader comparing the two sees exactly what the tab adds -- one line
+        // there, both of them here, against one axis.
+        //
+        // "custom:0" rather than a name, because arrange() clears the strip
+        // before it builds this and the tab it makes is therefore the first.
+        {"custom",
+         {QStringLiteral("/committed")},
+         "/committed/morning",
+         "custom:0",
+         {QStringLiteral("/committed/morning[:]"),
+          QStringLiteral("/committed/afternoon[:]")},
+         QStringLiteral("morning vs afternoon")},
     };
 }
 
@@ -196,6 +218,15 @@ bool run(QObject* root, const QString& javascript)
     return true;
 }
 
+/// One string as a JavaScript literal, quotes and all. Through QJsonDocument
+/// for the same reason jsArray is: a name may contain a quote.
+QString jsString(const QString& text)
+{
+    const QJsonDocument document{QJsonArray{text}};
+    const QString array = QString::fromUtf8(document.toJson(QJsonDocument::Compact));
+    return array.mid(1, array.size() - 2);
+}
+
 /// `paths` as a JavaScript array literal. Through QJsonDocument rather than by
 /// joining quotes, because an HDF5 name may contain both.
 QString jsArray(const QStringList& paths)
@@ -242,6 +273,24 @@ bool arrange(const Shot& shot, QObject* root, QQuickWindow* window,
     if (controller.currentPath() != path) {
         err() << shot.name << ": " << path << " is not in the example file\n";
         return false;
+    }
+
+    // Cleared and rebuilt rather than added to, for the reason the tree is:
+    // what the picture before this one left in the strip is not part of this
+    // one, and a tab left over would put a name in the strip that the
+    // paragraph beside the picture never mentions.
+    if (!run(root, QStringLiteral("clearCustomTabs()"))) {
+        return false;
+    }
+    if (!shot.entries.isEmpty()) {
+        if (!run(root, QStringLiteral("buildCustomTab(%1, %2)")
+                           .arg(jsString(shot.plotName), jsArray(shot.entries)))) {
+            return false;
+        }
+        // Twice: the tab's lines are read in one job a turn of the loop after
+        // they are added, and the graph is built from what that job returned.
+        settle();
+        settle();
     }
 
     const QString tab = QString::fromUtf8(shot.tab);

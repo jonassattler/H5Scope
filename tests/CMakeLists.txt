@@ -42,6 +42,18 @@ add_executable(test_models test_models.cpp)
 target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
+# --- the custom plot tabs -------------------------------------------------
+# Its own suite rather than more of test_models: what it covers is one feature
+# whose whole subject is reading several datasets at once, which is the thing
+# every other suite here is arranged not to do. Links Qt6::Graphs because the
+# points are asserted through fill(), and fill() takes the series a graph would
+# have created.
+add_executable(test_customplot test_customplot.cpp)
+target_link_libraries(test_customplot PRIVATE
+  gui test_support test_main Qt6::Test Qt6::Graphs
+)
+catch_discover_tests(test_customplot)
+
 # --- the example file, read back through the application's own stack -------
 # Shares tools/ExampleFile.cpp with make-example-file, so the suite asserts
 # against exactly the file that program writes rather than a second copy of it.

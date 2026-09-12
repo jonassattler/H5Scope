@@ -18,6 +18,13 @@ Button {
     property string glyph
     /// What it does, in words, for the tooltip. `text` stays empty: a Button
     /// with text would size itself around it.
+    ///
+    /// Left empty for a glyph that needs no explaining. A cross closes the
+    /// thing it is on and a plus adds one, and a tip that says so is a panel
+    /// popping up over the list every time the pointer crosses a row of them
+    /// -- which is what a reader moving down a column of crosses actually
+    /// experiences. Those take the hover slab above instead, which says
+    /// "this one" without covering the next three.
     property string hint
     /// Drawn as pressed while some state it toggles is on.
     property bool active: false
@@ -35,6 +42,14 @@ Button {
     /// the pointer, so it rests dimmed and comes up to full colour -- the same
     /// treatment the pipeline's drag handle gets, for the same reason.
     property bool bare: false
+    /// How strongly a bare glyph is drawn while the pointer is elsewhere.
+    ///
+    /// The dimming above assumes the glyph is always there and is answering a
+    /// pointer that has arrived. A control that appears only when it can be
+    /// used has already said that by being there, and dimming it as well
+    /// leaves a coloured speck that reads as a mark on the screen rather than
+    /// as something to press -- which is what the tree's plus was.
+    property real restOpacity: 0.55
 
     implicitWidth: Theme.smallControlHeight
     implicitHeight: Theme.smallControlHeight
@@ -47,7 +62,13 @@ Button {
     transform: Translate { y: control.down ? 1 : 0 }
 
     background: Rectangle {
-        visible: !control.bare
+        // A bare glyph still takes the slab under the pointer.
+        //
+        // "Bare" is about how it rests, not about how it answers: a column of
+        // these down the side of a list should draw no rims at all until one
+        // is aimed at, and then it should be unmistakable which one. That
+        // matters most where there is no tooltip to confirm it -- see `hint`.
+        visible: !control.bare || control.hovered || control.down
         radius: Theme.radiusS
         color: control.active ? Theme.accent
              : control.down ? Theme.surfaceActive
@@ -60,11 +81,12 @@ Button {
     contentItem: AppIcon {
         name: control.glyph
         color: control.active ? Theme.accentText : control.ink
-        opacity: (!control.bare || control.hovered || control.down) ? 1.0 : 0.55
+        opacity: (!control.bare || control.hovered || control.down)
+                 ? 1.0 : control.restOpacity
     }
 
     AppToolTip {
-        shown: control.hovered
+        shown: control.hovered && control.hint !== ""
         text: control.hint
     }
 }

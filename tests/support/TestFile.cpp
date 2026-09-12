@@ -159,6 +159,49 @@ void writeFixture(const std::string& path)
                      hypercube.data());
     }
 
+    // --- runs to draw against one another -------------------------------
+    // For the custom plot tabs, which are the one feature here that puts
+    // several datasets on one pair of axes. Two curves of the same length and
+    // a time base for them to be drawn against, plus a half-length third so
+    // that "align" and "stretch" have something to disagree about -- which is
+    // the whole of what that pair of checkboxes decides.
+    //
+    // In a group of their own rather than at the root, for two reasons. They
+    // are four faces of one thing and read as one; and the root listing is
+    // what the tree tests page through, so four more entries there pushed the
+    // last row of it off the bottom of an 800 x 600 pane and took a shape
+    // assertion with it.
+    //
+    // Values are closed forms rather than a table, so a test asserts against
+    // arithmetic rather than against a list it would have to keep in step:
+    // a is i, b is 100 - i, time is i / 2, and half is 2 * i over half as many
+    // samples.
+    {
+        const hid_t series = mustId(
+            H5Gcreate2(file, "series", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
+            "create series group");
+
+        std::array<double, 64> a{};
+        std::array<double, 64> b{};
+        std::array<double, 64> t{};
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            a[i] = static_cast<double>(i);
+            b[i] = 100.0 - static_cast<double>(i);
+            t[i] = static_cast<double>(i) / 2.0;
+        }
+        writeDataset(series, "a", H5T_NATIVE_DOUBLE, {64}, a.data());
+        writeDataset(series, "b", H5T_NATIVE_DOUBLE, {64}, b.data());
+        writeDataset(series, "time", H5T_NATIVE_DOUBLE, {64}, t.data());
+
+        std::array<double, 32> half{};
+        for (std::size_t i = 0; i < half.size(); ++i) {
+            half[i] = 2.0 * static_cast<double>(i);
+        }
+        writeDataset(series, "half", H5T_NATIVE_DOUBLE, {32}, half.data());
+
+        H5Gclose(series);
+    }
+
     // --- strings, fixed and variable length ------------------------------
     {
         constexpr std::size_t width = 8;
