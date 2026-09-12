@@ -1970,6 +1970,79 @@ TestCase {
         compare(plot.rangeMaximum, undefined)
     }
 
+    /// The highlight is drawn, and it is drawn wider.
+    ///
+    /// This was the one part of the move off Qt Graphs with a real technical
+    /// risk in it. A line width above 1.0 is an *optional* RHI feature and
+    /// several backends ignore it without saying so, and the highlight -- the
+    /// only affordance for following one line through a bundle of fifty -- is a
+    /// line drawn at double width. So the strokes are built out of triangles
+    /// instead, and this is what says the triangles are the width they were
+    /// asked for once the whole chain from the legend down is connected.
+    ///
+    /// One line, so that opacity cannot account for the difference: with a
+    /// single line drawn, highlighting it changes its width and nothing else.
+    function test_the_highlighted_line_is_drawn_wider() {
+        verify(select("/long_vec")) // one line of a thousand points
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        compare(AppController.datasetPlot.seriesCount, 1)
+
+        // Counted in ink rather than in pixels-unlike-the-ground: a grab is of
+        // the window cropped to the item's size, so it carries the tree and the
+        // bar with it, and those are neutral where a drawn line is not.
+        compare(plot.highlighted, -1)
+        const thin = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(thin > 20, "the line must be drawn at all: " + thin)
+
+        plot.highlighted = 0
+        waitForRendering(win.view)
+        const thick = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(thick > thin * 1.3,
+               "a highlighted line must be visibly heavier: " + thin + " -> "
+               + thick)
+
+        plot.highlighted = -1
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), thin)
+    }
+
+    /// Markers are punctuation on a line, and they mark samples.
+    ///
+    /// Only where the line is drawn sample for sample: once the envelope is
+    /// summarising, a drawn point stands for a whole bucket and a dot on it
+    /// marks nothing. A thousand points on a pane a thousand wide is drawn
+    /// whole, so this is the case where they appear.
+    function test_markers_put_a_dot_on_every_sample() {
+        verify(select("/long_vec"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        verify(!plot.showMarkers)
+        const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(bare > 20, "the line must be drawn at all: " + bare)
+
+        plot.showMarkers = true
+        waitForRendering(win.view)
+        const dotted = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(dotted > bare,
+               "markers must put ink on the plot: " + bare + " -> " + dotted)
+
+        plot.showMarkers = false
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare)
+    }
+
     /// The crosshair reads a sample, not a position.
     ///
     /// New with the renderer, and one of the two things the plot could not do

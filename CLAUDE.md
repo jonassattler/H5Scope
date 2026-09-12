@@ -62,14 +62,15 @@ ctest --preset release
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `make-screenshots`, the CI scripts and the two design checks. |
-| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`) plus the Qt Quick Test QML suites under `tests/qml/`. |
+| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
 QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
 hang off it as `CONSTANT` properties; `DatasetPlot`, `DatasetImage`,
 `TableSetupModel`, `PostprocessModel`, `CustomPlotSet` and `CustomPlot` are
-`QML_UNCREATABLE` and obtained from it. `FileSystem` and `FocusRelease` are the
-other registered types.
+`QML_UNCREATABLE` and obtained from it. `FileSystem`, `FocusRelease` and
+`PlotItem` are the other registered types — `PlotItem` is the only one QML
+*instantiates*, because it is an item and has to be placed.
 
 The custom plot tabs are the one part of the UI that is **not** about the
 selection: `CustomPlotSet` holds the reader's own tabs, each a `CustomPlot` of
@@ -83,6 +84,27 @@ and each reports how much of whatever is open it can still draw. That and the
 recent-files list are the only two things this program remembers between runs,
 and both are guarded by `QCoreApplication::organizationName().isEmpty()` so the
 tests and `make-screenshots` never touch the user's settings.
+
+The plot is drawn by this program and not by a library. `gui::PlotProjection`
+is the arithmetic — where a sample lands, which samples are drawable, where a
+gap ends one stroke, how a million samples become two thousand vertices without
+losing the one that matters, and how a stroke is built out of triangles — and
+it has no renderer in it, which is what lets `tests/test_plotprojection.cpp`
+assert all of it with no window. `gui::PlotItem` is the part that has one.
+`src/qml/PlotFrame.qml` draws the gutters, the rules, the ticks and the labels.
+Read the header of `PlotProjection.hpp` before changing any of it: the four
+things listed there are why this is ours rather than Qt Graphs', and each of
+them is a defect of the thing it replaced.
+
+Two rules hold across that boundary. **A tick is drawn where the curve was
+drawn, or it is a lie** — the log floor is `PlotItem.logDecades` and nothing in
+QML derives it a second time; `tst_views` asserts the two mappings agree.
+And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
+their own cache and copy nothing, so every path that can free or prune a held
+line calls `PlotItem::clear()` first. There are two such places in
+`DatasetPlot` and they are named in the code; `test_models` and
+`test_customplot` do the dangerous thing thirteen ways and check the item
+stopped reading.
 
 ## Invariants worth knowing before editing
 
@@ -114,6 +136,14 @@ tests and `make-screenshots` never touch the user's settings.
 6. **The views stream.** The table reads the block it is about to paint; the
    plot reads a line. Postprocessing is the exception — it must materialise, and
    is capped at `postproc::kMaxElements` (2^24 doubles, 128 MB).
+
+   What the plot reads is now a min/max **envelope** rather than every nth
+   element: it reads the bucket those elements were being chosen from and keeps
+   its extremes, so a spike one sample wide cannot be thinned away. That costs
+   no extra round trips — a bucket is one hyperslab either way — and
+   `tests/test_cost.cpp` asserts both halves of it. Zoom and pan read nothing
+   at all; that is asserted too, because a change that made them read would not
+   look like a bug, it would look like the plot had become slow.
 7. **The version is counted from release tags**, never typed. Major/minor live
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
 8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`
