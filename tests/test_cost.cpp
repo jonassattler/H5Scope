@@ -38,6 +38,7 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PlotItem.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "postproc/Pipeline.hpp"
@@ -65,7 +66,8 @@ namespace {
 /// them, which is the one seam this needs: `H5Session::setComputed` installs
 /// any DataSource as what the views read, and that is not a hook added for
 /// testing -- it is how a postprocessing pipeline's output reaches them.
-struct Counted {
+struct Counted
+{
     std::shared_ptr<CountingSource> source;
     DatasetTableModel table;
     DatasetPlot plot{&table};
@@ -113,7 +115,8 @@ struct Counted {
     }
 
     /// Crossings of the HDF5 thread across `body`, and the reads it caused.
-    struct Cost {
+    struct Cost
+    {
         long long crossings = 0;
         int reads = 0;
         hsize_t elements = 0;
@@ -126,15 +129,11 @@ struct Counted {
         const long long before = H5Thread::instance().crossings();
         body();
         settleAll();
-        return {H5Thread::instance().crossings() - before, source->reads(),
-                source->elementsRead()};
+        return {H5Thread::instance().crossings() - before, source->reads(), source->elementsRead()};
     }
 
     /// Ask the grid for one cell, as a delegate painting it would.
-    void paint(int row, int column)
-    {
-        (void)table.data(table.index(row, column), Qt::DisplayRole);
-    }
+    void paint(int row, int column) { (void)table.data(table.index(row, column), Qt::DisplayRole); }
 
     /// Ask for a rectangle of cells, as one layout pass over a viewport does.
     void paintRect(int firstRow, int rows, int firstColumn, int columns)
@@ -153,8 +152,7 @@ struct Counted {
 // The table: a block at a time, and only the block
 // ---------------------------------------------------------------------------
 
-TEST_CASE("the grid reads a block at a time, whatever it is asked for",
-          "[cost][table]")
+TEST_CASE("the grid reads a block at a time, whatever it is asked for", "[cost][table]")
 {
     Counted counted({1000, 1000});
 
@@ -255,8 +253,7 @@ TEST_CASE("the grid reads a block at a time, whatever it is asked for",
 
         // widestCell over a rectangle far outside the cached block. It is a
         // column width, and a column width is not worth a read.
-        const auto cost =
-            counted.measure([&] { (void)counted.table.widestCell(0, 900, 0, 900); });
+        const auto cost = counted.measure([&] { (void)counted.table.widestCell(0, 900, 0, 900); });
 
         CHECK(cost.reads == 0);
     }
@@ -268,8 +265,8 @@ TEST_CASE("a table read as one line is read as one hyperslab", "[cost][table]")
 
     SECTION("consecutive columns coalesce into one read per row")
     {
-        const auto cost = counted.measure(
-            [&] { (void)counted.table.sampleValues(0, -1, 8, 0, -1, 4096); });
+        const auto cost =
+            counted.measure([&] { (void)counted.table.sampleValues(0, -1, 8, 0, -1, 4096); });
 
         CHECK(cost.crossings == 1);
         CHECK(cost.reads == 4); // one per row, not one per column
@@ -284,8 +281,8 @@ TEST_CASE("a table read as one line is read as one hyperslab", "[cost][table]")
         counted.table.setLayout(layout);
         Counted::settleAll();
 
-        const auto cost = counted.measure(
-            [&] { (void)counted.table.sampleValues(0, -1, 8, 0, -1, 4096); });
+        const auto cost =
+            counted.measure([&] { (void)counted.table.sampleValues(0, -1, 8, 0, -1, 4096); });
 
         CHECK(cost.crossings == 1);
         // Four rows of four runs of one. That is the honest price of asking
@@ -407,9 +404,67 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         const auto cost = wide.measure([&] { (void)wide.plot.pointCount(); });
 
         CHECK(cost.crossings == 1);
-        // Two lines, each read as runs capped at kReadRun rather than whole.
-        CHECK(wide.plot.pointCount() <= 2048);
-        CHECK(cost.elements <= 2 * 100000);
+        CHECK(wide.plot.pointCount() <= DatasetPlot::kMaxPoints);
+
+        // Every element of both lines, and not one more.
+        //
+        // That is what an envelope costs and it is the number worth watching:
+        // the plot used to read one element per drawn point and miss any spike
+        // that fell between two of them. It reads the whole of each bucket now
+        // and reports its extremes, in the same number of round trips -- the
+        // reads below are one per bucket either way, and what changed is how
+        // much each of them moves.
+        CHECK(cost.elements == 2 * 100000);
+        CHECK(cost.reads <= 2 * DatasetPlot::kMaxPoints);
+    }
+
+    SECTION("zooming and panning read nothing at all")
+    {
+        // What keeps a drag smooth, stated as a count rather than as a
+        // duration. The window onto the data is the renderer's business and
+        // the samples are already in hand, so moving it must not reach the
+        // file -- and a change that made it do so would not look like a bug,
+        // it would look like the plot had become slow.
+        gui::PlotItem item;
+        (void)counted.plot.pointCount();
+        Counted::settleAll();
+        counted.plot.fill(&item);
+        REQUIRE(item.lineCount() == DatasetPlot::initialSeriesLimit());
+
+        const auto cost = counted.measure([&] {
+            for (int step = 0; step < 100; ++step) {
+                item.setXMin(static_cast<double>(step));
+                item.setXMax(200.0 + static_cast<double>(step) * 0.5);
+                item.setYMin(-static_cast<double>(step));
+                item.setYMax(static_cast<double>(step));
+            }
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+        CHECK(cost.elements == 0);
+    }
+
+    SECTION("a selection of thousands holds fewer points in each line")
+    {
+        // kMaxPoints each was right while a selection was sixty-four lines.
+        // `all` on ten thousand would be a hundred and sixty megabytes held and
+        // twenty million doubles walked on every frame of a drag, to draw lines
+        // the renderer then summarises to about a hundred points each anyway.
+        Counted many({10000, 4096});
+        (void)many.plot.pointCount();
+        Counted::settleAll();
+        const int few = many.plot.pointCount();
+
+        many.plot.selectAll();
+        (void)many.plot.pointCount();
+        Counted::settleAll();
+
+        CHECK(many.plot.seriesCount() == 10000);
+        CHECK(few == DatasetPlot::kMaxPoints);
+        CHECK(many.plot.pointCount() <= DatasetPlot::kMinPoints);
+        // ...and it is still an envelope, so nothing has been skipped over.
+        CHECK(many.plot.thinned());
     }
 }
 
@@ -532,8 +587,8 @@ TEST_CASE("a pipeline reads the slice it names and nothing else", "[cost][postpr
     SECTION("a selection above the cap is refused before anything is read")
     {
         const CountingSource enormous({8192, 8192});
-        const auto result = postproc::run(
-            enormous, {{postproc::OperationKind::Slice, QStringLiteral("...")}}, 1);
+        const auto result =
+            postproc::run(enormous, {{postproc::OperationKind::Slice, QStringLiteral("...")}}, 1);
 
         CHECK_FALSE(result.usable());
         CHECK(enormous.reads() == 0);
@@ -545,11 +600,11 @@ TEST_CASE("a pipeline reads the slice it names and nothing else", "[cost][postpr
             source, {{postproc::OperationKind::Slice, QStringLiteral("0:10, 0:10")}}, 1);
         const int afterSlice = source.reads();
 
-        const auto transposed = postproc::run(
-            source,
-            {{postproc::OperationKind::Slice, QStringLiteral("0:10, 0:10")},
-             {postproc::OperationKind::Transpose, QString{}}},
-            2);
+        const auto transposed =
+            postproc::run(source,
+                          {{postproc::OperationKind::Slice, QStringLiteral("0:10, 0:10")},
+                           {postproc::OperationKind::Transpose, QString{}}},
+                          2);
 
         REQUIRE(sliced.usable());
         REQUIRE(transposed.usable());
@@ -571,7 +626,8 @@ namespace {
 /// Small enough to write in a fraction of a second -- what is being asserted is
 /// that the cost does not scale with it, and that is as visible at a thousand
 /// members as at eight thousand.
-struct WideFile {
+struct WideFile
+{
     h5test::TempFile temp{"cost"};
     gui::AppController controller;
 
@@ -594,8 +650,7 @@ struct WideFile {
         spec.columns = 4;
         h5example::writeScaleFile(temp.path(), spec);
 
-        REQUIRE(h5test::openFileAndSettle(controller,
-                                          QString::fromStdString(temp.path())));
+        REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
     }
 
     [[nodiscard]] gui::H5TreeModel* tree() const
@@ -605,8 +660,7 @@ struct WideFile {
 
     [[nodiscard]] gui::TreeFilterProxyModel* proxy() const
     {
-        return qobject_cast<gui::TreeFilterProxyModel*>(
-            controller.filteredTreeModel());
+        return qobject_cast<gui::TreeFilterProxyModel*>(controller.filteredTreeModel());
     }
 };
 
@@ -616,8 +670,7 @@ int resolvedChildren(gui::H5TreeModel* tree, const QModelIndex& parent)
     int resolved = 0;
     const int rows = tree->rowCount(parent);
     for (int row = 0; row < rows; ++row) {
-        if (tree->data(tree->index(row, 0, parent), gui::H5TreeModel::IsResolvedRole)
-                .toBool()) {
+        if (tree->data(tree->index(row, 0, parent), gui::H5TreeModel::IsResolvedRole).toBool()) {
             ++resolved;
         }
     }
@@ -698,8 +751,8 @@ TEST_CASE("a group's member count does not cost its members", "[cost][tree]")
         const QModelIndex group = tree->index(row, 0, sessions);
         INFO(tree->pathAt(group).toStdString());
         // The count arrived...
-        CHECK(tree->data(group, gui::H5TreeModel::MetaRole).toString()
-              == QStringLiteral("64 items"));
+        CHECK(tree->data(group, gui::H5TreeModel::MetaRole).toString() ==
+              QStringLiteral("64 items"));
         // ...and the group it counted is still unlisted.
         CHECK_FALSE(tree->isPopulated(group));
     }
@@ -708,8 +761,7 @@ TEST_CASE("a group's member count does not cost its members", "[cost][tree]")
 TEST_CASE("choosing an object is one round trip, not eight", "[cost][selection]")
 {
     WideFile file;
-    const QString dataset =
-        QStringLiteral("/runs/run_0000/detectors/det_00/channel_00");
+    const QString dataset = QStringLiteral("/runs/run_0000/detectors/det_00/channel_00");
     REQUIRE(h5test::selectAndSettle(file.controller, dataset));
 
     // Describing a selection wants its kind, its attribute count, its full
@@ -723,8 +775,7 @@ TEST_CASE("choosing an object is one round trip, not eight", "[cost][selection]"
     // kind may or may not need to reopen the dataset. What is being held down
     // is the order of magnitude: a handful, not one per thing asked about --
     // it measured 2 when this was written.
-    const QString other =
-        QStringLiteral("/runs/run_0000/detectors/det_00/channel_01");
+    const QString other = QStringLiteral("/runs/run_0000/detectors/det_00/channel_01");
     const long long before = H5Thread::instance().crossings();
     REQUIRE(h5test::selectAndSettle(file.controller, other));
     const long long crossings = H5Thread::instance().crossings() - before;
@@ -735,8 +786,7 @@ TEST_CASE("choosing an object is one round trip, not eight", "[cost][selection]"
     CHECK(file.controller.datasetTabVisible());
 }
 
-TEST_CASE("rearranging the table reads nothing until it is painted",
-          "[cost][table]")
+TEST_CASE("rearranging the table reads nothing until it is painted", "[cost][table]")
 {
     Counted counted({64, 64, 8});
 

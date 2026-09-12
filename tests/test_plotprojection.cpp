@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <limits>
+#include <random>
 #include <vector>
 
 using Catch::Approx;
@@ -637,10 +638,17 @@ TEST_CASE("a constant line is a flat stroke across the pane", "[plot]")
         project(lineOver(values), gui::PlotAxis{}, paneOver(0.0, 100000.0, 6.0, 8.0));
 
     REQUIRE(drawn.runs.size() == 1);
-    // One point a column rather than two: the smallest and the largest sample
-    // in a column of constants are the same sample.
+    // One point a bucket rather than two: the smallest and the largest sample
+    // in a bucket of constants are the same sample, and there is nothing to
+    // draw between them.
+    //
+    // And between half a bucket and one bucket per column, because a bucket is
+    // a power of two and the rounding is upward. That is the price of aligning
+    // the buckets to the data rather than to the window -- see projectLine --
+    // and it is paid in horizontal resolution on a summary, which is the
+    // cheapest thing a plot has to spend.
     CHECK(drawn.points.size() <= 1001);
-    CHECK(drawn.points.size() >= 999);
+    CHECK(drawn.points.size() >= 500);
     const double middle = 250.0;
     for (const QPointF& point : drawn.points) {
         CHECK(point.y() == Approx(middle).margin(0.01));
@@ -990,4 +998,123 @@ TEST_CASE("a line drawn against a time base is never a summary", "[plot]")
     const gui::PlotProjected drawn =
         gui::projectLine(lineOver(values), axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
     CHECK_FALSE(drawn.decimated);
+}
+
+// --- the envelope holds still -----------------------------------------------
+
+TEST_CASE("panning moves the line without reshuffling it", "[plot]")
+{
+    // The property that makes a drag watchable, and the one an envelope
+    // derived from the *window* cannot have. Divide the visible range into as
+    // many buckets as the pane has columns and every pixel of pan slides every
+    // boundary by a fraction of a sample, so the two extremes each column
+    // selects keep changing and the line crawls under the pointer.
+    //
+    // Buckets aligned to the data's own index space cannot do that: panning
+    // changes which buckets are on screen and nothing about what is in them.
+    std::vector<double> values(200000, 0.0);
+    values[120000] = 9.0;
+
+    const auto peakAt = [&](double xMin, double xMax) {
+        gui::PlotView view = paneOver(xMin, xMax, -1.0, 10.0);
+        const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+        double top = std::numeric_limits<double>::infinity();
+        double at = 0.0;
+        for (const QPointF& point : drawn.points) {
+            if (point.y() < top) {
+                top = point.y();
+                at = point.x();
+            }
+        }
+        // Back into the data's own coordinates, which is where the question is.
+        return xMin + at / view.width * (xMax - xMin);
+    };
+
+    // The same window, slid along by a third of a bucket and then by a whole
+    // one. The spike must stay where it is in the data.
+    const double here = peakAt(0.0, 200000.0);
+    const double nudged = peakAt(60.0, 200060.0);
+    const double further = peakAt(200.0, 200200.0);
+
+    CHECK(here == Approx(120000.0).margin(256.0));
+    CHECK(nudged == Approx(here).margin(1.0));
+    CHECK(further == Approx(here).margin(1.0));
+}
+
+TEST_CASE("a bucket holds the same samples wherever the window is", "[plot]")
+{
+    // The same statement from the other side: two windows that overlap must
+    // agree about the values in the overlap, exactly, and not merely nearly.
+    std::vector<double> values(100000);
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> spread(-1.0, 1.0);
+    for (double& value : values) {
+        value = spread(rng);
+    }
+
+    const auto valuesIn = [&](double xMin, double xMax) {
+        const Projected drawn =
+            project(lineOver(values), gui::PlotAxis{}, paneOver(xMin, xMax, -1.5, 1.5));
+        std::vector<double> found;
+        found.reserve(drawn.points.size());
+        for (const QPointF& point : drawn.points) {
+            found.push_back(point.y());
+        }
+        return found;
+    };
+
+    const std::vector<double> wide = valuesIn(0.0, 100000.0);
+    const std::vector<double> slid = valuesIn(37.0, 100037.0);
+    REQUIRE(wide.size() > 100);
+    REQUIRE(slid.size() > 100);
+
+    // Every interior value of one appears, in order, in the other. Allowing a
+    // couple at each end, which are the buckets the slide moved off the pane.
+    std::size_t matched = 0;
+    std::size_t at = 0;
+    for (const double value : wide) {
+        while (at < slid.size() && slid[at] != value) {
+            ++at;
+        }
+        if (at < slid.size()) {
+            ++matched;
+            ++at;
+        }
+    }
+    CHECK(matched >= wide.size() - 4);
+}
+
+TEST_CASE("a bucket is a power of two, so zooming steps by octaves", "[plot]")
+{
+    // Which is the other half of the bargain: the detail changes once per
+    // doubling rather than continuously, and between those steps the picture
+    // is completely still.
+    std::vector<double> values(65536);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sin(static_cast<double>(i) / 30.0);
+    }
+
+    const auto pointsAcross = [&](double span) {
+        const double middle = 32768.0;
+        const Projected drawn = project(lineOver(values), gui::PlotAxis{},
+                                        paneOver(middle - span / 2, middle + span / 2, -1.5, 1.5));
+        return drawn.points.size();
+    };
+
+    // Inside one octave the bucket size does not change, so the number of
+    // points drawn is simply proportional to how much data is on screen.
+    const std::size_t wide = pointsAcross(60000.0);
+    const std::size_t narrower = pointsAcross(50000.0);
+    CHECK(wide > 0);
+    CHECK(static_cast<double>(narrower) ==
+          Approx(static_cast<double>(wide) * 50000.0 / 60000.0).margin(4.0));
+
+    // And crossing into the next octave halves the bucket, which is where the
+    // extra detail comes from: a slightly *smaller* window draws nearly twice
+    // as many points, and every one of them covers half as much data.
+    //
+    // A thousand columns puts that boundary at thirty-two samples a column.
+    const std::size_t justAbove = pointsAcross(33000.0);
+    const std::size_t justBelow = pointsAcross(31000.0);
+    CHECK(static_cast<double>(justBelow) > 1.5 * static_cast<double>(justAbove));
 }

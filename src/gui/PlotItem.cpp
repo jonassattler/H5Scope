@@ -22,8 +22,7 @@
 namespace gui {
 namespace {
 
-// The most stroke vertices one frame may submit, which at twenty bytes apiece
-// is eighty megabytes of vertex buffer.
+// The most stroke vertices one frame may submit.
 //
 // The envelope bounds each *line* by the pane's width, which is what makes a
 // ten-million-point dataset draw in under a millisecond. It does not bound
@@ -32,15 +31,20 @@ namespace {
 // arrangement reaching 3871 MiB.
 //
 // So the budget is divided between the lines and each gets a share of the
-// columns. The arithmetic below reaches this ceiling only above about two
-// thousand lines, so the default sixty-four -- and a thousand -- are
-// unaffected and draw at one column a pixel. Beyond that a line loses
-// horizontal resolution and keeps its extremes, because that is what an
-// envelope does: nothing goes missing, a spike may sit a few pixels from where
-// it fell. Ten thousand overlapping hairlines is a picture of a distribution
-// rather than of a line, and this is the honest way to lose detail nobody
-// could have seen.
-constexpr int kMaxVertices = 4 << 20;
+// columns. The number is set from the frame rather than from the memory:
+// building a stroke measures at about six nanoseconds a vertex on this
+// machine, so two million of them is a little over a third of a frame at sixty
+// hertz, with the projection and the upload still to pay for. At twenty bytes
+// apiece it is also forty megabytes of buffer, which is the smaller of the two
+// reasons to stop there.
+//
+// It bites only above about five hundred lines. The default sixty-four draws
+// at one column a pixel on any pane; past the ceiling a line loses horizontal
+// resolution and keeps its extremes, because that is what an envelope does --
+// nothing goes missing, a spike may sit a few pixels from where it fell. Ten
+// thousand overlapping hairlines is a picture of a distribution rather than of
+// a line, and this is the honest way to lose detail nobody could have seen.
+constexpr int kMaxVertices = 2 << 20;
 
 /// The colour a vertex carries: the line's own, multiplied by its strength and
 /// premultiplied, which is the convention the scene graph blends in.
@@ -395,22 +399,27 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
         const double width = lines_[line].width;
         for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
             const PlotRun& run = runs_[static_cast<std::size_t>(r)];
-            stroke_.clear();
-            strokeRun(&points_[static_cast<std::size_t>(run.first)], run.count, width, stroke_);
-            if (stroke_.empty()) {
-                continue;
+            // Straight into the buffer. The bridge to the previous strip is
+            // built on the first vertex of this one, because that is the first
+            // moment it is known -- and it is two vertices, which is also what
+            // preserves the strip's parity so the next run is wound like a
+            // fresh one.
+            bool opening = true;
+            strokeRunInto(&points_[static_cast<std::size_t>(run.first)], run.count, width,
+                          [&](double x, double y) {
+                              if (opening) {
+                                  opening = false;
+                                  if (started) {
+                                      vertex[at] = vertex[at - 1];
+                                      ++at;
+                                      place(QPointF(x, y), ink);
+                                  }
+                              }
+                              place(QPointF(x, y), ink);
+                          });
+            if (!opening) {
+                started = true;
             }
-            if (started) {
-                // Two degenerate vertices, which is also what preserves the
-                // strip's parity so the next run is wound like a fresh one.
-                vertex[at] = vertex[at - 1];
-                ++at;
-                place(stroke_.front(), ink);
-            }
-            for (const QPointF& point : stroke_) {
-                place(point, ink);
-            }
-            started = true;
         }
     }
 

@@ -46,6 +46,8 @@
 #include <QtCore/QPointF>
 #include <QtGui/QColor>
 
+#include <cmath>
+
 #include <vector>
 
 namespace gui {
@@ -205,8 +207,27 @@ struct PlotProjected
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
                           std::vector<QPointF>& points, std::vector<PlotRun>& runs);
 
+/// How far a mitred join may reach past the stroke before it is cut.
+///
+/// An envelope turns through very nearly 180 degrees at a one-sample spike --
+/// up one column and straight back down -- and an uncut miter at that angle is
+/// a spear several hundred pixels long thrown across the pane. Four is the
+/// conventional limit and is invisible at these widths.
+inline constexpr double kMiterLimit = 4.0;
+
+/// Below this the two normals at a join have cancelled, which is a true
+/// reversal, and there is no miter direction to find. The join becomes a butt
+/// end, which at a one- or two-pixel stroke is what a round join would have
+/// drawn anyway.
+inline constexpr double kMiterEpsilon = 1e-6;
+
+/// A stroke thinner than this has no area to rasterise and would disappear
+/// rather than draw faintly. Not a design decision -- Theme.plotLineWidth is
+/// what says how heavy a line is -- only a floor under the arithmetic.
+inline constexpr double kMinStrokeWidth = 0.25;
+
 /// Expand `count` projected points into a triangle strip `width` pixels wide,
-/// appending two vertices per station to `out`.
+/// calling `place(x, y)` twice per station.
 ///
 /// Triangles rather than a wide line because line width above 1.0 is an
 /// optional RHI feature that several backends ignore without saying so, and
@@ -214,11 +235,79 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 /// fifty -- is a line drawn at double width. A stroke that is sometimes two
 /// pixels and sometimes one depending on the machine is not an affordance.
 ///
-/// Joins are mitred, and the miter is cut at kMiterLimit so that the near
-/// reversal an envelope makes at a one-sample spike does not throw a spear
-/// across the pane. At a true reversal the two normals cancel and the join
-/// falls back to a butt end, which at these widths is what a round join would
-/// have drawn anyway.
+/// A template, and in the header, because this is the hot loop of the whole
+/// plot. Measured over ten thousand lines of two thousand points, it was more
+/// than half of a frame -- and half of *that* was writing the vertices into a
+/// vector so the caller could copy them into the buffer it had already
+/// allocated. PlotItem passes a sink that writes each vertex where it belongs
+/// and the copy disappears.
+template<typename Place>
+void strokeRunInto(const QPointF* points, int count, double width, Place&& place)
+{
+    if (points == nullptr || count < 2) {
+        return;
+    }
+    const double half = (width > kMinStrokeWidth ? width : kMinStrokeWidth) / 2.0;
+
+    // The normal of the segment leaving station `k`. A segment of no length has
+    // no direction, so it keeps the one before it -- which happens in an
+    // envelope wherever a column held a single sample.
+    //
+    // std::sqrt rather than std::hypot. hypot exists to survive squaring a
+    // number near the top of the range, and these are pixel deltas: projectLine
+    // clamps every coordinate to ten million, whose square is 1e14 and has
+    // nearly three hundred orders of magnitude of headroom. hypot was costing
+    // about four nanoseconds a station for a guarantee that cannot be needed.
+    const auto normalAfter = [&](int k, QPointF fallback) {
+        const double sx = points[k + 1].x() - points[k].x();
+        const double sy = points[k + 1].y() - points[k].y();
+        const double square = sx * sx + sy * sy;
+        if (!(square > 0.0)) {
+            return fallback;
+        }
+        const double inverse = 1.0 / std::sqrt(square);
+        return QPointF(-sy * inverse, sx * inverse);
+    };
+
+    QPointF entering = normalAfter(0, QPointF(0.0, -1.0));
+    QPointF leaving = entering;
+    for (int i = 0; i < count; ++i) {
+        if (i > 0) {
+            entering = leaving;
+            leaving = (i < count - 1) ? normalAfter(i, entering) : entering;
+        }
+
+        // The ends take the one normal they have; a join takes the bisector,
+        // lengthened so the stroke stays `width` wide through the corner.
+        //
+        // Written without normalising the bisector, because it does not have to
+        // be. Both normals are unit, so |n1 + n2|^2 is 2 + 2d for d = n1 . n2,
+        // and the reach that keeps a corner square works out as 1 / (1 + d) --
+        // no square root at all. The only case that needs one is a corner sharp
+        // enough for the miter to be cut, which at a limit of four is d below
+        // -0.875, and an envelope's columns are nowhere near it.
+        QPointF offset = leaving;
+        if (i > 0 && i < count - 1) {
+            const double dot = entering.x() * leaving.x() + entering.y() * leaving.y();
+            const double sum = 1.0 + dot;
+            if (sum > kMiterEpsilon) {
+                const double bisectorX = entering.x() + leaving.x();
+                const double bisectorY = entering.y() + leaving.y();
+                const double reach = sum < 2.0 / (kMiterLimit * kMiterLimit)
+                                         ? kMiterLimit / std::sqrt(2.0 * sum)
+                                         : 1.0 / sum;
+                offset = QPointF(bisectorX * reach, bisectorY * reach);
+            }
+        }
+
+        const double ox = offset.x() * half;
+        const double oy = offset.y() * half;
+        place(points[i].x() + ox, points[i].y() + oy);
+        place(points[i].x() - ox, points[i].y() - oy);
+    }
+}
+
+/// The same, collected into a vector. What the tests assert against.
 void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out);
 
 /// How many sides a marker is drawn with.

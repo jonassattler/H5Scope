@@ -16,24 +16,6 @@ namespace {
 // than two samples a column would draw more vertices than there are samples.
 constexpr double kSamplesPerColumn = 2.0;
 
-// How far a mitred join may reach past the stroke before it is cut. An
-// envelope turns through very nearly 180 degrees at a one-sample spike -- up
-// one column and straight back down -- and an uncut miter at that angle is a
-// spear several hundred pixels long thrown across the pane. Four is the
-// conventional limit and is invisible at these widths.
-constexpr double kMiterLimit = 4.0;
-
-// Below this the two normals at a join have cancelled, which is a true
-// reversal, and there is no miter direction to find. The join becomes a butt
-// end, which at a one- or two-pixel stroke is what a round join would have
-// drawn anyway.
-constexpr double kMiterEpsilon = 1e-6;
-
-// A stroke thinner than this has no area to rasterise and would disappear
-// rather than draw faintly. Not a design decision -- Theme.plotLineWidth is
-// what says how heavy a line is -- only a floor under the arithmetic.
-constexpr double kMinStrokeWidth = 0.25;
-
 // How far outside the pane a projected point is allowed to land.
 //
 // A sample does not stop existing because the reader zoomed past it: it is
@@ -274,25 +256,47 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         return added(false);
     }
 
-    // The envelope. One column at a time: find the smallest and the largest
-    // drawable sample that falls in it and emit both, in the order they occur,
-    // so the stroke keeps the direction the data has and does not zig-zag
-    // where the data rose steadily.
+    // The envelope, over buckets that are a power of two wide and aligned to
+    // the data's own index space -- bucket b is always exactly the samples
+    // [b * size, (b + 1) * size), whatever the reader is looking at.
     //
-    // This is what stride sampling cannot do. A spike one sample wide is the
-    // maximum of whatever column it lands in, so it is selected *because* it is
+    // That alignment is the whole point of doing it this way. The obvious
+    // arrangement is to divide the *visible* range into as many buckets as the
+    // pane has columns, and it looks right in a screenshot and wrong in motion:
+    // panning by one pixel slides every bucket boundary by a fraction of a
+    // sample, so the two extremes each column selects keep changing and the
+    // line crawls and boils under the pointer. Aligned buckets cannot do that.
+    // Panning changes which buckets are on screen and nothing about what is in
+    // them, so the line translates rigidly; zooming steps from one power of two
+    // to the next, which is one honest change of detail per octave instead of a
+    // continuous shimmer.
+    //
+    // It is also what makes each frame cost the pane rather than the data: the
+    // scan below touches the visible samples once, and the bucket size is
+    // chosen so that there are between one and two buckets per column.
+    //
+    // Within a bucket the smallest and the largest are emitted in the order
+    // they occur, so the stroke keeps the direction the data has -- and this is
+    // what stride sampling cannot do at all. A spike one sample wide is the
+    // extreme of whatever bucket it lands in, so it is selected *because* it is
     // extreme, where a stride selects by position and reaches it only by luck.
     const double perColumn = static_cast<double>(visible) / static_cast<double>(columns);
-    for (std::int64_t column = 0; column < columns; ++column) {
-        const std::int64_t i0 =
-            first + static_cast<std::int64_t>(std::floor(static_cast<double>(column) * perColumn));
-        if (i0 > last) {
-            break;
-        }
-        std::int64_t i1 =
-            first +
-            static_cast<std::int64_t>(std::floor(static_cast<double>(column + 1) * perColumn)) - 1;
-        i1 = std::clamp(i1, i0, last);
+    std::int64_t size = 1;
+    // Ceiling to a power of two. Bounded rather than open, because a perColumn
+    // that has gone to infinity under a degenerate view would otherwise not
+    // stop.
+    while (static_cast<double>(size) < perColumn && size < (std::int64_t{1} << 40)) {
+        size <<= 1;
+    }
+
+    const std::int64_t firstBucket = first / size;
+    const std::int64_t lastBucket = last / size;
+    for (std::int64_t b = firstBucket; b <= lastBucket; ++b) {
+        const std::int64_t i0 = b * size;
+        // Clamped by the data and not by the window: a bucket at the edge of
+        // the pane holds what it holds, or it would change as the reader
+        // scrolled it into view.
+        const std::int64_t i1 = std::min(i0 + size - 1, count - 1);
 
         double lowest = std::numeric_limits<double>::infinity();
         double highest = -std::numeric_limits<double>::infinity();
@@ -313,21 +317,28 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
             }
         }
         if (lowIndex < 0) {
-            // The whole column is a gap.
+            // The whole bucket is a gap.
             closeRun();
             continue;
         }
 
-        const double px = toX(x0 + static_cast<double>(i0) * dx);
-        if (lowIndex <= highIndex) {
-            place(px, toY(lowest));
-            if (highIndex != lowIndex) {
-                place(px, toY(highest));
-            }
+        // The two extremes occurred somewhere inside the bucket, and a bucket
+        // is a pixel or two wide. Putting them at its start and its middle is
+        // the nearest thing to where they were that costs nothing to say -- and
+        // at a bucket of two samples it is exactly where they were.
+        const double atFirst = toX(x0 + static_cast<double>(i0) * dx);
+        const double atMiddle =
+            toX(x0 + (static_cast<double>(i0) + static_cast<double>(size) / 2.0) * dx);
+        if (lowIndex == highIndex) {
+            place(atFirst, toY(lowest));
+        }
+        else if (lowIndex < highIndex) {
+            place(atFirst, toY(lowest));
+            place(atMiddle, toY(highest));
         }
         else {
-            place(px, toY(highest));
-            place(px, toY(lowest));
+            place(atFirst, toY(highest));
+            place(atMiddle, toY(lowest));
         }
     }
     closeRun();
@@ -336,54 +347,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 
 void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out)
 {
-    if (points == nullptr || count < 2) {
-        return;
-    }
-    const double half = std::max(width, kMinStrokeWidth) / 2.0;
-
-    // The normal of the segment leaving station `k`. A segment of no length
-    // has no direction, so it keeps the one before it -- which happens in an
-    // envelope wherever a column held a single sample.
-    const auto normalAfter = [&](int k, QPointF fallback) {
-        const double sx = points[k + 1].x() - points[k].x();
-        const double sy = points[k + 1].y() - points[k].y();
-        const double length = std::hypot(sx, sy);
-        if (!(length > 0.0)) {
-            return fallback;
-        }
-        return QPointF(-sy / length, sx / length);
-    };
-
-    QPointF entering = normalAfter(0, QPointF(0.0, -1.0));
-    QPointF leaving = entering;
-    for (int i = 0; i < count; ++i) {
-        if (i > 0) {
-            entering = leaving;
-            leaving = (i < count - 1) ? normalAfter(i, entering) : entering;
-        }
-
-        // The ends take the one normal they have; a join takes the bisector,
-        // lengthened so the stroke stays `width` wide through the corner.
-        QPointF offset = leaving;
-        if (i > 0 && i < count - 1) {
-            QPointF bisector(entering.x() + leaving.x(), entering.y() + leaving.y());
-            const double length = std::hypot(bisector.x(), bisector.y());
-            if (length > kMiterEpsilon) {
-                bisector = QPointF(bisector.x() / length, bisector.y() / length);
-                const double alignment =
-                    std::abs(bisector.x() * leaving.x() + bisector.y() * leaving.y());
-                const double reach = alignment > kMiterEpsilon
-                                         ? std::min(1.0 / alignment, kMiterLimit)
-                                         : kMiterLimit;
-                offset = QPointF(bisector.x() * reach, bisector.y() * reach);
-            }
-        }
-
-        const double ox = offset.x() * half;
-        const double oy = offset.y() * half;
-        out.emplace_back(points[i].x() + ox, points[i].y() + oy);
-        out.emplace_back(points[i].x() - ox, points[i].y() - oy);
-    }
+    strokeRunInto(points, count, width, [&out](double x, double y) { out.emplace_back(x, y); });
 }
 
 void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out)

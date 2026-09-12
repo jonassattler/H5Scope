@@ -43,8 +43,7 @@ void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QStrin
 
 void DatasetTableModel::setLayout(const TableLayout& layout)
 {
-    if (!present_ || layout.rank() != info_.rank()
-        || layout.onX.size() != layout.indices.size()) {
+    if (!present_ || layout.rank() != info_.rank() || layout.onX.size() != layout.indices.size()) {
         return;
     }
     beginResetModel();
@@ -81,8 +80,8 @@ int DatasetTableModel::columnCount(const QModelIndex& parent) const
 }
 
 DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& source,
-                                                      const TableAxes& axes,
-                                                      Block block, QString& error)
+                                                      const TableAxes& axes, Block block,
+                                                      QString& error)
 {
     // On the HDF5 thread. One job per block rather than one per read: a block
     // is a hundred rows of runs, and paying a round trip for each of them would
@@ -99,24 +98,22 @@ DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& 
                 const int column0 = block.columnOrigin + c;
                 const int run = axes.runLength(column0, block.columns - c);
 
-                std::vector<hsize_t> offset =
-                    axes.coordinates(block.rowOrigin + r, column0);
+                std::vector<hsize_t> offset = axes.coordinates(block.rowOrigin + r, column0);
                 std::vector<hsize_t> count(axes.rank(), 1);
                 if (hasX) {
                     count[lastX] = static_cast<hsize_t>(run);
                 }
 
                 const h5core::DataWindow window = source.readWindow(offset, count);
-                for (int i = 0; i < run && i < static_cast<int>(window.cells.size());
-                     ++i) {
+                for (int i = 0; i < run && i < static_cast<int>(window.cells.size()); ++i) {
                     block.cells[static_cast<std::size_t>(r) * block.columns + c + i] =
-                        QString::fromStdString(
-                            window.cells[static_cast<std::size_t>(i)]);
+                        QString::fromStdString(window.cells[static_cast<std::size_t>(i)]);
                 }
                 c += run;
             }
         }
-    } catch (const h5core::H5Error& failure) {
+    }
+    catch (const h5core::H5Error& failure) {
         error = QString::fromStdString(failure.summary());
         return {};
     }
@@ -159,9 +156,8 @@ void DatasetTableModel::setReadError(QString text) const
 const DatasetTableModel::Block* DatasetTableModel::blockAt(int row, int column) const
 {
     for (const Block& block : blocks_) {
-        if (block.valid && row >= block.rowOrigin
-            && row < block.rowOrigin + block.rows && column >= block.columnOrigin
-            && column < block.columnOrigin + block.columns) {
+        if (block.valid && row >= block.rowOrigin && row < block.rowOrigin + block.rows &&
+            column >= block.columnOrigin && column < block.columnOrigin + block.columns) {
             return &block;
         }
     }
@@ -177,10 +173,9 @@ void DatasetTableModel::ensureBlock(int row, int column) const
     Block block;
     block.rowOrigin = (row / kBlockRows) * kBlockRows;
     block.columnOrigin = (column / kBlockColumns) * kBlockColumns;
-    block.rows = static_cast<int>(
-        std::min<qint64>(kBlockRows, axes_.rows() - block.rowOrigin));
-    block.columns = static_cast<int>(
-        std::min<qint64>(kBlockColumns, axes_.columns() - block.columnOrigin));
+    block.rows = static_cast<int>(std::min<qint64>(kBlockRows, axes_.rows() - block.rowOrigin));
+    block.columns =
+        static_cast<int>(std::min<qint64>(kBlockColumns, axes_.columns() - block.columnOrigin));
     if (block.rows <= 0 || block.columns <= 0) {
         return;
     }
@@ -195,7 +190,8 @@ void DatasetTableModel::ensureBlock(int row, int column) const
     asked_.push_back(origin);
 
     auto* self = const_cast<DatasetTableModel*>(this);
-    struct Read {
+    struct Read
+    {
         Block block;
         QString error;
     };
@@ -235,8 +231,7 @@ void DatasetTableModel::ensureBlock(int row, int column) const
             // them; a reader scrolling through a dataset larger than RAM still
             // holds a bounded number of cells.
             std::erase_if(self->blocks_, [&](const Block& held) {
-                return held.rowOrigin == rowOrigin
-                       && held.columnOrigin == columnOrigin;
+                return held.rowOrigin == rowOrigin && held.columnOrigin == columnOrigin;
             });
             self->blocks_.insert(self->blocks_.begin(), std::move(read.block));
             if (self->blocks_.size() > kCachedBlocks) {
@@ -267,19 +262,18 @@ bool DatasetTableModel::numeric() const
     return present_ && info_.isNumeric() && info_.readable();
 }
 
-DatasetTableModel::NumericGrid
-DatasetTableModel::sampleValues(int firstRow, int rowSpan, int maxRows,
-                                int firstColumn, int columnSpan,
-                                int maxColumns) const
+DatasetTableModel::NumericGrid DatasetTableModel::sampleValues(int firstRow, int rowSpan,
+                                                               int maxRows, int firstColumn,
+                                                               int columnSpan, int maxColumns) const
 {
-    return sampleValues(axes_, firstRow, rowSpan, maxRows, firstColumn, columnSpan,
-                        maxColumns);
+    return sampleValues(axes_, firstRow, rowSpan, maxRows, firstColumn, columnSpan, maxColumns);
 }
 
-DatasetTableModel::NumericGrid
-DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes& axes,
-                              int firstRow, int rowSpan, int maxRows, int firstColumn,
-                              int columnSpan, int maxColumns)
+DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataSource& source,
+                                                             const TableAxes& axes, int firstRow,
+                                                             int rowSpan, int maxRows,
+                                                             int firstColumn, int columnSpan,
+                                                             int maxColumns, bool envelope)
 {
     // On the HDF5 thread. Everything above this -- whether there is a source at
     // all, whether its type has numbers in it -- was settled on the other side
@@ -304,17 +298,116 @@ DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes&
     // Ceiling division, so the stride is always enough: 100 rows into 30 is
     // every 4th, giving 25 -- never 34, which would overrun the cap.
     grid.rowStride = static_cast<int>((rowExtent + maxRows - 1) / maxRows);
-    grid.columnStride =
-        static_cast<int>((columnExtent + maxColumns - 1) / maxColumns);
+    grid.columnStride = static_cast<int>((columnExtent + maxColumns - 1) / maxColumns);
     grid.rows = static_cast<int>((rowExtent + grid.rowStride - 1) / grid.rowStride);
-    grid.columns =
+    const int buckets =
         static_cast<int>((columnExtent + grid.columnStride - 1) / grid.columnStride);
+
+    const bool hasX = !axes.xDims().empty();
+    const std::size_t lastX = hasX ? axes.xDims().back() : 0;
+
+    // An envelope, when one was asked for and there is anything to summarise.
+    //
+    // Only along the columns, because only the columns are contiguous in the
+    // file: the last x-dimension is the one that turns fastest along a row, so
+    // a bucket of them is one hyperslab and one read. Down the rows every
+    // element of a bucket would be its own read, and an envelope that cost
+    // `rowStride` times the round trips is not the same bargain at all. A plot
+    // reading its lines the other way up therefore gets plain stride sampling,
+    // which is what it got before.
+    const bool envelopeColumns = envelope && hasX && grid.columnStride > 1;
+    grid.columns = envelopeColumns ? 2 * buckets : buckets;
+    grid.columnStep = envelopeColumns ? grid.columnStride / 2.0 : grid.columnStride;
 
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     grid.values.assign(static_cast<std::size_t>(grid.rows) * grid.columns, nan);
 
-    const bool hasX = !axes.xDims().empty();
-    const std::size_t lastX = hasX ? axes.xDims().back() : 0;
+    const auto note = [&grid](double value) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+        if (!grid.hasFinite) {
+            grid.minimum = value;
+            grid.maximum = value;
+            grid.hasFinite = true;
+        }
+        else {
+            grid.minimum = std::min(grid.minimum, value);
+            grid.maximum = std::max(grid.maximum, value);
+        }
+    };
+
+    if (envelopeColumns) {
+        // One read per bucket, which is exactly what the strided path below
+        // does -- it reads one element per drawn point. The difference is that
+        // this one reads the whole run those elements were being chosen from,
+        // and kReadRun is 65536, so a bucket fits in a single read for any
+        // dataset up to a couple of hundred million points a line.
+        //
+        // That is the whole of the cost. In exchange a spike one sample wide
+        // cannot be missed, because it is selected for *being* extreme rather
+        // than for landing where a stride happened to fall -- and the extent
+        // the y axis is drawn against becomes the line's true extent rather
+        // than the extent of a sample of it.
+        try {
+            for (int r = 0; r < grid.rows; ++r) {
+                const auto row = static_cast<int>(firstRow + qint64{r} * grid.rowStride);
+                for (int b = 0; b < buckets; ++b) {
+                    const qint64 wanted = qint64{b} * grid.columnStride;
+                    const auto column = static_cast<int>(firstColumn + wanted);
+                    const auto span = static_cast<int>(
+                        std::min<qint64>(grid.columnStride, columnExtent - wanted));
+                    // Scattered Custom indices break the run, and the bucket is
+                    // then only partly covered. That is the same degradation
+                    // the strided path takes, and for the same reason.
+                    const int run = axes.runLength(column, std::min(span, kReadRun));
+
+                    std::vector<hsize_t> offset = axes.coordinates(row, column);
+                    std::vector<hsize_t> count(axes.rank(), 1);
+                    count[lastX] = static_cast<hsize_t>(std::max(run, 1));
+                    const h5core::NumericWindow window = source.readNumericWindow(offset, count);
+
+                    double lowest = 0.0;
+                    double highest = 0.0;
+                    qsizetype lowAt = -1;
+                    qsizetype highAt = -1;
+                    const auto seen = static_cast<qsizetype>(window.values.size());
+                    for (qsizetype i = 0; i < seen; ++i) {
+                        const double value = window.values[i];
+                        if (!std::isfinite(value)) {
+                            continue;
+                        }
+                        if (lowAt < 0 || value < lowest) {
+                            lowest = value;
+                            lowAt = i;
+                        }
+                        if (highAt < 0 || value > highest) {
+                            highest = value;
+                            highAt = i;
+                        }
+                    }
+                    if (lowAt < 0) {
+                        continue; // the whole bucket stays NaN, which is what it is
+                    }
+                    note(lowest);
+                    note(highest);
+
+                    // In the order they occur, so the stroke keeps the
+                    // direction the data has. At a stride of two that is not a
+                    // nicety -- the two values *are* the two elements, and
+                    // emitting them smallest-first would swap every descending
+                    // pair in the line.
+                    const auto at = static_cast<std::size_t>(r) * grid.columns + 2 * b;
+                    grid.values[at] = lowAt <= highAt ? lowest : highest;
+                    grid.values[at + 1] = lowAt <= highAt ? highest : lowest;
+                }
+            }
+        }
+        catch (const h5core::H5Error& error) {
+            grid.error = QString::fromStdString(error.summary());
+        }
+        return grid;
+    }
 
     // Two ways to walk a row, and the stride decides which is cheaper. With no
     // thinning the columns wanted are consecutive in the file, so one read of a
@@ -333,9 +426,9 @@ DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes&
                 const qint64 wanted = qint64{taken} * grid.columnStride;
                 const auto column = static_cast<int>(firstColumn + wanted);
                 const int limit =
-                    consecutive ? static_cast<int>(std::min<qint64>(
-                                      kReadRun, columnExtent - wanted))
-                                : 1;
+                    consecutive
+                        ? static_cast<int>(std::min<qint64>(kReadRun, columnExtent - wanted))
+                        : 1;
                 const int run = axes.runLength(column, limit);
 
                 std::vector<hsize_t> offset = axes.coordinates(row, column);
@@ -343,8 +436,7 @@ DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes&
                 if (hasX) {
                     count[lastX] = static_cast<hsize_t>(run);
                 }
-                const h5core::NumericWindow window =
-                    source.readNumericWindow(offset, count);
+                const h5core::NumericWindow window = source.readNumericWindow(offset, count);
 
                 // Every sampled column this run happens to cover. Reading
                 // starts on a wanted column by construction, so a full run
@@ -354,31 +446,20 @@ DatasetTableModel::sampleFrom(const h5core::DataSource& source, const TableAxes&
                 const int progress = taken;
                 for (; taken < grid.columns; ++taken) {
                     const qint64 within = qint64{taken} * grid.columnStride - wanted;
-                    if (within >= run
-                        || within >= static_cast<qint64>(window.values.size())) {
+                    if (within >= run || within >= static_cast<qint64>(window.values.size())) {
                         break;
                     }
-                    const double value =
-                        window.values[static_cast<std::size_t>(within)];
-                    grid.values[static_cast<std::size_t>(r) * grid.columns + taken] =
-                        value;
-                    if (std::isfinite(value)) {
-                        if (!grid.hasFinite) {
-                            grid.minimum = value;
-                            grid.maximum = value;
-                            grid.hasFinite = true;
-                        } else {
-                            grid.minimum = std::min(grid.minimum, value);
-                            grid.maximum = std::max(grid.maximum, value);
-                        }
-                    }
+                    const double value = window.values[static_cast<std::size_t>(within)];
+                    grid.values[static_cast<std::size_t>(r) * grid.columns + taken] = value;
+                    note(value);
                 }
                 if (taken == progress) {
                     ++taken; // leaves this column at NaN, which is what it is
                 }
             }
         }
-    } catch (const h5core::H5Error& error) {
+    }
+    catch (const h5core::H5Error& error) {
         grid.error = QString::fromStdString(error.summary());
     }
 
@@ -396,18 +477,17 @@ bool DatasetTableModel::sampleable(NumericGrid& grid) const
     if (!numeric()) {
         grid.error = errorText_.isEmpty()
                          ? tr("%1 holds %2, which has no numeric value.")
-                               .arg(sourcePath_,
-                                    QString::fromStdString(info_.type.description))
+                               .arg(sourcePath_, QString::fromStdString(info_.type.description))
                          : errorText_;
         return false;
     }
     return true;
 }
 
-DatasetTableModel::NumericGrid
-DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan,
-                                int maxRows, int firstColumn, int columnSpan,
-                                int maxColumns) const
+DatasetTableModel::NumericGrid DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow,
+                                                               int rowSpan, int maxRows,
+                                                               int firstColumn, int columnSpan,
+                                                               int maxColumns) const
 {
     NumericGrid grid;
     if (!sampleable(grid)) {
@@ -415,10 +495,9 @@ DatasetTableModel::sampleValues(const TableAxes& axes, int firstRow, int rowSpan
     }
     return H5Thread::instance().invoke([&](H5Session& session) {
         const h5core::DataSource* source = session.source();
-        return (source == nullptr)
-                   ? NumericGrid{}
-                   : sampleFrom(*source, axes, firstRow, rowSpan, maxRows, firstColumn,
-                                columnSpan, maxColumns);
+        return (source == nullptr) ? NumericGrid{}
+                                   : sampleFrom(*source, axes, firstRow, rowSpan, maxRows,
+                                                firstColumn, columnSpan, maxColumns);
     });
 }
 
@@ -443,12 +522,11 @@ DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) cons
         const h5core::DataSource* source = session.source();
         for (const SampleRequest& request : requests) {
             const TableAxes& axes = request.axes.has_value() ? *request.axes : axes_;
-            read.push_back(source == nullptr
-                               ? NumericGrid{}
-                               : sampleFrom(*source, axes, request.firstRow,
-                                            request.rowSpan, request.maxRows,
-                                            request.firstColumn, request.columnSpan,
-                                            request.maxColumns));
+            read.push_back(source == nullptr ? NumericGrid{}
+                                             : sampleFrom(*source, axes, request.firstRow,
+                                                          request.rowSpan, request.maxRows,
+                                                          request.firstColumn, request.columnSpan,
+                                                          request.maxColumns, request.envelope));
         }
         return read;
     });
@@ -471,8 +549,7 @@ QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
     // cell that is not there or would not read, and both of those are the same
     // "no value here" a struct or a string is.
     const auto missing = [role] {
-        return role == Number ? QVariant(std::numeric_limits<double>::quiet_NaN())
-                              : QVariant();
+        return role == Number ? QVariant(std::numeric_limits<double>::quiet_NaN()) : QVariant();
     };
 
     ensureBlock(row, column);
@@ -480,8 +557,8 @@ QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
     if (block == nullptr) {
         return missing();
     }
-    const auto flat = static_cast<std::size_t>(row - block->rowOrigin) * block->columns
-                      + static_cast<std::size_t>(column - block->columnOrigin);
+    const auto flat = static_cast<std::size_t>(row - block->rowOrigin) * block->columns +
+                      static_cast<std::size_t>(column - block->columnOrigin);
     if (flat >= block->cells.size()) {
         return missing();
     }
@@ -509,8 +586,7 @@ QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
 QVariantMap DatasetTableModel::valueExtent() const
 {
     if (!extent_) {
-        const NumericGrid grid =
-            sampleValues(0, -1, kExtentSamples, 0, -1, kExtentSamples);
+        const NumericGrid grid = sampleValues(0, -1, kExtentSamples, 0, -1, kExtentSamples);
         extent_ = Extent{grid.minimum, grid.maximum, grid.hasFinite};
     }
     return {{QStringLiteral("minimum"), extent_->minimum},
@@ -520,9 +596,7 @@ QVariantMap DatasetTableModel::valueExtent() const
 
 bool DatasetTableModel::floats() const
 {
-    return present_
-           && info_.type.cls == h5core::TypeClass::Float
-           && info_.readable();
+    return present_ && info_.type.cls == h5core::TypeClass::Float && info_.readable();
 }
 
 void DatasetTableModel::setFloatFormat(FloatFormat format)
@@ -536,8 +610,7 @@ void DatasetTableModel::setFloatFormat(FloatFormat format)
     // and not a reset: a reset would drop the reader's scroll position for a
     // change of notation.
     if (rowCount() > 0 && columnCount() > 0) {
-        emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1),
-                         {Qt::DisplayRole});
+        emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1), {Qt::DisplayRole});
     }
 }
 
@@ -550,8 +623,7 @@ void DatasetTableModel::setFloatDecimals(int decimals)
     floatDecimals_ = clamped;
     emit floatFormatChanged();
     if (rowCount() > 0 && columnCount() > 0) {
-        emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1),
-                         {Qt::DisplayRole});
+        emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1), {Qt::DisplayRole});
     }
 }
 
@@ -574,8 +646,7 @@ QString DatasetTableModel::formatted(const QString& text) const
     return QString::number(value, floatFormat_ == Fixed ? 'f' : 'e', floatDecimals_);
 }
 
-int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
-                                  int columns) const
+int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn, int columns) const
 {
     if (!present_ || rows <= 0 || columns <= 0) {
         return 0;
@@ -595,17 +666,15 @@ int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
         const int firstR = std::max(firstRow, block.rowOrigin);
         const int lastR = std::min(firstRow + rows, block.rowOrigin + block.rows);
         const int firstC = std::max(firstColumn, block.columnOrigin);
-        const int lastC =
-            std::min(firstColumn + columns, block.columnOrigin + block.columns);
+        const int lastC = std::min(firstColumn + columns, block.columnOrigin + block.columns);
 
         for (int r = firstR; r < lastR; ++r) {
             for (int c = firstC; c < lastC; ++c) {
-                const auto flat =
-                    static_cast<std::size_t>(r - block.rowOrigin) * block.columns
-                    + static_cast<std::size_t>(c - block.columnOrigin);
+                const auto flat = static_cast<std::size_t>(r - block.rowOrigin) * block.columns +
+                                  static_cast<std::size_t>(c - block.columnOrigin);
                 if (flat < block.cells.size()) {
-                    widest = std::max<int>(
-                        widest, static_cast<int>(formatted(block.cells[flat]).size()));
+                    widest = std::max<int>(widest,
+                                           static_cast<int>(formatted(block.cells[flat]).size()));
                 }
             }
         }
@@ -615,8 +684,7 @@ int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn,
 
 QVariantMap DatasetTableModel::elementAt(int row, int column) const
 {
-    if (!present_ || row < 0 || column < 0 || row >= axes_.rows()
-        || column >= axes_.columns()) {
+    if (!present_ || row < 0 || column < 0 || row >= axes_.rows() || column >= axes_.columns()) {
         return {};
     }
 
@@ -626,7 +694,8 @@ QVariantMap DatasetTableModel::elementAt(int row, int column) const
     // would mean a property, a signal and a pane that is briefly blank, to
     // save a wait of one object read. See DEVLOG: this is the remaining
     // synchronous point and it is deliberate.
-    struct Read {
+    struct Read
+    {
         h5core::ElementValue value;
         QString error;
     };
@@ -638,7 +707,8 @@ QVariantMap DatasetTableModel::elementAt(int row, int column) const
         }
         try {
             result.value = source->readElement(axes_.coordinates(row, column));
-        } catch (const h5core::H5Error& error) {
+        }
+        catch (const h5core::H5Error& error) {
             result.error = QString::fromStdString(error.summary());
         }
         return result;
@@ -727,8 +797,7 @@ namespace {
 /// else is the indices themselves, bracketed as numpy brackets its fancy
 /// indexing. Never approximated: what comes out selects exactly what went in,
 /// because the reader is going to paste it into a box that reads it back.
-[[nodiscard]] QString writeSelection(const std::vector<hsize_t>& indices,
-                                     hsize_t extent)
+[[nodiscard]] QString writeSelection(const std::vector<hsize_t>& indices, hsize_t extent)
 {
     if (indices.empty()) {
         return QStringLiteral(":");
@@ -744,9 +813,7 @@ namespace {
         if (indices.front() == 0 && indices.size() == extent) {
             return QStringLiteral(":");
         }
-        return QStringLiteral("%1:%2")
-            .arg(indices.front())
-            .arg(indices.back() + 1);
+        return QStringLiteral("%1:%2").arg(indices.front()).arg(indices.back() + 1);
     }
     QStringList written;
     written.reserve(static_cast<qsizetype>(indices.size()));
@@ -765,8 +832,7 @@ QString DatasetTableModel::lineExpression(int line, bool fromRows) const
         return {};
     }
 
-    const std::vector<std::size_t>& along =
-        fromRows ? axes_.xDims() : axes_.yDims();
+    const std::vector<std::size_t>& along = fromRows ? axes_.xDims() : axes_.yDims();
 
     // More than one dimension with something to run along, and the line is the
     // product of them rather than a slice of any one. See the header.
@@ -790,17 +856,16 @@ QString DatasetTableModel::lineExpression(int line, bool fromRows) const
     QStringList parts;
     parts.reserve(static_cast<qsizetype>(rank));
     for (std::size_t d = 0; d < rank; ++d) {
-        const bool runs =
-            std::find(along.begin(), along.end(), d) != along.end();
+        const bool runs = std::find(along.begin(), along.end(), d) != along.end();
         if (runs) {
-            parts << writeSelection(axes_.layout().indices[d],
-                                    d < shape.size() ? shape[d] : 0);
-        } else {
+            parts << writeSelection(axes_.layout().indices[d], d < shape.size() ? shape[d] : 0);
+        }
+        else {
             parts << QString::number(coords[d]);
         }
     }
-    return sourcePath_ + QStringLiteral("[") + parts.join(QStringLiteral(", "))
-           + QStringLiteral("]");
+    return sourcePath_ + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
+           QStringLiteral("]");
 }
 
 QHash<int, QByteArray> DatasetTableModel::roleNames() const
@@ -810,13 +875,10 @@ QHash<int, QByteArray> DatasetTableModel::roleNames() const
     // pointer is for.
     // "number" is the same cell as a double, which is what a cell filled by
     // its content is coloured from.
-    return {{Qt::DisplayRole, "display"},
-            {Qt::ToolTipRole, "toolTip"},
-            {Number, "number"}};
+    return {{Qt::DisplayRole, "display"}, {Qt::ToolTipRole, "toolTip"}, {Number, "number"}};
 }
 
-QVariant DatasetTableModel::headerData(int section, Qt::Orientation orientation,
-                                       int role) const
+QVariant DatasetTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
     if (role != Qt::DisplayRole) {
         return {};

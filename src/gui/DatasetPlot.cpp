@@ -3,15 +3,13 @@
 
 #include "DatasetPlot.hpp"
 
-
 #include <algorithm>
 #include <cmath>
 #include <iterator>
 
 namespace gui {
 
-DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent)
-    : QObject(parent), table_(table)
+DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent) : QObject(parent), table_(table)
 {
     // Two different events, deliberately. setDataset() and setLayout() both
     // reset the model, but only one of them is a new selection.
@@ -57,7 +55,7 @@ void DatasetPlot::invalidate()
     // rather than to the drawn set, so hiding a line must not disturb them --
     // which makes this the one place they are cleared.
     points_ = 0;
-    stride_ = 1;
+    step_ = 1.0;
     sampled_ = false;
     emit changed();
 }
@@ -86,7 +84,18 @@ void DatasetPlot::setSeriesFromRows(bool fromRows)
     invalidate();
 }
 
-void DatasetPlot::selectAll() { selectFirst(sourceSeriesCount()); }
+void DatasetPlot::selectAll()
+{
+    selectFirst(sourceSeriesCount());
+}
+
+int DatasetPlot::pointsFor(int lines)
+{
+    if (lines <= 0) {
+        return kMaxPoints;
+    }
+    return std::clamp(kPointBudget / lines, kMinPoints, kMaxPoints);
+}
 
 void DatasetPlot::selectFirst(int count)
 {
@@ -96,6 +105,22 @@ void DatasetPlot::selectFirst(int count)
     for (int series = 0; series < total; ++series) {
         drawn_.push_back(series);
     }
+
+    // How many points a line gets depends on how many lines there are, so a
+    // bulk change of the drawn set can change it -- and a line already held was
+    // read at the old resolution, with an x arithmetic that is one number for
+    // all of them. Those lines go.
+    //
+    // Only here, and pointedly not in setSeriesVisible: ticking one name in a
+    // legend of ten thousand must not re-read the other nine thousand nine
+    // hundred and ninety-nine.
+    const int cap = pointsFor(total);
+    if (cap != cap_) {
+        releaseDrawing();
+        lines_.clear();
+        cap_ = cap;
+    }
+
     sampled_ = false;
     emit changed();
 }
@@ -109,8 +134,7 @@ void DatasetPlot::selectNone()
 
 QString DatasetPlot::seriesExpression(int series) const
 {
-    return table_ == nullptr ? QString{}
-                             : table_->lineExpression(series, seriesFromRows_);
+    return table_ == nullptr ? QString{} : table_->lineExpression(series, seriesFromRows_);
 }
 
 bool DatasetPlot::seriesVisible(int series) const
@@ -133,7 +157,8 @@ void DatasetPlot::setSeriesVisible(int series, bool visible)
     }
     if (visible) {
         drawn_.insert(at, series);
-    } else {
+    }
+    else {
         drawn_.erase(at);
     }
     sampled_ = false;
@@ -148,8 +173,16 @@ DatasetTableModel::SampleRequest DatasetPlot::requestFor(int series) const
     // The trailing {} is the request's optional axes: the plot always reads the
     // table on screen, so it names none and the batch uses the model's own.
     return seriesFromRows_
-               ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, kMaxPoints, {}}
-               : DatasetTableModel::SampleRequest{0, -1, kMaxPoints, series, 1, 1, {}};
+               // Half as many buckets, because an envelope answers with two
+               // values for each of them -- so a line still arrives as at most
+               // kMaxPoints doubles and nothing about what this costs in
+               // memory changes.
+               ? DatasetTableModel::SampleRequest{series, 1, 1, 0, -1, cap_ / 2, {}, true}
+               // The other way up the line runs down the rows, which are not
+               // contiguous in the file; see sampleFrom for why an envelope is
+               // only offered along the columns. This is the reading that still
+               // thins by stride, and the one that can still miss a spike.
+               : DatasetTableModel::SampleRequest{0, -1, cap_, series, 1, 1, {}, false};
 }
 
 void DatasetPlot::readMissing() const
@@ -183,8 +216,7 @@ void DatasetPlot::readMissing() const
             requests.push_back(requestFor(wanted[i]));
         }
 
-        std::vector<DatasetTableModel::NumericGrid> grids =
-            table_->sampleValues(requests);
+        std::vector<DatasetTableModel::NumericGrid> grids = table_->sampleValues(requests);
         const std::size_t count = std::min(last - first, grids.size());
         for (std::size_t i = 0; i < count; ++i) {
             DatasetTableModel::NumericGrid& grid = grids[i];
@@ -196,7 +228,7 @@ void DatasetPlot::readMissing() const
             // first. The extent is what the x axis is drawn against, so it has
             // to be one number rather than one per line.
             points_ = seriesFromRows_ ? grid.columns : grid.rows;
-            stride_ = seriesFromRows_ ? grid.columnStride : grid.rowStride;
+            step_ = seriesFromRows_ ? grid.columnStep : static_cast<double>(grid.rowStride);
             lines_.emplace(wanted[first + i], std::move(grid.values));
         }
     }
@@ -242,7 +274,8 @@ void DatasetPlot::ensure() const
                 minimum_ = value;
                 maximum_ = value;
                 hasFinite_ = true;
-            } else {
+            }
+            else {
                 minimum_ = std::min(minimum_, value);
                 maximum_ = std::max(maximum_, value);
             }
@@ -267,7 +300,10 @@ QVariantList DatasetPlot::drawnSeries() const
     return series;
 }
 
-int DatasetPlot::seriesCount() const { return static_cast<int>(drawn_.size()); }
+int DatasetPlot::seriesCount() const
+{
+    return static_cast<int>(drawn_.size());
+}
 
 int DatasetPlot::pointCount() const
 {
@@ -283,7 +319,7 @@ int DatasetPlot::sourceSeriesCount() const
 bool DatasetPlot::thinned() const
 {
     ensure();
-    return stride_ > 1;
+    return step_ > 1.0;
 }
 
 double DatasetPlot::minimum() const
@@ -324,7 +360,10 @@ void DatasetPlot::setXStep(double value)
     emit xAxisChanged();
 }
 
-bool DatasetPlot::numeric() const { return table_->numeric(); }
+bool DatasetPlot::numeric() const
+{
+    return table_->numeric();
+}
 
 bool DatasetPlot::hasData() const
 {
@@ -340,8 +379,7 @@ QString DatasetPlot::error() const
 
 QString DatasetPlot::seriesLabel(int series) const
 {
-    const QString label = seriesFromRows_ ? table_->rowLabel(series)
-                                          : table_->columnLabel(series);
+    const QString label = seriesFromRows_ ? table_->rowLabel(series) : table_->columnLabel(series);
     // An axis carrying no dimension has no tuple to print -- a vector plotted
     // as one line is the case -- and a line still has to be called something.
     return label.isEmpty() ? QString::number(series) : label;
@@ -358,10 +396,16 @@ PlotLine DatasetPlot::lineOf(int series) const
     line.values = held->second.data();
     line.count = static_cast<qsizetype>(held->second.size());
     // Where the element sits, not where the drawn point sits: a thinned line
-    // skips stride_ elements between one drawn point and the next, so its x has
-    // to skip the same distance. With the default axis this is the element's
-    // own index, which is what the grid's column headers count.
-    line.positionStep = static_cast<double>(stride_);
+    // skips step_ elements between one drawn point and the next, so its x has
+    // to skip the same distance. With the default axis and no thinning this is
+    // the element's own index, which is what the grid's column headers count.
+    //
+    // Half a bucket when the line was read as an envelope: the two values of a
+    // bucket are its extremes, they occurred somewhere inside it, and putting
+    // them at its start and its middle is the nearest thing to where they were
+    // that costs nothing to say. A bucket is about a pixel wide, so the error
+    // is half of one.
+    line.positionStep = step_;
     return line;
 }
 

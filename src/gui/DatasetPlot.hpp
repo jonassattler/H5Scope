@@ -55,8 +55,7 @@ class DatasetPlot : public QObject
     /// True: one line per table row, x running along the columns. False: the
     /// transpose. See the note on setSeriesFromRows for why this is a setting
     /// rather than a constant.
-    Q_PROPERTY(bool seriesFromRows READ seriesFromRows WRITE setSeriesFromRows
-                   NOTIFY changed)
+    Q_PROPERTY(bool seriesFromRows READ seriesFromRows WRITE setSeriesFromRows NOTIFY changed)
     /// The lines actually drawn, by their index in the table, ascending. This
     /// is what the surface iterates and what fill() is indexed by.
     Q_PROPERTY(QVariantList drawnSeries READ drawnSeries NOTIFY changed)
@@ -196,6 +195,18 @@ private:
     /// Put the drawn set back to where a new table starts it: its first
     /// kMaxInitialSeries lines.
     void reseed();
+    /// Points per line, given how many lines there are.
+    ///
+    /// kMaxPoints each was right while a selection was sixty-four lines. It is
+    /// not right for `all` on a table of ten thousand: that is a hundred and
+    /// sixty megabytes held, and twenty million doubles scanned on every frame
+    /// of a drag -- to draw lines the renderer then summarises down to about a
+    /// hundred points each anyway, because ten thousand lines cannot each have
+    /// a thousand pixels of a thousand-pixel pane.
+    ///
+    /// So the lines share a budget. Below about a thousand of them nothing
+    /// changes, because a thousand times kMaxPoints is still inside it.
+    [[nodiscard]] static int pointsFor(int lines);
     /// Stop whatever was last filled from reading `lines_`.
     ///
     /// The borrow contract, honoured. Called from the only two places that can
@@ -222,7 +233,14 @@ private:
     /// screen and a line that goes away stops costing memory.
     mutable std::map<int, std::vector<double>> lines_;
     mutable int points_ = 0;
-    mutable int stride_ = 1;
+    /// Table positions between one drawn point and the next. A double because
+    /// an envelope puts two points in each bucket, so they sit half a bucket
+    /// apart and half of an odd bucket is not a whole number of elements.
+    mutable double step_ = 1.0;
+    /// Points per line for what is currently held. Recomputed when the size of
+    /// the drawn set changes in bulk -- see selectFirst -- and not when a
+    /// single line is ticked, so the legend stays cheap.
+    int cap_ = kMaxPoints;
     mutable double minimum_ = 0.0;
     mutable double maximum_ = 0.0;
     mutable bool hasFinite_ = false;
@@ -237,6 +255,14 @@ public:
     /// Points per line. Beyond a couple of thousand a line plot is drawing
     /// more detail than a screen can resolve, and the thinning says so.
     static constexpr int kMaxPoints = 2048;
+    /// ...and the fewest, however many lines are sharing the budget. Below
+    /// this a line stops being a shape and starts being a sketch of one, and
+    /// nothing is saved that was worth the difference.
+    static constexpr int kMinPoints = 256;
+    /// Doubles held for the drawn set, all lines together. Two million of
+    /// them, which is sixteen megabytes -- and, far more to the point, two
+    /// million the projection has to walk on every frame of a drag.
+    static constexpr int kPointBudget = 1 << 21;
     /// Lines a new selection opens on. A ceiling on what the reader is shown
     /// before they have asked for anything, not on what they may ask for:
     /// the legend ticks any line in the table and `select all` takes them all.
