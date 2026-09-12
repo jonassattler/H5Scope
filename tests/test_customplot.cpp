@@ -19,6 +19,9 @@
 #include "gui/CustomPlot.hpp"
 #include "gui/CustomPlotSet.hpp"
 #include "gui/DatasetLookup.hpp"
+#include "gui/DatasetPlot.hpp"
+#include "gui/DatasetTableModel.hpp"
+#include "gui/TableSetupModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
@@ -631,6 +634,76 @@ TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom
         settleAll();
         CHECK(plots->plotAt(index)->xExpression()
               == QStringLiteral("/cube[0, 0, :]"));
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice",
+                 "[custom][plot]")
+{
+    // What the legend's "add to a custom plot" puts into the entry it makes.
+    // It has to be exact: the reader is taking the line they can see, and an
+    // expression that selects more of the dataset than the plot drew would
+    // hand them a different curve under the same name.
+    auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+    REQUIRE(table != nullptr);
+    auto* plot = controller.datasetPlot();
+
+    SECTION("every dimension it holds fixed prints as the index it holds")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2 x 3 x 4
+        REQUIRE(plot->seriesFromRows());
+        CHECK(plot->seriesExpression(0) == QStringLiteral("/cube[0, 0, :]"));
+        CHECK(plot->seriesExpression(3) == QStringLiteral("/cube[1, 0, :]"));
+        CHECK(plot->seriesExpression(5) == QStringLiteral("/cube[1, 2, :]"));
+    }
+
+    SECTION("a sliced table yields an expression that says what was sliced")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        REQUIRE(controller.applySlice(QStringLiteral(":, :, 1:3")).isEmpty());
+        settleAll();
+
+        // Two points per line, and the expression says which two rather than
+        // taking the whole dimension back.
+        CHECK(plot->pointCount() == 2);
+        CHECK(plot->seriesExpression(0) == QStringLiteral("/cube[0, 0, 1:3]"));
+    }
+
+    SECTION("a scattered selection comes back bracketed, as numpy brackets one")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        REQUIRE(controller.applySlice(QStringLiteral(":, :, [0,3]")).isEmpty());
+        settleAll();
+        CHECK(plot->seriesExpression(0) == QStringLiteral("/cube[0, 0, [0,3]]"));
+    }
+
+    SECTION("a line running over two dimensions is not a slice, and says so")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/hypercube"));
+        auto* setup =
+            qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
+        REQUIRE(setup != nullptr);
+        // A second dimension on the columns: a line's points now run over the
+        // product of two, and no hyperslab of one dimension is that line.
+        setup->setAxis(2, true);
+        settleAll();
+        CHECK(plot->seriesExpression(0).isEmpty());
+    }
+
+    SECTION("and what it writes reads back into a custom plot unchanged")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        const QString written = plot->seriesExpression(4);
+        REQUIRE(written == QStringLiteral("/cube[1, 1, :]"));
+
+        gui::CustomPlot* custom = tab();
+        add(custom, written);
+        CHECK(errorOf(custom, 0).isEmpty());
+        CHECK(custom->pointCount() == 4);
+        // /cube holds its own flat index, so line (1,1) is
+        // 1*12 + 1*4 + k: 16, 17, 18, 19.
+        CHECK(custom->minimum() == 16.0);
+        CHECK(custom->maximum() == 19.0);
     }
 }
 

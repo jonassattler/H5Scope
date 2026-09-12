@@ -30,6 +30,7 @@ qt_add_qml_module(appqml
     CustomView.qml
     CustomDataPanel.qml
     CustomEntryRow.qml
+    AddToCustomMenu.qml
     RestoreViewDialog.qml
     ImageSurface.qml
     ViewFooter.qml

@@ -438,6 +438,132 @@ TestCase {
         compare(AppController.customPlots.plotAt(0).sourceSeriesCount, 2)
     }
 
+    // --- getting a dataset in from outside the tab -------------------------
+
+    function test_the_tree_grows_a_plus_while_a_custom_tab_is_open() {
+        const win = openWindow()
+
+        // Nothing to add to, so nothing offering to add.
+        compare(findAllOf(win.contentItem, "addToPlot")
+                .filter((p) => p.visible).length, 0)
+
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        tryVerify(() => !AppController.busy, 10000, "the tree must settle")
+        waitForRendering(win.contentItem)
+
+        const pluses = findAllOf(win.contentItem, "addToPlot")
+                       .filter((p) => p.visible)
+        verify(pluses.length > 0, "every dataset row must offer the plus")
+
+        // And it is green, which is the one thing in this pane drawn in a
+        // colour that is not a warning.
+        compare(String(pluses[0].ink), String(Theme.positive))
+    }
+
+    function test_the_plus_puts_the_dataset_into_the_tab_on_screen() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        AppController.customPlots.addDatasetTo(0, "/series/a")
+        settleReads()
+
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.sourceSeriesCount, 1)
+        compare(plot.seriesLabel(0), "/series/a[:]")
+        compare(plot.pointCount, 64)
+    }
+
+    function test_a_line_of_the_plot_tab_can_be_taken_to_a_custom_plot() {
+        const win = openWindow()
+        win.addCustomTab()
+        select("/cube")
+        win.selectTab("plot")
+        waitForRendering(win.contentItem)
+
+        // The plot tab draws six lines of a 2 x 3 x 4, and each of them is a
+        // slice of one dimension -- which is what the legend's menu offers.
+        const plot = AppController.datasetPlot
+        compare(plot.sourceSeriesCount, 6)
+        compare(plot.seriesExpression(0), "/cube[0, 0, :]")
+        compare(plot.seriesExpression(5), "/cube[1, 2, :]")
+
+        AppController.customPlots.plotAt(0).addExpression(plot.seriesExpression(3))
+        settleReads()
+
+        const custom = AppController.customPlots.plotAt(0)
+        compare(custom.sourceSeriesCount, 1)
+        compare(custom.pointCount, 4)
+        verify(custom.hasData, "the line must have been read")
+    }
+
+    function test_a_post_processed_line_has_no_path_to_record() {
+        const win = openWindow()
+        win.addCustomTab()
+        select("/hypercube")
+        win.selectTab("plot")
+        waitForRendering(win.contentItem)
+
+        const legends = findAllOf(win.contentItem, "plotLegend")
+                        .filter((l) => l.offersCustom)
+        compare(legends.length, 1)
+        const legend = legends[0]
+
+        // With nothing done to it, a line of the plot tab is a slice of the
+        // file and can be taken away.
+        compare(legend.customRefusal(0), "")
+
+        const pipeline = AppController.postprocessModel
+        pipeline.enabled = true
+        pipeline.addStep("max")
+        pipeline.setArgument(2, "0, 1")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        verify(AppController.postprocessActive,
+               "the pipeline must be running for this to be the case under test")
+
+        // What the legend is listing now is a computed array: it has no path,
+        // and an entry is a path and nothing else. Refused with its reason
+        // rather than quietly recording the raw slice underneath, which is
+        // not the line that was clicked.
+        const refusal = legend.customRefusal(0)
+        verify(refusal.indexOf("post-processed") >= 0,
+               "the reason must say why: " + refusal)
+
+        pipeline.enabled = false
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(legend.customRefusal(0), "")
+    }
+
+    function test_a_line_that_is_not_a_slice_of_one_dimension_is_not_offered() {
+        const win = openWindow()
+        win.addCustomTab()
+        select("/hypercube")
+        win.selectTab("plot")
+        waitForRendering(win.contentItem)
+
+        // A rank-4 table spreads three dimensions down its rows and one along
+        // its columns, so every line is a slice of one dimension and each is
+        // offered.
+        const legend = findAllOf(win.contentItem, "plotLegend")
+                       .filter((l) => l.offersCustom)[0]
+        compare(legend.customRefusal(0), "")
+
+        // Put a second dimension on the columns and a line stops being a
+        // hyperslab of anything: its points run over the product of two.
+        const setup = AppController.tableSetupModel
+        setup.setAxis(2, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const refusal = legend.customRefusal(0)
+        verify(refusal.indexOf("one dimension") >= 0,
+               "the reason must say what it is not: " + refusal)
+    }
+
     function test_the_footer_counts_entries_and_datapoints() {
         const win = openWindow()
         win.addCustomTab()

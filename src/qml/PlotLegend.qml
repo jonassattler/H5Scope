@@ -43,6 +43,33 @@ Rectangle {
     /// written here, so the number in the button is the number in force.
     readonly property int limit: plot ? plot.initialSeriesLimit : 0
 
+    /// Whether this legend can offer a line to a custom plot. It can when it
+    /// is describing the plot tab's own plot and not a custom one's.
+    readonly property bool offersCustom:
+        legend.plot === AppController.datasetPlot
+
+    /// Why line `index` cannot be taken to a custom plot, or empty when it
+    /// can be.
+    ///
+    /// One function rather than a condition on the menu row and a sentence
+    /// beside it, because the two have to agree: a row greyed for one reason
+    /// and explained by another is worse than either.
+    function customRefusal(index) {
+        if (AppController.postprocessActive)
+            return qsTr("a post-processed line has no path to record")
+        if (!legend.plot || legend.plot.seriesExpression(index) === "")
+            return qsTr("this line is not a slice of one dimension")
+        if (AppController.customPlots.count === 0)
+            return qsTr("no custom plots yet — make one with the +")
+        return ""
+    }
+
+    /// Open the line menu over line `index`.
+    function openRowMenu(index) {
+        lineMenu.series = index
+        lineMenu.popup()
+    }
+
     /// Bumped whenever the drawn set changes. seriesVisible() is a call rather
     /// than a role, so nothing else would tell a delegate's tick to update.
     property int revision: 0
@@ -59,6 +86,46 @@ Rectangle {
     Connections {
         target: legend.plot
         function onChanged() { legend.revision++ }
+    }
+
+    // What a line can be taken to. One drawer for the whole list, opened over
+    // whichever row was pressed -- a legend of ten thousand rows building one
+    // apiece would build ten thousand.
+    //
+    // A running pipeline is the one case this refuses. What the legend is
+    // listing then is a computed array: it has no path in the file, and an
+    // entry is a path and nothing else, so there is nothing to write down.
+    // Refused with its reason rather than quietly recording the slice
+    // underneath, which would put the raw data into the plot when what was
+    // clicked was a reduction of it.
+    AppMenu {
+        id: lineMenu
+
+        /// The line this was opened over.
+        property int series: -1
+
+        /// Why this line cannot be offered, or empty when it can be.
+        readonly property string refusal:
+            lineMenu.series >= 0 ? legend.customRefusal(lineMenu.series) : ""
+
+        AddToCustomMenu {
+            title: qsTr("Add to Custom Plot")
+            enabled: lineMenu.refusal === ""
+            onPicked: (index) => {
+                const plot = AppController.customPlots.plotAt(index)
+                if (!plot || lineMenu.refusal !== "")
+                    return
+                plot.addExpression(legend.plot.seriesExpression(lineMenu.series))
+            }
+        }
+
+        // Why the row above is greyed, when it is. A disabled row with no
+        // reason beside it is a row the reader reads as broken.
+        AppMenuItem {
+            text: lineMenu.refusal
+            enabled: false
+            visible: lineMenu.refusal !== ""
+        }
     }
 
     // The edge against the plot. The rail's own seam is `borderStrong`; this
@@ -233,6 +300,17 @@ Rectangle {
                         legend.target.highlighted =
                             legend.target.highlighted === row.index ? -1 : row.index
                     }
+                }
+
+                // ...and the right button offers to take this one line
+                // somewhere else. Only on the plot tab: a custom plot's own
+                // legend has nothing to offer, because the line is already in
+                // a custom plot and the entry row beside it is where it is
+                // edited.
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    enabled: legend.offersCustom
+                    onTapped: legend.openRowMenu(row.index)
                 }
             }
         }

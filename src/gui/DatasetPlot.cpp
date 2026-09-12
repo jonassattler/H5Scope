@@ -101,6 +101,12 @@ void DatasetPlot::selectNone()
     emit changed();
 }
 
+QString DatasetPlot::seriesExpression(int series) const
+{
+    return table_ == nullptr ? QString{}
+                             : table_->lineExpression(series, seriesFromRows_);
+}
+
 bool DatasetPlot::seriesVisible(int series) const
 {
     return std::binary_search(drawn_.begin(), drawn_.end(), series);

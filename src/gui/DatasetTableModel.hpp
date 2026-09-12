@@ -137,6 +137,22 @@ public:
     Q_INVOKABLE [[nodiscard]] QString columnLabel(int column) const;
     Q_INVOKABLE [[nodiscard]] QString cellLabel(int row, int column) const;
 
+    /// One line of the table, written the way the slice bar writes the whole
+    /// of it: `/cube[1, 2, :]`.
+    ///
+    /// `fromRows` says which way the lines run, which is DatasetPlot's own
+    /// setting. Every dimension this line holds fixed prints as the index it
+    /// holds it at; the one it runs along prints as the selection the table is
+    /// showing of it, so a table sliced to `0:4` yields a line of four points
+    /// and an expression that says four.
+    ///
+    /// Empty when the line is not a slice of one dimension. A table with two
+    /// dimensions on its x axis draws a line whose points run over the product
+    /// of them, and no hyperslab of one dimension is that line -- so rather
+    /// than write something close, this says there is nothing to write and the
+    /// caller offers the reader nothing.
+    Q_INVOKABLE [[nodiscard]] QString lineExpression(int line, bool fromRows) const;
+
     /// Whether the values can be read as numbers at all -- false for text, a
     /// compound, an enum, and for no dataset.
     [[nodiscard]] bool numeric() const;

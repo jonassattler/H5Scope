@@ -71,6 +71,15 @@ Rectangle {
         }
     }
 
+    /// Open the row menu over `path`. Held at the pane rather than built per
+    /// row: one menu is one menu however many rows are on screen, and a
+    /// thousand-row tree with a drawer apiece would build a thousand of them.
+    function openRowMenu(path, isDataset) {
+        rowMenu.path = path
+        rowMenu.isDataset = isDataset
+        rowMenu.popup()
+    }
+
     /// Which branches are open, by path, in tree order.
     function openBranches() {
         const model = AppController.filteredTreeModel
@@ -172,6 +181,8 @@ Rectangle {
             required property string name
             required property string path
             required property bool isGroup
+            required property bool isDataset
+            required property bool isResolved
             required property bool isCyclic
             required property bool isLink
             required property bool linkResolves
@@ -275,7 +286,17 @@ Rectangle {
             // arrangement for every list in Qt Quick.
             MouseArea {
                 anchors.fill: parent
-                onClicked: root.objectSelected(node.path)
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: (mouse) => {
+                    // A right-click selects the row as well as opening the
+                    // drawer over it. The menu acts on the row it was opened
+                    // over either way, and a drawer that left the selection
+                    // somewhere else would have the pane disagreeing with
+                    // itself about which object the reader means.
+                    root.objectSelected(node.path)
+                    if (mouse.button === Qt.RightButton)
+                        root.openRowMenu(node.path, node.isDataset)
+                }
                 // What the caret does, from anywhere on the row. A dataset has
                 // nothing to open, and a double click on one is simply the two
                 // selections it looks like.
@@ -628,8 +649,97 @@ Rectangle {
                     }
                 }
 
+                // --- the plus ----------------------------------------
+                // To the right of the shape, and a sibling of the cell that
+                // holds it rather than an item inside it: the RowLayout takes
+                // this width off the cell that fills, so the shape's own
+                // arithmetic -- which is delicate, and is why half the shapes
+                // in this pane once went missing -- is untouched.
+                //
+                // The gutter is there for every row while a custom plot is
+                // open, not only for the rows that can use it. A plus that
+                // appeared under the pointer would reflow the shape of every
+                // row the reader moved across, and a column of readouts that
+                // twitches as the pointer goes down it is harder to read than
+                // one that has given up four pixels.
+                Item {
+                    Layout.preferredWidth: Theme.gapL + Theme.gapS
+                    Layout.fillHeight: true
+                    visible: AppController.customPlots.activeIndex >= 0
 
+                    AppIconButton {
+                        objectName: "addToPlot"
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Theme.gapL
+                        height: Theme.gapL
+                        padding: 0
+                        visible: node.isDataset && node.isResolved
+                        glyph: "plus"
+                        ink: Theme.positive
+                        bare: true
+                        hint: qsTr("add to %1")
+                              .arg(AppController.customPlots.active
+                                   ? AppController.customPlots.active.name : "")
+                        onClicked: AppController.customPlots.addDatasetTo(
+                                       AppController.customPlots.activeIndex,
+                                       node.path)
+                    }
+                }
             }
+        }
+    }
+
+    // --- the row menu ----------------------------------------------------
+    // The first right-click drawer in this application. It carries the two
+    // things a reader can do with a dataset that are not "look at it": put it
+    // into a custom plot, and make it the thing a custom plot is drawn
+    // against.
+    //
+    // Each pair is a row for the tab on screen and a submenu for any of them.
+    // The pair reads as one item too many until you have both: the row is one
+    // press for the case that is almost always meant, and the submenu is the
+    // only way to reach a tab that is not showing.
+    AppMenu {
+        id: rowMenu
+
+        /// The row this was opened over.
+        property string path: ""
+        property bool isDataset: false
+
+        readonly property var plots: AppController.customPlots
+
+        AppMenuItem {
+            text: rowMenu.plots.active
+                  ? qsTr("Add to %1").arg(rowMenu.plots.active.name)
+                  : qsTr("Add to the current plot")
+            enabled: rowMenu.isDataset && rowMenu.plots.activeIndex >= 0
+            onTriggered: rowMenu.plots.addDatasetTo(rowMenu.plots.activeIndex,
+                                                    rowMenu.path)
+        }
+
+        AddToCustomMenu {
+            title: qsTr("Add to")
+            enabled: rowMenu.isDataset && AppController.customPlots.count > 0
+            onPicked: (index) => rowMenu.plots.addDatasetTo(index, rowMenu.path)
+        }
+
+        AppMenuSeparator {}
+
+        AppMenuItem {
+            text: rowMenu.plots.active
+                  ? qsTr("Set as Time Series for %1").arg(rowMenu.plots.active.name)
+                  : qsTr("Set as Time Series")
+            enabled: rowMenu.isDataset && rowMenu.plots.activeIndex >= 0
+            onTriggered: rowMenu.plots.setTimeSeriesOf(rowMenu.plots.activeIndex,
+                                                       rowMenu.path)
+        }
+
+        AddToCustomMenu {
+            title: qsTr("Set as Time Series for")
+            enabled: rowMenu.isDataset && AppController.customPlots.count > 0
+            onPicked: (index) => rowMenu.plots.setTimeSeriesOf(index, rowMenu.path)
         }
     }
 

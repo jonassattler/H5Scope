@@ -852,6 +852,8 @@ Item {
     PlotLegend {
         id: legendPanel
 
+        objectName: "plotLegend"
+
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         target: surface
