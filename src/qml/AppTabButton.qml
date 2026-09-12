@@ -42,7 +42,7 @@ Button {
     implicitWidth: control.glyph !== ""
                    ? Theme.tabBarHeight
                    : label.implicitWidth + Theme.s7 * 2
-                     + (control.closable ? Theme.gapL : 0)
+                     + (control.closable ? Theme.iconSize : 0)
     hoverEnabled: true
 
     background: Rectangle {
@@ -77,7 +77,13 @@ Button {
             id: label
 
             anchors.left: parent.left
-            anchors.right: closeMark.left
+            anchors.right: parent.right
+            // Room for the cross only on a tab that has one. Anchored to the
+            // edge with a margin rather than to the cross itself: the cross is
+            // hidden on the four fixed tabs and an anchor to a hidden item
+            // still holds its place, which took eighteen pixels off every
+            // label in the strip and elided all four of them.
+            anchors.rightMargin: control.closable ? Theme.iconSize : 0
             anchors.verticalCenter: parent.verticalCenter
             visible: control.glyph === ""
             text: control.text
@@ -105,8 +111,12 @@ Button {
 
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            width: Theme.gapL
-            height: Theme.gapL
+            // The icon at its own size with no rim. A cross drawn into twelve
+            // pixels on a 24-unit grid is a one-pixel stroke inset to eight of
+            // them, which is a smudge rather than a cross and a target the
+            // pointer has to be aimed at.
+            width: Theme.iconSize
+            height: Theme.iconSize
             padding: 0
             visible: control.closable && (control.hovered || control.selected)
             glyph: "close"

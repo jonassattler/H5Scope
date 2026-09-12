@@ -663,7 +663,7 @@ Rectangle {
                 // twitches as the pointer goes down it is harder to read than
                 // one that has given up four pixels.
                 Item {
-                    Layout.preferredWidth: Theme.gapL + Theme.gapS
+                    Layout.preferredWidth: Theme.iconSize + Theme.gapS
                     Layout.fillHeight: true
                     visible: AppController.customPlots.activeIndex >= 0
 
@@ -672,8 +672,12 @@ Rectangle {
 
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Theme.gapL
-                        height: Theme.gapL
+                        // The icon at its own size with no rim around it. A
+                        // plus drawn into twelve pixels on a 24-unit grid is a
+                        // one-pixel stroke, which at arm's length is a dot
+                        // rather than a plus.
+                        width: Theme.iconSize
+                        height: Theme.iconSize
                         padding: 0
                         visible: node.isDataset && node.isResolved
                         glyph: "plus"

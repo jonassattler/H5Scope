@@ -170,6 +170,32 @@ ApplicationWindow {
         return index
     }
 
+    /// Put the strip back to its four.
+    ///
+    /// For tools/make-screenshots, which calls it between pictures for the
+    /// same reason it collapses the tree between them: each picture should
+    /// show what it names and nothing the picture before it left behind.
+    function clearCustomTabs() {
+        while (window.customPlots.count > 0)
+            window.customPlots.removePlot(window.customPlots.count - 1)
+    }
+
+    /// Make a custom plot called `name` holding `expressions`, and show it.
+    ///
+    /// One function rather than four calls from outside, because the four have
+    /// to happen in order and the caller that needs them -- the screenshot
+    /// tool -- reaches this window through a JavaScript expression in its own
+    /// context and can only make one call at a time.
+    function buildCustomTab(name, expressions) {
+        const index = window.addCustomTab()
+        if (name !== "")
+            window.customPlots.setName(index, name)
+        const plot = window.customPlots.plotAt(index)
+        for (let i = 0; i < expressions.length; ++i)
+            plot.addExpression(expressions[i])
+        return "custom:" + index
+    }
+
     /// Close the tab at `index`, and leave the reader somewhere sensible.
     function closeCustomTab(index) {
         const wasShowing = window.customPlots.activeIndex === index
@@ -397,7 +423,12 @@ ApplicationWindow {
                         objectName: "addCustomTab"
 
                         glyph: "plus"
-                        ink: Theme.positive
+                        // The accent, not the positive green. This one makes a
+                        // *tab* -- it is navigation, like the four beside it,
+                        // and the strip is drawn in one ink. Green is spent on
+                        // the plus in the tree, which is the one that puts a
+                        // dataset somewhere.
+                        ink: Theme.accent
                         enabled: AppController.hasFile
                         onClicked: window.addCustomTab()
 

@@ -9,6 +9,8 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
 - Inspect the structure of HDF5 files, including metadata and attributes
 - Search through complex HDF5 files with wildcards
 - Visualize datasets as spreadsheets, plots or images
+- Draw slices of several datasets together on one pair of axes, against the
+  index, a stated range, or another dataset read as a time series
 - View images, which are automatically detected based on the HDF5 specification
 - Work with high dimensional arrays by utilizing powerful slicing tools
 - Transpose, reshape, reduce and slice a dataset before you look at it, with a
@@ -27,6 +29,13 @@ to its attributes.
 The Plot view, with the slice it is drawing spelled out above it.
 
 ![The Plot view, drawing a 48-point float64 dataset as a line](docs/screenshots/plot.png)
+
+A custom plot — as many tabs as you like, each holding lines from anywhere in
+the file. Datasets go in with the green plus beside them in the tree or from a
+right-click, entries can be written out by hand, and a tab can be torn off into
+a window of its own so two of them sit side by side.
+
+![A custom plot tab named "morning vs afternoon", drawing two 48-point float64 datasets together against one axis](docs/screenshots/custom.png)
 
 The Image view — datasets that follow the HDF5 image specification are detected
 and shown as images, alpha included.
