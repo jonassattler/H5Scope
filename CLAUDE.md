@@ -116,6 +116,11 @@ tests and `make-screenshots` never touch the user's settings.
    is capped at `postproc::kMaxElements` (2^24 doubles, 128 MB).
 7. **The version is counted from release tags**, never typed. Major/minor live
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
+8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`
+   and short. It *is* the release page: `tools/release-notes.sh` pulls it out
+   and CI publishes it. A tag with no section fails the design-checks job six
+   seconds in rather than after both builds, so a release whose notes nobody
+   wrote cannot be published.
 
 ## Conventions
 

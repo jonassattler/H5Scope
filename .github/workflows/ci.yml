@@ -34,6 +34,14 @@ jobs:
       - name: Nothing elides without a tooltip to read it in full
         run: bash tools/check-elided-text.sh src/qml
 
+      # A tag is a release, and a release says what changed in it. Checked in
+      # this job rather than in the one that publishes: that one runs after
+      # both builds, so a tag pushed without notes would fail twenty-six
+      # minutes in, having already spent them.
+      - name: A tag carries notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: bash tools/release-notes.sh "${GITHUB_REF_NAME#v}" --check
+
   build:
     name: Build and test (release, RHEL 8 floor)
     runs-on: ubuntu-latest
@@ -837,25 +845,39 @@ jobs:
       # rather than a pipe -- a heredoc nested in a YAML block scalar feeding a
       # flag that reads stdin is three quoting rules deep, and this step is the
       # last place worth being clever.
+      #
+      # What the release *says* comes out of CHANGELOG.md rather than out of
+      # this file. It used to be written here, which meant every release page
+      # carried the same paragraph about Qt being linked statically and not one
+      # word about what had changed -- true, and useless to the one reader it
+      # was in front of. See tools/release-notes.sh.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: release-assets
         run: |
-          cat > notes.md <<EOF
-          Self-contained builds: Qt and HDF5 are linked statically, so there is
-          nothing to install.
+          "$GITHUB_WORKSPACE/tools/release-notes.sh" "$VERSION" > notes.md
 
-          - **Linux x86-64** — \`H5Scope-$VERSION\`, or the AppImage if you
-            want a desktop entry. Built against glibc 2.28: RHEL 8 and newer.
-          - **Windows x64** — \`H5Scope-$VERSION.exe\`. Not code-signed, so
-            SmartScreen warns on first run: *More info* → *Run anyway*.
+          # ...then the three facts that are about the files rather than about
+          # the release, which is the only part worth repeating every time: a
+          # reader who has landed here to download something has to be told
+          # which file, what it will run on, and what terms it comes under.
+          # Everything above this rule is what actually changed.
+          cat >> notes.md <<EOF
+
+          ---
+
+          **Linux x86-64** — \`H5Scope-$VERSION\`, or the AppImage for a
+          desktop entry. Built against glibc 2.28: RHEL 8 and newer.
+          **Windows x64** — \`H5Scope-$VERSION.exe\`. Not code-signed, so
+          SmartScreen warns on first run: *More info* → *Run anyway*.
 
           GPL-3.0-only. \`H5Scope-$VERSION-source.tar.zst\` is the complete
           Corresponding Source for both; every binary also prints its terms
           with \`--license\` and \`--notices\`. \`SHA256SUMS\` covers
           everything here.
           EOF
+          cat notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "H5Scope $VERSION" \
             --notes-file notes.md \

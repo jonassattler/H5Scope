@@ -22,6 +22,40 @@ release builds on both platforms, the AppImage and the source bundle.
   platform behaviour of its own. All visual decisions live in one `Theme`
   singleton of design tokens.
 
+## Cutting a release
+
+Three steps, and the first is the one that is easy to forget.
+
+1. **Write the notes.** Add a `## MAJOR.MINOR.PATCH` section to `CHANGELOG.md`
+   saying what changed, in a handful of lines. That section is the release page
+   — CI publishes it and adds only a short note about which file is which — so
+   a version with no section cannot be released. `tools/release-notes.sh 0.4.0`
+   prints what will be published; `--check` says nothing and exits non-zero if
+   there is nothing to print.
+
+2. **Know the number.** It is not a guess: the patch counts the releases already
+   cut in the series, so the tag to push is whatever the build already calls
+   itself. Ask it rather than working it out.
+
+   ```sh
+   cmake --build --preset release
+   ls build/release/bin/H5Scope-*      # H5Scope-0.4.0 -> tag v0.4.0
+   ```
+
+   A new major or minor is a decision and is written in `cmake/Version.cmake`;
+   bumping the minor restarts the patch at zero on its own.
+
+3. **Tag and push.** The tag is what a release *is*, and pushing it is what
+   builds, tests and publishes one.
+
+   ```sh
+   git tag v0.4.0 && git push origin v0.4.0
+   ```
+
+   The publish job refuses a tag that disagrees with the binary the build
+   produced, so the two can never say different things about what the release
+   is.
+
 ## Building what the release publishes, on Linux
 
 The README's build targets the machine it runs on, which is what you want while
