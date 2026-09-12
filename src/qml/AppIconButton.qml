@@ -35,6 +35,14 @@ Button {
     /// the pointer, so it rests dimmed and comes up to full colour -- the same
     /// treatment the pipeline's drag handle gets, for the same reason.
     property bool bare: false
+    /// How strongly a bare glyph is drawn while the pointer is elsewhere.
+    ///
+    /// The dimming above assumes the glyph is always there and is answering a
+    /// pointer that has arrived. A control that appears only when it can be
+    /// used has already said that by being there, and dimming it as well
+    /// leaves a coloured speck that reads as a mark on the screen rather than
+    /// as something to press -- which is what the tree's plus was.
+    property real restOpacity: 0.55
 
     implicitWidth: Theme.smallControlHeight
     implicitHeight: Theme.smallControlHeight
@@ -60,7 +68,8 @@ Button {
     contentItem: AppIcon {
         name: control.glyph
         color: control.active ? Theme.accentText : control.ink
-        opacity: (!control.bare || control.hovered || control.down) ? 1.0 : 0.55
+        opacity: (!control.bare || control.hovered || control.down)
+                 ? 1.0 : control.restOpacity
     }
 
     AppToolTip {

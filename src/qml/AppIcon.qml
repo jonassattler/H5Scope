@@ -85,10 +85,17 @@ Item {
 
     // The same two strokes as the close above, turned 45 degrees -- which is
     // literally what a plus is, and drawing it that way is what keeps the two
-    // the same weight and the same inset when they sit in the same column.
+    // the same weight when they sit in the same column.
+    //
     // Squared off rather than round-capped at the ends: a plus reads as a
     // crosshair, and the round cap that softens a dismissal makes an add look
     // like a smudge at 18 pixels.
+    //
+    // Drawn across four-fifths of the grid where the close takes five-eighths
+    // of it. The close sits inside a 26px control with a slab to be inset
+    // from; this one stands on its own at 18, and at the close's inset the
+    // cross came out nine pixels across -- smaller than the shape readout it
+    // stands beside, which made it read as a speck rather than a control.
     Component {
         id: plusIcon
 
@@ -102,8 +109,8 @@ Item {
                 capStyle: ShapePath.FlatCap
 
                 startX: 12 * icon.unit
-                startY: 6 * icon.unit
-                PathLine { x: 12 * icon.unit; y: 18 * icon.unit }
+                startY: 4 * icon.unit
+                PathLine { x: 12 * icon.unit; y: 20 * icon.unit }
             }
 
             ShapePath {
@@ -112,9 +119,9 @@ Item {
                 fillColor: "transparent"
                 capStyle: ShapePath.FlatCap
 
-                startX: 6 * icon.unit
+                startX: 4 * icon.unit
                 startY: 12 * icon.unit
-                PathLine { x: 18 * icon.unit; y: 12 * icon.unit }
+                PathLine { x: 20 * icon.unit; y: 12 * icon.unit }
             }
         }
     }

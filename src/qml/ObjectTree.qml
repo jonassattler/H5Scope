@@ -683,6 +683,12 @@ Rectangle {
                         glyph: "plus"
                         ink: Theme.positive
                         bare: true
+                        // Full strength at rest. This control is already
+                        // conditional -- it is here only while there is a plot
+                        // to add to -- so it has nothing left to say by
+                        // whispering, and a dimmed green at this size is a
+                        // smudge rather than an affordance.
+                        restOpacity: 1.0
                         hint: qsTr("add to %1")
                               .arg(AppController.customPlots.active
                                    ? AppController.customPlots.active.name : "")
