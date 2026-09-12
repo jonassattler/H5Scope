@@ -74,6 +74,8 @@ Item {
             spacing: Theme.gapS
 
             AppCheckBox {
+                objectName: "entryDrawn"
+
                 checked: row.drawn
                 onToggled: {
                     if (row.plot)

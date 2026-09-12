@@ -45,6 +45,12 @@ SettingsPanel {
             width: parent.width
             spacing: Theme.gapS
 
+            // Opens on what the tab is called, because that is the name the
+            // view will nearly always want: a reader who has named a plot
+            // "morning vs afternoon" and then saves it is saving morning
+            // versus afternoon. Set rather than bound -- a binding on `text`
+            // breaks the moment they type over it, and this has to keep
+            // following the tab's name until they do.
             FilterInput {
                 id: viewName
 
@@ -58,6 +64,8 @@ SettingsPanel {
 
                 onTextEdited: internal.saveProblem = ""
                 onAccepted: internal.save()
+
+                Component.onCompleted: internal.offerPlotName()
             }
 
             AppToolButton {
@@ -86,62 +94,91 @@ SettingsPanel {
         // A view belongs to the session rather than to the tab it was saved
         // from, which is what makes saving one worth doing: a comparison built
         // once can be put into a fresh tab beside another.
-        Repeater {
-            model: AppController.customPlots.viewNames
+        //
+        // A Column of its own inside the row, because SettingRow spaces its
+        // children at gapXS -- right for a caption under a control, too tight
+        // for a stack of cards to read as separate ones.
+        Column {
+            width: parent.width
+            spacing: Theme.gapS
 
-            delegate: RowLayout {
+            Repeater {
+                model: AppController.customPlots.viewNames
+
+            // Each view is a card rather than a line of text with two buttons
+            // after it. Three of these stacked in a rail read as one paragraph
+            // with some controls scattered through it unless something says
+            // where one stops and the next begins -- and what a view is is a
+            // *thing* the reader made and can pick up again, which a bordered
+            // inset says and a run of text does not.
+            delegate: Rectangle {
                 id: viewRow
 
                 required property string modelData
 
-                width: parent.width
-                spacing: Theme.gapS
+                width: parent ? parent.width : 0
+                implicitHeight: viewLine.implicitHeight + Theme.gapS * 2
+                radius: Theme.radiusS
+                color: viewHover.hovered ? Theme.surfaceHover
+                                         : Theme.surfaceRaised
+                border.width: Theme.borderWidth
+                border.color: Theme.border
 
-                Text {
-                    id: viewLabel
+                HoverHandler { id: viewHover }
 
-                    Layout.fillWidth: true
-                    text: viewRow.modelData
-                    font: Theme.bodySmall
-                    color: Theme.textPrimary
-                    elide: Text.ElideMiddle
-                    verticalAlignment: Text.AlignVCenter
+                RowLayout {
+                    id: viewLine
 
-                    HoverHandler { id: viewHover }
+                    anchors.fill: parent
+                    anchors.margins: Theme.gapS
+                    spacing: Theme.gapS
 
-                    AppToolTip {
-                        shown: viewLabel.truncated && viewHover.hovered
-                        verbatim: true
-                        text: viewLabel.text
+                    Text {
+                        id: viewLabel
+
+                        Layout.fillWidth: true
+                        text: viewRow.modelData
+                        font: Theme.bodySmall
+                        color: Theme.textPrimary
+                        elide: Text.ElideMiddle
+                        verticalAlignment: Text.AlignVCenter
+
+                        AppToolTip {
+                            shown: viewLabel.truncated && viewHover.hovered
+                            verbatim: true
+                            text: viewLabel.text
+                        }
                     }
-                }
 
-                AppToolButton {
-                    objectName: "restoreView"
+                    AppToolButton {
+                        objectName: "restoreView"
 
-                    /// Which view this row is for, so the suite can press the
-                    /// right one of several.
-                    readonly property string viewName: viewRow.modelData
+                        /// Which view this row is for, so the suite can press
+                        /// the right one of several.
+                        readonly property string viewName: viewRow.modelData
 
-                    text: qsTr("restore")
-                    size: "sm"
-                    enabled: panel.plotIndex >= 0
-                    // Checked before it is applied, and the check has to ask
-                    // the file: a view can name a dataset this session has
-                    // never looked at. The answer arrives at onViewChecked
-                    // below.
-                    onClicked: {
-                        internal.restoring = viewRow.modelData
-                        AppController.customPlots.checkView(viewRow.modelData)
+                        text: qsTr("restore")
+                        size: "sm"
+                        enabled: panel.plotIndex >= 0
+                        // Checked before it is applied, and the check has to
+                        // ask the file: a view can name a dataset this session
+                        // has never looked at. The answer arrives at
+                        // onViewChecked below.
+                        onClicked: {
+                            internal.restoring = viewRow.modelData
+                            AppController.customPlots.checkView(viewRow.modelData)
+                        }
                     }
-                }
 
-                AppIconButton {
-                    glyph: "close"
-                    ink: Theme.danger
-                    bare: true
-                    hint: qsTr("forget this view")
-                    onClicked: AppController.customPlots.removeView(viewRow.modelData)
+                    AppIconButton {
+                        glyph: "close"
+                        ink: Theme.danger
+                        bare: true
+                        hint: qsTr("forget this view")
+                        onClicked: AppController.customPlots.removeView(
+                                       viewRow.modelData)
+                    }
+                    }
                 }
             }
         }
@@ -149,8 +186,9 @@ SettingsPanel {
         Text {
             width: parent.width
             visible: AppController.customPlots.viewNames.length === 0
-            text: qsTr("Nothing saved yet. A view keeps the lines, the x axis " +
-                       "and the colours, and can be put into any custom plot.")
+            text: qsTr("Nothing saved yet. A view keeps its name, its lines, " +
+                       "its x axis and its colours, and can be put into any " +
+                       "custom plot.")
             font: Theme.caption
             color: Theme.textDisabled
             wrapMode: Text.WordWrap
@@ -326,6 +364,20 @@ SettingsPanel {
         /// an answer about some other one.
         property string restoring: ""
 
+        /// Put the tab's name in the box.
+        function resetViewName() {
+            viewName.text = panel.plot ? panel.plot.name : ""
+            internal.saveProblem = ""
+        }
+
+        /// ...unless the reader is part way through writing something else
+        /// there. A tab renamed from its own bar must not take the caret's
+        /// line away mid-word.
+        function offerPlotName() {
+            if (!viewName.activeFocus)
+                internal.resetViewName()
+        }
+
         function save() {
             if (panel.plotIndex < 0)
                 return
@@ -335,8 +387,12 @@ SettingsPanel {
             internal.saveProblem = AppController.customPlots.saveView(
                 wanted, panel.plotIndex, panel.surface
                     ? panel.surface.drawingSettings() : ({}))
+            // Back to the tab's name rather than empty: the box states what
+            // saving now would be called, and after a save that is still the
+            // tab's name. Set outright rather than offered -- the box still
+            // has the caret, and what was in it has just been used up.
             if (internal.saveProblem === "")
-                viewName.text = ""
+                internal.resetViewName()
         }
 
         function commitTimeBase() {
@@ -352,6 +408,16 @@ SettingsPanel {
             internal.timeProblem = ""
         }
     }
+
+    // The tab renamed, or a different tab put in front of this panel. Either
+    // way the name the box is offering is no longer the right one.
+    Connections {
+        target: panel.plot
+
+        function onNameChanged() { internal.offerPlotName() }
+    }
+
+    onPlotChanged: internal.offerPlotName()
 
     Connections {
         target: AppController.customPlots

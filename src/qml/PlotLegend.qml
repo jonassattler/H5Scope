@@ -39,8 +39,9 @@ Rectangle {
     readonly property var plot: legend.target ? legend.target.plot : null
     /// Lines in the table, which is how many rows the list has.
     readonly property int total: plot ? plot.sourceSeriesCount : 0
-    /// How many a new selection opens on. Read off the plot rather than
-    /// written here, so the number in the button is the number in force.
+    /// How many a new selection opens on, or -1 for a plot that opened on
+    /// nothing. Read off the plot rather than written here, so the number in
+    /// the button is the number in force.
     readonly property int limit: plot ? plot.initialSeriesLimit : 0
 
     /// Whether this legend can offer a line to a custom plot. It can when it
@@ -354,12 +355,15 @@ Rectangle {
 
                 // The way back to what the selection opened on. Absent when
                 // the table is shorter than that window, because there it says
-                // exactly what "all" says.
+                // exactly what "all" says -- and absent altogether for a plot
+                // that opened on nothing, which says so with -1: a custom
+                // plot's lines were each put there on purpose, so there is no
+                // earlier state to go back to.
                 AppToolButton {
                     Layout.fillWidth: true
                     text: qsTr("first %1").arg(legend.limit)
                     size: "sm"
-                    visible: legend.total > legend.limit
+                    visible: legend.limit > 0 && legend.total > legend.limit
                     onClicked: { if (legend.plot) legend.plot.selectFirst(legend.limit) }
 
                     AppToolTip {

@@ -223,13 +223,6 @@ QString CustomPlot::xExpressionError(const QString& text) const
 
 int CustomPlot::addExpression(const QString& text)
 {
-    if (static_cast<int>(entries_.size()) >= kMaxEntries) {
-        emit notice(tr("%1 already holds %2 lines, which is as many as one "
-                       "plot draws")
-                        .arg(name_)
-                        .arg(kMaxEntries));
-        return -1;
-    }
     const int row = static_cast<int>(entries_.size());
     beginInsertRows({}, row, row);
     Entry entry;
@@ -240,7 +233,7 @@ int CustomPlot::addExpression(const QString& text)
     return row;
 }
 
-void CustomPlot::addDataset(const QString& path)
+void CustomPlot::addDataset(const QString& path, bool confirmed)
 {
     if (lookup_ == nullptr) {
         return;
@@ -248,7 +241,7 @@ void CustomPlot::addDataset(const QString& path)
     // The shape decides how many lines this is, so it has to be known first.
     // resolve() runs the continuation immediately when it already is, which is
     // the usual case: the tree had to describe the row to draw it.
-    lookup_->resolve({path}, [this, path] {
+    lookup_->resolve({path}, [this, path, confirmed] {
         const PathFacts* facts = lookup_->facts(path);
         if (facts == nullptr) {
             return;
@@ -268,21 +261,20 @@ void CustomPlot::addDataset(const QString& path)
             lines *= shape[d];
         }
 
-        const int room = kMaxEntries - static_cast<int>(entries_.size());
-        if (room <= 0) {
-            emit notice(tr("%1 already holds %2 lines, which is as many as one "
-                           "plot draws")
-                            .arg(name_)
-                            .arg(kMaxEntries));
+        // Asked about rather than clipped. A dataset of two thousand runs is
+        // a thing a reader may genuinely want the shape of; what they must not
+        // get is two thousand strokes they did not ask for, or a silent
+        // sixty-four out of two thousand, which is the worst of both -- a
+        // picture that looks complete and is not.
+        if (!confirmed && lines > static_cast<hsize_t>(kCrowdedLines)) {
+            emit crowding(path, static_cast<int>(lines));
             return;
         }
-        const hsize_t taking =
-            std::min<hsize_t>(lines, static_cast<hsize_t>(room));
 
         std::vector<QString> written;
-        written.reserve(static_cast<std::size_t>(taking));
+        written.reserve(static_cast<std::size_t>(lines));
         std::vector<hsize_t> cursor(last, 0);
-        for (hsize_t line = 0; line < taking; ++line) {
+        for (hsize_t line = 0; line < lines; ++line) {
             QStringList parts;
             for (std::size_t d = 0; d < last; ++d) {
                 parts << QString::number(cursor[d]);
@@ -309,14 +301,6 @@ void CustomPlot::addDataset(const QString& path)
             entries_.push_back(std::move(entry));
         }
         endInsertRows();
-
-        if (taking < lines) {
-            emit notice(tr("%1 has %2 lines; the first %3 were added, which is "
-                           "as many as one plot draws")
-                            .arg(path)
-                            .arg(lines)
-                            .arg(taking));
-        }
         invalidate();
     });
 }
@@ -848,7 +832,8 @@ QVariantMap CustomPlot::state() const
         mode = QStringLiteral("dataset");
     }
 
-    return {{QStringLiteral("entries"), rows},
+    return {{QStringLiteral("name"), name_},
+            {QStringLiteral("entries"), rows},
             {QStringLiteral("xMode"), mode},
             {QStringLiteral("xExpression"), xExpression_}};
 }
@@ -863,8 +848,7 @@ void CustomPlot::setState(const QVariantMap& state)
         const QVariantMap fields = row.toMap();
         const QString expression =
             fields.value(QStringLiteral("expression")).toString().trimmed();
-        if (expression.isEmpty()
-            || static_cast<int>(entries_.size()) >= kMaxEntries) {
+        if (expression.isEmpty()) {
             // Dropped rather than refused, which is the stance
             // PostprocessModel::setSteps takes for an operation this build does
             // not know: a stored thing that no longer makes sense costs the

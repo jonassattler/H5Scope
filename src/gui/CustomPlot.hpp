@@ -159,16 +159,20 @@ public:
     Q_INVOKABLE [[nodiscard]] QString xExpressionError(const QString& text) const;
 
     // --- the entries ------------------------------------------------------
-    /// Add a slice, written as a line. Returns the row it landed on, or -1
-    /// when the tab is already holding as many as it draws.
+    /// Add a slice, written as a line. Returns the row it landed on.
     Q_INVOKABLE int addExpression(const QString& text);
     /// Add every 1-D line of `path`, as the plot tab would draw them: the last
     /// dimension runs along x and every other one is spread over the lines.
-    /// Returns how many were added.
     ///
     /// Asynchronous, because it has to know the shape first. The rows appear
     /// when the answer does.
-    Q_INVOKABLE void addDataset(const QString& path);
+    ///
+    /// A dataset of more than `kCrowdedLines` lines adds nothing and emits
+    /// `crowding` instead, unless `confirmed`. Nothing here refuses: the
+    /// reader is told what they are about to ask for and asked again, which is
+    /// the same stance the legend's `all` takes on a table of ten thousand
+    /// rows.
+    Q_INVOKABLE void addDataset(const QString& path, bool confirmed = false);
     Q_INVOKABLE void removeEntry(int row);
     Q_INVOKABLE void moveEntry(int from, int to);
     Q_INVOKABLE void clearEntries();
@@ -184,10 +188,11 @@ public:
     // --- what the surface and the legend ask -------------------------------
     [[nodiscard]] QVariantList drawnSeries() const;
     [[nodiscard]] int seriesCount() const;
-    /// Higher than any tab can hold, so the legend's "first N" button -- which
-    /// exists to put a table of ten thousand rows back to what it opened on --
-    /// never appears here. Every entry in a custom plot was put there by hand.
-    [[nodiscard]] static int initialSeriesLimit() { return kMaxEntries; }
+    /// No such thing here, which is what -1 says. The legend's "first N"
+    /// button exists to put a table of ten thousand rows back to the window a
+    /// *selection* opened on; a custom plot opens on nothing and every entry
+    /// in it was put there on purpose, so there is no number to go back to.
+    [[nodiscard]] static int initialSeriesLimit() { return -1; }
     [[nodiscard]] int pointCount() const;
     [[nodiscard]] int sourceSeriesCount() const;
     [[nodiscard]] bool thinned() const;
@@ -237,6 +242,10 @@ signals:
     void nameChanged();
     /// Something worth telling the reader that is not an error on a row.
     void notice(const QString& message);
+    /// `path` would put `lines` lines in this plot, which is more than are
+    /// worth drawing without being asked. Answered by calling addDataset again
+    /// with `confirmed`, or by not calling it.
+    void crowding(const QString& path, int lines);
 
 private:
     struct Entry {
@@ -300,12 +309,16 @@ public:
     /// beyond a couple of thousand a line is drawing more detail than a screen
     /// can resolve.
     static constexpr int kMaxPoints = 2048;
-    /// Entries one tab will hold. The same ceiling the plot tab opens a
-    /// selection at, and here for the same reason -- past a few dozen, strokes
-    /// over one another stop separating -- but a hard limit rather than a
-    /// starting point, because every entry here was asked for individually and
-    /// there is no "all" to press.
-    static constexpr int kMaxEntries = 64;
+    /// Lines past which adding a whole dataset asks first.
+    ///
+    /// Not a limit. Past a few dozen, strokes over one another stop separating
+    /// and a plot of thousands takes a while to draw -- which is worth saying
+    /// before it happens and is not worth refusing over, because a reader who
+    /// wants to see the shape of two thousand runs at once has asked for
+    /// exactly that. The same number the plot tab opens a selection at, and
+    /// the same stance the legend's `all` takes beside it: state the cost,
+    /// then do as you are told.
+    static constexpr int kCrowdedLines = 64;
 };
 
 } // namespace gui

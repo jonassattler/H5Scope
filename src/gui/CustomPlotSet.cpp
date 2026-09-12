@@ -88,6 +88,12 @@ int CustomPlotSet::addPlot()
     connect(plot, &CustomPlot::nameChanged, this, [this] { emit namesChanged(); });
     connect(plot, &CustomPlot::notice, this,
             [this](const QString& message) { emit notice(message); });
+    // Forwarded with the plot's position on it, because what answers the
+    // question is addDatasetTo and that takes one.
+    connect(plot, &CustomPlot::crowding, this,
+            [this, plot](const QString& path, int lines) {
+                emit crowdingWarned(indexOfName(plot->name()), path, lines);
+            });
     plots_.push_back(plot);
     detached_.push_back(false);
     endInsertRows();
@@ -221,10 +227,24 @@ bool CustomPlotSet::detached(int index) const
     return detached_[static_cast<std::size_t>(index)];
 }
 
-void CustomPlotSet::addDatasetTo(int index, const QString& path)
+void CustomPlotSet::addDatasetTo(int index, const QString& path, bool confirmed)
 {
     if (CustomPlot* plot = plotAt(index); plot != nullptr) {
-        plot->addDataset(path);
+        plot->addDataset(path, confirmed);
+    }
+}
+
+QString CustomPlotSet::uniqueName(const QString& wanted, int except) const
+{
+    const QString trimmed = wanted.trimmed();
+    if (trimmed.isEmpty() || !taken(trimmed, except)) {
+        return trimmed;
+    }
+    for (int n = 2;; ++n) {
+        const QString candidate = QStringLiteral("%1 %2").arg(trimmed).arg(n);
+        if (!taken(candidate, except)) {
+            return candidate;
+        }
     }
 }
 
@@ -349,6 +369,26 @@ void CustomPlotSet::restoreView(const QString& name, int index)
         return;
     }
     plot->setState(held.value().plot);
+
+    // The title travels with the view, because a view *is* an arrangement and
+    // what it is called is part of one. It nearly always collides with the tab
+    // it was saved from -- which is still open under that name -- so it takes
+    // the first free variant rather than being refused, and says so when it
+    // had to.
+    const QString wanted =
+        held.value().plot.value(QStringLiteral("name")).toString().trimmed();
+    if (!wanted.isEmpty() && wanted != plot->name()) {
+        const QString given = uniqueName(wanted, index);
+        plot->setName(given);
+        const QModelIndex row = this->index(index, 0);
+        emit dataChanged(row, row, {NameRole});
+        if (given != wanted) {
+            emit notice(tr("another plot is called \"%1\", so this one is "
+                           "\"%2\"")
+                            .arg(wanted, given));
+        }
+    }
+
     emit viewRestored(index, held.value().settings);
 }
 

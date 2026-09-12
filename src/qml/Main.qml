@@ -637,6 +637,27 @@ ApplicationWindow {
         id: aboutDialog
     }
 
+    // Asked here rather than in the tab, because what raises it is the tree --
+    // a plus beside a row, or its menu -- and the tree is this window's.
+    CrowdedPlotDialog {
+        id: crowdedDialog
+    }
+
+    /// The question a whole dataset raises, exposed for the QML suite: a Popup
+    /// is not in the item tree, so there is no walking to it.
+    readonly property alias crowdedPlotDialog: crowdedDialog
+
+    Connections {
+        target: window.customPlots
+
+        function onCrowdingWarned(index, path, lines) {
+            crowdedDialog.plotIndex = index
+            crowdedDialog.path = path
+            crowdedDialog.lines = lines
+            crowdedDialog.open()
+        }
+    }
+
     // Whether a file opened is no longer something openFile() can return.
     //
     // It is opened on the thread that owns HDF5 and answered a moment later --

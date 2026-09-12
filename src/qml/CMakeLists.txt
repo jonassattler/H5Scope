@@ -33,6 +33,7 @@ qt_add_qml_module(appqml
     AddToCustomMenu.qml
     CustomPlotWindow.qml
     RestoreViewDialog.qml
+    CrowdedPlotDialog.qml
     ImageSurface.qml
     ViewFooter.qml
     SliceField.qml

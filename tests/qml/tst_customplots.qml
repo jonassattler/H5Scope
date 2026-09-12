@@ -710,6 +710,162 @@ TestCase {
         compare(named[0].font.letterSpacing, information[0].font.letterSpacing)
     }
 
+    // --- how many lines is too many ---------------------------------------
+
+    function test_a_whole_dataset_that_is_a_great_many_lines_asks_first() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        // /compressed is 100 x 100, so a hundred lines -- past the point where
+        // strokes over one another stop separating.
+        AppController.customPlots.addDatasetTo(0, "/compressed")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const asked = win.crowdedPlotDialog
+        verify(asked.visible, "the question must be in front of the reader")
+        compare(asked.lines, 100)
+        compare(asked.path, "/compressed")
+        compare(asked.plotIndex, 0)
+        // Nothing landed while it was open.
+        compare(AppController.customPlots.plotAt(0).sourceSeriesCount, 0)
+
+        asked.accept()
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        // Every one of them, not sixty-four of them: a silent clip is a
+        // picture that looks complete and is not.
+        compare(AppController.customPlots.plotAt(0).sourceSeriesCount, 100)
+    }
+
+    function test_cancelling_leaves_the_plot_as_it_was() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        AppController.customPlots.addDatasetTo(0, "/series/a")
+        settleReads()
+        compare(AppController.customPlots.plotAt(0).sourceSeriesCount, 1)
+
+        AppController.customPlots.addDatasetTo(0, "/compressed")
+        settleReads()
+        waitForRendering(win.contentItem)
+        win.crowdedPlotDialog.reject()
+        settleReads()
+
+        compare(AppController.customPlots.plotAt(0).sourceSeriesCount, 1)
+    }
+
+    function test_a_hand_written_line_is_never_questioned() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        // One at a time is one decision at a time, however many of them there
+        // are -- the question is about a dataset arriving whole.
+        const plot = AppController.customPlots.plotAt(0)
+        for (let i = 0; i < 70; ++i)
+            plot.addExpression("/series/a[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        compare(plot.sourceSeriesCount, 70)
+        verify(!win.crowdedPlotDialog.visible, "nothing to ask about")
+    }
+
+    function test_the_save_box_opens_on_the_name_of_the_tab() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "viewName")[0]
+        verify(box, "the panel must hold a save box")
+        compare(box.text, "Custom 1")
+
+        // ...and follows it, until the reader writes something else.
+        compare(AppController.customPlots.setName(0, "morning vs afternoon"), "")
+        waitForRendering(win.contentItem)
+        compare(box.text, "morning vs afternoon")
+
+        // Saving puts the tab's name back rather than emptying the box: what
+        // it states is what saving now would be called.
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        box.forceActiveFocus()
+        box.text = "just a"
+        box.textEdited()
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(AppController.customPlots.viewNames[0], "just a")
+        compare(box.text, "morning vs afternoon")
+    }
+
+    function test_a_restored_view_brings_the_tab_title_with_it() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        compare(AppController.customPlots.setName(0, "morning"), "")
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        compare(AppController.customPlots.saveView("named", 0, ({})), "")
+
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+        const second = shownView(win)
+        mouseClick(findAllOf(second, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        restore(second, "named")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        // The tab it was saved from still holds that name, so this one takes
+        // the first free variant -- and the strip says so.
+        compare(AppController.customPlots.plotAt(1).name, "morning 2")
+        compare(win.tabs[5].label, "morning 2")
+    }
+
+    function test_the_tick_beside_a_line_takes_it_out_of_the_picture() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        // The same question the legend's tick asks, written on the row the
+        // reader is already editing.
+        const ticks = findAllOf(view, "entryDrawn")
+        compare(ticks.length, 2)
+        verify(ticks[0].checked && ticks[1].checked, "both start drawn")
+
+        plot.setSeriesVisible(1, false)
+        waitForRendering(win.contentItem)
+        verify(ticks[0].checked)
+        verify(!ticks[1].checked, "the row follows the plot")
+
+        mouseClick(ticks[1])
+        waitForRendering(win.contentItem)
+        verify(plot.seriesVisible(1), "and the plot follows the row")
+        compare(plot.seriesCount, 2)
+    }
+
     function test_the_footer_counts_entries_and_datapoints() {
         const win = openWindow()
         win.addCustomTab()

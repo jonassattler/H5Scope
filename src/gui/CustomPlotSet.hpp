@@ -81,13 +81,28 @@ public:
     Q_INVOKABLE [[nodiscard]] int indexOfName(const QString& name) const;
     /// Rename a tab. Returns why it could not be, or empty once it is.
     Q_INVOKABLE QString setName(int index, const QString& name);
+    /// `wanted`, or the first "`wanted` 2", "`wanted` 3" nobody else is using.
+    ///
+    /// For restoring a view, which carries the title of the tab it was saved
+    /// from and will therefore collide with that tab every time it is put
+    /// somewhere else. That is a different situation from a reader typing a
+    /// name -- there they have said exactly what they mean and setName refuses
+    /// rather than deciding for them; here they have asked for an arrangement
+    /// and the title came along with it.
+    Q_INVOKABLE [[nodiscard]] QString uniqueName(const QString& wanted,
+                                                 int except) const;
     Q_INVOKABLE void setDetached(int index, bool detached);
     Q_INVOKABLE [[nodiscard]] bool detached(int index) const;
 
     /// Add a dataset to the tab at `index`, expanded into its 1-D lines.
     /// Offered here because every caller -- the tree's plus, the tree's menu,
     /// the legend's menu -- has an index rather than a plot.
-    Q_INVOKABLE void addDatasetTo(int index, const QString& path);
+    ///
+    /// A dataset with more lines than are worth drawing unasked answers
+    /// through `crowdingWarned` instead; call this again with `confirmed` to
+    /// go ahead. See CustomPlot::addDataset.
+    Q_INVOKABLE void addDatasetTo(int index, const QString& path,
+                                  bool confirmed = false);
     /// Make `path` the time base of the tab at `index`. The whole of the
     /// dataset when it is a vector; its first line otherwise, which is the
     /// line the plot tab would have drawn first.
@@ -129,6 +144,10 @@ signals:
     void viewRestored(int index, const QVariantMap& settings);
     /// Something worth telling the reader, from a tab or from here.
     void notice(const QString& message);
+    /// Adding `path` to the tab at `index` would put `lines` lines in it,
+    /// which is more than are worth drawing without being asked. The window
+    /// puts the question; calling addDatasetTo with `confirmed` is yes.
+    void crowdingWarned(int index, const QString& path, int lines);
 
 private:
     [[nodiscard]] QString freeName() const;

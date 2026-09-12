@@ -446,20 +446,79 @@ TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path 
                ContainsSubstring("dim"));
 }
 
-TEST_CASE_METHOD(PlotFixture, "a tab holds as many lines as one plot draws and no more",
+TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused",
                  "[custom]")
 {
     gui::CustomPlot* plot = tab();
-    QSignalSpy said(plot, &gui::CustomPlot::notice);
 
-    for (int i = 0; i < gui::CustomPlot::kMaxEntries; ++i) {
-        REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == i);
+    SECTION("a line at a time is never questioned, however many there are")
+    {
+        QSignalSpy asked(plot, &gui::CustomPlot::crowding);
+        for (int i = 0; i < gui::CustomPlot::kCrowdedLines + 8; ++i) {
+            REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == i);
+        }
+        CHECK(plot->sourceSeriesCount() == gui::CustomPlot::kCrowdedLines + 8);
+        CHECK(asked.count() == 0);
     }
-    CHECK(plot->addExpression(QStringLiteral("/series/a[:]")) == -1);
-    CHECK(plot->sourceSeriesCount() == gui::CustomPlot::kMaxEntries);
-    REQUIRE(said.count() == 1);
-    CHECK_THAT(said.at(0).at(0).toString().toStdString(),
-               ContainsSubstring("as many as one plot draws"));
+
+    SECTION("a dataset small enough to draw goes straight in")
+    {
+        QSignalSpy asked(plot, &gui::CustomPlot::crowding);
+        plot->addDataset(QStringLiteral("/cube")); // six lines
+        settleAll();
+        CHECK(plot->sourceSeriesCount() == 6);
+        CHECK(asked.count() == 0);
+    }
+
+    SECTION("one too big to draw unasked adds nothing and says how many")
+    {
+        QSignalSpy asked(plot, &gui::CustomPlot::crowding);
+        // 100 x 100: a hundred lines, which is past the point where strokes
+        // over one another stop separating.
+        plot->addDataset(QStringLiteral("/compressed"));
+        settleAll();
+
+        CHECK(plot->sourceSeriesCount() == 0);
+        REQUIRE(asked.count() == 1);
+        CHECK(asked.at(0).at(0).toString() == QStringLiteral("/compressed"));
+        CHECK(asked.at(0).at(1).toInt() == 100);
+    }
+
+    SECTION("and asking again with the answer adds every one of them")
+    {
+        plot->addDataset(QStringLiteral("/compressed"), true);
+        settleAll();
+        CHECK(plot->sourceSeriesCount() == 100);
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/compressed[0, :]"));
+        CHECK(plot->seriesLabel(99) == QStringLiteral("/compressed[99, :]"));
+        // Nothing was clipped: a hundred lines of a hundred points each.
+        CHECK(plot->pointCount() == 10000);
+    }
+
+    SECTION("the set forwards the question with the tab it is about on it")
+    {
+        QSignalSpy asked(set(), &gui::CustomPlotSet::crowdingWarned);
+        set()->addDatasetTo(0, QStringLiteral("/compressed"));
+        settleAll();
+
+        REQUIRE(asked.count() == 1);
+        CHECK(asked.at(0).at(0).toInt() == 0);
+        CHECK(asked.at(0).at(2).toInt() == 100);
+
+        set()->addDatasetTo(0, QStringLiteral("/compressed"), true);
+        settleAll();
+        CHECK(set()->plotAt(0)->sourceSeriesCount() == 100);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a custom plot has no window to go back to",
+                 "[custom]")
+{
+    // The legend's "first N" button puts a table of ten thousand rows back to
+    // the window a *selection* opened on. A custom plot opens on nothing and
+    // every entry in it was put there on purpose, so there is no such number
+    // and -1 is how the legend is told to leave the button out.
+    CHECK(gui::CustomPlot::initialSeriesLimit() == -1);
 }
 
 TEST_CASE_METHOD(PlotFixture, "the tabs are named, unique and reorderable", "[custom]")
@@ -600,6 +659,40 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         REQUIRE(checked.count() == 1);
         CHECK(checked.at(0).at(1).toInt() == 2);
         CHECK(checked.at(0).at(2).toStringList().size() == 2);
+    }
+
+    SECTION("the tab's own title travels with it")
+    {
+        const int target = plots->addPlot();
+        settleAll();
+        REQUIRE(plots->setName(source, QStringLiteral("morning")).isEmpty());
+        REQUIRE(plots->saveView(QStringLiteral("named"), source, {}).isEmpty());
+
+        plots->restoreView(QStringLiteral("named"), target);
+        settleAll();
+        // The tab it was saved from is still open under that name, so this one
+        // takes the first free variant rather than being refused -- a view is
+        // an arrangement and what it is called is part of one.
+        CHECK(plots->plotAt(target)->name() == QStringLiteral("morning 2"));
+        CHECK(plots->plotAt(source)->name() == QStringLiteral("morning"));
+    }
+
+    SECTION("and takes that title outright once the tab it came from has gone")
+    {
+        REQUIRE(plots->setName(source, QStringLiteral("morning")).isEmpty());
+        REQUIRE(plots->saveView(QStringLiteral("named"), source, {}).isEmpty());
+        plots->removePlot(source);
+        QCoreApplication::processEvents();
+        REQUIRE(plots->count() == 0);
+
+        const int target = plots->addPlot();
+        settleAll();
+        plots->restoreView(QStringLiteral("named"), target);
+        settleAll();
+
+        // Nothing is using the name now, so there is no variant to fall back
+        // to and the tab is called what the view was saved as.
+        CHECK(plots->plotAt(target)->name() == QStringLiteral("morning"));
     }
 
     SECTION("saving over a name replaces the view and keeps its place in the list")
