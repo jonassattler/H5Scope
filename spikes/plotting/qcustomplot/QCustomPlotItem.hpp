@@ -78,6 +78,10 @@ public:
     /// much is the bridge".
     void setAdaptiveSampling(bool on);
 
+    /// Whether each graph gets an entry in QCustomPlot's own legend. Off by
+    /// default: H5Scope draws its own, and the entries are not free to remove.
+    void setPopulateLegend(bool on);
+
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -96,6 +100,7 @@ private:
     ViewWindow view_;
     bool logY_ = false;
     bool adaptiveSampling_ = true;
+    bool populateLegend_ = false;
 };
 
 } // namespace spike

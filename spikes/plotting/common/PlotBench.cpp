@@ -54,18 +54,20 @@ std::vector<Cell> grid(std::int64_t pointBudget)
 void BenchReport::print(const std::string& title) const
 {
     std::printf("\n%s\n", title.c_str());
-    std::printf("%-10s %7s %9s %9s %9s %8s %8s %8s %9s %8s %9s   %s\n", "shape",
-                "series", "points", "build ms", "first ms", "cpu p50", "cpu p95",
-                "rss MiB", "data MiB", "allocs", "alloc MiB", "");
-    std::printf("%-10s %7s %9s %9s %9s %8s %8s %8s %9s %8s %9s\n", "----------",
-                "-------", "---------", "---------", "---------", "--------",
-                "--------", "--------", "---------", "--------", "---------");
+    std::printf("%-10s %7s %9s %9s %9s %9s %8s %8s %8s %9s %8s %9s   %s\n",
+                "shape", "series", "points", "clear ms", "build ms", "first ms",
+                "cpu p50", "cpu p95", "rss MiB", "data MiB", "allocs",
+                "alloc MiB", "");
+    std::printf("%-10s %7s %9s %9s %9s %9s %8s %8s %8s %9s %8s %9s\n",
+                "----------", "-------", "---------", "---------", "---------",
+                "---------", "--------", "--------", "--------", "---------",
+                "--------", "---------");
 
     for (const Row& row : rows_) {
         if (row.skipped) {
-            std::printf("%-10s %7d %9d %9s %9s %8s %8s %8s %9s %8s %9s   %s\n",
+            std::printf("%-10s %7d %9d %9s %9s %9s %8s %8s %8s %9s %8s %9s   %s\n",
                         row.shape.c_str(), row.series, row.points, "-", "-", "-",
-                        "-", "-", "-", "-", "-", row.note.c_str());
+                        "-", "-", "-", "-", "-", "-", row.note.c_str());
             continue;
         }
         // The marker and the note both, not one or the other: a row that is
@@ -80,9 +82,10 @@ void BenchReport::print(const std::string& title) const
         } else {
             std::snprintf(rss, sizeof rss, "%.0f", row.rssMiB);
         }
-        std::printf("%-10s %7d %9d %9.1f %9.1f %8.2f %8.2f %8s %9.0f %8llu %9llu   %s\n",
-                    row.shape.c_str(), row.series, row.points, row.buildMs,
-                    row.firstFrameMs, row.frames.cpuMedian, row.frames.cpuP95, rss,
+        std::printf("%-10s %7d %9d %9.1f %9.1f %9.1f %8.2f %8.2f %8s %9.0f %8llu %9llu   %s\n",
+                    row.shape.c_str(), row.series, row.points, row.clearMs,
+                    row.buildMs, row.firstFrameMs, row.frames.cpuMedian,
+                    row.frames.cpuP95, rss,
                     row.dataMiB,
                     static_cast<unsigned long long>(row.allocCalls),
                     static_cast<unsigned long long>(row.allocMiB),
@@ -105,7 +108,7 @@ bool BenchReport::appendTsv(const QString& path) const
     }
     QTextStream out(&file);
     if (fresh) {
-        out << "renderer\tshape\tseries\tpoints\treal\tskipped\tbuild_ms\tfirst_ms"
+        out << "renderer\tshape\tseries\tpoints\treal\tskipped\tclear_ms\tbuild_ms\tfirst_ms"
                "\tcpu_p50\tcpu_p95\tcpu_worst\twall_p50\twall_p95\tframes\trss_mib"
                "\tdata_mib\tallocs\talloc_mib\tnote\n";
     }
@@ -113,7 +116,8 @@ bool BenchReport::appendTsv(const QString& path) const
         out << QString::fromStdString(row.renderer) << '\t'
             << QString::fromStdString(row.shape) << '\t' << row.series << '\t'
             << row.points << '\t' << (row.realWorkload ? 1 : 0) << '\t'
-            << (row.skipped ? 1 : 0) << '\t' << row.buildMs << '\t'
+            << (row.skipped ? 1 : 0) << '\t' << row.clearMs << '\t'
+            << row.buildMs << '\t'
             << row.firstFrameMs << '\t' << row.frames.cpuMedian << '\t'
             << row.frames.cpuP95 << '\t' << row.frames.cpuWorst << '\t'
             << row.frames.wallMedian << '\t' << row.frames.wallP95 << '\t'

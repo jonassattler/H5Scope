@@ -23,6 +23,7 @@ void QCustomPlotSurface::setVariant(const QString& variant)
     name_ = variant_.isEmpty() ? "qcustomplot"
                                : "qcustomplot/" + variant_.toStdString();
     if (QCustomPlotItem* plot = item()) {
+        plot->setPopulateLegend(variant_ == QLatin1String("with-legend"));
         plot->setAdaptiveSampling(variant_ != QLatin1String("no-adaptive"));
     }
 }
@@ -43,6 +44,7 @@ void QCustomPlotSurface::setSource(const SyntheticSource* source)
         view_.yMax = source_->maximum();
     }
     if (QCustomPlotItem* plot = item()) {
+        plot->setPopulateLegend(variant_ == QLatin1String("with-legend"));
         plot->setAdaptiveSampling(variant_ != QLatin1String("no-adaptive"));
         plot->setSource(source_);
         plot->setView(view_);

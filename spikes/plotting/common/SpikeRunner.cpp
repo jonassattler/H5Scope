@@ -113,8 +113,17 @@ BenchReport runBench(Surface& surface, const Options& options)
             options.shape, cell.series, cell.points, options.seed);
         row.dataMiB = static_cast<double>(source->bytes()) / (1024.0 * 1024.0);
 
+        // Throwing the previous cell's data away, timed on its own. Charging
+        // it to the next cell's build would put the cost of discarding ten
+        // thousand lines in the row of the sixty-four that replaced them --
+        // which is where it first appeared, at 496 seconds, and looked like an
+        // impossible build rather than a quadratic teardown.
         QElapsedTimer clock;
         clock.start();
+        surface.setSource(nullptr);
+        row.clearMs = static_cast<double>(clock.nsecsElapsed()) / 1e6;
+
+        clock.restart();
         surface.setSource(source.get());
         row.buildMs = static_cast<double>(clock.nsecsElapsed()) / 1e6;
 

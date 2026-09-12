@@ -15,6 +15,12 @@
 //
 // Seven numbers per cell, and each answers a different question:
 //
+//   clear ms   throwing the *previous* dataset away. Measured on its own
+//              because it is not always small and it is not always the same
+//              order as building: QCustomPlot took 496 seconds to discard ten
+//              thousand graphs it had built in one, and charged to the build
+//              column that number would have been read as the cost of the
+//              sixty-four lines that replaced them.
 //   build ms   handing the renderer N lines of M points. The application's
 //              DatasetPlot::fill() is exactly this call, once per line, and it
 //              happens on the UI thread.
@@ -75,6 +81,7 @@ struct Row {
     bool skipped = false;
     std::string note;
 
+    double clearMs = 0.0;
     double buildMs = 0.0;
     double firstFrameMs = 0.0;
     FrameStats frames;

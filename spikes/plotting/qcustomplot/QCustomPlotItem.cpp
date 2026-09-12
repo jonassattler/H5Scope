@@ -4,6 +4,7 @@
 #include "QCustomPlotItem.hpp"
 
 #include "common/Palette.hpp"
+#include "common/SpikeMain.hpp"
 
 #include <qcustomplot.h>
 
@@ -23,6 +24,27 @@ QCustomPlotItem::QCustomPlotItem(QQuickItem* parent)
     setAcceptHoverEvents(true);
 
     plot_ = std::make_unique<QCustomPlot>();
+    // Given a viewport before anything else, because QCustomPlot's constructor
+    // ends by queueing a replot of itself. A QWidget that is never shown still
+    // runs that cycle, and at a size of zero it allocates zero-sized paint
+    // buffers and reports, once per layer:
+    //   QPainter::begin: Paint device returned engine == 0
+    //   QCPLayer::drawToPaintBuffer() paint buffer returned inactive painter
+    //
+    // setViewport() rather than resize(): a hidden widget receives no resize
+    // event, so resizing it leaves the viewport at zero and changes nothing --
+    // which is the shape of this whole bridge in one line. The widget is real
+    // enough to run its own machinery and not real enough to be told its size
+    // the way a widget normally is.
+    //
+    // It narrows the complaint and does not silence it. QCustomPlot draws its
+    // buffered layers -- the overlay is one -- out of paint buffers that only
+    // replot() allocates, and toPainter() is not replot(); calling replot()
+    // here as well does not help, because a widget that is never shown never
+    // completes one. So the messages stay, the pixels are correct, and what
+    // they are really reporting is a library being driven down a path it does
+    // not have. Left in the log rather than filtered out of it.
+    plot_->setViewport(QRect(0, 0, kWindowWidth, kWindowHeight));
     plot_->setBackground(QBrush(plotGround()));
     plot_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     plot_->xAxis->setBasePen(QPen(QColor(0x8b, 0x91, 0x9b)));
@@ -40,6 +62,12 @@ QCustomPlotItem::QCustomPlotItem(QQuickItem* parent)
 }
 
 QCustomPlotItem::~QCustomPlotItem() = default;
+
+void QCustomPlotItem::setPopulateLegend(bool on)
+{
+    populateLegend_ = on;
+    rebuild();
+}
 
 void QCustomPlotItem::setAdaptiveSampling(bool on)
 {
@@ -101,6 +129,19 @@ void QCustomPlotItem::rebuild()
             values[i] = from[static_cast<std::size_t>(i)];
         }
         QCPGraph* graph = plot_->addGraph();
+        // Out of QCustomPlot's own legend again, because H5Scope has one of its
+        // own -- PlotLegend.qml, virtualised, and already better than anything
+        // here offers. QCustomPlot::addGraph() adds a legend item whether the
+        // legend is shown or not, and removing a plottable later has to find
+        // and remove that item: a linear search of the legend plus a layout
+        // simplify, per plottable. Tearing down ten thousand graphs that way
+        // is quadratic, and it was measured at 496 seconds.
+        //
+        // This is a configuration choice and not a fix; --variant with-legend
+        // leaves the items in, so the report can say what the default costs.
+        if (!populateLegend_) {
+            graph->removeFromLegend();
+        }
         graph->setPen(QPen(seriesColour(line, series)));
         graph->setAdaptiveSampling(adaptiveSampling_);
         // alreadySorted, because x from an origin and a step is. Telling
