@@ -629,6 +629,24 @@ QtObject {
         letterSpacing: 1.32,
         capitalization: Font.AllUppercase
     })
+    /// The same machine label, left as it was written.
+    ///
+    /// Uppercasing is a rendering decision about a *fixed vocabulary*: every
+    /// other label in this application is a word the program chose, and
+    /// drawing "information" as INFORMATION says it is a name of a thing
+    /// rather than a sentence. A custom plot's name is not that -- it is the
+    /// reader's own phrase, typed into a box that shows it back as they typed
+    /// it -- and a strip that shouts it while the box beside it does not is
+    /// one string presented as two different things.
+    ///
+    /// Everything else is identical, so a named tab still sits in the strip as
+    /// a tab and not as a stray piece of body text.
+    readonly property font labelVerbatim: Qt.font({
+        families: theme.monoFamilies,
+        pixelSize: 11,
+        weight: Font.Medium,
+        letterSpacing: 1.32
+    })
     /// The smaller readout: tracked +0.18em (1.8px at 10px).
     readonly property font micro: Qt.font({
         families: theme.monoFamilies,

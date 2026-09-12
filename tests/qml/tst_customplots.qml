@@ -106,6 +106,20 @@ TestCase {
         return false
     }
 
+    /// The strip's tab buttons, in order. Found by what they are: a tab is
+    /// the only thing in this window carrying both a selected flag and a
+    /// verbatim-label one.
+    function tabButtons(win) {
+        const bar = findAllOf(win.contentItem, "tabBar")[0]
+        const found = []
+        for (let i = 0; i < bar.children.length; ++i) {
+            const child = bar.children[i]
+            if (child.selected !== undefined && child.verbatimLabel !== undefined)
+                found.push(child)
+        }
+        return found
+    }
+
     /// The CustomView that is actually on screen, or null.
     function shownView(win) {
         const views = findAllOf(win.contentItem, "customView")
@@ -655,6 +669,45 @@ TestCase {
         win.selectTab("table")
         waitForRendering(win.contentItem)
         verify(!row.marked, "and stop marking it when it is not")
+    }
+
+    function test_a_named_tab_reads_the_way_the_name_box_shows_it() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const field = findAllOf(shownView(win), "customNameField")[0]
+        field.forceActiveFocus()
+        field.text = "morning vs afternoon"
+        field.textEdited()
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        const buttons = tabButtons(win)
+        // Four fixed, then the plus, then this one -- and the plus carries no
+        // label at all, so it is filtered out by having one.
+        const named = buttons.filter((b) => b.text === "morning vs afternoon")
+        verify(named.length === 1,
+               "the strip holds [" + buttons.map((b) => b.text).join("|") + "]")
+
+        // The contract: the box and the strip say the same string the same
+        // way. The four this program named itself keep the uppercase, because
+        // that is what says they are a fixed vocabulary rather than a phrase.
+        verify(named[0].verbatimLabel, "a named tab is drawn as it was written")
+        compare(named[0].font.capitalization, Font.MixedCase)
+        compare(field.text, named[0].text)
+
+        const information = buttons.filter((b) => b.text === "information")
+        verify(information.length === 1,
+               "the strip holds [" + buttons.map((b) => b.text).join("|") + "]")
+        verify(!information[0].verbatimLabel)
+        compare(information[0].font.capitalization, Font.AllUppercase)
+
+        // Everything else about the two is the same, so a named tab still
+        // sits in the strip as a tab.
+        compare(named[0].font.pixelSize, information[0].font.pixelSize)
+        compare(named[0].font.family, information[0].font.family)
+        compare(named[0].font.letterSpacing, information[0].font.letterSpacing)
     }
 
     function test_the_footer_counts_entries_and_datapoints() {

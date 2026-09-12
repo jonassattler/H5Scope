@@ -18,12 +18,15 @@ import QtQuick.Controls.Basic
 /// does give every other interactive surface hover feedback, and a tab strip
 /// that answers a pointer with nothing reads as disabled.
 ///
-/// Two more since the strip stopped being four fixed tabs. A custom plot can be
-/// closed, so it carries a cross -- shown only under the pointer or while it is
-/// the tab on screen, because a row of crosses down a strip is a row of things
-/// to press by accident. And the control that *makes* one is a tab-shaped
+/// Three more since the strip stopped being four fixed tabs. A custom plot can
+/// be closed, so it carries a cross -- shown only under the pointer or while it
+/// is the tab on screen, because a row of crosses down a strip is a row of
+/// things to press by accident. The control that *makes* one is a tab-shaped
 /// button with a glyph instead of a label, so that it stands in the strip at
-/// the strip's own height rather than as a button dropped into it.
+/// the strip's own height rather than as a button dropped into it. And a tab
+/// the reader has named draws that name as they wrote it: the uppercase is for
+/// the four words this program chose, not for a phrase somebody typed into a
+/// box that is showing it back to them unchanged.
 Button {
     id: control
 
@@ -35,8 +38,18 @@ Button {
     property string glyph: ""
     /// What the glyph is drawn in. Only meaningful with `glyph` set.
     property color ink: Theme.textSecondary
+    /// Draw the label as it was written rather than uppercased. For a tab
+    /// whose name the reader typed; see Theme.labelVerbatim.
+    property bool verbatimLabel: false
 
     signal closeRequested()
+
+    // Carried by the control rather than set on the label inside it, which is
+    // how Qt Quick Controls means a font to be handed down: anything asking
+    // this button what it is set in -- the suite that pins the strip's
+    // capitalization, a layout measuring it -- asks the button, and there is
+    // one answer rather than one per item.
+    font: control.verbatimLabel ? Theme.labelVerbatim : Theme.label
 
     implicitHeight: Theme.tabBarHeight
     implicitWidth: control.glyph !== ""
@@ -87,7 +100,7 @@ Button {
             anchors.verticalCenter: parent.verticalCenter
             visible: control.glyph === ""
             text: control.text
-            font: Theme.label
+            font: control.font
             // A tab this selection cannot offer -- the plot and the image on a
             // dataset of text -- is greyed rather than removed, so the strip
             // keeps its shape and says what is unavailable rather than hiding

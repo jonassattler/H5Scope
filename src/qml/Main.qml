@@ -366,6 +366,10 @@ ApplicationWindow {
                             selected: window.currentTabId === modelData.id
                             enabled: window.tabAvailable(modelData.id)
                             closable: tabButton.customIndex >= 0
+                            // The four fixed tabs are this program's own
+                            // words; a custom one is the reader's, and the
+                            // name box in its bar shows it back unchanged.
+                            verbatimLabel: tabButton.customIndex >= 0
                             onClicked: window.selectTab(modelData.id)
                             onCloseRequested: window.closeCustomTab(tabButton.customIndex)
 
