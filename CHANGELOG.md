@@ -25,6 +25,27 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.5.0
+
+**The plot draws itself now.** Qt Graphs is gone from the tree, and both the
+Plot tab and custom plots draw through H5Scope's own renderer instead. That
+paid for two things a library couldn't give: a line is decimated by the
+min/max extremes of each column of pixels rather than by stride, so a spike a
+single sample wide is never one of the samples a stride steps over, and
+zooming in now re-reads the run on screen at a finer resolution instead of
+stretching the same summary — magnification is no longer capped at 256×. The
+stripped Linux binary is 16 MiB smaller (78.3 → 62.1 MiB) with the library
+and its unused 3-D dependency gone, and Qt Graphs was also the only GPL-only
+component in the tree: H5Scope stays GPL-3.0, but now because that is the
+author's choice rather than an obligation carried in by a dependency.
+
+**Reading the line.** Pointing at a line puts its value in the same status
+strip every view already has instead of a floating box drawn over the
+picture, and the crosshair is clipped to the pane so it never marks a point
+that isn't on screen. The y axis gutter is now sized to the widest label it
+actually prints, so a trace of large or negative values no longer has its
+digits cut off against the frame.
+
 ## 0.4.0
 
 **Custom plot tabs.** A fifth kind of tab, made with the `+` at the end of the

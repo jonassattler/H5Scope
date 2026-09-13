@@ -33,7 +33,7 @@
 # the answer with it; see BundleVersion.cmake below.
 
 set(H5SCOPE_VERSION_MAJOR 0)
-set(H5SCOPE_VERSION_MINOR 4)
+set(H5SCOPE_VERSION_MINOR 5)
 
 function(h5scope_resolve_version)
   set(patch 0)
