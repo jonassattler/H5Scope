@@ -77,7 +77,40 @@ Item {
     // all, and cut the x axis's first tick off at the frame. The right-hand
     // gutter is room for half of the last x label, which sits centred on the
     // axis's right end: at a gap's worth of margin half of it fell off.
-    readonly property int gutterLeft: Theme.plotLabelMargin
+    /// Wide enough for the numbers it has to hold, and never narrower than the
+    /// token that used to stand here alone.
+    ///
+    /// A fixed margin was right for as long as the axis printed four
+    /// characters. Point it at a trace of sixteen-bit samples and the ticks
+    /// read -32000, which is six -- and what a reader saw was "0000" down the
+    /// side of the plot, four times, with the sign and the leading digits cut
+    /// off at the frame. A label that is clipped is worse than no label: it is
+    /// a number, and it is the wrong one.
+    ///
+    /// Measured off the widest tick rather than off all of them because
+    /// Theme.readout is monospaced, so the longest string is the widest one.
+    /// No cycle: a tick's *text* comes from the view, and only its position
+    /// comes from the pane this decides the size of.
+    readonly property int gutterLeft:
+        Math.max(Theme.plotLabelMargin,
+                 Math.ceil(yLabelMetrics.width) + Theme.gapM)
+
+    readonly property string widestYLabel: {
+        let widest = ""
+        for (let i = 0; i < frame.yTicks.length; ++i) {
+            if (frame.yTicks[i].text.length > widest.length)
+                widest = frame.yTicks[i].text
+        }
+        return widest
+    }
+
+    TextMetrics {
+        id: yLabelMetrics
+
+        font: Theme.readout
+        text: frame.widestYLabel
+    }
+
     readonly property int gutterRight: Theme.s9
     readonly property int gutterTop: Theme.gapS
     /// Measured rather than stated, because it has to hold a line of type and
@@ -153,6 +186,25 @@ Item {
             Math.ceil(-Math.log(width) / Math.LN10) + 2))
     }
 
+    /// One tick, written.
+    ///
+    /// The *span* decides whether to use an exponent, not the value. That is
+    /// the distinction that matters on an axis with a large offset and a small
+    /// range -- a time base of seconds since 1970 spanning five minutes -- where
+    /// every tick rounds to 1.7e+9 and an axis of eight identical labels says
+    /// nothing at all. Judged by the span, that axis prints whole seconds and
+    /// the ticks differ; an axis that really does cross decades gets the
+    /// exponent, and its ticks differ too.
+    function labelFor(value, span) {
+        const width = Math.abs(span)
+        if (width >= 1e6 || (width > 0 && width < 1e-4)) {
+            // Zero written as an exponent is "0.0e+0", which is six characters
+            // that mean nothing the first one did not.
+            return value === 0 ? "0" : value.toExponential(1)
+        }
+        return value.toFixed(frame.decimalsFor(span))
+    }
+
     /// The round values in `low`..`high`, stepping by `step`.
     ///
     /// Counted from a first tick rather than accumulated, because adding a
@@ -198,12 +250,12 @@ Item {
     /// arranged to prevent.
     readonly property var xTicks: {
         const step = frame.niceStep(frame.viewMaxX - frame.viewMinX, frame.tickTarget)
-        const decimals = frame.decimalsFor(frame.viewMaxX - frame.viewMinX)
         const values = frame.ticksBetween(frame.viewMinX, frame.viewMaxX, step)
+        const span = frame.viewMaxX - frame.viewMinX
         const out = []
         for (let i = 0; i < values.length; ++i) {
             out.push({ at: frame.xFraction(values[i]),
-                       text: values[i].toFixed(decimals) })
+                       text: frame.labelFor(values[i], span) })
         }
         return out
     }
@@ -225,12 +277,12 @@ Item {
             }
             return out
         }
-        const step = frame.niceStep(frame.axisHigh - frame.axisLow, frame.tickTarget)
-        const decimals = frame.decimalsFor(frame.axisHigh - frame.axisLow)
+        const span = frame.axisHigh - frame.axisLow
+        const step = frame.niceStep(span, frame.tickTarget)
         const values = frame.ticksBetween(frame.axisLow, frame.axisHigh, step)
         for (let i = 0; i < values.length; ++i) {
             out.push({ at: frame.yFraction(values[i]),
-                       text: values[i].toFixed(decimals) })
+                       text: frame.labelFor(values[i], span) })
         }
         return out
     }
