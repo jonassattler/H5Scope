@@ -41,12 +41,9 @@ set(H5SCOPE_LINKED_PORTS
   libaec
   libpng
   md4c
-  meshoptimizer
   pcre2
   qtbase
   qtdeclarative
-  qtgraphs
-  qtquick3d
   qtshadertools
   qtsvg
   zlib

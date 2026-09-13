@@ -8,6 +8,8 @@
 #include "gui/AttributeTableModel.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
+#include "gui/PlotItem.hpp"
+#include "gui/PlotProjection.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/ObjectInfoModel.hpp"
@@ -18,6 +20,9 @@
 #include "gui/TreeFilterProxyModel.hpp"
 #include "h5scope/Version.hpp"
 
+#include <limits>
+
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -41,6 +46,34 @@
 using Catch::Matchers::ContainsSubstring;
 
 namespace {
+
+/// Give `item` a pane and a window, so that it will answer questions about
+/// what it is drawing.
+void frameOver(gui::PlotItem& item, double xMin, double xMax, double yMin, double yMax)
+{
+    item.setWidth(400.0);
+    item.setHeight(300.0);
+    item.setXMin(xMin);
+    item.setXMax(xMax);
+    item.setYMin(yMin);
+    item.setYMax(yMax);
+}
+
+/// What the item is actually reading, through the pointers it was handed, or
+/// NaN when it is reading nothing.
+///
+/// Not a count. A count is still right when every vector behind those pointers
+/// has been freed, which is precisely the failure the borrow contract exists to
+/// prevent -- so the cases that assert the values survived a change dereference
+/// them here rather than counting lines. Under a sanitiser this is where a
+/// use-after-free is caught instead of guessed at.
+double readsBack(const gui::PlotItem& item, double px, double py)
+{
+    const QVariantMap found = item.nearestSample(px, py);
+    return found.value(QStringLiteral("valid")).toBool()
+               ? found.value(QStringLiteral("y")).toDouble()
+               : std::numeric_limits<double>::quiet_NaN();
+}
 
 /// A controller backed by a freshly generated fixture. No QML engine is
 /// involved: these tests cover the C++ layer that QML binds to.
@@ -1983,6 +2016,358 @@ TEST_CASE_METHOD(ControllerFixture, "the plot reads the table as lines", "[plot]
         setup()->setMode(2, gui::TableSetupModel::Index);
         REQUIRE(spy.count() > 0);
         REQUIRE(plot->seriesCount() == 6);
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
+                 "[plot]")
+{
+    // fill() gives the item pointers straight into the plot's own cache and
+    // copies nothing: a QList<QPointF> per line was sixteen bytes a point,
+    // built and thrown away on every refill, and a refill is what recolouring
+    // used to cost. The price is a contract the compiler cannot check, so it is
+    // asserted here instead.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2x3x4 -> 6 rows of 4
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    CHECK(item.lineCount() == 6);
+
+    SECTION("a line carries the values the plot read, at the plot's own x")
+    {
+        const gui::PlotLine line = plot->lineOf(0);
+        REQUIRE(line.count == 4);
+        CHECK(line.values[0] == 0.0);
+        CHECK(line.values[3] == 3.0);
+
+        // The default axis is the element's own index, which is what the
+        // grid's column headers count.
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK_FALSE(axis.explicitX());
+        CHECK(gui::xOf(line, axis, 0) == 0.0);
+        CHECK(gui::xOf(line, axis, 3) == 3.0);
+
+        // ...and it moves with the stated range, without a re-read.
+        plot->setXStart(10.0);
+        plot->setXStep(0.5);
+        CHECK(gui::xOf(line, plot->drawingAxis(), 2) == 11.0);
+    }
+
+    SECTION("only the lines that are drawn are handed over")
+    {
+        plot->selectFirst(2);
+        plot->fill(&item);
+        CHECK(item.lineCount() == 2);
+
+        plot->selectNone();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("a line the table does not have is empty rather than absent")
+    {
+        const gui::PlotLine missing = plot->lineOf(999);
+        CHECK(missing.values == nullptr);
+        CHECK(missing.count == 0);
+        CHECK(gui::samplesOf(missing, plot->drawingAxis()).empty());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "what the plot filled is emptied before it is freed",
+                 "[plot]")
+{
+    // The places where the line on screen stops being a reading of anything:
+    // another dataset, another arrangement of the same one, no file at all.
+    // There the item is emptied, and reporting no lines is the observable form
+    // of "it stopped reading".
+    //
+    // Every *other* way a held line can go is in the case below this one, and
+    // the difference between the two is the whole design: a coarser reading of
+    // the same data is not a reason to blank the pane.
+    auto* plot = controller.datasetPlot();
+    gui::PlotItem item;
+
+    SECTION("selecting another dataset")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        REQUIRE(h5test::selectAndSettle(controller, "/compressed"));
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("rearranging the table under it")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/hypercube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() > 0);
+        setup()->setMode(2, gui::TableSetupModel::Index);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("transposing, which renames every line")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        plot->setSeriesFromRows(false);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("closing the file")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 6);
+        controller.closeFile();
+        h5test::settle();
+        CHECK(item.lineCount() == 0);
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture,
+                 "what the plot filled goes on being drawn until it is replaced", "[plot]")
+{
+    // The other half of the borrow contract, and the half that keeps a picture
+    // on screen. Pruning the cache down to the drawn set, and re-reading it for
+    // a pane of a different width, both destroy vectors the renderer is holding
+    // a pointer into -- and the way that used to be honoured was to empty the
+    // item, which the reader saw as the plot going blank and staying blank
+    // until the next frame filled it.
+    //
+    // So these are asserted by dereferencing rather than by counting: the item
+    // still has its lines, and the values behind them still read what they read.
+    // A count alone would pass just as happily over freed memory.
+    auto* plot = controller.datasetPlot();
+    gui::PlotItem item;
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 6 rows of 0..23
+    frameOver(item, 0.0, 3.0, 0.0, 23.0);
+    plot->fill(&item);
+    REQUIRE(item.lineCount() == 6);
+    // Row 3 of /cube is 12..15, so the top right of the pane is 23 and the
+    // bottom left is 0.
+    REQUIRE(readsBack(item, 0.0, 300.0) == Catch::Approx(0.0));
+
+    SECTION("hiding a line, which prunes the cache down to what is drawn")
+    {
+        plot->setSeriesVisible(3, false);
+        // The prune happens lazily, on the next question anyone asks -- so ask
+        // one, exactly as a binding would.
+        (void)plot->minimum();
+        CHECK(item.lineCount() == 6);
+        CHECK(readsBack(item, 0.0, 300.0) == Catch::Approx(0.0));
+
+        // ...and the moment it is filled again, it is reading the new cache and
+        // the old one is free to go.
+        plot->fill(&item);
+        CHECK(item.lineCount() == 5);
+        CHECK(readsBack(item, 0.0, 300.0) == Catch::Approx(0.0));
+    }
+
+    SECTION("the pane changing width, which re-reads every line")
+    {
+        plot->setPaneColumns(256);
+        // Debounced, so nothing at all has happened yet -- which is the point
+        // of it: a drag of the window's edge crosses a dozen of these.
+        CHECK(item.lineCount() == 6);
+        h5test::settleFor(gui::DatasetPlot::kResizeMilliseconds + 200);
+        (void)plot->minimum();
+        CHECK(item.lineCount() == 6);
+        CHECK(readsBack(item, 0.0, 300.0) == Catch::Approx(0.0));
+
+        plot->fill(&item);
+        CHECK(item.lineCount() == 6);
+        CHECK(readsBack(item, 0.0, 300.0) == Catch::Approx(0.0));
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary could not",
+                 "[plot]")
+{
+    // The plot holds a fixed summary of the whole line, so zooming into it used
+    // to stretch that summary rather than resolve it -- which is why the
+    // surface's magnification was pinned at 256. It reads the run the reader is
+    // looking at again now, at a finer bucket, once the view has stopped
+    // moving. This is that arithmetic, asserted through lineOf(), which is the
+    // same seam the renderer is handed.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/trace")); // 20000, one line down the rows
+    REQUIRE_FALSE(plot->seriesFromRows());
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+
+    // The whole of it, thinned: buckets of twenty elements -- the ceiling of
+    // twenty thousand over the thousand-odd it is allowed -- two values each,
+    // and half a bucket between one drawn point and the next.
+    const gui::PlotLine whole = plot->lineOf(0);
+    REQUIRE(whole.count == 2000);
+    CHECK(whole.positionStart == 0.0);
+    CHECK(whole.positionStep == Catch::Approx(10.0));
+    CHECK(plot->thinned());
+    const double low = plot->minimum();
+    const double high = plot->maximum();
+    CHECK(high == Catch::Approx(9.0)); // the spike is in the envelope, not thinned away
+
+    SECTION("the run on screen is read at a finer bucket")
+    {
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+
+        const gui::PlotLine closer = plot->lineOf(0);
+        // Twice the visible span, in twice the buckets the pane has columns:
+        // four elements each, two between drawn points, and every one of them
+        // inside the run. The extra octave is the prefetch -- it reads exactly
+        // the same elements, because a run's cost is its span -- and it is what
+        // makes the reader's next step in a draw rather than a wait. See
+        // DatasetPlot::detailBuckets.
+        CHECK(closer.positionStart == 0.0);
+        CHECK(closer.positionStep == Catch::Approx(2.0));
+        CHECK(closer.count == 4096);
+        CHECK(closer.values != whole.values);
+
+        const std::vector<QPointF> points = gui::samplesOf(closer, plot->drawingAxis());
+        REQUIRE_FALSE(points.empty());
+        CHECK(points.front().x() >= 0.0);
+        CHECK(points.back().x() <= 8192.0);
+        // Finer than the summary by exactly the octaves between them.
+        CHECK(closer.positionStep < whole.positionStep);
+    }
+
+    SECTION("the extent stays the line's own, so the axis holds still")
+    {
+        // The y axis is drawn between these two. If they became the extent of
+        // whatever run had last been read, the axis would rescale under the
+        // reader every time detail arrived -- and the spike at 12345 would
+        // vanish from the scale the moment they looked anywhere else.
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        CHECK(plot->minimum() == low);
+        CHECK(plot->maximum() == high);
+    }
+
+    SECTION("the closest look is the file's own samples")
+    {
+        // Around the spike, and close enough that a bucket is one element: what
+        // is drawn is what is in the file, not a summary of anything.
+        plot->setVisibleRange(12000.0, 12400.0);
+        h5test::settleFor(300);
+
+        const gui::PlotLine closest = plot->lineOf(0);
+        CHECK(closest.positionStep == Catch::Approx(1.0));
+        REQUIRE(closest.count == 2048);
+        CHECK(closest.positionStart == Catch::Approx(11776.0)); // aligned, not the view's edge
+
+        const auto at = static_cast<qsizetype>(12345 - 11776);
+        REQUIRE(at < closest.count);
+        CHECK(closest.values[at] == Catch::Approx(9.0));
+        CHECK(closest.values[at - 1] == Catch::Approx(std::sin(12344.0 / 300.0)));
+    }
+
+    SECTION("zooming back out draws the summary again, and reads nothing to do it")
+    {
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        REQUIRE(plot->lineOf(0).positionStep == Catch::Approx(2.0));
+
+        plot->setVisibleRange(0.0, 20000.0);
+        const gui::PlotLine back = plot->lineOf(0);
+        // In the same call, without waiting for anything: the whole-line
+        // summary was never thrown away.
+        CHECK(back.positionStart == 0.0);
+        CHECK(back.positionStep == Catch::Approx(10.0));
+        CHECK(back.values == whole.values);
+    }
+
+    SECTION("the next step in is already in hand")
+    {
+        // The prefetch, through the seam the renderer is handed: the run is
+        // read an octave finer than the pane needs, so stepping in lands on the
+        // values already here. The same pointer, not a new one -- which is what
+        // "nothing was read" looks like from this side.
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        const gui::PlotLine closer = plot->lineOf(0);
+        REQUIRE(closer.values != whole.values);
+
+        plot->setVisibleRange(1000.0, 3000.0); // half the span, same centre
+        h5test::settleFor(300);
+
+        const gui::PlotLine stepped = plot->lineOf(0);
+        CHECK(stepped.values == closer.values);
+        CHECK(stepped.positionStep == Catch::Approx(closer.positionStep));
+        CHECK(stepped.positionStart == Catch::Approx(closer.positionStart));
+    }
+
+    SECTION("a run off the end of the line is what is left of it")
+    {
+        plot->setVisibleRange(19000.0, 19900.0);
+        h5test::settleFor(300);
+
+        const gui::PlotLine closer = plot->lineOf(0);
+        const std::vector<QPointF> points = gui::samplesOf(closer, plot->drawingAxis());
+        REQUIRE_FALSE(points.empty());
+        CHECK(points.back().x() <= 20000.0);
+        CHECK(closer.positionStart + closer.positionStep * (closer.count - 1) <= 20000.0);
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a closer look is held to the same contract",
+                 "[plot]")
+{
+    // The borrow contract again, over the second cache. There are more ways to
+    // destroy one of these than there are for the whole-line summary -- it is
+    // replaced whenever the reader moves the view far enough -- and each of
+    // them falls on one side of the same line: a run superseded by a sharper
+    // one is retired and goes on being drawn, and a run whose data has gone
+    // takes the item with it.
+    auto* plot = controller.datasetPlot();
+    gui::PlotItem item;
+    REQUIRE(h5test::selectAndSettle(controller, "/trace"));
+    frameOver(item, 0.0, 20000.0, -10.0, 10.0);
+    plot->setVisibleRange(0.0, 4000.0);
+    h5test::settleFor(300);
+    plot->fill(&item);
+    REQUIRE(item.lineCount() == 1);
+    const double drawn = readsBack(item, 200.0, 150.0);
+    REQUIRE(std::isfinite(drawn));
+
+    SECTION("a run landing over the one being drawn")
+    {
+        plot->setVisibleRange(8000.0, 12000.0);
+        h5test::settleFor(300);
+        // Still drawing the run it had, and the values behind it are still
+        // there to be read.
+        CHECK(item.lineCount() == 1);
+        CHECK(readsBack(item, 200.0, 150.0) == Catch::Approx(drawn));
+        plot->fill(&item);
+        CHECK(item.lineCount() == 1);
+        CHECK(std::isfinite(readsBack(item, 200.0, 150.0)));
+    }
+
+    SECTION("zooming out, which drops it")
+    {
+        plot->setVisibleRange(0.0, 20000.0);
+        CHECK(item.lineCount() == 1);
+        CHECK(readsBack(item, 200.0, 150.0) == Catch::Approx(drawn));
+        plot->fill(&item);
+        CHECK(item.lineCount() == 1);
+        CHECK(std::isfinite(readsBack(item, 200.0, 150.0)));
+    }
+
+    SECTION("selecting another dataset")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("closing the file")
+    {
+        controller.closeFile();
+        h5test::settle();
+        CHECK(item.lineCount() == 0);
     }
 }
 

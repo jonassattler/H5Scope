@@ -303,6 +303,15 @@ SettingsPanel {
             checked: panel.target ? panel.target.showMarkers : false
             onToggled: { if (panel.target) panel.target.showMarkers = checked }
         }
+
+        /// Pointing at the plot reads the sample under the pointer, and says so
+        /// in the bar below it. Off for a reader who wants the footer to hold
+        /// still while they look at it.
+        AppCheckBox {
+            text: qsTr("cursor")
+            checked: panel.target ? panel.target.showCursor : false
+            onToggled: { if (panel.target) panel.target.showCursor = checked }
+        }
     }
 
     SettingRow {

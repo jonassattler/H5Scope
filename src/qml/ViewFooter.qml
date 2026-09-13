@@ -28,6 +28,18 @@ Rectangle {
     /// Segments of the readout, joined by the system's mono separator.
     property var facts: []
 
+    /// Segments pinned to the right-hand end of the bar.
+    ///
+    /// One bar with two ends, because the two kinds of fact in it answer to
+    /// different things. What is on the left describes the *view* -- how many
+    /// lines, how many points, what the window is -- and changes when the
+    /// reader arranges something. What is on the right is the reading under the
+    /// pointer, and changes with every pixel the pointer moves. Appended to one
+    /// run they pushed each other about: the left-hand facts shifted as the
+    /// reading grew a digit, so the numbers a reader was watching moved while
+    /// they were watching them. At opposite ends neither disturbs the other.
+    property var trailingFacts: []
+
     implicitHeight: Theme.statusBarHeight
     color: Theme.background
 
@@ -41,7 +53,15 @@ Rectangle {
     Text {
         id: readout
 
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        // Up to the reading, never under it. The reading is the shorter run and
+        // the one whose width changes as the pointer moves, so it keeps its
+        // room and this gives way -- a footer that elided the reading would be
+        // eliding the only fact on the bar that is about where the reader is
+        // pointing right now.
+        anchors.right: trailing.visible ? trailing.left : parent.right
         anchors.leftMargin: Theme.gapM
         anchors.rightMargin: Theme.gapM
         // `·` is the system's mono metadata separator, as in the status
@@ -61,6 +81,23 @@ Rectangle {
             verbatim: true
             text: footer.facts.join("   ")
         }
+    }
+
+    Text {
+        id: trailing
+
+        objectName: "footerTrailing"
+
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: Theme.gapM
+        visible: footer.trailingFacts.length > 0
+        text: footer.trailingFacts.join("  ·  ")
+        font: Theme.microLabel
+        color: Theme.textDisabled
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
     }
 
     /// "1 col", not "1 cols". The readout is uppercased by the label font,

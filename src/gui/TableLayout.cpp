@@ -33,7 +33,6 @@ qint64 axisExtent(const TableLayout& layout, const std::vector<std::size_t>& dim
     return total;
 }
 
-
 } // namespace
 
 bool defaultOnX(std::size_t dimension, std::size_t rank)
@@ -87,7 +86,6 @@ TableLayout defaultLayout(const std::vector<hsize_t>& shape,
     return layout;
 }
 
-
 TableAxes::TableAxes(TableLayout layout, bool empty) : layout_(std::move(layout))
 {
     for (std::size_t d = 0; d < layout_.onX.size(); ++d) {
@@ -126,8 +124,7 @@ std::vector<hsize_t> TableAxes::coordinates(qint64 row, qint64 column) const
         for (std::size_t i = 0; i < dims.size(); ++i) {
             const std::vector<hsize_t>& selected = layout_.indices[dims[i]];
             if (!selected.empty()) {
-                coords[dims[i]] =
-                    selected[std::min<std::size_t>(slot[i], selected.size() - 1)];
+                coords[dims[i]] = selected[std::min<std::size_t>(slot[i], selected.size() - 1)];
             }
         }
     };
@@ -157,8 +154,31 @@ int TableAxes::runLength(qint64 column, int limit) const
 
     const auto position = static_cast<std::size_t>(column) % fastest.size();
     int run = 1;
-    while (run < limit && position + run < fastest.size()
-           && fastest[position + run] == fastest[position] + run) {
+    while (run < limit && position + run < fastest.size() &&
+           fastest[position + run] == fastest[position] + run) {
+        ++run;
+    }
+    return run;
+}
+
+int TableAxes::rowRunLength(qint64 row, int limit) const
+{
+    // The mirror of runLength above, down the other axis. The last
+    // y-dimension is the one that turns fastest down a table column, so a span
+    // of rows is one hyperslab exactly as long as that dimension's selected
+    // indices stay consecutive.
+    if (yDims_.empty() || limit <= 1) {
+        return std::max(limit, 1);
+    }
+    const std::vector<hsize_t>& fastest = layout_.indices[yDims_.back()];
+    if (fastest.empty()) {
+        return 1;
+    }
+
+    const auto position = static_cast<std::size_t>(row) % fastest.size();
+    int run = 1;
+    while (run < limit && position + run < fastest.size() &&
+           fastest[position + run] == fastest[position] + run) {
         ++run;
     }
     return run;

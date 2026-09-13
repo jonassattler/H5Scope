@@ -42,12 +42,12 @@ class DatasetTableModel : public QAbstractTableModel
     /// How a float is written in a cell. Only the presentation changes: the
     /// tooltip role keeps handing back the value the file holds, so a rounded
     /// column never puts the exact number out of reach.
-    Q_PROPERTY(FloatFormat floatFormat READ floatFormat WRITE setFloatFormat
-                   NOTIFY floatFormatChanged)
+    Q_PROPERTY(
+        FloatFormat floatFormat READ floatFormat WRITE setFloatFormat NOTIFY floatFormatChanged)
     /// Digits after the point, for the two formats that have a point. Ignored
     /// by Shortest.
-    Q_PROPERTY(int floatDecimals READ floatDecimals WRITE setFloatDecimals
-                   NOTIFY floatFormatChanged)
+    Q_PROPERTY(
+        int floatDecimals READ floatDecimals WRITE setFloatDecimals NOTIFY floatFormatChanged)
     /// True when the values are floats and the setting above therefore applies.
     Q_PROPERTY(bool floats READ floats NOTIFY datasetChanged)
 
@@ -61,7 +61,8 @@ public:
     /// a column that the file says is smooth. Not a number -- text, a struct,
     /// a cell that would not read -- is NaN rather than an absent QVariant, so
     /// the delegate's required property is always set.
-    enum Roles {
+    enum Roles
+    {
         Number = Qt::UserRole,
     };
     Q_ENUM(Roles)
@@ -69,7 +70,8 @@ public:
     /// Shortest is what H5Scope has always printed: the fewest digits
     /// that read back as the same double, which is exact and ragged. The other
     /// two trade exactness for a column that lines up.
-    enum FloatFormat {
+    enum FloatFormat
+    {
         Shortest = 0,
         Fixed = 1,      ///< 'f': 12.340000
         Scientific = 2, ///< 'e': 1.234000e+01
@@ -78,11 +80,24 @@ public:
 
     /// A rectangle of the table read as numbers and thinned to something a
     /// screen can hold: what the plot and the image are both made of.
-    struct NumericGrid {
+    struct NumericGrid
+    {
         int rows = 0;    ///< after decimation
         int columns = 0; ///< after decimation
         int rowStride = 1;
         int columnStride = 1;
+        /// Table positions between one drawn column and the next.
+        ///
+        /// The same as `columnStride`, except in an envelope: there each
+        /// bucket of `columnStride` elements yields *two* values -- its
+        /// smallest and its largest -- so consecutive drawn points are half a
+        /// bucket apart. The plot needs this rather than the stride, because
+        /// where a point sits along x is what it is multiplied by.
+        double columnStep = 1.0;
+        /// ...and the same down the rows, for a line that runs that way --
+        /// which every 1-D dataset does, because defaultOnX keeps a rank-1
+        /// dimension on the row axis so it still reads as a column in the grid.
+        double rowStep = 1.0;
         /// Row-major, size == rows * columns. NaN marks a cell that could not
         /// be read, so one bad element does not discard the block around it.
         std::vector<double> values;
@@ -207,13 +222,19 @@ public:
     /// points as it has pixels, the image for as much of both as it has
     /// pixels.
     ///
-    /// Thinning is plain stride sampling and not a min/max envelope: a spike
-    /// narrower than one stride is not drawn. That is the honest cost of never
-    /// reading more of the file than the screen can show, and the place to
-    /// start if the plot ever needs to be exact at a glance.
-    [[nodiscard]] NumericGrid sampleValues(int firstRow, int rowSpan, int maxRows,
-                                           int firstColumn, int columnSpan,
-                                           int maxColumns) const;
+    /// Thinning here is plain stride sampling: every nth element, and a spike
+    /// narrower than one stride is not drawn. That is what the table and the
+    /// image want -- a cell they show is a cell that is in the file, at the
+    /// index the header prints -- and it is not what a plot wants.
+    ///
+    /// The batch form below takes a `SampleRequest::envelope`, which asks for
+    /// the smallest and the largest of each bucket instead. See sampleFrom for
+    /// why that is free: the strided read here fetches one element per drawn
+    /// point, and an envelope fetches the bucket those elements were chosen
+    /// from -- the same number of reads, each moving a contiguous run instead
+    /// of a single value.
+    [[nodiscard]] NumericGrid sampleValues(int firstRow, int rowSpan, int maxRows, int firstColumn,
+                                           int columnSpan, int maxColumns) const;
 
     /// The same read against a table other than the one on screen. The image
     /// presentation uses it to take one colour channel at a time out of a
@@ -223,12 +244,13 @@ public:
     /// Blocking, like the one above: it waits for the HDF5 thread. The plot and
     /// the image are both built on it, so the wait is real and is what the
     /// batch form below exists to stop paying more than once.
-    [[nodiscard]] NumericGrid sampleValues(const TableAxes& axes, int firstRow,
-                                           int rowSpan, int maxRows, int firstColumn,
-                                           int columnSpan, int maxColumns) const;
+    [[nodiscard]] NumericGrid sampleValues(const TableAxes& axes, int firstRow, int rowSpan,
+                                           int maxRows, int firstColumn, int columnSpan,
+                                           int maxColumns) const;
 
     /// One rectangle asked for, in the arguments sampleValues() takes.
-    struct SampleRequest {
+    struct SampleRequest
+    {
         int firstRow = 0;
         int rowSpan = -1;
         int maxRows = 1;
@@ -242,6 +264,11 @@ public:
         /// request is what lets all of its planes travel in one crossing
         /// rather than one each.
         std::optional<TableAxes> axes;
+        /// Take the smallest and the largest of each bucket rather than its
+        /// first element. See sampleValues below: this is what stops a spike
+        /// narrower than one stride from going undrawn, and it costs no extra
+        /// reads.
+        bool envelope = false;
     };
 
     /// Several rectangles of the dataset, in one crossing of the thread.
@@ -254,6 +281,19 @@ public:
     /// that stopped answering. The reads themselves were never the cost.
     [[nodiscard]] std::vector<NumericGrid>
     sampleValues(const std::vector<SampleRequest>& requests) const;
+
+    /// The same batch against a source the caller already has, with no waiting
+    /// of its own. Static because it runs on the HDF5 thread: everything it
+    /// needs is an argument, which is what makes it safe to call from inside a
+    /// submitted job as well as from the blocking form above.
+    ///
+    /// DatasetPlot is why it is public. A closer look at a line is a second
+    /// read of what is already on screen, so it must not stop the window the
+    /// way the blocking form would -- and the policy about *when* to ask
+    /// belongs to the plot rather than in here.
+    [[nodiscard]] static std::vector<NumericGrid>
+    readSamples(const h5core::DataSource& source, const TableAxes& axes,
+                const std::vector<SampleRequest>& requests);
 
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
@@ -283,10 +323,9 @@ private:
     void setReadError(QString text) const;
     /// The sampling itself, on the HDF5 thread.
     [[nodiscard]] static NumericGrid sampleFrom(const h5core::DataSource& source,
-                                                const TableAxes& axes, int firstRow,
-                                                int rowSpan, int maxRows,
-                                                int firstColumn, int columnSpan,
-                                                int maxColumns);
+                                                const TableAxes& axes, int firstRow, int rowSpan,
+                                                int maxRows, int firstColumn, int columnSpan,
+                                                int maxColumns, bool envelope = false);
     /// Whether there is anything to sample, and what to say when there is not.
     [[nodiscard]] bool sampleable(NumericGrid& grid) const;
     [[nodiscard]] QString labelFor(int row, int column, bool showX, bool showY) const;
@@ -305,7 +344,8 @@ private:
     mutable H5Requests requests_;
 
     /// Where a block starts, as the pair that names it.
-    struct Origin {
+    struct Origin
+    {
         int row = 0;
         int column = 0;
         [[nodiscard]] bool operator==(const Origin&) const = default;
@@ -324,7 +364,8 @@ private:
 
     /// One rectangle of the *table*, not of the dataset: with a scattered
     /// selection the two are no longer the same shape.
-    struct Block {
+    struct Block
+    {
         int rowOrigin = 0;
         int columnOrigin = 0;
         int rows = 0;
@@ -336,9 +377,8 @@ private:
     /// Fill `block` from `source`. Runs on the HDF5 thread, so it is static and
     /// takes everything it needs; `error` is set instead of an exception being
     /// let out across the queue.
-    [[nodiscard]] static Block readBlock(const h5core::DataSource& source,
-                                         const TableAxes& axes, Block block,
-                                         QString& error);
+    [[nodiscard]] static Block readBlock(const h5core::DataSource& source, const TableAxes& axes,
+                                         Block block, QString& error);
 
     /// The block holding (row, column), or null. Found rather than assumed:
     /// see blocks_.
@@ -360,7 +400,8 @@ private:
     mutable QString errorText_;
 
     /// What valueExtent() answers with, sampled once per table.
-    struct Extent {
+    struct Extent
+    {
         double minimum = 0.0;
         double maximum = 0.0;
         bool valid = false;

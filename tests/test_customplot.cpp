@@ -9,11 +9,12 @@
 // survives a file being swapped underneath it. The QML suite covers the
 // chrome -- the strip, the rails, the menus -- and none of this.
 //
-// The points are asserted through fill(), which is the only place the x
-// arithmetic is observable, and it is observable there because that is where
-// it belongs: the values never cross into QML, so a bulk replace into a series
-// is the whole of the boundary. A QLineSeries is a QObject and needs no graph
-// to be filled, which is what lets this suite stay free of a QML engine.
+// The points are asserted through lineOf() and drawingAxis(), which together
+// are what fill() hands a renderer, and gui::samplesOf() over the pair is
+// exactly what fill() used to put into a QXYSeries. That is the whole of the
+// boundary -- the values never cross into QML -- and asserting it here rather
+// than through something rendered is what lets this suite stay free of a QML
+// engine, a window and a scene graph.
 
 #include "gui/AppController.hpp"
 #include "gui/CustomPlot.hpp"
@@ -21,25 +22,32 @@
 #include "gui/DatasetLookup.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
-#include "gui/TableSetupModel.hpp"
 #include "gui/H5Thread.hpp"
+#include "gui/PlotItem.hpp"
+#include "gui/PlotProjection.hpp"
+#include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
 #include "support/TestFile.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include <QCoreApplication>
 #include <QColor>
+#include <QCoreApplication>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
-#include <QtGraphs/QLineSeries>
 
+#include <hdf5.h>
+
+#include <limits>
 #include <cmath>
+#include <vector>
 
+using Catch::Approx;
 using Catch::Matchers::ContainsSubstring;
 
 namespace {
@@ -50,21 +58,18 @@ namespace {
 /// event loop are one job -- so settling means turning the loop as well as
 /// draining the thread, and a few times over: adding a dataset resolves its
 /// shape in one crossing and reads its lines in the next.
-struct PlotFixture {
+struct PlotFixture
+{
     h5test::TempFile temp{"custom"};
     gui::AppController controller;
 
     PlotFixture()
     {
         h5test::onH5([&] { h5test::writeFixture(temp.path()); });
-        REQUIRE(h5test::openFileAndSettle(controller,
-                                          QString::fromStdString(temp.path())));
+        REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
     }
 
-    [[nodiscard]] gui::CustomPlotSet* set() const
-    {
-        return controller.customPlots();
-    }
+    [[nodiscard]] gui::CustomPlotSet* set() const { return controller.customPlots(); }
 
     /// A fresh tab, settled.
     [[nodiscard]] gui::CustomPlot* tab()
@@ -89,25 +94,29 @@ struct PlotFixture {
         settleAll();
     }
 
-    /// The points fill() puts into a series, which is what the graph draws.
+    /// The points fill() hands a renderer, in data coordinates: where each
+    /// sample of entry `series` lands along x, with the undrawable ones absent.
     [[nodiscard]] static QList<QPointF> drawn(gui::CustomPlot* plot, int series)
     {
-        QLineSeries line;
-        plot->fill(&line, series);
-        return line.points();
+        const std::vector<QPointF> points =
+            gui::samplesOf(plot->lineOf(series), plot->drawingAxis());
+        QList<QPointF> out;
+        out.reserve(static_cast<qsizetype>(points.size()));
+        for (const QPointF& point : points) {
+            out.append(point);
+        }
+        return out;
     }
 
     [[nodiscard]] static QString errorOf(const gui::CustomPlot* plot, int row)
     {
-        return plot->data(plot->index(row, 0), gui::CustomPlot::ErrorRole)
-            .toString();
+        return plot->data(plot->index(row, 0), gui::CustomPlot::ErrorRole).toString();
     }
 };
 
 } // namespace
 
-TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets together",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets together", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     REQUIRE(plot != nullptr);
@@ -163,8 +172,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("a block is not a line, and the reason names its shape")
     {
         add(plot, QStringLiteral("/matrix[:, :]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("is one line"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("is one line"));
         CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("4"));
         CHECK_FALSE(plot->hasData());
     }
@@ -172,15 +180,13 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("a single element is not a line either")
     {
         add(plot, QStringLiteral("/matrix[0, 0]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("one element"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("one element"));
     }
 
     SECTION("a path that is not there says that rather than anything else")
     {
         add(plot, QStringLiteral("/nowhere[:]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("nothing at this path"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("nothing at this path"));
     }
 
     SECTION("a group holds no values")
@@ -192,22 +198,19 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     SECTION("text cannot be plotted")
     {
         add(plot, QStringLiteral("/str_vlen[:]"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("only numbers"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("only numbers"));
     }
 
     SECTION("a scalar has no line in it")
     {
         add(plot, QStringLiteral("/scalar_int"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("single value"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("single value"));
     }
 
     SECTION("an unbalanced bracket is reported in the subscript parser's words")
     {
         add(plot, QStringLiteral("/series/a[:"));
-        CHECK_THAT(errorOf(plot, 0).toStdString(),
-                   ContainsSubstring("never closed"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("never closed"));
     }
 
     SECTION("a bad entry does not stop a good one being drawn")
@@ -221,8 +224,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when i
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its slice",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its slice", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));
@@ -234,13 +236,13 @@ TEST_CASE_METHOD(PlotFixture, "a line can be called something other than its sli
 
     plot->setAlias(0, QStringLiteral("morning"));
     CHECK(plot->seriesLabel(0) == QStringLiteral("morning"));
-    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::AliasRole).toString()
-          == QStringLiteral("morning"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::AliasRole).toString() ==
+          QStringLiteral("morning"));
     // The other line is untouched, and so is what is actually read: the entry
     // still holds the slice, because that is what the file is asked for.
     CHECK(plot->seriesLabel(1) == QStringLiteral("/series/b[:]"));
-    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
-          == QStringLiteral("/series/a[:]"));
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ExpressionRole).toString() ==
+          QStringLiteral("/series/a[:]"));
     CHECK(plot->pointCount() == 128);
 
     SECTION("an empty alias hands the slice back")
@@ -269,8 +271,7 @@ TEST_CASE_METHOD(PlotFixture, "a bare path is the whole of the dataset", "[custo
     CHECK(plot->pointCount() == 64);
 }
 
-TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would draw",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would draw", "[custom]")
 {
     gui::CustomPlot* plot = tab();
 
@@ -308,13 +309,11 @@ TEST_CASE_METHOD(PlotFixture, "a dataset arrives as the lines the plot tab would
         settleAll();
         CHECK(plot->sourceSeriesCount() == 0);
         REQUIRE(said.count() == 1);
-        CHECK_THAT(said.at(0).at(0).toString().toStdString(),
-                   ContainsSubstring("only numbers"));
+        CHECK_THAT(said.at(0).at(0).toString().toStdString(), ContainsSubstring("only numbers"));
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is chosen",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is chosen", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));
@@ -389,8 +388,7 @@ TEST_CASE_METHOD(PlotFixture, "the x of a point comes from whichever axis is cho
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes", "[custom]")
 {
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));    // 64 samples, sets the axis
@@ -399,8 +397,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
     REQUIRE(plot->sourcePointCount() == 64);
 
     const auto scalable = [&](int row) {
-        return plot->data(plot->index(row, 0), gui::CustomPlot::ScalableRole)
-            .toBool();
+        return plot->data(plot->index(row, 0), gui::CustomPlot::ScalableRole).toBool();
     };
     // The long one is exactly as long as the axis, so the pair means nothing
     // for it and the row shows them disabled.
@@ -458,8 +455,7 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
     }
 }
 
-TEST_CASE("a line longer than the plot draws is thinned by striding its indices",
-          "[custom]")
+TEST_CASE("a line longer than the plot draws is thinned by striding its indices", "[custom]")
 {
     // The function rather than a dataset, because the cap is 2048 points and
     // the shared fixture has nothing that long -- and because what is being
@@ -482,6 +478,289 @@ TEST_CASE("a line longer than the plot draws is thinned by striding its indices"
         CHECK(gui::thinToPoints(small, {false}, 2048) == 1);
         CHECK(small.front().size() == 4);
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "the same slice draws the same in both plots", "[custom][plot]")
+{
+    // A reader who puts a dataset on the Plot tab and the same slice in a
+    // custom tab is looking at one dataset. The two pictures of it differing in
+    // any way they can see is a bug in whichever of them they are not looking
+    // at -- and they did differ, badly: past four million elements a custom
+    // entry gave up on the envelope and fell back to stride, so
+    // /plotting/adc_10M drew on the Plot tab as a band of +/-32000 with all
+    // seventeen of its impulses in it and in a custom tab as an aliased sine of
+    // +/-13000 with none of them.
+    //
+    // Not "close enough": the same values, in the same order, at the same
+    // positions. Both reduce the line the same way because there is only one
+    // right way to reduce it.
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/trace")));
+    gui::DatasetPlot* tabPlot = controller.datasetPlot();
+    REQUIRE(tabPlot != nullptr);
+    REQUIRE(tabPlot->seriesCount() == 1);
+
+    gui::CustomPlot* custom = tab();
+    add(custom, QStringLiteral("/trace[:]"));
+    REQUIRE(custom->seriesCount() == 1);
+
+    const gui::PlotLine mine = tabPlot->lineOf(0);
+    const gui::PlotLine theirs = custom->lineOf(0);
+
+    REQUIRE(mine.count > 0);
+    REQUIRE(theirs.count == mine.count);
+    CHECK(theirs.positionStart == mine.positionStart);
+    CHECK(theirs.positionStep == Approx(mine.positionStep));
+    for (qsizetype i = 0; i < mine.count; ++i) {
+        INFO("point " << i);
+        REQUIRE(theirs.values[i] == mine.values[i]);
+    }
+
+    // Including the one-sample spike, which is the whole reason an envelope is
+    // worth its round trips: a stride of twenty lands on 12345 only by luck,
+    // and neither of these is relying on luck.
+    CHECK(tabPlot->maximum() == Approx(9.0));
+    CHECK(custom->maximum() == Approx(9.0));
+}
+
+TEST_CASE_METHOD(PlotFixture, "a wider pane is read at a finer bucket", "[custom][plot]")
+{
+    // What a line is thinned to is a property of the pane it is drawn in, not a
+    // constant. A constant is wrong in both directions -- fewer buckets than
+    // there are pixel columns draws an envelope as a hatch of separated teeth
+    // instead of a band, and more points than can be told apart are read and
+    // held for nothing.
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/trace")));
+    gui::DatasetPlot* tabPlot = controller.datasetPlot();
+    gui::CustomPlot* custom = tab();
+    add(custom, QStringLiteral("/trace[:]"));
+
+    // Twenty thousand elements into a thousand-odd buckets is a bucket of
+    // twenty, which is a thousand of them and two values each -- a little under
+    // the budget, because the bucket is a ceiling and the last one is short.
+    const int assumed = tabPlot->pointCount();
+    CHECK(assumed == 2000);
+    CHECK(assumed <= 2 * gui::DatasetPlot::kDefaultColumns);
+    REQUIRE(custom->pointCount() == assumed);
+
+    tabPlot->setPaneColumns(2048);
+    custom->setPaneColumns(2048);
+    // Both debounce: a drag of the window's edge crosses a dozen quanta and is
+    // one read at the end of it rather than one per sixty-four pixels.
+    h5test::settleFor(gui::CustomPlot::kResizeMilliseconds + 200);
+    settleAll();
+
+    // Twice the columns, twice the buckets, and the two still agree.
+    CHECK(tabPlot->pointCount() > assumed);
+    CHECK(custom->pointCount() == tabPlot->pointCount());
+
+    // ...and a pane narrower than the default asks for less rather than more.
+    tabPlot->setPaneColumns(256);
+    custom->setPaneColumns(256);
+    h5test::settleFor(gui::CustomPlot::kResizeMilliseconds + 200);
+    settleAll();
+    CHECK(tabPlot->pointCount() < assumed);
+    CHECK(custom->pointCount() == tabPlot->pointCount());
+}
+
+TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again", "[custom]")
+{
+    // The same closer look the plot tab takes, resolved per entry: these lines
+    // come from all over the file and need not be the same length, so the run
+    // one of them is asked for is a run of its *own* elements.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]")); // 20000, with a one-sample spike at 12345
+    REQUIRE(plot->seriesCount() == 1);
+
+    const gui::PlotLine whole = plot->lineOf(0);
+    REQUIRE(whole.count == 2000); // 1000 buckets of twenty, two values each
+    CHECK(whole.positionStart == 0.0);
+    CHECK(whole.positionStep == Approx(10.0));
+    const double high = plot->maximum();
+    CHECK(high == Approx(9.0));
+
+    SECTION("the run on screen, at a finer bucket")
+    {
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine closer = plot->lineOf(0);
+        CHECK(closer.positionStart == 0.0);
+        // Twice the visible span, in twice the buckets the pane has columns --
+        // the prefetch octave, which reads the same elements and has the next
+        // step in already in hand. The plot tab takes the same octave, which is
+        // what keeps the two pictures identical.
+        CHECK(closer.positionStep == Approx(2.0));
+        CHECK(closer.count == 4096);
+
+        const QList<QPointF> points = drawn(plot, 0);
+        REQUIRE_FALSE(points.isEmpty());
+        CHECK(points.first().x() >= 0.0);
+        CHECK(points.last().x() <= 8192.0);
+        // ...and the extent is still the whole line's, so the axis holds still
+        // while the detail arrives.
+        CHECK(plot->maximum() == high);
+    }
+
+    SECTION("and at the closest look, the file's own samples")
+    {
+        plot->setVisibleRange(12000.0, 12400.0);
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine closest = plot->lineOf(0);
+        CHECK(closest.positionStep == Approx(1.0));
+        CHECK(closest.positionStart == Approx(11776.0)); // aligned, not the view's edge
+        REQUIRE(closest.count == 2048);
+
+        const auto at = static_cast<qsizetype>(12345 - 11776);
+        CHECK(closest.values[at] == Approx(9.0));
+    }
+
+    SECTION("zooming back out is the summary again, in the same call")
+    {
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        settleAll();
+        REQUIRE(plot->lineOf(0).positionStep == Approx(2.0));
+
+        plot->setVisibleRange(0.0, 20000.0);
+        const gui::PlotLine back = plot->lineOf(0);
+        CHECK(back.values == whole.values);
+        CHECK(back.positionStep == Approx(10.0));
+    }
+
+    SECTION("the next step in is already in hand")
+    {
+        // The prefetch: a run is read an octave finer than the pane needs, so
+        // the reader's next step down lands on values that are already here.
+        // Observable as the pointer -- the same buffer, not a new one -- which
+        // is the only way to say "nothing was read" without counting.
+        plot->setVisibleRange(0.0, 4000.0);
+        h5test::settleFor(300);
+        settleAll();
+        const gui::PlotLine closer = plot->lineOf(0);
+        REQUIRE(closer.values != whole.values);
+
+        plot->setVisibleRange(1000.0, 3000.0); // half the span, same centre
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine stepped = plot->lineOf(0);
+        CHECK(stepped.values == closer.values);
+        CHECK(stepped.positionStep == Approx(closer.positionStep));
+        CHECK(stepped.positionStart == Approx(closer.positionStart));
+    }
+
+    SECTION("the octaves out are already in hand")
+    {
+        // The direction that used to flicker. Zooming out past the run in hand
+        // fell back to the whole-line summary -- correct, and as many octaves
+        // too coarse as the reader was zoomed in -- and then sharpened a tenth
+        // of a second later. The runs read ahead of the reader remove that, and
+        // the plot tab does exactly the same thing: see test_cost.
+        plot->setVisibleRange(8000.0, 9000.0); // mid-line, so nothing is
+        h5test::settleFor(1200);               // answered by the end of the data
+        settleAll();
+        REQUIRE(plot->lineOf(0).positionStep < whole.positionStep);
+
+        double low = 8000.0;
+        double high = 9000.0;
+        for (int octave = 1; octave <= 3; ++octave) {
+            const double centre = (low + high) / 2.0;
+            const double half = high - low;
+            low = centre - half;
+            high = centre + half;
+
+            // In the same call as the gesture: the picture is already drawn
+            // from a run rather than from the whole-line summary, which is what
+            // "no flicker" means -- the flicker was never a read, it was the
+            // picture coarsening while one was on its way.
+            plot->setVisibleRange(low, high);
+            CHECK(plot->lineOf(0).positionStep < whole.positionStep);
+
+            h5test::settleFor(400);
+            settleAll();
+            CHECK(plot->lineOf(0).positionStep < whole.positionStep);
+        }
+    }
+
+    SECTION("an entry short enough to be drawn whole is never read again")
+    {
+        add(plot, QStringLiteral("/series/a[:]")); // 64 elements
+        const gui::PlotLine before = plot->lineOf(1);
+        REQUIRE(before.count == 64);
+
+        plot->setVisibleRange(0.0, 40.0);
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine after = plot->lineOf(1);
+        CHECK(after.values == before.values);
+        CHECK(after.positionStart == 0.0);
+        CHECK(after.positionStep == Approx(1.0));
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a stretched entry is looked at closely where it is drawn",
+                 "[custom]")
+{
+    // Stretch spreads a line over the whole axis whatever its length, so the
+    // run of elements under the pane is not the run of positions under it. The
+    // map is affine and this is it, run backwards and then forwards again.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));        // 20000: the axis is this long
+    add(plot, QStringLiteral("/trace[0:10000]"));  // half as long, stretched over it
+    plot->setScaling(1, gui::CustomPlot::Stretch);
+    settleAll();
+    REQUIRE(plot->sourcePointCount() == 20000);
+
+    const gui::PlotLine whole = plot->lineOf(1);
+    const qsizetype summarised = whole.count;
+
+    plot->setVisibleRange(0.0, 4000.0);
+    h5test::settleFor(300);
+    settleAll();
+
+    const gui::PlotLine closer = plot->lineOf(1);
+    // Two elements of this entry to one position of the axis, so a run of its
+    // elements covers twice as much axis as it would under align -- which is
+    // the whole of what stretching means, applied to a piece of a line.
+    CHECK(closer.positionStep == Approx(1.0 * 19999.0 / 9999.0));
+    CHECK(closer.positionStart == Approx(0.0));
+
+    const QList<QPointF> points = drawn(plot, 1);
+    REQUIRE_FALSE(points.isEmpty());
+    CHECK(points.first().x() >= 0.0);
+    CHECK(points.last().x() <= 8200.0);
+    // Denser than the summary was over the same stretch of axis.
+    CHECK(points.size() > summarised / 4);
+}
+
+TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base keeps its whole summary",
+                 "[custom]")
+{
+    // A time base is a lookup table, not an affine map: it need not be
+    // monotonic and need not be evenly spaced, so a range of x is not a range
+    // of indices and there is nothing to narrow a read to. The same reason
+    // projectLine() refuses to envelope that path. Zooming there does what it
+    // always did -- it stretches -- and nothing is read.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    plot->setXMode(gui::CustomPlot::Dataset);
+    plot->setXExpression(QStringLiteral("/trace[:]"));
+    settleAll();
+    REQUIRE(plot->xReady());
+
+    const gui::PlotLine before = plot->lineOf(0);
+    plot->setVisibleRange(-0.5, 0.5);
+    h5test::settleFor(300);
+    settleAll();
+
+    const gui::PlotLine after = plot->lineOf(0);
+    CHECK(after.values == before.values);
+    CHECK(after.count == before.count);
+    CHECK(after.positionStart == 0.0);
 }
 
 TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path is known",
@@ -507,8 +786,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path 
                ContainsSubstring("dim"));
 }
 
-TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused", "[custom]")
 {
     gui::CustomPlot* plot = tab();
 
@@ -572,8 +850,7 @@ TEST_CASE_METHOD(PlotFixture, "a crowded plot is asked about rather than refused
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a custom plot has no window to go back to",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a custom plot has no window to go back to", "[custom]")
 {
     // The legend's "first N" button puts a table of ten thousand rows back to
     // the window a *selection* opened on. A custom plot opens on nothing and
@@ -651,12 +928,10 @@ TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[cust
     // piece of one file's contents, and it says how much of whatever is open
     // it can still draw instead of going away.
     CHECK(set()->viewNames() == QStringList{QStringLiteral("both")});
-    CHECK(set()->stateOf(QStringLiteral("both"))
-          == gui::CustomPlotSet::NoMatch);
+    CHECK(set()->stateOf(QStringLiteral("both")) == gui::CustomPlotSet::NoMatch);
 }
 
-TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
-                 "[custom]")
+TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open", "[custom]")
 {
     gui::CustomPlotSet* plots = set();
     const int source = plots->addPlot();
@@ -685,8 +960,8 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         gui::CustomPlot* into = plots->plotAt(target);
         CHECK(into->sourceSeriesCount() == 2);
         CHECK(into->seriesLabel(1) == QStringLiteral("/series/half[:]"));
-        CHECK(into->data(into->index(1, 0), gui::CustomPlot::ScalingRole).toInt()
-              == static_cast<int>(gui::CustomPlot::Stretch));
+        CHECK(into->data(into->index(1, 0), gui::CustomPlot::ScalingRole).toInt() ==
+              static_cast<int>(gui::CustomPlot::Stretch));
         CHECK(into->xMode() == gui::CustomPlot::Dataset);
         CHECK(into->xExpression() == QStringLiteral("/series/time[:]"));
         CHECK(into->pointCount() == 96);
@@ -715,8 +990,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         add(broken, QStringLiteral("/series/a[:]"));
         add(broken, QStringLiteral("/gone[:]"));
         add(broken, QStringLiteral("/matrix[:, :]"));
-        REQUIRE(plots->saveView(QStringLiteral("stale"),
-                                plots->indexOfName(broken->name()), {})
+        REQUIRE(plots->saveView(QStringLiteral("stale"), plots->indexOfName(broken->name()), {})
                     .isEmpty());
 
         QSignalSpy checked(plots, &gui::CustomPlotSet::viewChecked);
@@ -768,8 +1042,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is put into whichever tab is open",
         REQUIRE(plots->saveView(QStringLiteral("pair"), source, {}).isEmpty());
         // Both fit the file entirely, so the order between them is the
         // alphabet's.
-        CHECK(plots->viewNames()
-              == QStringList{QStringLiteral("other"), QStringLiteral("pair")});
+        CHECK(plots->viewNames() == QStringList{QStringLiteral("other"), QStringLiteral("pair")});
 
         plots->removeView(QStringLiteral("pair"));
         CHECK(plots->viewNames() == QStringList{QStringLiteral("other")});
@@ -789,8 +1062,7 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/series/a[:]"));
         add(from, QStringLiteral("/series/b[:]"));
         REQUIRE(plots->saveView(QStringLiteral("both"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("both"))
-              == gui::CustomPlotSet::FullMatch);
+        CHECK(plots->stateOf(QStringLiteral("both")) == gui::CustomPlotSet::FullMatch);
     }
 
     SECTION("some of it is")
@@ -798,8 +1070,7 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/series/a[:]"));
         add(from, QStringLiteral("/gone_away[:]"));
         REQUIRE(plots->saveView(QStringLiteral("half"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("half"))
-              == gui::CustomPlotSet::PartialMatch);
+        CHECK(plots->stateOf(QStringLiteral("half")) == gui::CustomPlotSet::PartialMatch);
     }
 
     SECTION("none of it is")
@@ -807,14 +1078,12 @@ TEST_CASE_METHOD(PlotFixture, "a view says how much of the file in front of it i
         add(from, QStringLiteral("/gone_away[:]"));
         add(from, QStringLiteral("/also_gone[:]"));
         REQUIRE(plots->saveView(QStringLiteral("stale"), source, {}).isEmpty());
-        CHECK(plots->stateOf(QStringLiteral("stale"))
-              == gui::CustomPlotSet::NoMatch);
+        CHECK(plots->stateOf(QStringLiteral("stale")) == gui::CustomPlotSet::NoMatch);
     }
 
     SECTION("and a view nobody saved matches nothing")
     {
-        CHECK(plots->stateOf(QStringLiteral("never"))
-              == gui::CustomPlotSet::NoMatch);
+        CHECK(plots->stateOf(QStringLiteral("never")) == gui::CustomPlotSet::NoMatch);
     }
 }
 
@@ -841,13 +1110,12 @@ TEST_CASE_METHOD(PlotFixture, "the views are offered best fit first, then alphab
     add(from, QStringLiteral("/series/b[:]"));
     REQUIRE(plots->saveView(QStringLiteral("z green"), source, {}).isEmpty());
 
-    CHECK(plots->viewNames()
-          == QStringList{QStringLiteral("z green"), QStringLiteral("a yellow"),
-                         QStringLiteral("z yellow"), QStringLiteral("a red one")});
+    CHECK(plots->viewNames() == QStringList{QStringLiteral("z green"), QStringLiteral("a yellow"),
+                                            QStringLiteral("z yellow"),
+                                            QStringLiteral("a red one")});
 }
 
-TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
-                 "[custom][views]")
+TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session", "[custom][views]")
 {
     // The one thing in this application that is written down besides the list
     // of files opened, and for the same reason: a comparison built once is
@@ -869,9 +1137,9 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
         QSettings::setDefaultFormat(wasFormat);
     });
 
-    const QVariantMap drawing{{QStringLiteral("showMarkers"), true},
-                              {QStringLiteral("colorSingle"),
-                               QVariant::fromValue(QColor(Qt::red))}};
+    const QVariantMap drawing{
+        {QStringLiteral("showMarkers"), true},
+        {QStringLiteral("colorSingle"), QVariant::fromValue(QColor(Qt::red))}};
     {
         gui::CustomPlotSet writing;
         const int index = writing.addPlot();
@@ -892,8 +1160,8 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
 
     CHECK(back->sourceSeriesCount() == 1);
     CHECK(back->seriesLabel(0) == QStringLiteral("morning"));
-    CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString()
-          == QStringLiteral("/series/a[:]"));
+    CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString() ==
+          QStringLiteral("/series/a[:]"));
     CHECK(back->name() == QStringLiteral("runs"));
 
     SECTION("and so are the drawing settings, colours and all")
@@ -908,8 +1176,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session",
         // A colour is the one value that does not survive a trip through JSON
         // on its own; it is written as "#aarrggbb", which is what a QML colour
         // property reads back without being asked.
-        CHECK(QColor(came.value(QStringLiteral("colorSingle")).toString())
-              == QColor(Qt::red));
+        CHECK(QColor(came.value(QStringLiteral("colorSingle")).toString()) == QColor(Qt::red));
     }
 
     SECTION("and forgetting one forgets it for good")
@@ -938,13 +1205,11 @@ TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom
     {
         plots->setTimeSeriesOf(index, QStringLiteral("/cube"));
         settleAll();
-        CHECK(plots->plotAt(index)->xExpression()
-              == QStringLiteral("/cube[0, 0, :]"));
+        CHECK(plots->plotAt(index)->xExpression() == QStringLiteral("/cube[0, 0, :]"));
     }
 }
 
-TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice",
-                 "[custom][plot]")
+TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice", "[custom][plot]")
 {
     // What the legend's "add to a custom plot" puts into the entry it makes.
     // It has to be exact: the reader is taking the line they can see, and an
@@ -986,8 +1251,7 @@ TEST_CASE_METHOD(PlotFixture, "a line of the plot tab writes itself as a slice",
     SECTION("a line running over two dimensions is not a slice, and says so")
     {
         REQUIRE(h5test::selectAndSettle(controller, "/hypercube"));
-        auto* setup =
-            qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
+        auto* setup = qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
         REQUIRE(setup != nullptr);
         // A second dimension on the columns: a line's points now run over the
         // product of two, and no hyperslab of one dimension is that line.
@@ -1061,5 +1325,319 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
         plot->setSeriesVisible(3, false);
         settleAll();
         CHECK(gui::H5Thread::instance().crossings() - mark == 0);
+    }
+}
+
+// --- the hand-over to a renderer ------------------------------------------
+//
+// fill() gives a PlotItem pointers straight into the entries' own vectors and
+// copies nothing, which is the whole reason a ten-thousand-line selection does
+// not cost a second hundred and sixty megabytes. The price is a contract the
+// compiler cannot check: whatever was filled must be emptied before those
+// vectors are freed. These cases are that contract, asserted rather than
+// commented.
+
+TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at once", "[custom]")
+{
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    CHECK(item.lineCount() == 2);
+
+    SECTION("a hidden entry is not handed over")
+    {
+        plot->setSeriesVisible(0, false);
+        settleAll();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 1);
+    }
+
+    SECTION("an empty tab hands over nothing")
+    {
+        plot->clearEntries();
+        settleAll();
+        plot->fill(&item);
+        CHECK(item.lineCount() == 0);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is freed", "[custom]")
+{
+    // The ways an entry stops being a reading of anything: the row removed, the
+    // tab cleared, the expression retyped. There the item is emptied, and
+    // reporting no lines is the observable form of "it stopped reading".
+    //
+    // The ways an entry is merely re-read -- a wider pane, a coarser or finer
+    // bucket, a line ticked in the legend -- are in the case below, and the
+    // difference between the two is the whole design: a coarser reading of the
+    // same data is not a reason to blank the pane.
+    gui::PlotItem item;
+
+    SECTION("removing the row it was drawing")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->removeEntry(0);
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("clearing the tab")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->clearEntries();
+        CHECK(item.lineCount() == 0);
+    }
+
+    SECTION("retyping an expression, which re-reads every value")
+    {
+        gui::CustomPlot* plot = tab();
+        add(plot, QStringLiteral("/series/a[:]"));
+        plot->fill(&item);
+        REQUIRE(item.lineCount() == 1);
+        plot->setExpression(0, QStringLiteral("/series/b[:]"));
+        CHECK(item.lineCount() == 0);
+    }
+
+}
+
+TEST_CASE_METHOD(PlotFixture,
+                 "what a custom plot filled goes on being drawn until it is replaced", "[custom]")
+{
+    // The other half of the contract. Each of these destroys values a renderer
+    // is holding a pointer into, and each of them is the same data read again
+    // rather than different data -- so the values outlive the change and the
+    // pane keeps its picture until fill() hands over the replacement.
+    //
+    // Asserted by dereferencing rather than by counting: the item still has its
+    // lines, and reading through them still gives what it gave. A count alone
+    // would pass just as happily over freed memory, which is exactly the
+    // failure this is about.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+
+    gui::PlotItem item;
+    item.setWidth(400.0);
+    item.setHeight(300.0);
+    item.setXMin(0.0);
+    item.setXMax(64.0);
+    item.setYMin(0.0);
+    item.setYMax(100.0);
+    plot->fill(&item);
+    REQUIRE(item.lineCount() == 2);
+
+    const auto readsBack = [&item] {
+        const QVariantMap found = item.nearestSample(10.0, 150.0);
+        return found.value(QStringLiteral("valid")).toBool()
+                   ? found.value(QStringLiteral("y")).toDouble()
+                   : std::numeric_limits<double>::quiet_NaN();
+    };
+    const double drawn = readsBack();
+    REQUIRE(std::isfinite(drawn));
+
+    SECTION("reordering, which moves the values out from under the drawing order")
+    {
+        plot->moveEntry(0, 1);
+        CHECK(item.lineCount() == 2);
+        CHECK(readsBack() == Catch::Approx(drawn));
+    }
+
+    SECTION("the read that replaces every value when it lands")
+    {
+        plot->invalidate();
+        settleAll();
+        CHECK(item.lineCount() == 2);
+        CHECK(std::isfinite(readsBack()));
+        plot->fill(&item);
+        CHECK(item.lineCount() == 2);
+        CHECK(readsBack() == Catch::Approx(drawn));
+    }
+
+    SECTION("hiding the line it was drawing")
+    {
+        plot->setSeriesVisible(0, false);
+        CHECK(item.lineCount() == 2);
+        CHECK(readsBack() == Catch::Approx(drawn));
+        plot->fill(&item);
+        CHECK(item.lineCount() == 1);
+    }
+
+    SECTION("the pane changing width, which re-reads every entry")
+    {
+        plot->setPaneColumns(256);
+        // Debounced, so nothing has happened yet -- which is the point of it: a
+        // drag of the window's edge crosses a dozen of these.
+        CHECK(item.lineCount() == 2);
+        CHECK(readsBack() == Catch::Approx(drawn));
+        h5test::settleFor(gui::CustomPlot::kResizeMilliseconds + 200);
+        settleAll();
+        CHECK(item.lineCount() == 2);
+        CHECK(std::isfinite(readsBack()));
+        plot->fill(&item);
+        CHECK(item.lineCount() == 2);
+        CHECK(readsBack() == Catch::Approx(drawn));
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "the axis handed over is the one the tab is drawn against",
+                 "[custom]")
+{
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+
+    SECTION("a stated range is a start and a step")
+    {
+        plot->setXStart(100.0);
+        plot->setXStep(0.25);
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK_FALSE(axis.explicitX());
+        CHECK(axis.start == 100.0);
+        CHECK(axis.step == 0.25);
+    }
+
+    SECTION("a time base is an array, and the line reads it point for point")
+    {
+        plot->setXMode(gui::CustomPlot::Dataset);
+        plot->setXExpression(QStringLiteral("/series/b[:]"));
+        settleAll();
+        REQUIRE(plot->xReady());
+
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK(axis.explicitX());
+        CHECK(axis.count == 64);
+        // series_b is 100 - i, so the first sample of series_a sits at x = 100.
+        CHECK(gui::xOf(plot->lineOf(0), axis, 0) == 100.0);
+    }
+
+    SECTION("a time base that has not read draws nothing at all")
+    {
+        // Rather than falling back to positions: the reader asked for these
+        // values against *those* x, and the same line on an axis of indices is
+        // a different plot wearing the same label.
+        plot->setXMode(gui::CustomPlot::Dataset);
+        plot->setXExpression(QStringLiteral("/nothing/here[:]"));
+        settleAll();
+        REQUIRE_FALSE(plot->xReady());
+        CHECK(plot->lineOf(0).count == 0);
+
+        gui::PlotItem item;
+        plot->fill(&item);
+        CHECK(item.drawnPointCount() == 0);
+    }
+}
+
+// --- what thinning keeps --------------------------------------------------
+
+namespace {
+
+/// A hundred thousand samples of nothing, with one spike in the middle of them.
+///
+/// The index is chosen to be exactly what stride sampling misses. A line of
+/// this length drawn at two thousand points has a stride of forty-nine, and
+/// 54321 is not a multiple of it -- so the old reading of this file drew a flat
+/// line at zero and reported an extent of nothing, which is a picture of a
+/// dataset that does not exist.
+void writeSpike(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t dims[1] = {100000};
+    const hid_t space = H5Screate_simple(1, dims, nullptr);
+    const hid_t set =
+        H5Dcreate2(file, "/trace", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    std::vector<double> values(100000, 0.0);
+    values[54321] = 9.0;
+    values[76543] = -7.0;
+    REQUIRE(H5Dwrite(set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+    H5Dclose(set);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
+{
+    // The claim the whole exercise rests on, asserted through both plots
+    // because they read by different routes and each had to be fixed on its
+    // own terms.
+    h5test::TempFile temp{"spike"};
+    h5test::onH5([&] { writeSpike(temp.path()); });
+
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
+
+    SECTION("read as the selected dataset")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/trace"));
+        gui::DatasetPlot* plot = controller.datasetPlot();
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->pointCount() <= gui::DatasetPlot::kMaxPoints);
+
+        // The extent is the line's own, not the extent of a sample of it --
+        // which is what puts the spike inside the pane rather than off the top
+        // of it.
+        CHECK(plot->maximum() == 9.0);
+        CHECK(plot->minimum() == -7.0);
+
+        // ...and both are among the points actually handed to the renderer.
+        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        double highest = 0.0;
+        double lowest = 0.0;
+        for (const QPointF& point : drawn) {
+            highest = std::max(highest, point.y());
+            lowest = std::min(lowest, point.y());
+        }
+        CHECK(highest == 9.0);
+        CHECK(lowest == -7.0);
+
+        // Where it is drawn is where it is in the data, to within the bucket it
+        // was the extreme of.
+        double at = 0.0;
+        for (const QPointF& point : drawn) {
+            if (point.y() == 9.0) {
+                at = point.x();
+            }
+        }
+        CHECK(at == Approx(54321.0).margin(64.0));
+    }
+
+    SECTION("read as a custom plot entry")
+    {
+        gui::CustomPlotSet* set = controller.customPlots();
+        const int index = set->addPlot();
+        PlotFixture::settleAll();
+        gui::CustomPlot* plot = set->plotAt(index);
+        REQUIRE(plot != nullptr);
+        REQUIRE(plot->addExpression(QStringLiteral("/trace[:]")) >= 0);
+        PlotFixture::settleAll();
+
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->pointCount() <= gui::CustomPlot::kMaxPoints);
+        CHECK(plot->maximum() == 9.0);
+        CHECK(plot->minimum() == -7.0);
+
+        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        double highest = 0.0;
+        double at = 0.0;
+        for (const QPointF& point : drawn) {
+            if (point.y() > highest) {
+                highest = point.y();
+                at = point.x();
+            }
+        }
+        CHECK(highest == 9.0);
+        CHECK(at == Approx(54321.0).margin(64.0));
     }
 }

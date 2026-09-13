@@ -1679,20 +1679,135 @@ TestCase {
         }
         verify(vector > 20, "a vector's one line must be drawn")
 
-        // ...and nothing of the previous selection is drawn under it. Qt
-        // Graphs keeps what a series last drew, in the pixel coordinates of
-        // the axes it was drawn against, so a graph reused across selections
-        // shows both at once. This corner of the plot area belongs to neither
-        // the vector -- which runs corner to corner -- nor its axes.
+        // ...and nothing of the previous selection is drawn under it. This
+        // corner of the plot area belongs to neither the vector -- which runs
+        // corner to corner -- nor to anything the previous selection should
+        // have left behind.
+        //
+        // Counted in ink rather than in pixels-unlike-the-ground, which is a
+        // change this test needed when the plot stopped drawing through Qt
+        // Graphs. The grid is neutral and the lines are not, and the grid now
+        // reaches this corner: Qt Graphs drew its own grid only through the
+        // graphics API and the software renderer that headless runs get
+        // dropped it, so for as long as this suite has existed the corner was
+        // bare. It is not bare now, and a horizontal rule across it is 420
+        // pixels of perfectly correct drawing.
+        //
+        // What the check is actually about survives that intact. The failure
+        // it was written for was Qt Graphs keeping what a series last drew, in
+        // the pixel coordinates of the axes it was drawn against, so that a
+        // graph reused across selections showed both at once -- and a stale
+        // stroke is a stroke, drawn in whichever colour the cycle gave it.
+        // Ink in this corner means a line in it.
         let ghost = 0
         for (let gx = Math.round(line.width * 0.55); gx < line.width - 30; ++gx) {
             for (let gy = Math.round(line.height * 0.80); gy < line.height - 40; ++gy) {
-                if (line.pixel(gx, gy) !== Theme.surfaceInset)
+                const pixel = line.pixel(gx, gy)
+                if (Math.max(pixel.r, pixel.g, pixel.b)
+                    - Math.min(pixel.r, pixel.g, pixel.b) > 0.06)
                     ++ghost
             }
         }
         verify(ghost < 50,
                "the previous selection must not still be drawn: " + ghost + " px")
+    }
+
+    /// The grid is a control that draws something.
+    ///
+    /// It was not, for as long as the plot drew through Qt Graphs -- not
+    /// because the library refused, but because the library drew it only
+    /// through the graphics API and every headless run falls back to the
+    /// software renderer, which dropped it without a word. A note in
+    /// PlotSurface.qml said for a long time that Qt Graphs drew no grid at
+    /// all; docs/screenshots/plot.png, which is taken with the "rhi" backend
+    /// asked for by name, always had one in it.
+    ///
+    /// Now the rules are this application's own Rectangles and they draw
+    /// wherever anything draws, which is what makes this assertable here at
+    /// last.
+    function test_the_grid_draws_when_it_is_asked_to() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        // A band above the lines' own extent would be ideal and there is no
+        // such band -- the y axis is the extent of the values. So count the
+        // rules instead: a horizontal grid line is a row that is almost
+        // entirely not the ground, and a row a line crosses is a handful of
+        // pixels.
+        const rulesIn = (shot) => {
+            let found = 0
+            for (let y = 0; y < shot.height; ++y) {
+                let across = 0
+                for (let x = Math.round(shot.width * 0.55);
+                     x < shot.width - 40; x += 2) {
+                    if (shot.pixel(x, y) !== Theme.surfaceInset)
+                        ++across
+                }
+                if (across > (shot.width * 0.45 - 40) / 4)
+                    ++found
+            }
+            return found
+        }
+
+        plot.showGrid = true
+        waitForRendering(win.view)
+        const withGrid = rulesIn(grabImage(plot))
+        verify(withGrid >= 3,
+               "the grid must draw its rules: only " + withGrid + " found")
+
+        plot.showGrid = false
+        waitForRendering(win.view)
+        const without = rulesIn(grabImage(plot))
+        verify(without < withGrid,
+               "turning the grid off must take rules away: " + without
+               + " of " + withGrid + " left")
+
+        plot.showGrid = true
+    }
+
+    /// The ticks are drawn where the curve is.
+    ///
+    /// The chrome and the renderer each map a value to a place on the pane,
+    /// and they are two implementations of one rule -- three lines of it, in
+    /// QML and in C++. If they ever disagree the grid does not look wrong, it
+    /// looks authoritative and reads off by a pixel.
+    ///
+    /// So the two are asserted against each other directly, over the window on
+    /// screen and over a window twice as tall: a rule that happens to hold at
+    /// the ends of one span is not the same rule.
+    function test_the_ticks_agree_with_the_renderer_about_where_a_value_sits() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+
+        const agreesOver = (low, high) => {
+            for (let i = 0; i <= 10; ++i) {
+                const value = low + (high - low) * i / 10
+                const mine = lines.parent.yFraction(value)
+                const theirs = lines.yFraction(value)
+                verify(Math.abs(mine - theirs) < 1e-9,
+                       "the chrome puts " + value + " at " + mine
+                       + " and the renderer at " + theirs)
+            }
+        }
+
+        agreesOver(lines.yMin, lines.yMax)
+        // ...and outside it, which is where a stroke that leaves the pane is
+        // projected to and where an off-by-a-sign would show.
+        agreesOver(lines.yMin - (lines.yMax - lines.yMin),
+                   lines.yMax + (lines.yMax - lines.yMin))
     }
 
     /// Start, step and stop: any two describe the x axis and the third follows
@@ -1845,6 +1960,514 @@ TestCase {
         compare(plot.autoRange, undefined)
         compare(plot.rangeMinimum, undefined)
         compare(plot.rangeMaximum, undefined)
+    }
+
+    /// Zooming in reads the run on screen again, and says so in the footer.
+    ///
+    /// The whole chain, from a gesture on the surface to a different set of
+    /// values reaching the renderer. The plot holds a summary of the whole line
+    /// -- a couple of thousand points however long it is -- so zooming used to
+    /// stretch that summary, and the surface's ceiling on magnification was
+    /// pinned at 256 for exactly that reason. Now the surface tells the plot
+    /// object what is on screen, the object reads that run again once the view
+    /// has stopped moving, and the readout stops saying "thinned" when a bucket
+    /// has become one element.
+    function test_zooming_in_reads_the_run_on_screen_again() {
+        verify(select("/trace")) // 20000 elements, summarised to 2000 points
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const backing = AppController.datasetPlot
+
+        // Let the pane's own width land before anything is counted. The surface
+        // pushes it on its first refill and the plot object waits out the drag
+        // -- kResizeMilliseconds -- so a count taken before that is a count at
+        // whatever width the window this test replaced happened to have.
+        wait(600)
+        waitForRendering(win.view)
+
+        // The ceiling is the data's now rather than a constant.
+        compare(plot.maxZoom, Math.max(256, 20000 / 16))
+
+        // How many points that is follows the pane -- a bucket is a column --
+        // so what is asserted here is the shape of the answer and not a number
+        // that would change with the size of the window this test opens.
+        const whole = backing.pointCount
+        verify(whole > 0)
+        verify(whole <= 2 * 20000)
+        verify(backing.thinned, "the whole line does not fit in what is drawn")
+        const summarised = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(summarised > 20, "the line must be drawn at all: " + summarised)
+
+        // Two hundred times in, about the middle: a hundred elements across the
+        // pane, which is a bucket of one however wide the pane is.
+        const area = plot.plotRect
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 200)
+        compare(plot.zoomX, 200)
+        // The wheel takes both axes with it, and this dataset's spike is nine
+        // where its sine is one -- so fifty times in on y is a band of empty
+        // air above the line. Put y back: what is being asked about here is
+        // resolution along x.
+        plot.zoomY = 1.0
+        plot.panY = 0.0
+        // The gesture itself reads nothing; the tenth of a second after it
+        // does.
+        wait(400)
+        waitForRendering(win.view)
+
+        verify(!backing.thinned, "at a bucket of one the samples are the file's")
+        verify(backing.pointCount > 0)
+        // And it is drawn where the pane is. A run carries an offset into the
+        // line it came from -- PlotLine::positionStart -- and a run drawn
+        // without it would be a line somewhere off the frame and a blank plot,
+        // which every count above would still agree with.
+        const resolved = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(resolved > 20, "the run that was read must be on the pane: " + resolved)
+
+        // And back out, which needs no read at all: the whole-line summary was
+        // never thrown away.
+        plot.resetView()
+        compare(backing.pointCount, whole)
+        verify(backing.thinned)
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), summarised)
+    }
+
+    /// A pane that changes width keeps its picture.
+    ///
+    /// What a line is thinned to follows the pane -- a bucket is a column --
+    /// so every change of width is a question for the plot object. Opening a
+    /// rail is the sharpest form of it: the pane narrows by a couple of hundred
+    /// pixels in one step, and what the reader saw was the plot go blank and
+    /// stay blank until they moved the pointer into it.
+    ///
+    /// So this asserts the picture rather than the counts: there is a line on
+    /// the pane before the rail opens, and there is one on the frame after it.
+    function test_a_rail_opening_does_not_empty_the_plot() {
+        verify(select("/trace"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot.drawable)
+        const before = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(before > 20, "the line must be drawn to begin with: " + before)
+
+        win.view.toggleRail("data")
+        compare(win.view.rail, "data")
+        waitForRendering(win.view)
+        verify(plot.drawable, "the plot must still know it has something to draw")
+        const narrowed = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(narrowed > 20, "the line must survive the rail opening: " + narrowed)
+
+        win.view.toggleRail("data")
+        compare(win.view.rail, "")
+        waitForRendering(win.view)
+        const restored = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(restored > 20, "...and closing it again: " + restored)
+
+        // ...and it survives the slower version of the same thing: a window
+        // dragged wider a step at a time. Every one of those steps used to be a
+        // re-read of every drawn line, and the reader saw the pane flicker
+        // under their hand. The picture is asserted after each, because a blank
+        // frame in the middle of a drag is exactly what this is about.
+        for (let width = 900; width >= 600; width -= 40) {
+            win.width = width
+            waitForRendering(win.view)
+            const during = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+            verify(during > 20,
+                   "the line must be drawn at every width: " + width
+                   + " gave " + during)
+        }
+        // And once the drag stops, the pane is re-thinned for the width it
+        // ended at.
+        // Comfortably past DatasetPlot::kResizeMilliseconds, which is 200.
+        wait(600)
+        waitForRendering(win.view)
+        const settled = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(settled > 20, "...and after it settles: " + settled)
+    }
+
+    /// Shift zooms x alone; Ctrl zooms y alone.
+    ///
+    /// A plot of a long trace is read by stretching time without changing what
+    /// an amplitude is worth, and a plot of a narrow band is read the other way
+    /// round. A wheel that always took both axes made either of those a zoom
+    /// followed by a correcting pan, done by eye -- so the two modifiers every
+    /// other plot in the field uses do here what they do there.
+    ///
+    /// Through zoomAxesFor() and zoomAt() rather than through a synthesised
+    /// wheel event: what is being asserted is which axis moves, and QtQuickTest
+    /// cannot put a modifier on a wheel the WheelHandler will accept.
+    function test_a_modifier_holds_one_axis_still() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const area = plot.plotRect
+        const px = area.x + area.width / 2
+        const py = area.y + area.height / 2
+
+        compare(plot.zoomAxesFor(Qt.NoModifier), "both")
+        compare(plot.zoomAxesFor(Qt.ShiftModifier), "x")
+        compare(plot.zoomAxesFor(Qt.ControlModifier), "y")
+        // Both together is neither, because a modifier this file does not know
+        // about is a window manager's and not an instruction.
+        compare(plot.zoomAxesFor(Qt.ShiftModifier | Qt.ControlModifier), "both")
+
+        plot.zoomAt(px, py, 4, "x")
+        compare(plot.zoomX, 4)
+        compare(plot.zoomY, 1)
+        compare(plot.panY, 0)
+
+        plot.resetView()
+        plot.zoomAt(px, py, 4, "y")
+        compare(plot.zoomY, 4)
+        compare(plot.zoomX, 1)
+        compare(plot.panX, 0)
+
+        plot.resetView()
+        plot.zoomAt(px, py, 4, "both")
+        compare(plot.zoomX, 4)
+        compare(plot.zoomY, 4)
+
+        // ...and the way back is a double tap, which is the gesture every map
+        // and image viewer uses. It costs nothing: the whole-line summary is
+        // never thrown away, so the most zoomed-out picture is always already
+        // in hand and going to it is a draw.
+        const gestures = findChild(win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+        doubleClickOn(gestures)
+        waitForRendering(win.view)
+        compare(plot.zoomX, 1)
+        compare(plot.zoomY, 1)
+        compare(plot.panX, 0)
+        compare(plot.panY, 0)
+        verify(!plot.zoomed)
+
+        // ...and the drag still pans, which is the thing the double click could
+        // have cost: the two gestures share one press, and a mouse area that
+        // took the grab and kept it would have frozen the view.
+        plot.zoomAt(px, py, 8, "both")
+        const started = plot.panX
+        mouseDrag(gestures, Math.round(gestures.width / 2),
+                  Math.round(gestures.height / 2), -80, 0)
+        waitForRendering(win.view)
+        verify(plot.panX !== started,
+               "dragging must still move the view: " + plot.panX)
+
+        plot.resetView()
+    }
+
+    /// The highlight is drawn, and it is drawn wider.
+    ///
+    /// This was the one part of the move off Qt Graphs with a real technical
+    /// risk in it. A line width above 1.0 is an *optional* RHI feature and
+    /// several backends ignore it without saying so, and the highlight -- the
+    /// only affordance for following one line through a bundle of fifty -- is a
+    /// line drawn at double width. So the strokes are built out of triangles
+    /// instead, and this is what says the triangles are the width they were
+    /// asked for once the whole chain from the legend down is connected.
+    ///
+    /// One line, so that opacity cannot account for the difference: with a
+    /// single line drawn, highlighting it changes its width and nothing else.
+    function test_the_highlighted_line_is_drawn_wider() {
+        verify(select("/long_vec")) // one line of a thousand points
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        compare(AppController.datasetPlot.seriesCount, 1)
+
+        // Counted in ink rather than in pixels-unlike-the-ground: a grab is of
+        // the window cropped to the item's size, so it carries the tree and the
+        // bar with it, and those are neutral where a drawn line is not.
+        compare(plot.highlighted, -1)
+        const thin = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(thin > 20, "the line must be drawn at all: " + thin)
+
+        plot.highlighted = 0
+        waitForRendering(win.view)
+        const thick = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(thick > thin * 1.3,
+               "a highlighted line must be visibly heavier: " + thin + " -> "
+               + thick)
+
+        plot.highlighted = -1
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), thin)
+    }
+
+    /// Markers are punctuation on a line, and they mark samples.
+    ///
+    /// Only where the line is drawn sample for sample: once the envelope is
+    /// summarising, a drawn point stands for a whole bucket and a dot on it
+    /// marks nothing. A thousand points on a pane a thousand wide is drawn
+    /// whole, so this is the case where they appear.
+    function test_markers_put_a_dot_on_every_sample() {
+        verify(select("/long_vec"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        verify(!plot.showMarkers)
+        const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(bare > 20, "the line must be drawn at all: " + bare)
+
+        plot.showMarkers = true
+        waitForRendering(win.view)
+        const dotted = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(dotted > bare,
+               "markers must put ink on the plot: " + bare + " -> " + dotted)
+
+        plot.showMarkers = false
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare)
+    }
+
+    /// The crosshair reads a sample, not a position.
+    ///
+    /// New with the renderer, and one of the two things the plot could not do
+    /// at all while it drew through Qt Graphs. It snaps: a plot is a picture of
+    /// measurements that were taken, and a readout of the space between two of
+    /// them is a reading of something nobody measured. The same argument the
+    /// time base makes about interpolating an x, and the gap makes about a
+    /// value that would not read.
+    function test_the_crosshair_reads_the_sample_under_the_pointer() {
+        verify(select("/compressed")) // 100 x 100, so x runs 0 .. 99
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+        const frame = lines.parent
+
+        // Nothing until the pointer is over the pane.
+        verify(!frame.reading.valid,
+               "there must be no reading before anything is pointed at")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(frame.reading.valid, "pointing at the plot must produce a reading")
+
+        // Snapped. The default axis is the element's own index, so a reading
+        // that landed on a sample is a whole number and one between two of them
+        // is not.
+        compare(frame.reading.x, Math.round(frame.reading.x))
+        verify(frame.reading.x >= 0 && frame.reading.x <= 99,
+               "the reading must be inside the data: x = " + frame.reading.x)
+        verify(frame.reading.line >= 0,
+               "the reading must say which line it came from")
+
+        // And it follows the pointer.
+        const wasAt = frame.reading.x
+        mouseMove(lines, Math.round(lines.width * 0.7),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(frame.reading.valid)
+        verify(frame.reading.x > wasAt,
+               "moving right must read further along x: " + wasAt + " -> "
+               + frame.reading.x)
+
+        // ...and it is drawn, not merely computed: two rules, a ring on the
+        // sample and a box with the numbers in it are all ink that was not on
+        // the pane before.
+        const busy = (shot) => {
+            let found = 0
+            for (let x = 0; x < shot.width; x += 2) {
+                for (let y = Theme.sliceBarHeight; y < shot.height; y += 2) {
+                    if (shot.pixel(x, y) !== Theme.surfaceInset)
+                        ++found
+                }
+            }
+            return found
+        }
+        const withCrosshair = busy(grabImage(lines.parent))
+
+        mouseMove(lines, -20, -20)
+        waitForRendering(win.view)
+        verify(!frame.reading.valid,
+               "the reading must go when the pointer leaves the pane")
+        verify(busy(grabImage(lines.parent)) < withCrosshair,
+               "the crosshair must leave with it")
+    }
+
+    /// The numbers go in the bar below the plot, not in a box on top of it.
+    ///
+    /// They were in a box on top of it, because that is where a plotting
+    /// library puts them. It is the wrong place here: this application already
+    /// has a strip along the foot of every view whose whole job is to say what
+    /// is on screen in numbers, and a second readout in a second style over the
+    /// picture is a second convention.
+    function test_the_reading_is_reported_in_the_footer() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+
+        compare(plot.readingFacts.length, 0)
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        // The line it came from -- there are sixty-four of them here -- and the
+        // two numbers.
+        const facts = plot.readingFacts
+        compare(facts.length, 3)
+        verify(String(facts[0]).startsWith("line "), "got " + facts[0])
+        verify(String(facts[1]).startsWith("x "), "got " + facts[1])
+        verify(String(facts[2]).startsWith("y "), "got " + facts[2])
+        // The default axis counts elements, so an x reads as a whole number
+        // rather than as "12.0000" -- four digits of decoration on a count.
+        verify(!String(facts[1]).includes("."), "got " + facts[1])
+
+        // ...at the right-hand end of the bar, and not appended to the run of
+        // facts on the left. Appended, a reading that grew a digit moved the
+        // line count and the point count under a reader who was watching them.
+        // The plot's own footer, not the first one in the tree: the view
+        // carries three of them -- table, plot, image -- and findChild answers
+        // with whichever it reaches first.
+        const footer = findChild(win.view, "plotFooter")
+        verify(footer, "the plot's footer must be reachable")
+        const trailing = findChild(footer, "footerTrailing")
+        verify(trailing, "the footer must carry a right-hand readout")
+        verify(trailing.visible, "it must be showing: " + trailing.text)
+        for (let i = 0; i < facts.length; ++i) {
+            verify(String(trailing.text).includes(String(facts[i])),
+                   "the reading must be in the right-hand readout: got "
+                   + trailing.text)
+        }
+        verify(trailing.x + trailing.width > footer.width / 2,
+               "the reading must sit in the right-hand half of the bar: "
+               + (trailing.x + trailing.width) + " of " + footer.width)
+
+        mouseMove(lines, -20, -20)
+        waitForRendering(win.view)
+        compare(plot.readingFacts.length, 0)
+        verify(!trailing.visible,
+               "with nothing under the pointer the right-hand readout goes")
+    }
+
+    /// ...and a plot of one line does not say which line.
+    ///
+    /// "Which" has no answer worth printing there, and a line's name can be a
+    /// bare row index -- which read as a stray number sitting between two facts
+    /// that were labelled: "1 LINE . 1000 POINTS . Y 0.000 ... 999.0 . 0 . X 450".
+    function test_a_single_line_is_not_named_in_the_reading() {
+        verify(select("/long_vec"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        compare(AppController.datasetPlot.seriesCount, 1)
+
+        mouseMove(lines, Math.round(lines.width * 0.45),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        const facts = plot.readingFacts
+        compare(facts.length, 2)
+        verify(String(facts[0]).startsWith("x "), "got " + facts[0])
+        verify(String(facts[1]).startsWith("y "), "got " + facts[1])
+
+        mouseMove(lines, -20, -20)
+    }
+
+    /// The crosshair is a control now, and it can be turned off.
+    function test_the_cursor_can_be_turned_off() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot.showCursor, "the cursor is on by default")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        plot.showCursor = false
+        waitForRendering(win.view)
+        verify(!plot.reading.valid,
+               "turning the cursor off must stop it reading")
+        compare(plot.readingFacts.length, 0)
+
+        plot.showCursor = true
+    }
+
+    /// The crosshair is clipped to the pane, and that is not tidiness.
+    ///
+    /// The sample nearest the pointer need not be on screen. Zoom the y axis
+    /// into a narrow band and point at part of the line that has left it: the
+    /// nearest sample is hundreds of pixels above or below the frame, and the
+    /// rule through it was drawn there -- across the bar above the plot.
+    ///
+    /// Asserted in two halves, because either alone would pass on a broken
+    /// build: that the dangerous state is reachable at all, and that the thing
+    /// which contains it is the pane.
+    function test_the_crosshair_stays_inside_the_plot_area() {
+        verify(select("/long_vec")) // a ramp from 0 to 999
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        const frame = lines.parent
+        const cursor = findChild(win.view, "plotCursor")
+        verify(cursor, "the crosshair must be reachable")
+
+        // Whatever else is true, it is clipped and it is the pane.
+        verify(cursor.clip, "the crosshair must be clipped")
+        compare(cursor.x, frame.area.x)
+        compare(cursor.y, frame.area.y)
+        compare(cursor.width, frame.area.width)
+        compare(cursor.height, frame.area.height)
+
+        // A narrow band around the middle of a ramp: at the left-hand end of
+        // the line every sample is far below it.
+        plot.zoomY = 20
+        waitForRendering(win.view)
+        mouseMove(lines, 2, Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+        verify(plot.reading.py > frame.area.height,
+               "the nearest sample must be below the pane for this to test "
+               + "anything: py = " + plot.reading.py + " of " + frame.area.height)
+
+        plot.zoomY = 1
+        mouseMove(lines, -20, -20)
     }
 
     function test_a_reversed_cycle_runs_the_other_way() {

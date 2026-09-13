@@ -48,6 +48,8 @@ private:
 ///   /enum                    1-D enum {RED,GREEN,BLUE} [3]
 ///   /compressed              2-D int32 [100x100], chunked + gzip
 ///   /long_vec                1-D int32 [1000] (exceeds the view block size)
+///   /trace                   1-D float64 [20000], a sine with a one-sample
+///                            spike at 12345 (long enough for a closer look)
 ///   /empty                   1-D int32 [0]
 ///   /group                   group, attrs "title" and "version"
 ///   /group/nested            group

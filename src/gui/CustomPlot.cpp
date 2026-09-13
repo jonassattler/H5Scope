@@ -12,10 +12,10 @@
 #include "postproc/Pipeline.hpp"
 
 #include <QPointF>
-#include <QtGraphs/QXYSeries>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <memory>
 #include <utility>
@@ -26,32 +26,46 @@ namespace {
 
 /// What the job is asked for: one line per expression, the time base first
 /// when there is one.
-struct Ask {
+struct Ask
+{
     QString expression;
+    /// A closer look rather than the whole line: read only this run of it, at
+    /// this bucket. See gui::PlotWindow.
+    std::optional<PlotWindow> window;
+    /// Buckets to reduce the whole line to, which is the pane's own width in
+    /// columns. Ignored when a window says what the bucket is.
+    int buckets = CustomPlot::kDefaultColumns;
 };
 
 /// What it hands back, alongside the facts it learned on the way.
-struct Answer {
+struct Answer
+{
     QString problem;
     std::vector<double> values;
-    int stride = 1;
+    /// The first element of the line these values start at. Zero for the whole
+    /// line; the run's own start for a closer look.
+    double start = 0.0;
+    /// Axis positions between one drawn point and the next. Half a bucket when
+    /// the line was read as an envelope, because a bucket answers with two.
+    double step = 1.0;
     int sourceLength = 0;
 };
 
-struct Reply {
+struct Reply
+{
     std::vector<Answer> lines;
     std::vector<std::pair<QString, PathFacts>> learned;
 };
 
 /// Read one line. On the HDF5 thread; `opened` is this job's own cache of open
 /// datasets, so several entries over one dataset open it once.
-[[nodiscard]] Answer
-readLine(h5core::File* file, const QString& expression,
-         std::map<QString, std::shared_ptr<h5core::Dataset>>& opened,
-         std::map<QString, PathFacts>& facts)
+[[nodiscard]] Answer readLine(h5core::File* file, const Ask& ask,
+                              std::map<QString, std::shared_ptr<h5core::Dataset>>& opened,
+                              std::map<QString, PathFacts>& facts)
 {
     Answer answer;
 
+    const QString& expression = ask.expression;
     const Expression parts = splitExpression(expression);
     if (!parts.valid()) {
         answer.problem = parts.error;
@@ -73,8 +87,7 @@ readLine(h5core::File* file, const QString& expression,
 
     std::vector<std::vector<hsize_t>> indices;
     std::vector<bool> drop;
-    if (!resolveLine(parts.subscript, known->second.shape, indices, drop,
-                     answer.problem)) {
+    if (!resolveLine(parts.subscript, known->second.shape, indices, drop, answer.problem)) {
         return answer;
     }
 
@@ -84,34 +97,122 @@ readLine(h5core::File* file, const QString& expression,
             break;
         }
     }
-    answer.stride = thinToPoints(indices, drop, CustomPlot::kMaxPoints);
+    // A closer look reads a run of the line rather than the whole of it, and
+    // the elements outside that run are never touched -- which is what makes
+    // zooming in cost the pane rather than the file. The run's bucket was
+    // chosen against the pane by gui::windowFor and is simply obeyed here.
+    if (ask.window.has_value()) {
+        windowLine(indices, drop, ask.window->first, ask.window->span);
+        answer.start = static_cast<double>(ask.window->first);
+    }
 
     auto held = opened.find(parts.path);
     if (held == opened.end()) {
         try {
             held = opened
                        .emplace(parts.path,
-                                std::make_shared<h5core::Dataset>(
-                                    *file, parts.path.toStdString()))
+                                std::make_shared<h5core::Dataset>(*file, parts.path.toStdString()))
                        .first;
-        } catch (const h5core::H5Error& error) {
+        }
+        catch (const h5core::H5Error& error) {
             answer.problem = QString::fromStdString(error.summary());
             return answer;
         }
     }
+    h5core::Dataset& dataset = *held->second;
 
-    const postproc::ArrayResult read =
-        postproc::read(*held->second, indices, drop);
-    if (!read.ok()) {
-        answer.problem = read.error;
+    // How what is left is reduced to something a screen can show.
+    //
+    // Always the extremes of each bucket, never every nth element. A stride
+    // selects by position and reaches an extremum only by luck -- on
+    // /plotting/adc_10M it lands on none of the seventeen impulses and beats
+    // against the trace's own oscillation, so what it draws is a wave that is
+    // not in the file. An envelope selects the extremum *because* it is
+    // extreme, draws the same number of points, and cannot lose one.
+    //
+    // This used to give up past kEnvelopeElements and fall back to stride,
+    // because the reduction was done in memory and the read had to be
+    // materialised first. That was not a compromise, it was a second picture of
+    // the same data: the Plot tab drew adc_10M as a band of +/-32000 with every
+    // impulse in it, and a custom tab drew the same slice as an aliased sine of
+    // +/-13000 with none of them. Reading a bucket at a time costs the same
+    // round trips as the strided read it replaces -- one per drawn point either
+    // way -- and never holds more than one bucket, so there is nothing left to
+    // give up for.
+    const std::size_t along = lineDimension(indices, drop);
+    const auto length = static_cast<long long>(indices[along].size());
+    const long long buckets = std::max<long long>(1, ask.buckets);
+    const long long bucket = ask.window.has_value()
+                                 ? ask.window->bucket
+                                 : std::max<long long>(1, (length + buckets - 1) / buckets);
+
+    if (bucket <= 1) {
+        // Short enough to draw sample for sample. One read of the lot.
+        const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
+        if (!read.ok()) {
+            answer.problem = read.error;
+            return answer;
+        }
+        const postproc::Array& array = read.array;
+        const hsize_t count = array.size();
+        answer.step = 1.0;
+        answer.values.reserve(static_cast<std::size_t>(count));
+        for (hsize_t i = 0; i < count; ++i) {
+            answer.values.push_back(array.at({i}));
+        }
         return answer;
     }
 
-    const postproc::Array& array = read.array;
-    const hsize_t count = array.size();
-    answer.values.reserve(static_cast<std::size_t>(count));
-    for (hsize_t i = 0; i < count; ++i) {
-        answer.values.push_back(array.at({i}));
+    // The envelope, a bucket at a time: the smallest and the largest of each,
+    // in the order they occur so the stroke keeps the direction the data has. A
+    // bucket with nothing drawable in it answers with a pair of NaN, which is a
+    // gap, which is what it is.
+    const std::vector<hsize_t> line = std::move(indices[along]);
+    const long long taken = (length + bucket - 1) / bucket;
+    answer.step = static_cast<double>(bucket) / 2.0;
+    answer.values.reserve(static_cast<std::size_t>(taken) * 2);
+    const auto nothing = std::numeric_limits<double>::quiet_NaN();
+    for (long long b = 0; b < taken; ++b) {
+        const long long first = b * bucket;
+        const long long last = std::min(first + bucket, length);
+        indices[along].assign(line.begin() + first, line.begin() + last);
+
+        const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
+        if (!read.ok()) {
+            answer.problem = read.error;
+            answer.values.clear();
+            return answer;
+        }
+        const postproc::Array& array = read.array;
+        const hsize_t count = array.size();
+
+        double lowest = 0.0;
+        double highest = 0.0;
+        hsize_t lowAt = 0;
+        hsize_t highAt = 0;
+        bool any = false;
+        for (hsize_t i = 0; i < count; ++i) {
+            const double value = array.at({i});
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            if (!any || value < lowest) {
+                lowest = value;
+                lowAt = i;
+            }
+            if (!any || value > highest) {
+                highest = value;
+                highAt = i;
+            }
+            any = true;
+        }
+        if (!any) {
+            answer.values.push_back(nothing);
+            answer.values.push_back(nothing);
+            continue;
+        }
+        answer.values.push_back(lowAt <= highAt ? lowest : highest);
+        answer.values.push_back(lowAt <= highAt ? highest : lowest);
     }
     return answer;
 }
@@ -125,14 +226,29 @@ CustomPlot::CustomPlot(QString name, DatasetLookup* lookup, QObject* parent)
     coalesce_.setInterval(0);
     connect(&coalesce_, &QTimer::timeout, this, &CustomPlot::refresh);
 
+    // The closer look waits for the gesture to stop, where the coalescing above
+    // waits only for the turn of the event loop. Two timers because they are
+    // two different waits: one is "several edits are one read", the other is
+    // "a reader still moving has not asked for anything yet".
+    settle_.setSingleShot(true);
+    settle_.setInterval(kSettleMilliseconds);
+    connect(&settle_, &QTimer::timeout, this, &CustomPlot::askForCloser);
+
+    // And a third wait, for the pane's width. A window dragged from narrow to
+    // wide crosses a dozen column quanta and each crossing is every entry read
+    // again -- which the reader saw as the tab flickering under their hand
+    // while they were still deciding how wide they wanted it.
+    resize_.setSingleShot(true);
+    resize_.setInterval(kResizeMilliseconds);
+    connect(&resize_, &QTimer::timeout, this, &CustomPlot::applyColumns);
+
     // A path that was unknown while the reader was typing is known now, so the
     // rows re-check themselves against it. Nothing is re-read: the error roles
     // are recomputed from the cache.
     if (lookup_ != nullptr) {
         connect(lookup_, &DatasetLookup::changed, this, [this] {
             if (!entries_.empty()) {
-                emit dataChanged(index(0, 0),
-                                 index(static_cast<int>(entries_.size()) - 1, 0),
+                emit dataChanged(index(0, 0), index(static_cast<int>(entries_.size()) - 1, 0),
                                  {ErrorRole});
             }
         });
@@ -146,8 +262,7 @@ int CustomPlot::rowCount(const QModelIndex& parent) const
 
 QVariant CustomPlot::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || index.row() < 0
-        || index.row() >= static_cast<int>(entries_.size())) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= static_cast<int>(entries_.size())) {
         return {};
     }
     const Entry& entry = entries_[static_cast<std::size_t>(index.row())];
@@ -293,9 +408,8 @@ void CustomPlot::addDataset(const QString& path, bool confirmed)
                 parts << QString::number(cursor[d]);
             }
             parts << QStringLiteral(":");
-            written.push_back(path + QStringLiteral("[")
-                              + parts.join(QStringLiteral(", "))
-                              + QStringLiteral("]"));
+            written.push_back(path + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
+                              QStringLiteral("]"));
             // Odometer over the leading dimensions, fastest on the right --
             // row-major, the same order the grid lists its rows in.
             for (std::size_t d = last; d-- > 0;) {
@@ -326,7 +440,7 @@ void CustomPlot::removeEntry(int row)
     beginRemoveRows({}, row, row);
     entries_.erase(entries_.begin() + row);
     endRemoveRows();
-    invalidate();
+    discard(); // the row's values went with it
 }
 
 void CustomPlot::moveEntry(int from, int to)
@@ -347,7 +461,7 @@ void CustomPlot::moveEntry(int from, int to)
     endMoveRows();
     // The order is the drawing order and so the colour order, and nothing was
     // re-read: the values travelled with the row.
-    emit changed();
+    announce();
 }
 
 void CustomPlot::clearEntries()
@@ -358,7 +472,7 @@ void CustomPlot::clearEntries()
     beginResetModel();
     entries_.clear();
     endResetModel();
-    invalidate();
+    discard(); // every row's values went with them
 }
 
 void CustomPlot::setExpression(int row, const QString& text)
@@ -374,12 +488,14 @@ void CustomPlot::setExpression(int row, const QString& text)
     entry.expression = trimmed;
     // The values held are the old line's. Dropped rather than kept, because a
     // row whose box says one thing while the stroke on the plot is another is
-    // the one state this must never be in.
+    // the one state this must never be in -- so the renderer is emptied here
+    // rather than left drawing them, which is what discard() below is for.
+    releaseDrawing();
     entry.values.clear();
     entry.sourceLength = 0;
-    entry.stride = 1;
+    entry.step = 1.0;
     touch(row, {ExpressionRole, PointsRole, SourcePointsRole, ScalableRole});
-    invalidate();
+    discard();
 }
 
 QString CustomPlot::entryError(int row, const QString& text) const
@@ -405,7 +521,7 @@ void CustomPlot::setAlias(int row, const QString& text)
     touch(row, {AliasRole});
     // Nothing is re-read and no point moves; the legend simply calls it
     // something else. `changed` is what the legend listens to.
-    emit changed();
+    announce();
 }
 
 void CustomPlot::setScaling(int row, Scaling scaling)
@@ -421,6 +537,9 @@ void CustomPlot::setScaling(int row, Scaling scaling)
     touch(row, {ScalingRole});
     // The same points, moved: nothing is re-read and no line has come or gone.
     emit xAxisChanged();
+    // Which elements are on screen has moved with them, though -- stretch and
+    // align put different parts of the line under the pane.
+    refreshCloser();
 }
 
 QVariantList CustomPlot::drawnSeries() const
@@ -436,12 +555,14 @@ QVariantList CustomPlot::drawnSeries() const
 
 int CustomPlot::seriesCount() const
 {
-    return static_cast<int>(std::count_if(
-        entries_.begin(), entries_.end(),
-        [](const Entry& entry) { return entry.drawn; }));
+    return static_cast<int>(std::count_if(entries_.begin(), entries_.end(),
+                                          [](const Entry& entry) { return entry.drawn; }));
 }
 
-int CustomPlot::pointCount() const { return points_; }
+int CustomPlot::pointCount() const
+{
+    return points_;
+}
 
 int CustomPlot::sourceSeriesCount() const
 {
@@ -450,13 +571,18 @@ int CustomPlot::sourceSeriesCount() const
 
 bool CustomPlot::thinned() const
 {
-    return std::any_of(entries_.begin(), entries_.end(), [](const Entry& entry) {
-        return entry.drawn && entry.stride > 1;
-    });
+    return std::any_of(entries_.begin(), entries_.end(),
+                       [](const Entry& entry) { return entry.drawn && entry.step > 1.0; });
 }
 
-double CustomPlot::minimum() const { return minimum_; }
-double CustomPlot::maximum() const { return maximum_; }
+double CustomPlot::minimum() const
+{
+    return minimum_;
+}
+double CustomPlot::maximum() const
+{
+    return maximum_;
+}
 
 int CustomPlot::sourcePointCount() const
 {
@@ -479,6 +605,9 @@ void CustomPlot::setXStart(double value)
     }
     xStart_ = value;
     emit xAxisChanged();
+    // The axis decides what a position is worth in x, so moving it moves which
+    // elements the reader is looking at without the view having moved at all.
+    refreshCloser();
 }
 
 void CustomPlot::setXStep(double value)
@@ -488,9 +617,13 @@ void CustomPlot::setXStep(double value)
     }
     xStep_ = value;
     emit xAxisChanged();
+    refreshCloser();
 }
 
-bool CustomPlot::hasData() const { return hasFinite_; }
+bool CustomPlot::hasData() const
+{
+    return hasFinite_;
+}
 
 QString CustomPlot::error() const
 {
@@ -536,7 +669,11 @@ void CustomPlot::setSeriesVisible(int series, bool visible)
     entry.drawn = visible;
     touch(series, {DrawnRole});
     recount();
-    emit changed();
+    announce();
+    // An entry ticked while the reader is looking closely has no closer look of
+    // its own yet. It draws from the whole-line summary -- correct, and coarse
+    // -- until the next settle reads the one run it is missing.
+    refreshCloser();
 }
 
 void CustomPlot::selectAll()
@@ -551,7 +688,8 @@ void CustomPlot::selectAll()
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
+    refreshCloser();
 }
 
 void CustomPlot::selectNone()
@@ -566,7 +704,8 @@ void CustomPlot::selectNone()
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
+    refreshCloser();
 }
 
 void CustomPlot::selectFirst(int count)
@@ -576,7 +715,428 @@ void CustomPlot::selectFirst(int count)
     }
     touch(-1, {DrawnRole});
     recount();
-    emit changed();
+    announce();
+    refreshCloser();
+}
+
+// ---------------------------------------------------------------------------
+// The closer look
+// ---------------------------------------------------------------------------
+
+int CustomPlot::bucketBudget() const
+{
+    return std::clamp(columns_, kMinPoints / 2, kMaxPoints / 2);
+}
+
+int CustomPlot::closerBuckets() const
+{
+    // One octave finer than the pane needs, which is the cheapest prefetch
+    // there is and is what the plot tab does -- see DatasetPlot::detailBuckets
+    // for the argument. Here every entry keeps its own run rather than sharing
+    // a budget with the others, so the guard is the number of entries drawn
+    // rather than a division: past a few dozen runs held at twice the
+    // resolution the tab is spending memory on detail nobody asked for.
+    const int pane = bucketBudget();
+    return seriesCount() <= kCrowdedLines ? std::min(2 * pane, kMaxPoints) : pane;
+}
+
+void CustomPlot::setPaneColumns(int columns)
+{
+    // Down to the quantum, for the reason DatasetPlot::kColumnQuantum gives:
+    // handing the renderer more than two points per column makes it summarise
+    // again, in powers of two, and a hair too many costs half the resolution.
+    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
+                                     kMinPoints / 2, kMaxPoints / 2);
+    if (quantised == wantedColumns_) {
+        return;
+    }
+    wantedColumns_ = quantised;
+    if (wantedColumns_ == columns_) {
+        // Dragged out and back again inside one gesture. Nothing to do, and
+        // nothing to wait for either.
+        resize_.stop();
+        return;
+    }
+    if (!measured_) {
+        // The surface measuring itself for the first time. There is no gesture
+        // to wait out and nothing for the wait to protect -- whatever has been
+        // read so far was read at an assumed width.
+        measured_ = true;
+        resize_.stop();
+        applyColumns();
+        return;
+    }
+    // Otherwise nothing happens here. See the note on the declaration: the read
+    // is at the end of the drag, not once per sixty-four pixels of it.
+    resize_.start();
+}
+
+void CustomPlot::applyColumns()
+{
+    if (wantedColumns_ == columns_) {
+        return;
+    }
+    columns_ = wantedColumns_;
+    // Every entry was reduced against the old width, so every entry is read
+    // again -- and what is on screen goes on being drawn until the answer
+    // lands.
+    invalidate();
+}
+
+void CustomPlot::setVisibleRange(double xMin, double xMax)
+{
+    if (viewMin_ == xMin && viewMax_ == xMax) {
+        return;
+    }
+    // Whether a run in hand still covers the pane is a property of the view, so
+    // it can change without anything being read -- and when it does, a
+    // different set of values has to reach the renderer.
+    const int drawnCloser = closerDrawn();
+    viewMin_ = xMin;
+    viewMax_ = xMax;
+    refreshCloser();
+    if (closerDrawn() != drawnCloser) {
+        announce();
+    }
+}
+
+double CustomPlot::stretchScale(const Entry& entry) const
+{
+    if (entry.scaling != Stretch || entry.sourceLength <= 1) {
+        return 1.0;
+    }
+    // The line spread over the whole axis: its first element at the start and
+    // its last at the end, whatever their number. The same map lineOf() draws
+    // the whole line with, written per element rather than per drawn point,
+    // because a run of the line has to land where its elements would have.
+    return static_cast<double>(sourcePointCount() - 1) /
+           static_cast<double>(entry.sourceLength - 1);
+}
+
+bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) const
+{
+    if (xMode_ == Dataset) {
+        // A time base is a lookup table, not an affine map. It need not be
+        // monotonic, so a range of x is not a range of indices and there is
+        // nothing here to run backwards -- the same reason projectLine()
+        // refuses to envelope that path.
+        return false;
+    }
+    if (!std::isfinite(viewMin_) || !std::isfinite(viewMax_) || !std::isfinite(xStart_) ||
+        !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return false;
+    }
+    const double scale = stretchScale(entry);
+    if (!(std::abs(scale) > 0.0)) {
+        return false;
+    }
+    double low = (viewMin_ - xStart_) / xStep_ / scale;
+    double high = (viewMax_ - xStart_) / xStep_ / scale;
+    if (low > high) {
+        std::swap(low, high);
+    }
+    if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
+        return false;
+    }
+    first = low;
+    last = high;
+    return true;
+}
+
+std::optional<PlotWindow> CustomPlot::closerFor(const Entry& entry, int buckets) const
+{
+    if (!entry.drawn || entry.sourceLength <= 0 || !entry.problem.isEmpty()) {
+        return {};
+    }
+    if (entry.step <= 1.0) {
+        // Already drawn sample for sample. There is nothing a second read could
+        // add, whatever the reader does with the wheel.
+        return {};
+    }
+    double low = 0.0;
+    double high = 0.0;
+    if (!lineRange(entry, low, high)) {
+        return {};
+    }
+    // An envelope answers with two values for each bucket and a bucket is a
+    // column, so the count the caller hands in is already what it means.
+    return windowFor(low, high, entry.sourceLength, buckets);
+}
+
+int CustomPlot::drawnLevel(const Entry& entry) const
+{
+    double low = 0.0;
+    double high = 0.0;
+    if (entry.levels.empty() || !lineRange(entry, low, high)) {
+        return -1;
+    }
+    // Against the line rather than against the view: a pane showing the end of
+    // a line shows some empty axis past it, and a run reaching the last element
+    // covers everything there is to draw out there.
+    low = std::max(low, 0.0);
+    high = std::min(high, static_cast<double>(entry.sourceLength));
+
+    // The finest run that covers the pane. They all hold about the same number
+    // of points, so a finer one is more detail on screen for the same cost --
+    // and the coarser ones are still here for the moment the reader zooms out
+    // past this one, which is the whole reason there is more than one.
+    int best = -1;
+    for (std::size_t i = 0; i < entry.levels.size(); ++i) {
+        const Level& level = entry.levels[i];
+        if (level.values.empty() || !level.window.covers(low, high)) {
+            continue;
+        }
+        if (best < 0 ||
+            level.window.bucket < entry.levels[static_cast<std::size_t>(best)].window.bucket) {
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+bool CustomPlot::served(const Entry& entry, double low, double high, long long bucket) const
+{
+    low = std::max(low, 0.0);
+    high = std::min(high, static_cast<double>(entry.sourceLength));
+    return std::any_of(entry.levels.begin(), entry.levels.end(), [&](const Level& level) {
+        return !level.values.empty() && level.window.bucket <= bucket &&
+               level.window.covers(low, high);
+    });
+}
+
+int CustomPlot::heldLevels() const
+{
+    // Each run is about `bucketBudget()` buckets of two values, per entry, so
+    // how many there is room for is the budget divided by what one costs. A tab
+    // of a few entries gets all of them; one carrying hundreds keeps the run it
+    // is on and nothing else.
+    const int entries = std::max(seriesCount(), 1);
+    const int affordable = kPointBudget / std::max(entries * 4 * bucketBudget(), 1);
+    return std::clamp(affordable, 1, kHeldLevels);
+}
+
+void CustomPlot::trimLevels(Entry& entry)
+{
+    const int allowed = heldLevels();
+    if (static_cast<int>(entry.levels.size()) <= allowed) {
+        return;
+    }
+    const std::optional<PlotWindow> needed = closerFor(entry, bucketBudget());
+    // Octaves away from the bucket the pane is asking for: the runs nearest the
+    // reader are the ones they are about to want.
+    const auto distance = [&needed](const Level& level) {
+        if (!needed.has_value()) {
+            return 0.0;
+        }
+        return std::abs(std::log2(static_cast<double>(level.window.bucket)) -
+                        std::log2(static_cast<double>(std::max<long long>(needed->bucket, 1))));
+    };
+    while (static_cast<int>(entry.levels.size()) > allowed) {
+        std::size_t worst = 0;
+        for (std::size_t i = 1; i < entry.levels.size(); ++i) {
+            if (distance(entry.levels[i]) > distance(entry.levels[worst])) {
+                worst = i;
+            }
+        }
+        retire(entry.levels[worst].values);
+        entry.levels.erase(entry.levels.begin() + static_cast<long>(worst));
+    }
+}
+
+int CustomPlot::closerDrawn() const
+{
+    int drawn = 0;
+    for (const Entry& entry : entries_) {
+        if (entry.drawn && closerCovers(entry)) {
+            ++drawn;
+        }
+    }
+    return drawn;
+}
+
+bool CustomPlot::closerSuffices(const Entry& entry, const PlotWindow& needed) const
+{
+    // The run in hand covers the pane and its bucket is no coarser than the one
+    // the pane needs, so reading again would spend a round trip to arrive at a
+    // picture the reader cannot tell from the one already drawn. See
+    // DatasetPlot::detailSuffices: this is where the prefetch octave is spent,
+    // and it is why a step in is a draw rather than a wait.
+    const int at = drawnLevel(entry);
+    return at >= 0 && entry.levels[static_cast<std::size_t>(at)].window.bucket <= needed.bucket;
+}
+
+std::optional<PlotWindow> CustomPlot::closerWanted(const Entry& entry) const
+{
+    const std::optional<PlotWindow> needed = closerFor(entry, bucketBudget());
+    if (!needed.has_value()) {
+        return {};
+    }
+    if (!closerSuffices(entry, *needed)) {
+        // What the pane is waiting for, an octave finer than it asked. First,
+        // because it is the only one the reader can see.
+        std::optional<PlotWindow> want = closerFor(entry, closerBuckets());
+        return want.has_value() ? want : needed;
+    }
+    // The pane is answered, so what is left is idle work: the octaves out.
+    // Measured from the run being drawn rather than from the view, so that
+    // panning about inside that run asks for nothing new -- see
+    // DatasetPlot::detailWanted, which makes the same argument at length.
+    const int at = drawnLevel(entry);
+    if (at < 0) {
+        return {};
+    }
+    const PlotWindow base = entry.levels[static_cast<std::size_t>(at)].window;
+    const double centre = static_cast<double>(base.first) + static_cast<double>(base.span) / 2.0;
+    const double half = static_cast<double>(base.span) / 2.0;
+    for (int octave = 1; octave <= kPrefetchOctaves; ++octave) {
+        const auto reach = static_cast<double>(1 << octave);
+        const double low = centre - half * reach;
+        const double high = centre + half * reach;
+        const std::optional<PlotWindow> out =
+            windowFor(low, high, entry.sourceLength, bucketBudget());
+        if (!out.has_value()) {
+            break;
+        }
+        if (!served(entry, low, high, out->bucket)) {
+            return out;
+        }
+    }
+    return {};
+}
+
+void CustomPlot::refreshCloser()
+{
+    bool wanted = false;
+    bool dropped = false;
+    for (Entry& entry : entries_) {
+        if (!closerFor(entry, bucketBudget()).has_value()) {
+            if (!entry.levels.empty()) {
+                // The borrow contract: these values outlive the change rather
+                // than being freed under a renderer that is reading them. The
+                // whole-line summary covers everything by construction, so the
+                // frame after this one is a correct picture either way.
+                for (Level& level : entry.levels) {
+                    retire(level.values);
+                }
+                entry.levels.clear();
+                dropped = true;
+            }
+            continue;
+        }
+        if (closerWanted(entry).has_value()) {
+            wanted = true;
+        }
+    }
+    if (wanted) {
+        settle_.start();
+    }
+    else {
+        // The same runs, already in hand. Not a read, not a signal, not even a
+        // timer -- which is what makes panning inside them free.
+        settle_.stop();
+    }
+    if (dropped) {
+        announce();
+    }
+}
+
+void CustomPlot::askForCloser()
+{
+    if (lookup_ == nullptr) {
+        return;
+    }
+    std::vector<int> rows;
+    std::vector<Ask> asks;
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        const Entry& entry = entries_[i];
+        const std::optional<PlotWindow> want = closerWanted(entry);
+        if (!want.has_value()) {
+            continue;
+        }
+        rows.push_back(static_cast<int>(i));
+        asks.push_back(Ask{entry.expression, want, closerBuckets()});
+    }
+    if (asks.empty()) {
+        return;
+    }
+
+    // Its own tickets, so that this and a refresh cannot cancel one another:
+    // a refresh supersedes whatever closer look was being read, and a closer
+    // look must never supersede a refresh.
+    //
+    // Submitted rather than waited for, as everything on this path is. There is
+    // already a correct picture on screen; blocking the window to replace it
+    // with a sharper one would spend the reader's attention to save them
+    // nothing.
+    closerRequests_.reset();
+    H5Thread::instance().submit(
+        closerRequests_,
+        [asks](H5Session& session) {
+            Reply reply;
+            reply.lines.reserve(asks.size());
+            h5core::File* file = session.file();
+            std::map<QString, std::shared_ptr<h5core::Dataset>> opened;
+            std::map<QString, PathFacts> facts;
+            for (const Ask& ask : asks) {
+                reply.lines.push_back(readLine(file, ask, opened, facts));
+            }
+            return reply;
+        },
+        [this, rows, asks](Reply reply) {
+            const std::size_t count = std::min(rows.size(), reply.lines.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto row = static_cast<std::size_t>(rows[i]);
+                if (row >= entries_.size()) {
+                    continue; // a row removed while this was out
+                }
+                Entry& entry = entries_[row];
+                if (entry.expression != asks[i].expression) {
+                    continue; // retyped while this was out; the next settle asks again
+                }
+                Answer& answer = reply.lines[i];
+                const PlotWindow window = *asks[i].window;
+                // Remembered even when it read nothing, so a line that will not
+                // read closely is not asked for over and over. lineOf() falls
+                // back to a coarser run, or to the whole-line summary, which is
+                // what such a line should draw.
+                const auto at = std::find_if(
+                    entry.levels.begin(), entry.levels.end(),
+                    [&window](const Level& level) { return level.window == window; });
+                if (at == entry.levels.end()) {
+                    entry.levels.push_back(Level{window, answer.step,
+                                                 answer.problem.isEmpty()
+                                                     ? std::move(answer.values)
+                                                     : std::vector<double>{}});
+                }
+                else {
+                    at->step = answer.step;
+                    // Retired, not overwritten: a renderer may be holding a
+                    // pointer into what is there now, and it goes on drawing it
+                    // until fill() hands over what replaces it.
+                    retire(at->values);
+                    at->values = answer.problem.isEmpty() ? std::move(answer.values)
+                                                          : std::vector<double>{};
+                }
+                trimLevels(entry);
+            }
+            announce();
+            // And on to the next octave, if there is one worth reading. The
+            // chain is what keeps the prefetch idle work: each run waits out its
+            // own settle, so a reader who starts moving again cancels the rest.
+            refreshCloser();
+        });
+}
+
+void CustomPlot::clearCloser()
+{
+    settle_.stop();
+    closerRequests_.reset();
+    for (Entry& entry : entries_) {
+        for (Level& level : entry.levels) {
+            retire(level.values);
+        }
+        entry.levels.clear();
+    }
 }
 
 bool CustomPlot::scalable(const Entry& entry) const
@@ -599,68 +1159,128 @@ double CustomPlot::positionOf(const Entry& entry, std::size_t at) const
     }
     // Point for point, allowing for the thinning: a line drawn every stride-th
     // element covers stride axis positions between one drawn point and the
-    // next.
-    return static_cast<double>(at) * static_cast<double>(entry.stride);
+    // next -- and half a bucket when it was read as an envelope, because the
+    // two values of a bucket are its extremes and they occurred somewhere
+    // inside it.
+    return static_cast<double>(at) * entry.step;
 }
 
-void CustomPlot::fill(QAbstractSeries* target, int series)
+void CustomPlot::releaseDrawing()
 {
-    auto* points = qobject_cast<QXYSeries*>(target);
-    if (points == nullptr) {
+    if (drawing_ != nullptr) {
+        drawing_->clear();
+        drawing_ = nullptr;
+    }
+}
+
+void CustomPlot::retire(std::vector<double>& values)
+{
+    if (values.empty()) {
         return;
     }
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    if (drawing_ == nullptr) {
+        // Nothing is reading it, so there is nothing to keep it alive for --
+        // and this is what bounds the store: a tab nobody is drawing would
+        // otherwise accumulate one copy per read until something filled a
+        // renderer.
+        values.clear();
         return;
+    }
+    // Moved rather than copied: a std::vector move takes the buffer with it,
+    // so the pointer the renderer was given goes on naming the same doubles.
+    // `drawing_` is deliberately left alone -- the item is still reading these
+    // values and is still what has to be emptied if they ever do have to go.
+    retired_.push_back(std::move(values));
+    values.clear();
+}
+
+void CustomPlot::announce()
+{
+    emit changed();
+}
+
+PlotLine CustomPlot::lineOf(int series) const
+{
+    PlotLine line;
+    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+        return line;
     }
     const Entry& entry = entries_[static_cast<std::size_t>(series)];
     if (entry.values.empty()) {
-        points->clear();
+        return line;
+    }
+    // A tab drawn against a time base that has not read draws nothing at all,
+    // rather than falling back to positions: the reader asked for these values
+    // against *those* x, and an axis of indices with the same line on it is a
+    // different plot wearing the same label.
+    if (xMode_ == Dataset && xValues_.empty()) {
+        return line;
+    }
+
+    // The closer look, while it covers what is on screen. A second summary of
+    // the same entry rather than a replacement for the first: zoom out past the
+    // run in hand and the whole-line summary below is what is drawn, in the
+    // same frame, because it covers everything by construction.
+    if (closerCovers(entry)) {
+        const Level& level = entry.levels[static_cast<std::size_t>(drawnLevel(entry))];
+        line.values = level.values.data();
+        line.count = static_cast<qsizetype>(level.values.size());
+        // The run's own start and step, put back on the axis by the same map
+        // the whole line is drawn with. Under Align an element is a position;
+        // under Stretch the line is spread over the axis, so both the offset
+        // and the step are scaled by the same factor.
+        const double scale = stretchScale(entry);
+        line.positionStart = static_cast<double>(level.window.first) * scale;
+        line.positionStep = level.step * scale;
+        return line;
+    }
+
+    line.values = entry.values.data();
+    line.count = static_cast<qsizetype>(entry.values.size());
+    // The same affine map positionOf() applies, written once as a start and a
+    // step. Stretch spreads the line over the whole axis -- its first sample at
+    // the start and its last at the end, whatever is in between -- and align
+    // covers the elements the thinning skipped.
+    const auto drawn = static_cast<double>(entry.values.size());
+    if (entry.scaling == Stretch && drawn > 1.0) {
+        line.positionStep = static_cast<double>(sourcePointCount() - 1) / (drawn - 1.0);
+    }
+    else {
+        line.positionStep = entry.step;
+    }
+    return line;
+}
+
+PlotAxis CustomPlot::drawingAxis() const
+{
+    PlotAxis axis;
+    axis.start = xStart_;
+    axis.step = xStep_;
+    if (xMode_ == Dataset) {
+        axis.values = xValues_.data();
+        axis.count = static_cast<qsizetype>(xValues_.size());
+    }
+    return axis;
+}
+
+void CustomPlot::fill(PlotItem* target)
+{
+    if (target == nullptr) {
         return;
     }
-
-    const bool againstDataset = xMode_ == Dataset;
-    const auto xCount = static_cast<double>(xValues_.size());
-
-    QList<QPointF> line;
-    line.reserve(static_cast<qsizetype>(entry.values.size()));
-    for (std::size_t i = 0; i < entry.values.size(); ++i) {
-        const double value = entry.values[i];
-        // A value that would not read is a gap in the line, not a zero: an
-        // invented number at the axis is a reading of the data, and a wrong
-        // one. The plot tab's rule, and for its reason.
-        if (!std::isfinite(value)) {
-            continue;
+    std::vector<PlotLine> lines;
+    lines.reserve(entries_.size());
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].drawn) {
+            lines.push_back(lineOf(static_cast<int>(i)));
         }
-        const double position = positionOf(entry, i);
-
-        double x = 0.0;
-        if (againstDataset) {
-            if (xValues_.empty()) {
-                continue;
-            }
-            // The time base has a value at each of its own positions and
-            // nowhere in between, so a point that falls between two of them
-            // takes the nearer. Interpolating would invent an x, which is the
-            // same mistake as inventing a y.
-            const double at = std::round(position);
-            if (at < 0.0 || at >= xCount) {
-                // Past the end of the time base. The line stops here rather
-                // than being drawn against an x that does not exist, which is
-                // what "align" means when the two are different lengths.
-                continue;
-            }
-            x = xValues_[static_cast<std::size_t>(at)];
-            if (!std::isfinite(x)) {
-                continue;
-            }
-        } else {
-            x = xStart_ + position * xStep_;
-        }
-        line.append(QPointF(x, value));
     }
-    // One bulk replace, not `count` appends: each append signals, and a series
-    // loaded point by point from QML redraws the graph on every one of them.
-    points->replace(line);
+    target->setLines(std::move(lines), drawingAxis());
+    drawing_ = target;
+    // ...and now, and only now, is nothing reading what was retired. This is
+    // the one place those vectors are freed, because it is the one place a
+    // renderer that was borrowing them has just been given something else.
+    retired_.clear();
 }
 
 QStringList CustomPlot::paths() const
@@ -683,7 +1303,24 @@ QStringList CustomPlot::paths() const
 
 void CustomPlot::invalidate()
 {
+    // Nothing is emptied. Whatever is drawing goes on drawing what it was
+    // given, and the reply is what replaces it -- at which point the values it
+    // is reading are retired rather than freed. This used to release here, and
+    // the reader saw it: every row added, every slider dragged and every change
+    // of the pane's width blanked the tab until the answer came back.
     coalesce_.start();
+}
+
+void CustomPlot::discard()
+{
+    // ...and this is the version for when the line on screen is about to become
+    // the wrong line rather than a coarser one: a row removed, a row retyped,
+    // or the whole tab replaced. There the old stroke is not a worse reading of
+    // the data, it is a reading of something the reader has just said they are
+    // not looking at.
+    releaseDrawing();
+    retired_.clear(); // nothing is reading them now
+    invalidate();
 }
 
 void CustomPlot::touch(int row, const QVector<int>& roles)
@@ -692,8 +1329,7 @@ void CustomPlot::touch(int row, const QVector<int>& roles)
         return;
     }
     if (row < 0) {
-        emit dataChanged(index(0, 0),
-                         index(static_cast<int>(entries_.size()) - 1, 0), roles);
+        emit dataChanged(index(0, 0), index(static_cast<int>(entries_.size()) - 1, 0), roles);
         return;
     }
     emit dataChanged(index(row, 0), index(row, 0), roles);
@@ -717,7 +1353,8 @@ void CustomPlot::recount()
                 minimum_ = value;
                 maximum_ = value;
                 hasFinite_ = true;
-            } else {
+            }
+            else {
                 minimum_ = std::min(minimum_, value);
                 maximum_ = std::max(maximum_, value);
             }
@@ -746,7 +1383,8 @@ void CustomPlot::recount()
             xMinimum_ = value;
             xMaximum_ = value;
             seen = true;
-        } else {
+        }
+        else {
             xMinimum_ = std::min(xMinimum_, value);
             xMaximum_ = std::max(xMaximum_, value);
         }
@@ -768,25 +1406,29 @@ void CustomPlot::refresh()
     std::vector<Ask> asks;
     asks.reserve(entries_.size() + 1);
     if (wantsX) {
-        asks.push_back({xExpression_});
+        asks.push_back(Ask{xExpression_, {}, bucketBudget()});
     }
     for (const Entry& entry : entries_) {
-        asks.push_back({entry.expression});
+        asks.push_back(Ask{entry.expression, {}, bucketBudget()});
     }
 
     if (asks.empty()) {
         xProblem_.clear();
-        xValues_.clear();
+        retire(xValues_);
         xSourceLength_ = 0;
+        clearCloser();
         recount();
-        emit changed();
+        announce();
         return;
     }
 
     // Supersedes whatever was in flight. An answer about the entries as they
     // were two keystrokes ago is exactly the stale answer H5Requests exists to
-    // drop.
+    // drop -- and so is a closer look at them, which is why both sets of
+    // tickets go. What is *held* stays until this read lands, so the picture
+    // does not coarsen while the reader types.
     requests_.reset();
+    closerRequests_.reset();
     H5Thread::instance().submit(
         requests_,
         [asks](H5Session& session) {
@@ -796,8 +1438,7 @@ void CustomPlot::refresh()
             std::map<QString, std::shared_ptr<h5core::Dataset>> opened;
             std::map<QString, PathFacts> facts;
             for (const Ask& ask : asks) {
-                reply.lines.push_back(
-                    readLine(file, ask.expression, opened, facts));
+                reply.lines.push_back(readLine(file, ask, opened, facts));
             }
             reply.learned.reserve(facts.size());
             for (auto& entry : facts) {
@@ -806,6 +1447,9 @@ void CustomPlot::refresh()
             return reply;
         },
         [this, wantsX](Reply reply) {
+            // Every entry's values are about to be replaced. Retired rather
+            // than freed, so the renderer goes on drawing what it has until
+            // fill() hands it the answer -- see retire().
             for (auto& learned : reply.learned) {
                 lookup_->remember(learned.first, std::move(learned.second));
             }
@@ -815,13 +1459,15 @@ void CustomPlot::refresh()
                 if (!reply.lines.empty()) {
                     Answer& answer = reply.lines.front();
                     xProblem_ = answer.problem;
+                    retire(xValues_);
                     xValues_ = std::move(answer.values);
                     xSourceLength_ = answer.sourceLength;
                 }
                 at = 1;
-            } else {
+            }
+            else {
                 xProblem_.clear();
-                xValues_.clear();
+                retire(xValues_);
                 xSourceLength_ = 0;
             }
 
@@ -832,14 +1478,21 @@ void CustomPlot::refresh()
                 Answer& answer = reply.lines[at];
                 Entry& entry = entries_[i];
                 entry.problem = answer.problem;
+                retire(entry.values);
                 entry.values = std::move(answer.values);
-                entry.stride = answer.stride;
+                entry.step = answer.step;
                 entry.sourceLength = answer.sourceLength;
             }
+            // Whatever was being looked at closely was a run of the lines as
+            // they were before this read. The expression may have been retyped
+            // under it, so none of it is kept; refreshCloser() below asks for
+            // the run the reader is on now.
+            clearCloser();
 
             recount();
             touch(-1, {ErrorRole, PointsRole, SourcePointsRole, ScalableRole});
-            emit changed();
+            announce();
+            refreshCloser();
         });
 }
 
@@ -848,19 +1501,19 @@ QVariantMap CustomPlot::state() const
     QVariantList rows;
     rows.reserve(static_cast<qsizetype>(entries_.size()));
     for (const Entry& entry : entries_) {
-        rows.append(QVariantMap{
-            {QStringLiteral("expression"), entry.expression},
-            {QStringLiteral("alias"), entry.alias},
-            {QStringLiteral("scaling"),
-             entry.scaling == Stretch ? QStringLiteral("stretch")
-                                      : QStringLiteral("align")},
-            {QStringLiteral("drawn"), entry.drawn}});
+        rows.append(QVariantMap{{QStringLiteral("expression"), entry.expression},
+                                {QStringLiteral("alias"), entry.alias},
+                                {QStringLiteral("scaling"), entry.scaling == Stretch
+                                                                ? QStringLiteral("stretch")
+                                                                : QStringLiteral("align")},
+                                {QStringLiteral("drawn"), entry.drawn}});
     }
 
     QString mode = QStringLiteral("index");
     if (xMode_ == Range) {
         mode = QStringLiteral("range");
-    } else if (xMode_ == Dataset) {
+    }
+    else if (xMode_ == Dataset) {
         mode = QStringLiteral("dataset");
     }
 
@@ -874,12 +1527,10 @@ void CustomPlot::setState(const QVariantMap& state)
 {
     beginResetModel();
     entries_.clear();
-    const QVariantList rows =
-        state.value(QStringLiteral("entries")).toList();
+    const QVariantList rows = state.value(QStringLiteral("entries")).toList();
     for (const QVariant& row : rows) {
         const QVariantMap fields = row.toMap();
-        const QString expression =
-            fields.value(QStringLiteral("expression")).toString().trimmed();
+        const QString expression = fields.value(QStringLiteral("expression")).toString().trimmed();
         if (expression.isEmpty()) {
             // Dropped rather than refused, which is the stance
             // PostprocessModel::setSteps takes for an operation this build does
@@ -891,8 +1542,7 @@ void CustomPlot::setState(const QVariantMap& state)
         entry.expression = expression;
         entry.alias = fields.value(QStringLiteral("alias")).toString().trimmed();
         entry.scaling =
-            fields.value(QStringLiteral("scaling")).toString()
-                    == QStringLiteral("stretch")
+            fields.value(QStringLiteral("scaling")).toString() == QStringLiteral("stretch")
                 ? Stretch
                 : Align;
         entry.drawn = fields.value(QStringLiteral("drawn"), true).toBool();
@@ -901,12 +1551,12 @@ void CustomPlot::setState(const QVariantMap& state)
     endResetModel();
 
     const QString mode = state.value(QStringLiteral("xMode")).toString();
-    xMode_ = mode == QStringLiteral("range")   ? Range
+    xMode_ = mode == QStringLiteral("range")     ? Range
              : mode == QStringLiteral("dataset") ? Dataset
                                                  : Index;
     xExpression_ = state.value(QStringLiteral("xExpression")).toString();
     emit xSourceChanged();
-    invalidate();
+    discard(); // a different tab entirely; nothing on screen is its
 }
 
 } // namespace gui

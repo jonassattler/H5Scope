@@ -1,0 +1,415 @@
+// SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-License-Identifier: GPL-3.0-only
+
+#pragma once
+
+// Where the points go, with no renderer attached.
+//
+// Everything a line plot decides before a pixel is touched is here: which
+// sample lands at which x, which samples are drawable at all, where a gap in
+// the data ends one stroke and starts the next, how a million samples become
+// two thousand vertices without losing the one that matters, and how a stroke
+// a chosen number of pixels wide is built out of triangles.
+//
+// Split out of PlotItem so that it can be tested without a window. The whole
+// of it is arithmetic over doubles and two output vectors; it links QtGui for
+// QPointF and QColor and nothing else. tests/test_customplot.cpp asserts the x
+// arithmetic through samplesOf() below, which is the shape the boundary used to
+// have -- it filled a QXYSeries with data-space points -- and which survives as
+// a seam precisely because the renderer no longer needs it.
+//
+// Three things in here are the reason the plot is ours rather than a library's,
+// and all three are cheap once the projection is:
+//
+// 1. Decimation by min/max envelope rather than by stride. Stride selects by
+//    position and reaches an extremum only by luck;
+//    DatasetTableModel.hpp:205-213 names the cost, "a spike narrower than one
+//    stride is not drawn". An envelope selects the extremum *because* it is
+//    extreme, draws the same number of points, and cannot lose one.
+//
+// 2. Double precision all the way to the vertex. QSGGeometry stores float32.
+//    An x of 1.7e9 -- seconds since the epoch, which is what every logger in
+//    the world writes -- has a float spacing of 128, so a line sampled every
+//    millisecond collapses into a staircase of flat treads. The fix is not to
+//    store doubles; it is to project in double and cast the *result*, because
+//    a pixel coordinate is at most a few thousand. That is why the projection
+//    happens here rather than in a vertex shader fed with data coordinates,
+//    which is the faster arrangement and the one that loses the data.
+//
+// 3. A gap where the data is absent. Dropping the non-finite samples and
+//    handing the survivors to a line renderer draws a straight line *across*
+//    the missing data, which is a reading of data that was never taken. A run
+//    of them ends the stroke here and the next run starts a new one.
+
+#include <QtCore/QPointF>
+#include <QtGui/QColor>
+
+#include <cmath>
+
+#include <optional>
+#include <vector>
+
+namespace gui {
+
+/// One line to draw.
+///
+/// `values` is **borrowed**: the renderer reads it on every frame and never
+/// copies it. The owner is whoever handed it over -- DatasetPlot and CustomPlot
+/// both already hold their lines as `std::vector<double>`, and a copy of a
+/// ten-thousand-line selection would be a hundred and sixty megabytes of it --
+/// so the contract is that the owner calls PlotItem::clear() before it touches
+/// those vectors again. There is no way for the item to notice; that is the
+/// price of not copying, and it is why this says so here rather than leaving it
+/// to be discovered.
+struct PlotLine
+{
+    const double* values = nullptr;
+    qsizetype count = 0;
+
+    /// Where sample `i` sits along the shared axis, before the axis turns a
+    /// position into an x: `positionStart + i * positionStep`.
+    ///
+    /// Two callers need the two degrees of freedom for different reasons.
+    /// DatasetPlot thins by stride and a drawn point therefore covers `stride`
+    /// axis positions. CustomPlot's "stretch" spreads a line of any length over
+    /// the whole axis, which is the same affine map with a fractional step. A
+    /// line that is simply itself leaves these at 0 and 1.
+    double positionStart = 0.0;
+    double positionStep = 1.0;
+
+    /// Supplied by the caller rather than chosen here: every colour in this
+    /// application resolves through Theme.qml, and a renderer that picked its
+    /// own would be the one place that did not.
+    QColor colour;
+
+    /// How strongly the line is drawn, multiplied into the colour's own alpha.
+    ///
+    /// Separate from the colour rather than folded into it, because the two
+    /// are set by different things and in no fixed order: the palette decides
+    /// the hue, and whether a line is the highlighted one decides the strength.
+    /// Folding them would make `setSeriesColor` after `setSeriesOpacity` quietly
+    /// undo it.
+    double opacity = 1.0;
+
+    /// The stroke, in device-independent pixels. Per line because the
+    /// highlight is a line drawn at double width, and because a stroke built
+    /// out of triangles can honour a width that the graphics API cannot --
+    /// line width above 1 is an optional RHI feature that several backends
+    /// silently ignore, which is why this is not a call to setLineWidth().
+    double width = 1.0;
+};
+
+/// One closer look at a line: an aligned run of it, to be summarised at a
+/// bucket finer than the whole of it could be.
+///
+/// The whole-line summary a model holds is fixed -- so many points however long
+/// the line is -- which means zooming into it stretches what is drawn rather
+/// than resolving it. Reading the run the reader is looking at again, at a
+/// finer bucket, is what turns an octave of zoom into an octave of detail. This
+/// is where that run is decided; who reads it, and when, is the model's own
+/// business.
+///
+/// **Aligned**, for the same reason the renderer's buckets are aligned -- see
+/// the long note in projectLine(). A run derived from the view slides its
+/// boundaries with every pixel of pan, so the two extremes each bucket selects
+/// keep changing and the line crawls and boils under the pointer. These are
+/// powers of two in the data's own index space: panning translates the line
+/// rigidly and zooming steps one octave at a time.
+struct PlotWindow
+{
+    /// The first element of the line this covers, in the line's own indices.
+    long long first = 0;
+    /// How many elements: `bucket * columns`, except at the end of the line
+    /// where it is what is left.
+    long long span = 0;
+    /// Elements per bucket. A power of two, and 1 when the reader is close
+    /// enough that the run is drawn sample for sample.
+    long long bucket = 1;
+    /// Buckets. Asked of a read as its cap, so that the stride it works out is
+    /// exactly `bucket` -- a run clamped by the end of the line would otherwise
+    /// be read at a finer stride than every other one, and its buckets would
+    /// not line up with theirs.
+    int columns = 0;
+
+    [[nodiscard]] bool operator==(const PlotWindow&) const = default;
+
+    /// Whether this run holds everything between `low` and `high`, in the same
+    /// indices. Callers clamp those two to the data first: a pane showing the
+    /// end of a line shows some empty axis past it, and a run reaching the last
+    /// element covers everything there is to draw out there.
+    [[nodiscard]] bool covers(double low, double high) const
+    {
+        return static_cast<double>(first) <= low && static_cast<double>(first + span) >= high;
+    }
+};
+
+/// The closer look at `low`..`high` of a line of `length` elements, given a
+/// budget of `buckets` buckets -- or nothing when the whole-line summary is
+/// already at least as fine, which is the answer whenever the reader is zoomed
+/// out.
+///
+/// The run is twice the width of what is visible, so the reader can pan off the
+/// middle of it and still be looking at data that has been read while the next
+/// one is on its way, and it steps by a quarter of itself rather than by the
+/// whole: the pane is half the run wide, so a quarter-run step leaves the run in
+/// hand still covering the pane for one step past the boundary that asked for
+/// the next one. Without that, every crossing would fall back to the coarse
+/// summary for as long as the read took and a slow pan would flicker between
+/// the two.
+[[nodiscard]] std::optional<PlotWindow> windowFor(double low, double high, long long length,
+                                                  long long buckets);
+
+/// How the shared x axis turns a position into a value.
+struct PlotAxis
+{
+    /// x = start + position * step.
+    double start = 0.0;
+    double step = 1.0;
+
+    /// ...unless there is a time base, and then x = values[round(position)].
+    ///
+    /// Borrowed on the same terms as PlotLine::values. A time base has a value
+    /// at each of its own positions and nowhere in between, so a point that
+    /// falls between two of them takes the nearer; interpolating would invent
+    /// an x, which is the same mistake as inventing a y.
+    const double* values = nullptr;
+    qsizetype count = 0;
+
+    [[nodiscard]] bool explicitX() const { return values != nullptr && count > 0; }
+};
+
+/// The window being shown and the pane it is shown in.
+struct PlotView
+{
+    double xMin = 0.0;
+    double xMax = 1.0;
+    double yMin = 0.0;
+    double yMax = 1.0;
+
+    /// The pane, in item coordinates.
+    double width = 0.0;
+    double height = 0.0;
+
+    /// Device pixels per item coordinate: the window's devicePixelRatio.
+    ///
+    /// A pane is measured in logical pixels and drawn into a framebuffer with
+    /// this many physical ones for each of them, so on a HiDPI display "one
+    /// bucket per column" over the logical width is one bucket per *two*
+    /// physical columns, and half the resolution the screen can show is thrown
+    /// away before anything is drawn. Every column count below is therefore
+    /// taken over `width * pixelRatio`, which is what the reader's screen
+    /// actually has.
+    ///
+    /// One by default, so a test that describes a pane without a window gets
+    /// the arithmetic it would have had.
+    double pixelRatio = 1.0;
+
+    /// Most envelope columns one line may spend, or 0 for one per pixel.
+    ///
+    /// The envelope bounds each *line* by the pane's width, which is the whole
+    /// point of it -- but it does not bound their sum, and ten thousand lines
+    /// at two vertices a column is forty million vertices whatever the pane
+    /// measures. PlotItem divides a fixed budget between the lines and passes
+    /// the share down here. See kMaxVertices in PlotItem.cpp.
+    int maxColumns = 0;
+};
+
+/// One unbroken stroke. A line with two gaps in it is three runs.
+struct PlotRun
+{
+    int first = 0;
+    int count = 0;
+};
+
+/// What projecting one line produced.
+struct PlotProjected
+{
+    /// Strokes appended to `runs`.
+    int runs = 0;
+    /// Whether the envelope was used, which is to say whether a drawn point is
+    /// a sample or a summary of several.
+    ///
+    /// Markers are the reason this is reported. A marker is punctuation on a
+    /// line and it marks a *sample*; drawing one per envelope point would put
+    /// two dots in every pixel column, which says nothing and is not what the
+    /// setting means.
+    bool decimated = false;
+};
+
+/// Where sample `at` of `line` sits along x -- or NaN when it sits nowhere,
+/// which is a sample past the end of a time base or one whose x did not read.
+[[nodiscard]] double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at);
+
+/// Every drawable sample of `line`, in **data** coordinates and in drawing
+/// order, with the undrawable ones simply absent.
+///
+/// Nothing in the renderer calls this: the whole design is that a sample
+/// becomes a pixel without ever becoming a QPointF in data space, because
+/// sixteen bytes a point built and copied per refill is what the old boundary
+/// cost. It exists as the seam tests/test_customplot.cpp asserts the x
+/// arithmetic through, and it agrees with projectLine() by construction --
+/// both drop a sample that does not read.
+[[nodiscard]] std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis);
+
+/// Where `value` sits up the pane, as a fraction from the bottom.
+///
+/// The one piece of arithmetic the chrome and the curve must agree about. A
+/// tick drawn at a fraction this function did not produce is a grid line that
+/// lies about where the curve is, which is why PlotItem hands this to QML
+/// rather than letting QML derive it.
+[[nodiscard]] double yFractionOf(double value, const PlotView& view);
+
+/// Project `line` into `points` in item coordinates, splitting the strokes at
+/// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
+/// set of lines projects into one pair of buffers.
+///
+PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
+                          std::vector<QPointF>& points, std::vector<PlotRun>& runs);
+
+/// How far a mitred join may reach past the stroke before it is given up.
+///
+/// An envelope turns through very nearly 180 degrees at every column -- up to
+/// the bucket's high, back down to the next one's low -- and a miter at that
+/// angle is a spear several hundred pixels long thrown across the pane. Four is
+/// the conventional limit.
+///
+/// Past it the join becomes a butt: the two segments end and start on the same
+/// perpendicular. *Not* a miter cut short, which is what this used to do and is
+/// the wrong shape -- the bisector of two nearly opposite normals points along
+/// the stroke rather than across it, so clamping its length left a whisker
+/// standing out of every extreme of every envelope column. A butt at a one- or
+/// two-pixel stroke is what a round join would have drawn anyway.
+inline constexpr double kMiterLimit = 4.0;
+
+/// The smallest `1 + n1.n2` a join can have and still be mitred within the
+/// limit above. The miter reaches sqrt(2 / sum) times the half width, so a
+/// limit of four is a sum of an eighth.
+inline constexpr double kMiterFloor = 2.0 / (kMiterLimit * kMiterLimit);
+
+/// A stroke thinner than this has no area to rasterise and would disappear
+/// rather than draw faintly. Not a design decision -- Theme.plotLineWidth is
+/// what says how heavy a line is -- only a floor under the arithmetic.
+inline constexpr double kMinStrokeWidth = 0.25;
+
+/// Expand `count` projected points into a triangle strip `width` pixels wide,
+/// calling `place(x, y)` twice per station.
+///
+/// Triangles rather than a wide line because line width above 1.0 is an
+/// optional RHI feature that several backends ignore without saying so, and
+/// the highlight -- the one affordance for following a line through a bundle of
+/// fifty -- is a line drawn at double width. A stroke that is sometimes two
+/// pixels and sometimes one depending on the machine is not an affordance.
+///
+/// A template, and in the header, because this is the hot loop of the whole
+/// plot. Measured over ten thousand lines of two thousand points, it was more
+/// than half of a frame -- and half of *that* was writing the vertices into a
+/// vector so the caller could copy them into the buffer it had already
+/// allocated. PlotItem passes a sink that writes each vertex where it belongs
+/// and the copy disappears.
+template<typename Place>
+void strokeRunInto(const QPointF* points, int count, double width, Place&& place)
+{
+    if (points == nullptr || count < 2) {
+        return;
+    }
+    const double half = (width > kMinStrokeWidth ? width : kMinStrokeWidth) / 2.0;
+
+    // Which side of the path the first vertex of each pair is on, carried along
+    // the run.
+    //
+    // This is the whole reason an envelope drew as a comb of spindles rather
+    // than as a band. A triangle strip pairs each station's two vertices with
+    // the next station's two, and the quad between them is only a quad while
+    // both pairs are the same way round. At a reversal -- which is *every*
+    // station of an envelope, up to the high and straight back down -- the
+    // normal flips to the other side of the path, so the two sides crossed and
+    // every quad rasterised as an hourglass pinched to a point in the middle:
+    // half the ink, and a black gap where the join should have been solid.
+    //
+    // Screen space has no memory of which side was "left", so the test is
+    // simply whether this station's offset still points the way the last one
+    // did. It costs a dot product per station and nothing else.
+    QPointF carried;
+
+    // The normal of the segment leaving station `k`. A segment of no length has
+    // no direction, so it keeps the one before it -- which happens in an
+    // envelope wherever a column held a single sample.
+    //
+    // std::sqrt rather than std::hypot. hypot exists to survive squaring a
+    // number near the top of the range, and these are pixel deltas: projectLine
+    // clamps every coordinate to ten million, whose square is 1e14 and has
+    // nearly three hundred orders of magnitude of headroom. hypot was costing
+    // about four nanoseconds a station for a guarantee that cannot be needed.
+    const auto normalAfter = [&](int k, QPointF fallback) {
+        const double sx = points[k + 1].x() - points[k].x();
+        const double sy = points[k + 1].y() - points[k].y();
+        const double square = sx * sx + sy * sy;
+        if (!(square > 0.0)) {
+            return fallback;
+        }
+        const double inverse = 1.0 / std::sqrt(square);
+        return QPointF(-sy * inverse, sx * inverse);
+    };
+
+    QPointF entering = normalAfter(0, QPointF(0.0, -1.0));
+    QPointF leaving = entering;
+    for (int i = 0; i < count; ++i) {
+        if (i > 0) {
+            entering = leaving;
+            leaving = (i < count - 1) ? normalAfter(i, entering) : entering;
+        }
+
+        // The ends take the one normal they have; a join takes the bisector,
+        // lengthened so the stroke stays `width` wide through the corner.
+        //
+        // Written without normalising the bisector, because it does not have to
+        // be. Both normals are unit, so |n1 + n2|^2 is 2 + 2d for d = n1 . n2,
+        // and the reach that keeps a corner square works out as 1 / (1 + d) --
+        // no square root at all.
+        //
+        // Past the miter limit the join is a butt instead: both segments end on
+        // the one perpendicular they very nearly share. The bisector of two
+        // opposed normals points *along* the stroke, so a miter cut to length
+        // there is not a join at all, it is a whisker standing out of the line
+        // -- and at 180 degrees it is the spear kMiterLimit is named for.
+        QPointF offset = leaving;
+        if (i > 0 && i < count - 1) {
+            const double dot = entering.x() * leaving.x() + entering.y() * leaving.y();
+            const double sum = 1.0 + dot;
+            if (sum >= kMiterFloor) {
+                offset =
+                    QPointF((entering.x() + leaving.x()) / sum, (entering.y() + leaving.y()) / sum);
+            }
+        }
+
+        // ...and it goes on the side the run has been using. See `carried`.
+        if (i > 0 && offset.x() * carried.x() + offset.y() * carried.y() < 0.0) {
+            offset = QPointF(-offset.x(), -offset.y());
+        }
+        carried = offset;
+
+        const double ox = offset.x() * half;
+        const double oy = offset.y() * half;
+        place(points[i].x() + ox, points[i].y() + oy);
+        place(points[i].x() - ox, points[i].y() - oy);
+    }
+}
+
+/// The same, collected into a vector. What the tests assert against.
+void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out);
+
+/// How many sides a marker is drawn with.
+///
+/// A marker is four pixels across and the one it replaces was a QML Rectangle
+/// with a radius of half its width -- a circle. Eight sides is a circle at that
+/// size and six is a visible hexagon; the count is stated here because
+/// PlotItem sizes its vertex buffer from it, and a buffer sized from a
+/// different number than the one that fills it is a write past the end of a
+/// mapped range.
+inline constexpr int kMarkerSides = 8;
+
+/// Append one marker of `radius` at `centre`, as exactly kMarkerSides vertices
+/// in triangle-strip order.
+void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out);
+
+} // namespace gui

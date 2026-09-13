@@ -318,6 +318,11 @@ Rectangle {
                         }
                         return shown
                     }
+                    // And what the pointer is on, when it is on something --
+                    // at the other end of the bar, so that a reading that
+                    // grows a digit does not shift the facts beside it under
+                    // a reader who is watching them.
+                    trailingFacts: plotSurface.readingFacts
                 }
             }
 

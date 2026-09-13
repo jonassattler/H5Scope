@@ -18,7 +18,7 @@ target_link_libraries(make-example-file PRIVATE example_file)
 # output can be diffed against h5ls/h5dump to check the viewer against the file
 # rather than against itself.
 qt_add_executable(inspect-file inspect-file.cpp)
-target_link_libraries(inspect-file PRIVATE gui Qt6::Gui Qt6::Graphs)
+target_link_libraries(inspect-file PRIVATE gui Qt6::Gui)
 qt_import_plugins(inspect-file INCLUDE Qt6::QOffscreenIntegrationPlugin)
 
 # Neither of these is a Qt type; the moc pass over them is pure cost.
@@ -47,12 +47,12 @@ qt_import_plugins(bench-data INCLUDE Qt6::QOffscreenIntegrationPlugin)
 #
 # The same libraries the application links, because it *is* the application: it
 # loads H5Scope/Main.qml exactly as src/main.cpp does, and a static Qt resolves
-# QML modules at link time, so appqmlplugin and QtGraphs have to be named here
-# for the same reason they are named there.
+# QML modules at link time, so appqmlplugin has to be named here for the same
+# reason it is named there.
 qt_add_executable(make-screenshots make-screenshots.cpp)
 target_link_libraries(make-screenshots PRIVATE
   gui appqml appqmlplugin example_file
-  Qt6::Quick Qt6::QuickControls2 Qt6::Graphs
+  Qt6::Quick Qt6::QuickControls2
 )
 # What the QML import scanner reads to decide which module plugins to link is
 # the *target's* source directory, and there is not a line of QML in tools/.

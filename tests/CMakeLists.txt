@@ -42,15 +42,27 @@ add_executable(test_models test_models.cpp)
 target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
+# --- what the plot decides before a pixel is touched ----------------------
+# Arithmetic only: gui::projectLine takes doubles and fills two vectors, so
+# this needs no window, no engine and no file. That is the point of having
+# split PlotProjection out of PlotItem -- the four things the plot got wrong
+# for as long as it drew through Qt Graphs are all decided here, and a grab of
+# something rendered is a poor way to assert any of them.
+add_executable(test_plotprojection test_plotprojection.cpp)
+target_link_libraries(test_plotprojection PRIVATE gui Catch2::Catch2WithMain)
+catch_discover_tests(test_plotprojection)
+
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature
 # whose whole subject is reading several datasets at once, which is the thing
-# every other suite here is arranged not to do. Links Qt6::Graphs because the
-# points are asserted through fill(), and fill() takes the series a graph would
-# have created.
+# every other suite here is arranged not to do. It used to link Qt6::Graphs, on
+# the grounds that the points were asserted through fill() and fill() took the
+# series a graph would have created; the points are now asserted through
+# lineOf() and gui::samplesOf(), which is a better seam for the same assertions
+# and needs no library to draw with.
 add_executable(test_customplot test_customplot.cpp)
 target_link_libraries(test_customplot PRIVATE
-  gui test_support test_main Qt6::Test Qt6::Graphs
+  gui test_support test_main Qt6::Test
 )
 catch_discover_tests(test_customplot)
 
@@ -80,10 +92,6 @@ qt_add_executable(test_qml tst_qml.cpp)
 target_link_libraries(test_qml PRIVATE
   Qt6::QuickTest Qt6::Qml Qt6::Quick
   gui appqml test_support
-  # PlotSurface.qml imports QtGraphs, and a static Qt resolves QML modules at
-  # link time; qt_import_qml_plugins below scans this target's own QML files,
-  # which are the test suites rather than the views they instantiate.
-  Qt6::Graphs
 )
 target_compile_definitions(test_qml PRIVATE
   QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
@@ -112,9 +120,6 @@ target_link_libraries(test_qmlload PRIVATE
   Qt6::Test Qt6::Qml Qt6::Quick Qt6::QuickControls2
   gui appqml appqmlplugin
 )
-# Main.qml reaches QtGraphs through DataView; a static Qt needs the module
-# named or the root fails to load with 'module "QtGraphs" is not installed'.
-target_link_libraries(test_qmlload PRIVATE Qt6::Graphs)
 qt_import_qml_plugins(test_qmlload)
 qt_import_plugins(test_qmlload INCLUDE Qt6::QOffscreenIntegrationPlugin)
 

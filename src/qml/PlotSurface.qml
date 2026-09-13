@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import QtQuick
-import QtGraphs
 import H5Scope.Backend
 
 /// The Data Viewer's plot presentation: every row of the table as one line,
@@ -13,19 +12,26 @@ import H5Scope.Backend
 /// a rank-4 dataset plots on the same terms it browses.
 ///
 /// The points never cross into QML. AppController.datasetPlot samples the file
-/// and loads each series through fill(), which is one bulk replace; a graph
-/// filled a point at a time from JavaScript redraws itself on every one of
-/// them, and a dataset has thousands.
+/// and hands every drawn line to the PlotFrame's item in one call -- a pointer
+/// into the cache it already holds, plus the arithmetic that puts a sample at
+/// an x. Nothing is built on the way and nothing is copied.
 ///
-/// Qt Graphs rather than Qt Charts: Charts draws through the Qt Widgets
-/// graphics scene and asserts without a QApplication, which is the whole
-/// widgets stack pulled into a Qt Quick application to draw polylines.
+/// This surface used to draw through Qt Graphs, and most of what is below is
+/// older than that decision: the zoom and pan arithmetic, the two-of-three x
+/// axis, the colour cycles, the legend and the settings are all
+/// library-agnostic and none of them moved. What went is the graph itself, the
+/// Loader that existed only to defeat the library holding on to what a series
+/// last drew, and the re-fill that existed only to make a recoloured line
+/// redraw. See docs on PlotFrame.qml for what replaced the chrome.
 Item {
     id: surface
 
     // --- settings, written by PlotSettingsPanel -------------------------
     property bool showGrid: true
     property bool showMarkers: false
+    /// Whether pointing at the plot reads the sample under the pointer: a
+    /// crosshair on the plot and a line of numbers in the bar below it.
+    property bool showCursor: true
 
     /// Whether this is the presentation on screen. Reading `plot.hasData`
     /// samples the file, so every path into the plot is guarded by this: a
@@ -300,11 +306,22 @@ Item {
     property real zoomY: 1.0
     property real panY: 0.0
 
-    /// Ceiling on magnification. The sample behind the plot holds at most a
-    /// couple of thousand points per line, so beyond this there is nothing
-    /// further to resolve -- reading between two samples is the data settings
-    /// panel's job, which subsets the dataset and re-reads it.
-    readonly property real maxZoom: 256.0
+    /// Ceiling on magnification.
+    ///
+    /// This was 256 flat, and the note beside it said why: the sample behind
+    /// the plot held at most a couple of thousand points of the *whole* line,
+    /// so past that there was nothing further to resolve and zooming only
+    /// stretched what was already drawn.
+    ///
+    /// That is no longer true. The plot object reads the run the reader is
+    /// looking at again, at a finer bucket, whenever they stop moving -- see
+    /// DatasetPlot::setVisibleRange -- so each octave in is an octave of real
+    /// detail until the line is drawn sample for sample. The ceiling is
+    /// therefore about the data rather than about the cache: enough
+    /// magnification to put a handful of elements across the pane, and no more,
+    /// because a pane showing fewer than that is showing a gap between two
+    /// samples rather than a line.
+    readonly property real maxZoom: Math.max(256.0, surface.dataLength / 16)
 
     readonly property bool zoomed: zoomX !== 1.0 || zoomY !== 1.0
                                    || panX !== 0.0 || panY !== 0.0
@@ -312,9 +329,7 @@ Item {
     /// The plot area, in this item's coordinates: the frame minus the margins
     /// the axis labels live in. Every gesture below is measured against it,
     /// because a fraction of the whole item is not a fraction of the axis.
-    readonly property rect plotRect: graphLoader.item
-        ? graphLoader.item.plotArea
-        : Qt.rect(0, 0, Math.max(width, 1), Math.max(height, 1))
+    readonly property rect plotRect: frame.area
 
     function resetView() {
         zoomX = 1.0
@@ -368,7 +383,16 @@ Item {
                  pan: surface.clampPan(centre - (low + high) / 2.0, next, low, high) }
     }
 
-    function zoomAt(px, py, factor) {
+    /// Zoom about (px, py) by `factor`, on the axes `axes` names: "x", "y" or
+    /// "both".
+    ///
+    /// One axis at a time is what the modifiers ask for, and it is not a
+    /// convenience. A plot of a long trace is read by stretching time without
+    /// changing what an amplitude is worth, and a plot of a narrow band is read
+    /// the other way round; a zoom that always takes both makes either of those
+    /// a zoom followed by a correcting pan, done by eye. Shift for x and Ctrl
+    /// for y, which is the pair every other plot in the field uses.
+    function zoomAt(px, py, factor, axes) {
         const area = surface.plotRect
         if (area.width <= 0 || area.height <= 0)
             return
@@ -376,16 +400,36 @@ Item {
         // y grows downward on screen and upward on the axis.
         const fy = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
 
-        const x = surface.zoomedAxis(surface.zoomX, surface.panX,
-                                     surface.axisMinX, surface.axisMaxX,
-                                     fx, factor)
-        const y = surface.zoomedAxis(surface.zoomY, surface.panY,
-                                     surface.lowerBound, surface.upperBound,
-                                     fy, factor)
-        surface.zoomX = x.zoom
-        surface.panX = x.pan
-        surface.zoomY = y.zoom
-        surface.panY = y.pan
+        if (axes !== "y") {
+            const x = surface.zoomedAxis(surface.zoomX, surface.panX,
+                                         surface.axisMinX, surface.axisMaxX,
+                                         fx, factor)
+            surface.zoomX = x.zoom
+            surface.panX = x.pan
+        }
+        if (axes !== "x") {
+            const y = surface.zoomedAxis(surface.zoomY, surface.panY,
+                                         surface.lowerBound, surface.upperBound,
+                                         fy, factor)
+            surface.zoomY = y.zoom
+            surface.panY = y.pan
+        }
+    }
+
+    /// Which axes a wheel event with these modifiers zooms.
+    ///
+    /// Shift alone is x, Ctrl alone is y, and everything else -- neither, both,
+    /// or one of them with a third key held -- is both. Both is the default
+    /// rather than nothing, because a modifier this file does not know about is
+    /// a modifier some window manager put there and not an instruction.
+    function zoomAxesFor(modifiers) {
+        const shift = (modifiers & Qt.ShiftModifier) !== 0
+        const control = (modifiers & Qt.ControlModifier) !== 0
+        if (shift && !control)
+            return "x"
+        if (control && !shift)
+            return "y"
+        return "both"
     }
 
     /// Drag the view by a pointer movement. The content follows the pointer,
@@ -408,10 +452,12 @@ Item {
     /// 1, 2 or 5 times a power of ten, which is what every axis in every
     /// plotting library settles on and what a reader can add up in their head.
     ///
-    /// Set explicitly because Qt Graphs computes its automatic spacing from
-    /// the axis's *declared* range and not from the range it is showing, so a
-    /// zoomed-in axis would keep the spacing of the whole dataset and print
-    /// one lonely tick.
+    /// Written here in the first place because Qt Graphs computed its
+    /// automatic spacing from the axis's *declared* range and not from the
+    /// range it was showing, so a zoomed-in axis kept the spacing of the whole
+    /// dataset and printed one lonely tick. PlotFrame has its own copy, which
+    /// is the one the ticks are drawn from; this one is what the QML suite
+    /// reads and what the footer's readouts round against.
     function niceStep(span, target) {
         if (!(span > 0))
             return 0
@@ -437,271 +483,207 @@ Item {
         color: Theme.surfaceInset
     }
 
-    // The graph is built rather than declared, and rebuilt rather than
-    // refilled.
+    // The frame and the lines. PlotFrame draws the gutters, the rules, the
+    // ticks and their labels; the item inside it draws the strokes.
     //
-    // Qt Graphs holds on to what a series last drew: reusing one for a new
-    // selection leaves the old path on screen underneath the new one, in the
-    // pixel coordinates of the axes it was drawn against, and neither
-    // emptying the series nor taking it out of the graph clears it. Nor can
-    // the series simply be destroyed -- removeSeries() keeps the raw pointer
-    // in a cleanup list it reads on its next polish, so a series freed before
-    // then takes the application down.
+    // What this replaced was a Loader holding a GraphsView, discarded and
+    // rebuilt on every change of selection. That was not a design -- it was
+    // Qt Graphs tax. A series there held on to what it last drew, so reusing
+    // one left the old path on screen underneath the new one in the pixel
+    // coordinates of the axes it had been drawn against, and neither emptying
+    // it nor taking it out of the graph cleared it; nor could it simply be
+    // destroyed, because removeSeries() kept the raw pointer in a cleanup list
+    // it read on its next polish. Throwing the whole view away answered both
+    // and cost a blank frame every time the reader picked a dataset.
     //
-    // Discarding the whole GraphsView answers both: the series go with their
-    // graph in one teardown, so nothing outlives the list that refers to it,
-    // and every selection draws onto a surface with no history. A graph is
-    // rebuilt when the reader picks a dataset, which is not a rate that needs
-    // optimising.
-    Loader {
-        id: graphLoader
+    // Nothing here retains anything. fill() hands the item a pointer to the
+    // lines and the item projects them; a new selection is a new set of
+    // pointers and the frame after it is the new picture.
+    PlotFrame {
+        id: frame
 
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
-        active: false
-        sourceComponent: graphComponent
+
+        viewMinX: surface.viewMinX
+        viewMaxX: surface.viewMaxX
+        viewMinY: surface.viewMinY
+        viewMaxY: surface.viewMaxY
+        showGrid: surface.showGrid
+        tickTarget: surface.tickTarget
+
+        markers: surface.showMarkers
+        markerSize: Theme.plotMarkerSize
+        showCursor: surface.showCursor
     }
 
-    Component {
-        id: graphComponent
+    /// What the pointer is over, snapped to the nearest drawn sample:
+    /// `{ valid, line, x, y, px, py }`. Invalid when the pointer is elsewhere
+    /// or the reader has turned the cursor off.
+    readonly property var reading: frame.reading
 
-        GraphsView {
-            id: graph
-
-            antialiasing: true
-            // Room where the labels actually are. These were the other way
-            // round -- air on the top and right, nothing on the left and
-            // bottom -- which left the y axis with no width to print a number
-            // in and so with no numbers at all, and cut the x axis's first
-            // tick off at the frame.
-            marginTop: Theme.gapS
-            marginBottom: Theme.plotMargin
-            marginLeft: Theme.plotLabelMargin
-            // Room for half of the last x label, which sits centred on the
-            // axis's right end. The axis now runs to `stop` rather than to the
-            // last element, so that label is always drawn -- and at a gap's
-            // worth of margin half of it fell off the frame.
-            marginRight: Theme.s9
-
-            // The plot area is clipped so a zoomed-in line stops at the
-            // frame rather than being drawn across the axis labels.
-            clipPlotArea: true
-
-            axisX: ValueAxis {
-                id: xAxis
-
-                min: surface.axisMinX
-                max: surface.axisMaxX
-                zoom: surface.zoomX
-                pan: surface.panX
-                // A round spacing over what is on screen, always -- and
-                // pointedly *not* the reader's `step`. It used to be that,
-                // back when step was the distance between two ticks; it is now
-                // the distance between two elements, and a dataset of a
-                // thousand points at 0.25 apart would put a thousand labels
-                // along the axis on top of one another.
-                //
-                // Set explicitly rather than left to Qt Graphs because that
-                // computes its automatic spacing from the axis's *declared*
-                // range and not from the range it is showing, so a zoomed-in
-                // axis would keep the spacing of the whole dataset and print
-                // one lonely tick.
-                tickInterval: surface.niceStep(visualMax - visualMin,
-                                               surface.tickTarget)
-                // Enough decimals to tell two ticks apart, and no more -- the
-                // same rule the y axis below applies, and for the same reason.
-                // This axis used to print none at all, which was right only
-                // while it counted whole columns; a step the reader states can
-                // be a thousandth, and eight ticks all reading "0" is an axis
-                // that has stopped saying anything.
-                labelDecimals: {
-                    const span = Math.abs(visualMax - visualMin)
-                    if (!(span > 0))
-                        return 0
-                    return Math.max(0, Math.min(6,
-                        Math.ceil(-Math.log(span) / Math.LN10) + 2))
-                }
-                gridVisible: surface.showGrid
-                subGridVisible: false
-                titleVisible: false
-            }
-
-            axisY: ValueAxis {
-                id: yAxis
-
-                min: surface.lowerBound
-                max: surface.upperBound
-                zoom: surface.zoomY
-                pan: surface.panY
-                tickInterval: surface.niceStep(visualMax - visualMin,
-                                               surface.tickTarget)
-                // Enough decimals to tell two ticks apart, and no more: a span
-                // of 100 wants none, a span of a thousandth wants five. A fixed
-                // count prints either noise or "0.0" all the way up the axis.
-                // Taken off the *visible* span, so zooming in adds digits as
-                // the ticks close up.
-                labelDecimals: {
-                    const span = Math.abs(visualMax - visualMin)
-                    if (!(span > 0))
-                        return 2
-                    return Math.max(0, Math.min(6,
-                        Math.ceil(-Math.log(span) / Math.LN10) + 2))
-                }
-                gridVisible: surface.showGrid
-                subGridVisible: false
-                titleVisible: false
-            }
-
-            // Every colour and font the graph draws comes from Theme, like
-            // every other surface here; nothing is Qt's own palette.
-            theme: GraphsTheme {
-                colorScheme: Theme.dark ? GraphsTheme.ColorScheme.Dark
-                                        : GraphsTheme.ColorScheme.Light
-                backgroundColor: Theme.surfaceInset
-                plotAreaBackgroundColor: Theme.surfaceInset
-                labelTextColor: Theme.textSecondary
-                axisXLabelFont: Theme.readout
-                axisYLabelFont: Theme.readout
-                // A step stronger than a table's rules, for the same reason
-                // the table's own went up: this plot's ground is the inset,
-                // which is true black, and a hairline at line-1 against it is
-                // a line nobody can see. The axis rules go a step further
-                // again, so the frame reads as the frame.
-                //
-                // Qt Graphs 6.11 draws neither the grid nor the axis rules
-                // whatever these are set to -- verified by setting them to
-                // 3px red, which also does not appear -- so what "grid lines"
-                // in the settings panel turns on is, for now, nothing. The
-                // weights are stated here so that the day the library draws
-                // them, it draws them in the system's own ink. The axis
-                // *labels* are unaffected and do render; those are what the
-                // margins above make room for.
-                grid.mainColor: Theme.borderStrong
-                grid.subColor: Theme.border
-                grid.mainWidth: Theme.borderWidth
-                axisX.mainColor: Theme.borderGuide
-                axisY.mainColor: Theme.borderGuide
-                axisX.mainWidth: Theme.borderWidth
-                axisY.mainWidth: Theme.borderWidth
-                axisX.labelTextColor: Theme.textSecondary
-                axisY.labelTextColor: Theme.textSecondary
-                // The fallback only. Every line is given its colour explicitly
-                // when the graph is built, from the cycle the reader picked;
-                // this is what a series would take if one ever were not.
-                seriesColors: [Theme.accent]
-            }
-
-            /// The table lines this graph was built for, in drawing order, so
-            /// restyle() can ask what each of its series is a line *of*.
-            property var drawn: []
-
-            /// Re-colour what is already drawn.
-            ///
-            /// Changing a colour or picking a line out does not change which
-            /// series exist, so it must not go through rebuild(): tearing the
-            /// GraphsView down and building another one blanks the view for a
-            /// frame, and a plot that flashes every time the reader clicks a
-            /// name in the legend is unusable for the one thing the legend is
-            /// for -- following a line through a bundle.
-            function restyle() {
-                for (let i = 0; i < graph.drawn.length; ++i) {
-                    const line = graph.seriesList[i]
-                    if (!line)
-                        continue
-                    line.color = surface.seriesColor(i, graph.drawn.length)
-                    line.opacity = surface.seriesOpacity(graph.drawn[i],
-                                                         graph.drawn.length)
-                    line.width = surface.seriesWidth(graph.drawn[i])
-                    // Qt Graphs redraws a series when its *points* change and
-                    // not when its colour does, so a recoloured line keeps its
-                    // old stroke on screen until something marks it dirty.
-                    // Re-filling is what marks it: the values come from
-                    // DatasetPlot's own cache, so this touches no file and
-                    // nothing is torn down -- which is the whole point of
-                    // restyling rather than rebuilding.
-                    surface.plot.fill(line, graph.drawn[i])
-                }
-            }
-
-            Component.onCompleted: {
-                // The lines the plot is drawing, by their index in the table.
-                // Not 0..seriesCount -- with a line unticked in the middle of
-                // the set, position and index are not the same number, and
-                // filling by position would draw the wrong rows under the
-                // right names.
-                graph.drawn = surface.plot.drawnSeries
-                for (let i = 0; i < graph.drawn.length; ++i) {
-                    const line = lineComponent.createObject(graph)
-                    line.pointDelegate = surface.showMarkers ? line.marker : null
-                    line.color = surface.seriesColor(i, graph.drawn.length)
-                    line.opacity = surface.seriesOpacity(graph.drawn[i],
-                                                         graph.drawn.length)
-                    line.width = surface.seriesWidth(graph.drawn[i])
-                    graph.addSeries(line)
-                    surface.plot.fill(line, graph.drawn[i])
-                }
+    /// The same thing written out, for the bar below the plot to print.
+    ///
+    /// It used to be a box floating in the corner of the pane. That is where a
+    /// plotting library puts it and it is the wrong place here, because this
+    /// application already has a strip along the foot of every view whose whole
+    /// job is to say what is on screen in numbers -- and a second readout in a
+    /// second style, over the top of the picture, is a second convention.
+    ///
+    /// The frame knows the numbers; only the thing being drawn knows the names,
+    /// and the index it hands back is a position in the drawn set rather than a
+    /// row of any table.
+    readonly property var readingFacts: {
+        if (!surface.reading.valid)
+            return []
+        const facts = []
+        const drawn = surface.plot ? surface.plot.drawnSeries : []
+        // Which line, and only when there is more than one -- "which" has no
+        // answer worth printing about a plot of a single line, and a line's
+        // name can be a bare row index, which read as a stray number between
+        // two facts that were labelled.
+        if (drawn.length > 1) {
+            const position = surface.reading.line
+            if (position >= 0 && position < drawn.length) {
+                facts.push(qsTr("line %1")
+                           .arg(surface.plot.seriesLabel(drawn[position])))
             }
         }
+        facts.push(qsTr("x %1").arg(surface.readingNumber(surface.reading.x)))
+        facts.push(qsTr("y %1").arg(surface.readingNumber(surface.reading.y)))
+        return facts
     }
 
-    Component {
-        id: lineComponent
+    /// One reading, written. Six significant figures, except for a whole
+    /// number: the default x axis is the element's own index, and "12.0000" is
+    /// four digits of decoration on a count.
+    function readingNumber(value) {
+        if (!isFinite(value))
+            return String(value)
+        return Number.isInteger(value) ? String(value) : value.toPrecision(6)
+    }
 
-        LineSeries {
-            id: line
-
-            color: Theme.accent
-            width: Theme.plotLineWidth
-
-            /// A marker is punctuation on the line, not a second series, so it
-            /// takes the line's colour and the smallest size that still reads
-            /// as a dot.
-            ///
-            /// Declared *inside* the series rather than beside the graph,
-            /// which is the whole trick: a Component's instances resolve names
-            /// in the scope the Component was declared in, so `line` here is
-            /// this series and nothing else. One shared delegate outside had no
-            /// way to know which line it was drawing on -- Qt Graphs passes a
-            /// point's value and its selected state to the delegate, not its
-            /// series -- so every marker on every line came out the same
-            /// colour. Bound rather than assigned, so a marker follows its line
-            /// through a restyle for free.
-            property Component marker: Component {
-                Rectangle {
-                    width: Theme.plotMarkerSize
-                    height: Theme.plotMarkerSize
-                    radius: width / 2
-                    color: line.color
-                }
-            }
+    /// Hand the lines over and dress them.
+    ///
+    /// One crossing into C++ for the whole plot rather than one per line, and
+    /// no points built on the way: see DatasetPlot::fill. The lines are
+    /// borrowed, so the model empties the item before it frees them -- which is
+    /// why there is nothing here to tear down.
+    function refill() {
+        // Here as well as on every change of the view, because a plot object
+        // that has just been reset -- a new dataset, a rearranged table -- has
+        // forgotten what was on screen, and this is the first moment it is
+        // being spoken to again.
+        surface.pushColumns()
+        surface.pushRange()
+        if (!surface.drawable) {
+            frame.lines.clear()
+            return
         }
+        surface.plot.fill(frame.lines)
+        surface.restyle()
     }
 
-    /// Discard the graph and build the next one. Toggling `active` is what
-    /// does it: the Loader destroys the item, and its series with it.
-    function rebuild() {
-        graphLoader.active = false
-        graphLoader.active = surface.drawable
-    }
-
-    /// Re-colour what is drawn, without discarding it. The two are separate
-    /// because they cost separate things: rebuild() re-reads the file and
-    /// blanks the view for a frame, restyle() assigns three properties per
-    /// line.
+    /// Re-colour what is drawn, without re-reading or re-filling it.
+    ///
+    /// The line this replaced said: "Qt Graphs redraws a series when its
+    /// points change and not when its colour does, so a recoloured line keeps
+    /// its old stroke on screen until something marks it dirty. Re-filling is
+    /// what marks it." Sixty-four crossings into C++, each building a couple of
+    /// thousand QPointF, to change a hue. A colour is now a property of the
+    /// line and the item redraws from the values it already has.
     function restyle() {
-        if (graphLoader.item)
-            graphLoader.item.restyle()
+        const drawn = surface.plot ? surface.plot.drawnSeries : []
+        for (let i = 0; i < drawn.length; ++i) {
+            frame.lines.setSeriesColor(i, surface.seriesColor(i, drawn.length))
+            frame.lines.setSeriesOpacity(i, surface.seriesOpacity(drawn[i],
+                                                                   drawn.length))
+            frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))
+        }
     }
 
-    Component.onCompleted: surface.rebuild()
-    onActiveChanged: Qt.callLater(surface.rebuild)
-    // A marker delegate is set on the series when it is created, so this one
-    // does have to go the long way round.
-    onShowMarkersChanged: Qt.callLater(surface.rebuild)
+    /// Tell the plot object what is on screen.
+    ///
+    /// Not a setting and nothing is drawn from it: it is what lets the object
+    /// decide whether the lines are worth reading again at a finer bucket, and
+    /// the answer is usually no -- a range that resolves to the run already in
+    /// hand costs nothing at all on the other side. The read, when there is
+    /// one, waits for the gesture to stop and then goes out asynchronously, so
+    /// nothing here waits for it and no frame is missed.
+    ///
+    /// Guarded by `active` like every other path into the plot object: a reader
+    /// browsing a large dataset as a table must not pay for a closer look at a
+    /// plot nobody has asked to see.
+    function pushRange() {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.setVisibleRange(surface.viewMinX, surface.viewMaxX)
+    }
 
-    // Colour and emphasis are assigned to the series rather than bound, because
-    // a series is a Qt Graphs object and not an Item; but which series exist
-    // has not changed, so these restyle rather than rebuild.
+    /// Tell it how wide the pane is, in columns.
+    ///
+    /// A bucket is a column: what a line is thinned to is a property of the
+    /// pane it is drawn in and not a constant, and the number used to be a
+    /// constant in both directions -- fewer buckets than pixels on a wide
+    /// screen, which draws an envelope as a hatch of separated teeth instead of
+    /// a band, and more points than anyone can tell apart on a narrow one.
+    ///
+    /// The frame rather than the plot area inside it, which is not a rounding:
+    /// the area's left gutter is measured off the widest y tick label, that
+    /// label is measured off the extent of the data, and the extent moves when
+    /// the resolution does -- a finer bucket can find a more extreme value. So
+    /// a resolution taken from the area is a resolution that decides the gutter
+    /// that decides the resolution, which is exactly the binding loop Qt
+    /// reported the first time this was written that way. The frame's own width
+    /// depends on nothing the plot draws.
+    ///
+    /// It overestimates by the gutters, which is what the renderer's tolerance
+    /// for a few points per column is for -- see kSamplesPerColumn. Quantised
+    /// on the other side, so dragging the window's edge does not re-read the
+    /// file once a pixel.
+    ///
+    /// In *device* pixels, which is the other half of "a bucket is a column".
+    /// A pane is laid out in logical pixels and drawn into a framebuffer with
+    /// devicePixelRatio of them for each one, so thinning to the logical width
+    /// on a HiDPI screen hands the renderer one bucket per two or three
+    /// physical columns -- a band drawn at half or a third of the resolution
+    /// the display has, which is the whole of what oversampling would have
+    /// bought and is free to ask for correctly instead.
+    function pushColumns() {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.setPaneColumns(
+            Math.round((frame.width - frame.gutterRight) * surface.pixelRatio))
+    }
+
+    /// Device pixels per logical one, which is the other factor in the pane's
+    /// width. A property rather than a call so that dragging the window onto a
+    /// display with a different scaling re-thins the lines for it -- a resize
+    /// would otherwise be the only thing that ever noticed.
+    ///
+    /// Unqualified `Screen`, which is how an attached property is reached: it
+    /// attaches to the object whose scope names it, and that is this item.
+    readonly property real pixelRatio: Math.max(1, Screen.devicePixelRatio)
+
+    onPixelRatioChanged: surface.pushColumns()
+
+    onViewMinXChanged: surface.pushRange()
+    onViewMaxXChanged: surface.pushRange()
+
+    // A resized window is a different number of columns, and what a line is
+    // thinned to follows it. Quantised on the other side, so a drag of the
+    // frame's edge re-reads every sixty-four pixels rather than every one.
+    Connections {
+        target: frame
+        function onWidthChanged() { surface.pushColumns() }
+    }
+
+    Component.onCompleted: surface.refill()
+    onActiveChanged: Qt.callLater(surface.refill)
+
+    // Colour and emphasis are assigned to the lines rather than bound, because
+    // a line belongs to a C++ item and not to the QML object tree; but which
+    // lines exist has not changed, so these restyle rather than re-fill.
     onColorModeChanged: surface.restyle()
     onColorSingleChanged: surface.restyle()
     onColorRangeFromChanged: surface.restyle()
@@ -727,11 +709,11 @@ Item {
     Connections {
         target: surface.plot
         enabled: surface.active
-        function onChanged() { Qt.callLater(surface.rebuild) }
-        // The same lines, moved along x. Nothing has to be re-read and no
-        // series has appeared or gone away, so this re-fills what is already
-        // drawn rather than tearing the graph down and building another.
-        function onXAxisChanged() { Qt.callLater(surface.restyle) }
+        function onChanged() { Qt.callLater(surface.refill) }
+        // The same lines, moved along x. Nothing has to be re-read and no line
+        // has appeared or gone away -- but where a point sits along x is the
+        // axis the item was handed, so it has to be handed the new one.
+        function onXAxisChanged() { Qt.callLater(surface.refill) }
     }
 
     /// The properties a saved view keeps.
@@ -744,7 +726,7 @@ Item {
         "rangeStart", "rangeStep", "rangeStop", "locks",
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
-        "showGrid", "showMarkers"
+        "showGrid", "showMarkers", "showCursor"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -782,7 +764,7 @@ Item {
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
-                "showGrid", "showMarkers", "highlighted",
+                "showGrid", "showMarkers", "showCursor", "highlighted",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
@@ -798,11 +780,14 @@ Item {
     }
 
     // --- zoom and pan ----------------------------------------------------
-    // Over the graph rather than inside it: GraphsView carries handlers of its
-    // own for the zoom and pan styles it implements, and those zoom about the
-    // centre of the frame. The pointer is what a reader is aiming with, so the
-    // wheel is taken here instead and turned into the axis arithmetic above.
+    // Over the frame rather than inside it. This began as a way around
+    // GraphsView's own wheel and drag handlers, which zoomed about the centre
+    // of the frame rather than about the pointer; it stays because zoom and pan
+    // are properties of the *view* and not of the drawing, so they belong to
+    // the object that owns the window onto the data.
     Item {
+        objectName: "plotGestures"
+
         anchors.fill: parent
         // The same inset as the graph, so a pointer position in this item is a
         // pointer position in the graph's own coordinates -- which is what
@@ -812,11 +797,22 @@ Item {
 
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            // acceptedModifiers is deliberately left alone. Its default is
+            // Qt.KeyboardModifierMask, which means "whatever is held"; naming
+            // Shift and Control there would require *both* of them at once,
+            // which is the opposite of what this reads.
+            //
             // One notch is 120 eighths of a degree; a trackpad sends fractions
-            // of that, and the exponential keeps both feeling the same.
+            // of that, and the exponential keeps both feeling the same. Held
+            // down, Shift turns a wheel's vertical delta into a horizontal one
+            // on several platforms, so the horizontal one is read when there is
+            // no vertical one -- the notch the reader turned, wherever the
+            // window system filed it.
             onWheel: (event) => {
-                surface.zoomAt(event.x, event.y,
-                               Math.pow(1.25, event.angleDelta.y / 120))
+                const turned = event.angleDelta.y !== 0 ? event.angleDelta.y
+                                                        : event.angleDelta.x
+                surface.zoomAt(event.x, event.y, Math.pow(1.25, turned / 120),
+                               surface.zoomAxesFor(event.modifiers))
             }
         }
 
@@ -839,9 +835,27 @@ Item {
         }
 
         // The way back, without hunting for a button: the same gesture every
-        // map and image viewer uses.
-        TapHandler {
-            onDoubleTapped: surface.resetView()
+        // map and image viewer uses, and the reason it is worth a gesture at
+        // all is that it costs nothing -- the whole-line summary is never
+        // thrown away, so the most zoomed-out picture is always already in hand
+        // and going to it is a draw rather than a read.
+        //
+        // A MouseArea rather than a TapHandler, for exactly the reason
+        // ObjectTree gives at length: TapHandler counts its own taps against
+        // the platform's double-click interval, and anything that takes the
+        // grab in between resets the count -- here the drag handler above, which
+        // takes a passive grab on every press. A MouseArea counts nothing. It
+        // answers the QEvent::MouseButtonDblClick the window system itself
+        // sends, which is a double click by the reader's own settings rather
+        // than by this program's arithmetic.
+        //
+        // Panning still works, and by the same arrangement a Flickable uses: the
+        // drag handler holds a passive grab through the press and takes the
+        // exclusive one the moment the pointer moves past the drag threshold.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            onDoubleClicked: surface.resetView()
         }
     }
 

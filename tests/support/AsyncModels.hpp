@@ -30,6 +30,26 @@ inline bool settle(int milliseconds = 30000)
     return gui::H5Thread::instance().drain(milliseconds);
 }
 
+/// Spin the event loop for `milliseconds`, then settle.
+///
+/// For the one thing in the models that waits on a clock rather than on a
+/// signal: a plot reads a closer look at its lines only once the view has
+/// stopped moving, so a test that moves the view and asks what it cost has to
+/// let that tenth of a second pass. Everything else here waits on the HDF5
+/// thread, which answers as fast as it can.
+inline bool settleFor(int milliseconds)
+{
+    QDeadlineTimer deadline(milliseconds);
+    while (!deadline.hasExpired()) {
+        // Waiting for events rather than spinning: a timer *is* an event, so
+        // this dispatches the one being waited for the moment it is due.
+        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 5);
+    }
+    settle();
+    QCoreApplication::processEvents();
+    return settle();
+}
+
 /// Open a file and wait for it. openFile() returns whether the open was
 /// *started*; this returns whether it succeeded.
 inline bool openFileAndSettle(gui::AppController& controller, const QString& path)

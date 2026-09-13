@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -60,8 +61,7 @@ hid_t mustId(hid_t id, const char* what)
 class Id
 {
 public:
-    Id(hid_t id, herr_t (*closer)(hid_t), const char* what)
-        : id_(mustId(id, what)), closer_(closer)
+    Id(hid_t id, herr_t (*closer)(hid_t), const char* what) : id_(mustId(id, what)), closer_(closer)
     {}
     ~Id()
     {
@@ -113,21 +113,18 @@ Id makeSpace(const std::vector<hsize_t>& dims)
     if (dims.empty()) {
         return {H5Screate(H5S_SCALAR), &H5Sclose, "scalar dataspace"};
     }
-    return {H5Screate_simple(static_cast<int>(dims.size()), dims.data(), nullptr),
-            &H5Sclose, "simple dataspace"};
+    return {H5Screate_simple(static_cast<int>(dims.size()), dims.data(), nullptr), &H5Sclose,
+            "simple dataspace"};
 }
 
-void writeDataset(hid_t parent, const char* name, hid_t type,
-                  const std::vector<hsize_t>& dims, const void* data,
-                  hid_t createProps = H5P_DEFAULT)
+void writeDataset(hid_t parent, const char* name, hid_t type, const std::vector<hsize_t>& dims,
+                  const void* data, hid_t createProps = H5P_DEFAULT)
 {
     const Id space = makeSpace(dims);
-    const Id dataset(
-        H5Dcreate2(parent, name, type, space, H5P_DEFAULT, createProps, H5P_DEFAULT),
-        &H5Dclose, "create dataset");
+    const Id dataset(H5Dcreate2(parent, name, type, space, H5P_DEFAULT, createProps, H5P_DEFAULT),
+                     &H5Dclose, "create dataset");
     if (data != nullptr) {
-        must(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data),
-             "write dataset");
+        must(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data), "write dataset");
     }
 }
 
@@ -139,11 +136,10 @@ void writeConverted(hid_t parent, const char* name, hid_t fileType, hid_t memory
 {
     const Id space = makeSpace(dims);
     const Id dataset(
-        H5Dcreate2(parent, name, fileType, space, H5P_DEFAULT, createProps, H5P_DEFAULT),
-        &H5Dclose, "create dataset");
+        H5Dcreate2(parent, name, fileType, space, H5P_DEFAULT, createProps, H5P_DEFAULT), &H5Dclose,
+        "create dataset");
     if (data != nullptr) {
-        must(H5Dwrite(dataset, memoryType, H5S_ALL, H5S_ALL, H5P_DEFAULT, data),
-             "write dataset");
+        must(H5Dwrite(dataset, memoryType, H5S_ALL, H5S_ALL, H5P_DEFAULT, data), "write dataset");
     }
 }
 
@@ -167,29 +163,28 @@ void stringAttribute(hid_t object, const char* name, const std::string& value)
 {
     const Id type = variableString();
     const Id space(H5Screate(H5S_SCALAR), &H5Sclose, "attribute dataspace");
-    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT),
-                       &H5Aclose, "create string attribute");
+    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
+                       "create string attribute");
     const char* pointer = value.c_str();
     must(H5Awrite(attribute, type, &pointer), "write string attribute");
 }
 
-void stringArrayAttribute(hid_t object, const char* name,
-                          const std::vector<const char*>& values)
+void stringArrayAttribute(hid_t object, const char* name, const std::vector<const char*>& values)
 {
     const Id type = variableString();
     const Id space = makeSpace({static_cast<hsize_t>(values.size())});
-    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT),
-                       &H5Aclose, "create string array attribute");
+    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
+                       "create string array attribute");
     must(H5Awrite(attribute, type, values.data()), "write string array attribute");
 }
 
 template<typename T>
-void numericAttribute(hid_t object, const char* name, hid_t type,
-                      const std::vector<hsize_t>& dims, const std::vector<T>& values)
+void numericAttribute(hid_t object, const char* name, hid_t type, const std::vector<hsize_t>& dims,
+                      const std::vector<T>& values)
 {
     const Id space = makeSpace(dims);
-    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT),
-                       &H5Aclose, "create numeric attribute");
+    const Id attribute(H5Acreate2(object, name, type, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
+                       "create numeric attribute");
     if (!values.empty()) {
         must(H5Awrite(attribute, type, values.data()), "write numeric attribute");
     }
@@ -274,11 +269,9 @@ Id readingType()
     const Id samples(H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, sampleDims), &H5Tclose,
                      "samples array type");
 
-    Id type(H5Tcreate(H5T_COMPOUND, sizeof(Reading)), &H5Tclose,
-            "create reading compound");
+    Id type(H5Tcreate(H5T_COMPOUND, sizeof(Reading)), &H5Tclose, "create reading compound");
     must(H5Tinsert(type, "station", HOFFSET(Reading, station), station), "station");
-    must(H5Tinsert(type, "timestamp", HOFFSET(Reading, timestamp), H5T_NATIVE_INT64),
-         "timestamp");
+    must(H5Tinsert(type, "timestamp", HOFFSET(Reading, timestamp), H5T_NATIVE_INT64), "timestamp");
     must(H5Tinsert(type, "position", HOFFSET(Reading, position), point), "position");
     must(H5Tinsert(type, "samples", HOFFSET(Reading, samples), samples), "samples");
     must(H5Tinsert(type, "quality", HOFFSET(Reading, quality), quality), "quality");
@@ -334,14 +327,13 @@ void tagImageByName(hid_t parent, const char* name, const char* subclass,
 
 void writeExternalFile(const std::string& path)
 {
-    const Id file(H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT),
-                  &H5Fclose, "create external file");
+    const Id file(H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), &H5Fclose,
+                  "create external file");
     stringAttribute(file, "title", "Companion file: external-link and VDS targets");
 
     {
         const Id group = makeGroup(file, "external");
-        stringAttribute(group, "note",
-                        "Reached from example.h5 through an external link");
+        stringAttribute(group, "note", "Reached from example.h5 through an external link");
 
         std::vector<std::int32_t> values(25);
         for (std::size_t i = 0; i < values.size(); ++i) {
@@ -349,8 +341,7 @@ void writeExternalFile(const std::string& path)
         }
         writeDataset(group, "squares", H5T_NATIVE_INT32, {5, 5}, values.data());
         {
-            const Id dataset(H5Dopen2(group, "squares", H5P_DEFAULT), &H5Dclose,
-                             "reopen squares");
+            const Id dataset(H5Dopen2(group, "squares", H5P_DEFAULT), &H5Dclose, "reopen squares");
             stringAttribute(dataset, "units", "dimensionless");
         }
 
@@ -378,8 +369,7 @@ void writeExternalFile(const std::string& path)
 void writeData(hid_t file)
 {
     const Id group = makeGroup(file, "data");
-    stringAttribute(group, "purpose",
-                    "Ordinary numeric datasets, one per shape worth testing");
+    stringAttribute(group, "purpose", "Ordinary numeric datasets, one per shape worth testing");
 
     // A scalar, which has rank 0 but exactly one element.
     const std::int32_t answer = 42;
@@ -410,8 +400,7 @@ void writeData(hid_t file)
     {
         const Id dataset(H5Dopen2(group, "matrix", H5P_DEFAULT), &H5Dclose, "reopen");
         stringAttribute(dataset, "description", "Element (r, c) holds r*10 + c");
-        numericAttribute<double>(dataset, "valid_range", H5T_NATIVE_DOUBLE, {2},
-                                 {0.0, 32.0});
+        numericAttribute<double>(dataset, "valid_range", H5T_NATIVE_DOUBLE, {2}, {0.0, 32.0});
     }
 
     std::vector<std::int32_t> cube(2 * 3 * 4);
@@ -440,8 +429,7 @@ void writeData(hid_t file)
     for (std::size_t i = 0; i < rank8.size(); ++i) {
         rank8[i] = static_cast<std::uint8_t>(i);
     }
-    writeDataset(group, "rank8", H5T_NATIVE_UINT8, {2, 2, 2, 2, 2, 2, 2, 2},
-                 rank8.data());
+    writeDataset(group, "rank8", H5T_NATIVE_UINT8, {2, 2, 2, 2, 2, 2, 2, 2}, rank8.data());
 
     // Rank 12, with singleton dimensions mixed in -- a shape that looks
     // degenerate but is entirely legal, and that a naive index calculation
@@ -469,8 +457,8 @@ void writeData(hid_t file)
         // A null dataspace holds no elements and has no shape -- distinct from
         // a scalar, which has no shape but one element.
         const Id space(H5Screate(H5S_NULL), &H5Sclose, "null dataspace");
-        const Id dataset(H5Dcreate2(group, "null_space", H5T_NATIVE_INT32, space,
-                                    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
+        const Id dataset(H5Dcreate2(group, "null_space", H5T_NATIVE_INT32, space, H5P_DEFAULT,
+                                    H5P_DEFAULT, H5P_DEFAULT),
                          &H5Dclose, "create null dataset");
         stringAttribute(dataset, "note", "H5S_NULL: no elements, and no shape either");
     }
@@ -486,19 +474,17 @@ void writeData(hid_t file)
                                        std::numeric_limits<double>::lowest()};
     writeDataset(group, "special_floats", H5T_NATIVE_DOUBLE, {8}, specials.data());
 
-    const std::vector<std::int64_t> extremes{std::numeric_limits<std::int64_t>::min(), -1,
-                                             0, std::numeric_limits<std::int64_t>::max()};
+    const std::vector<std::int64_t> extremes{std::numeric_limits<std::int64_t>::min(), -1, 0,
+                                             std::numeric_limits<std::int64_t>::max()};
     writeDataset(group, "int64_extremes", H5T_NATIVE_INT64, {4}, extremes.data());
 
-    const std::vector<std::uint64_t> unsignedExtremes{
-        0, 1, std::numeric_limits<std::uint64_t>::max()};
-    writeDataset(group, "uint64_extremes", H5T_NATIVE_UINT64, {3},
-                 unsignedExtremes.data());
+    const std::vector<std::uint64_t> unsignedExtremes{0, 1,
+                                                      std::numeric_limits<std::uint64_t>::max()};
+    writeDataset(group, "uint64_extremes", H5T_NATIVE_UINT64, {3}, unsignedExtremes.data());
 
     // Big-endian on disk: the viewer must convert rather than show byte soup.
     const std::vector<std::int32_t> counts{1, 256, 65536, 16777216};
-    writeConverted(group, "big_endian_int32", H5T_STD_I32BE, H5T_NATIVE_INT32, {4},
-                   counts.data());
+    writeConverted(group, "big_endian_int32", H5T_STD_I32BE, H5T_NATIVE_INT32, {4}, counts.data());
 }
 
 // --- /types: one dataset per datatype class --------------------------------
@@ -534,8 +520,7 @@ void writeTypes(hid_t file)
         must(H5Tset_precision(odd, 20), "20-bit precision");
         must(H5Tset_offset(odd, 0), "zero offset");
         const std::vector<std::int32_t> narrow{-524288, -1, 0, 1, 524287};
-        writeConverted(integers, "int20_in_int32", odd, H5T_NATIVE_INT32, {5},
-                       narrow.data());
+        writeConverted(integers, "int20_in_int32", odd, H5T_NATIVE_INT32, {5}, narrow.data());
     }
 
     // Floats, including the half precision HDF5 2.x exposes natively.
@@ -545,8 +530,7 @@ void writeTypes(hid_t file)
         const std::vector<double> f64{-1.5, 0.0, 0.1, 1e300, std::numbers::pi};
         writeDataset(floats, "float32", H5T_NATIVE_FLOAT, {5}, f32.data());
         writeDataset(floats, "float64", H5T_NATIVE_DOUBLE, {5}, f64.data());
-        writeConverted(floats, "float16", H5T_IEEE_F16LE, H5T_NATIVE_FLOAT, {5},
-                       f32.data());
+        writeConverted(floats, "float16", H5T_IEEE_F16LE, H5T_NATIVE_FLOAT, {5}, f32.data());
         // long double: 16 bytes on this platform, and a width no viewer that
         // switches on element size will have a case for.
         const std::vector<long double> f80{-1.5L, 0.0L, 0.1L, 1e300L, 2.5L};
@@ -582,15 +566,13 @@ void writeTypes(hid_t file)
         writeDataset(strings, "fixed_spacepad", spacePad, {4}, padded.data());
 
         const Id vlen = variableString();
-        const char* utf8[] = {"plain ascii", "h\u00e9llo w\u00f6rld",
-                              "\u65e5\u672c\u8a9e", ""};
+        const char* utf8[] = {"plain ascii", "h\u00e9llo w\u00f6rld", "\u65e5\u672c\u8a9e", ""};
         writeDataset(strings, "vlen_utf8", vlen, {4}, utf8);
 
         // Rank 2, so the flat list of panes has to label an element by a
         // coordinate rather than by a single subscript.
-        const char* grid[] = {"north west", "north",  "north east",
-                              "west",       "centre", "east",
-                              "south west", "south",  "south east"};
+        const char* grid[] = {"north west", "north",      "north east", "west",      "centre",
+                              "east",       "south west", "south",      "south east"};
         writeDataset(strings, "grid_3x3", vlen, {3, 3}, grid);
 
         // One long, multi-line string: the shape a provenance record takes.
@@ -610,8 +592,7 @@ void writeTypes(hid_t file)
         std::vector<std::string> owned(500);
         std::vector<const char*> many(500);
         for (std::size_t i = 0; i < owned.size(); ++i) {
-            owned[i] =
-                "record " + std::to_string(i) + ": " + std::string(1 + (i % 40), '.');
+            owned[i] = "record " + std::to_string(i) + ": " + std::string(1 + (i % 40), '.');
             many[i] = owned[i].c_str();
         }
         writeDataset(strings, "many_500", vlen, {500}, many.data());
@@ -621,11 +602,9 @@ void writeTypes(hid_t file)
     {
         const Id compounds = makeGroup(group, "compound");
 
-        const Id simpleType(H5Tcreate(H5T_COMPOUND, sizeof(Simple)), &H5Tclose,
-                            "simple compound");
+        const Id simpleType(H5Tcreate(H5T_COMPOUND, sizeof(Simple)), &H5Tclose, "simple compound");
         must(H5Tinsert(simpleType, "id", HOFFSET(Simple, id), H5T_NATIVE_INT32), "id");
-        must(H5Tinsert(simpleType, "value", HOFFSET(Simple, value), H5T_NATIVE_DOUBLE),
-             "value");
+        must(H5Tinsert(simpleType, "value", HOFFSET(Simple, value), H5T_NATIVE_DOUBLE), "value");
         const std::vector<Simple> simple{{7, 1.5}, {9, 2.5}, {11, -3.25}};
         writeDataset(compounds, "simple", simpleType, {3}, simple.data());
 
@@ -643,8 +622,7 @@ void writeTypes(hid_t file)
             readings[i].position = {static_cast<double>(i), static_cast<double>(i) * 2.0,
                                     static_cast<double>(i) * 3.0};
             for (int s = 0; s < 4; ++s) {
-                readings[i].samples[s] =
-                    static_cast<double>(i) + static_cast<double>(s) / 4.0;
+                readings[i].samples[s] = static_cast<double>(i) + static_cast<double>(s) / 4.0;
             }
             readings[i].quality = static_cast<std::int32_t>(i % 3);
             readings[i].weight = 0.5F * static_cast<float>(i);
@@ -653,9 +631,8 @@ void writeTypes(hid_t file)
         {
             const Id dataset(H5Dopen2(compounds, "nested", H5P_DEFAULT), &H5Dclose,
                              "reopen nested");
-            stringAttribute(
-                dataset, "note",
-                "Members: fixed string, int64, nested compound, array, enum, float");
+            stringAttribute(dataset, "note",
+                            "Members: fixed string, int64, nested compound, array, enum, float");
         }
 
         // A table shape rather than a list: rank 2 of records.
@@ -697,8 +674,7 @@ void writeTypes(hid_t file)
 
         // Ragged rows, which is what a vlen is for.
         const Id vlenType(H5Tvlen_create(H5T_NATIVE_INT32), &H5Tclose, "vlen type");
-        std::vector<std::vector<std::int32_t>> ragged{
-            {1}, {1, 2, 3}, {}, {4, 5, 6, 7, 8, 9}};
+        std::vector<std::vector<std::int32_t>> ragged{{1}, {1, 2, 3}, {}, {4, 5, 6, 7, 8, 9}};
         std::vector<hvl_t> vlens(ragged.size());
         for (std::size_t i = 0; i < ragged.size(); ++i) {
             vlens[i].len = ragged[i].size();
@@ -709,8 +685,7 @@ void writeTypes(hid_t file)
 
     // Bitfield, opaque, and the time class HDF5 never finished.
     {
-        const std::vector<std::uint32_t> bits{0x00000000U, 0x0000FFFFU, 0xDEADBEEFU,
-                                              0xFFFFFFFFU};
+        const std::vector<std::uint32_t> bits{0x00000000U, 0x0000FFFFU, 0xDEADBEEFU, 0xFFFFFFFFU};
         writeDataset(group, "bitfield32", H5T_STD_B32LE, {4}, bits.data());
 
         Id opaque(H5Tcreate(H5T_OPAQUE, 8), &H5Tclose, "opaque type");
@@ -736,14 +711,12 @@ void writeTypes(hid_t file)
 void writeCommitted(hid_t file)
 {
     const Id group = makeGroup(file, "committed");
-    stringAttribute(
-        group, "purpose",
-        "Named datatypes: objects in their own right, and shared by datasets");
+    stringAttribute(group, "purpose",
+                    "Named datatypes: objects in their own right, and shared by datasets");
 
     {
         Id celsius(H5Tcopy(H5T_IEEE_F64LE), &H5Tclose, "copy float64");
-        must(H5Tcommit2(group, "celsius_t", celsius, H5P_DEFAULT, H5P_DEFAULT,
-                        H5P_DEFAULT),
+        must(H5Tcommit2(group, "celsius_t", celsius, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
              "commit celsius_t");
         // A named datatype carries attributes exactly as a dataset does.
         stringAttribute(celsius, "units", "degree_Celsius");
@@ -762,9 +735,8 @@ void writeCommitted(hid_t file)
 
     {
         const Id record = readingType();
-        must(
-            H5Tcommit2(group, "reading_t", record, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
-            "commit reading_t");
+        must(H5Tcommit2(group, "reading_t", record, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
+             "commit reading_t");
         stringAttribute(record, "schema_version", "2");
 
         std::vector<Reading> readings(3);
@@ -803,8 +775,7 @@ void writeStorage(hid_t file, const std::string& externalFileName)
     // Chunked, with a chunk that does not divide the shape evenly.
     {
         const Id props = chunked({7, 6});
-        writeDataset(group, "chunked_7x6", H5T_NATIVE_INT32, {20, 20}, values.data(),
-                     props);
+        writeDataset(group, "chunked_7x6", H5T_NATIVE_INT32, {20, 20}, values.data(), props);
     }
 
     // Compact: the data lives in the object header, so storage is tiny and
@@ -823,11 +794,10 @@ void writeStorage(hid_t file, const std::string& externalFileName)
         const hsize_t maxDims[] = {H5S_UNLIMITED, 8};
         const Id space(H5Screate_simple(2, dims, maxDims), &H5Sclose, "extendable space");
         const Id props = chunked({3, 4});
-        const Id dataset(H5Dcreate2(group, "extendable", H5T_NATIVE_INT32, space,
-                                    H5P_DEFAULT, props, H5P_DEFAULT),
+        const Id dataset(H5Dcreate2(group, "extendable", H5T_NATIVE_INT32, space, H5P_DEFAULT,
+                                    props, H5P_DEFAULT),
                          &H5Dclose, "create extendable");
-        must(H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                      values.data()),
+        must(H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()),
              "write extendable");
         stringAttribute(dataset, "note", "Max shape is unlimited x 8");
     }
@@ -840,11 +810,9 @@ void writeStorage(hid_t file, const std::string& externalFileName)
         must(H5Pset_fill_value(props, H5T_NATIVE_INT32, &fill), "set fill value");
         must(H5Pset_alloc_time(props, H5D_ALLOC_TIME_LATE), "late allocation");
         writeDataset(group, "fill_value_only", H5T_NATIVE_INT32, {8, 8}, nullptr, props);
-        const Id dataset(H5Dopen2(group, "fill_value_only", H5P_DEFAULT), &H5Dclose,
-                         "reopen fill");
-        stringAttribute(
-            dataset, "note",
-            "Never written: reads back as the fill value -999, stores 0 bytes");
+        const Id dataset(H5Dopen2(group, "fill_value_only", H5P_DEFAULT), &H5Dclose, "reopen fill");
+        stringAttribute(dataset, "note",
+                        "Never written: reads back as the fill value -999, stores 0 bytes");
     }
 
     // Raw data in a companion file outside the HDF5 container.
@@ -852,8 +820,7 @@ void writeStorage(hid_t file, const std::string& externalFileName)
         Id props(H5Pcreate(H5P_DATASET_CREATE), &H5Pclose, "external plist");
         const hsize_t bytes = 20 * 20 * sizeof(std::int32_t);
         must(H5Pset_external(props, "example_raw.bin", 0, bytes), "set external storage");
-        writeDataset(group, "external_raw", H5T_NATIVE_INT32, {20, 20}, values.data(),
-                     props);
+        writeDataset(group, "external_raw", H5T_NATIVE_INT32, {20, 20}, values.data(), props);
         const Id dataset(H5Dopen2(group, "external_raw", H5P_DEFAULT), &H5Dclose,
                          "reopen external");
         stringAttribute(dataset, "note", "Raw data lives in example_raw.bin, not here");
@@ -866,29 +833,26 @@ void writeStorage(hid_t file, const std::string& externalFileName)
         const Id virtualSpace(H5Screate_simple(2, virtualDims, nullptr), &H5Sclose,
                               "virtual space");
         const hsize_t sourceDims[] = {10};
-        const Id sourceSpace(H5Screate_simple(1, sourceDims, nullptr), &H5Sclose,
-                             "source space");
+        const Id sourceSpace(H5Screate_simple(1, sourceDims, nullptr), &H5Sclose, "source space");
         Id props(H5Pcreate(H5P_DATASET_CREATE), &H5Pclose, "virtual plist");
 
         const char* sources[] = {"/vds_source/row_a", "/vds_source/row_b"};
         for (hsize_t row = 0; row < 2; ++row) {
             const hsize_t start[] = {row, 0};
             const hsize_t count[] = {1, 10};
-            must(H5Sselect_hyperslab(virtualSpace, H5S_SELECT_SET, start, nullptr, count,
-                                     nullptr),
+            must(H5Sselect_hyperslab(virtualSpace, H5S_SELECT_SET, start, nullptr, count, nullptr),
                  "select virtual row");
-            must(H5Pset_virtual(props, virtualSpace, externalFileName.c_str(),
-                                sources[row], sourceSpace),
+            must(H5Pset_virtual(props, virtualSpace, externalFileName.c_str(), sources[row],
+                                sourceSpace),
                  "map virtual row");
         }
         must(H5Sselect_all(virtualSpace), "reset virtual selection");
 
-        const Id dataset(H5Dcreate2(group, "virtual", H5T_NATIVE_DOUBLE, virtualSpace,
-                                    H5P_DEFAULT, props, H5P_DEFAULT),
+        const Id dataset(H5Dcreate2(group, "virtual", H5T_NATIVE_DOUBLE, virtualSpace, H5P_DEFAULT,
+                                    props, H5P_DEFAULT),
                          &H5Dclose, "create virtual dataset");
-        stringAttribute(
-            dataset, "note",
-            "Rows come from /vds_source/row_a and row_b in the companion file");
+        stringAttribute(dataset, "note",
+                        "Rows come from /vds_source/row_a and row_b in the companion file");
     }
 }
 
@@ -908,30 +872,28 @@ void writeFilters(hid_t file)
         for (hsize_t c = 0; c < columns; ++c) {
             const auto index = static_cast<std::size_t>(r * columns + c);
             smooth[index] = static_cast<std::int32_t>(r * 4 + c / 3);
-            real[index] = std::sin(static_cast<double>(r) / 12.0) *
-                          std::cos(static_cast<double>(c) / 9.0);
+            real[index] =
+                std::sin(static_cast<double>(r) / 12.0) * std::cos(static_cast<double>(c) / 9.0);
         }
     }
 
     {
         Id props = chunked({20, 20});
         must(H5Pset_deflate(props, 6), "deflate 6");
-        writeDataset(group, "deflate", H5T_NATIVE_INT32, {rows, columns}, smooth.data(),
-                     props);
+        writeDataset(group, "deflate", H5T_NATIVE_INT32, {rows, columns}, smooth.data(), props);
     }
     {
         Id props = chunked({20, 20});
         must(H5Pset_shuffle(props), "shuffle");
         must(H5Pset_deflate(props, 9), "deflate 9");
         must(H5Pset_fletcher32(props), "fletcher32");
-        writeDataset(group, "shuffle_deflate_fletcher32", H5T_NATIVE_INT32,
-                     {rows, columns}, smooth.data(), props);
+        writeDataset(group, "shuffle_deflate_fletcher32", H5T_NATIVE_INT32, {rows, columns},
+                     smooth.data(), props);
     }
     {
         Id props = chunked({20, 20});
         must(H5Pset_fletcher32(props), "fletcher32 only");
-        writeDataset(group, "fletcher32", H5T_NATIVE_INT32, {rows, columns},
-                     smooth.data(), props);
+        writeDataset(group, "fletcher32", H5T_NATIVE_INT32, {rows, columns}, smooth.data(), props);
     }
     {
         // N-bit only pays when the stored precision is below the word width.
@@ -950,8 +912,7 @@ void writeFilters(hid_t file)
     {
         Id props = chunked({20, 20});
         must(H5Pset_scaleoffset(props, H5Z_SO_FLOAT_DSCALE, 3), "scaleoffset");
-        writeDataset(group, "scaleoffset", H5T_NATIVE_DOUBLE, {rows, columns},
-                     real.data(), props);
+        writeDataset(group, "scaleoffset", H5T_NATIVE_DOUBLE, {rows, columns}, real.data(), props);
     }
 
     // SZIP is optional in an HDF5 build; write it only if this one has an
@@ -968,8 +929,8 @@ void writeFilters(hid_t file)
                 const hid_t dataset = H5Dcreate2(group, "szip", H5T_NATIVE_INT32, space,
                                                  H5P_DEFAULT, props, H5P_DEFAULT);
                 if (dataset >= 0) {
-                    wrote = H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL,
-                                     H5P_DEFAULT, smooth.data()) >= 0;
+                    wrote = H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                                     smooth.data()) >= 0;
                     H5Dclose(dataset);
                 }
             }
@@ -1012,12 +973,10 @@ void writeFilters(hid_t file)
         if (H5Pset_filter(props, static_cast<H5Z_filter_t>(32008), H5Z_FLAG_OPTIONAL, 2,
                           parameters) >= 0) {
             const Id space = makeSpace({rows, columns});
-            const hid_t dataset =
-                H5Dcreate2(group, "unavailable_optional", H5T_NATIVE_INT32, space,
-                           H5P_DEFAULT, props, H5P_DEFAULT);
+            const hid_t dataset = H5Dcreate2(group, "unavailable_optional", H5T_NATIVE_INT32, space,
+                                             H5P_DEFAULT, props, H5P_DEFAULT);
             if (dataset >= 0) {
-                H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                         smooth.data());
+                H5Dwrite(dataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT, smooth.data());
                 stringAttribute(dataset, "note",
                                 "Filter 32008 is optional and absent: HDF5 skips it and "
                                 "the data reads back normally");
@@ -1094,13 +1053,12 @@ void writeImages(hid_t file)
         for (hsize_t y = 0; y < size; ++y) {
             for (hsize_t x = 0; x < size; ++x) {
                 const double hue = static_cast<double>(x) / static_cast<double>(size);
-                const double value =
-                    1.0 - static_cast<double>(y) / static_cast<double>(size);
+                const double value = 1.0 - static_cast<double>(y) / static_cast<double>(size);
                 hueToRgb(hue, value, &pixels[(y * size + x) * 3]);
             }
         }
-        writeDataset(group, "rgb_256x256x3", H5T_NATIVE_UINT8, {size, size, 3},
-                     pixels.data(), chunked({32, 32, 3}));
+        writeDataset(group, "rgb_256x256x3", H5T_NATIVE_UINT8, {size, size, 3}, pixels.data(),
+                     chunked({32, 32, 3}));
         tagImageByName(group, "rgb_256x256x3", "IMAGE_TRUECOLOR", "INTERLACE_PIXEL");
     }
 
@@ -1112,8 +1070,7 @@ void writeImages(hid_t file)
         for (hsize_t y = 0; y < size; ++y) {
             for (hsize_t x = 0; x < size; ++x) {
                 const double hue = static_cast<double>(x) / static_cast<double>(size);
-                const double value =
-                    1.0 - static_cast<double>(y) / static_cast<double>(size);
+                const double value = 1.0 - static_cast<double>(y) / static_cast<double>(size);
                 hueToRgb(hue, value, rgb);
                 for (hsize_t c = 0; c < 3; ++c) {
                     planes[(c * size + y) * size + x] = rgb[c];
@@ -1122,8 +1079,7 @@ void writeImages(hid_t file)
         }
         writeDataset(group, "rgb_planar_3x256x256", H5T_NATIVE_UINT8, {3, size, size},
                      planes.data(), chunked({1, 32, 32}));
-        tagImageByName(group, "rgb_planar_3x256x256", "IMAGE_TRUECOLOR",
-                       "INTERLACE_PLANE");
+        tagImageByName(group, "rgb_planar_3x256x256", "IMAGE_TRUECOLOR", "INTERLACE_PLANE");
     }
 
     // Four channels, with alpha falling off towards the edges.
@@ -1140,8 +1096,7 @@ void writeImages(hid_t file)
                     std::clamp(1.0 - std::sqrt(dx * dx + dy * dy), 0.0, 1.0) * 255.0);
             }
         }
-        writeDataset(group, "rgba_128x128x4", H5T_NATIVE_UINT8, {small, small, 4},
-                     pixels.data());
+        writeDataset(group, "rgba_128x128x4", H5T_NATIVE_UINT8, {small, small, 4}, pixels.data());
         tagImageByName(group, "rgba_128x128x4", "IMAGE_TRUECOLOR", "INTERLACE_PIXEL");
     }
 
@@ -1154,17 +1109,16 @@ void writeImages(hid_t file)
                 const double dx = (static_cast<double>(x) - 255.5) / 255.5;
                 const double dy = (static_cast<double>(y) - 255.5) / 255.5;
                 const double r = std::sqrt(dx * dx + dy * dy);
-                pixels[y * big + x] = static_cast<std::uint8_t>(
-                    127.5 * (1.0 + std::sin(r * 18.0)) * std::exp(-r));
+                pixels[y * big + x] =
+                    static_cast<std::uint8_t>(127.5 * (1.0 + std::sin(r * 18.0)) * std::exp(-r));
             }
         }
         writeDataset(group, "gray_512x512", H5T_NATIVE_UINT8, {big, big}, pixels.data(),
                      chunked({64, 64}));
-        const Id dataset(H5Dopen2(group, "gray_512x512", H5P_DEFAULT), &H5Dclose,
-                         "reopen gray");
+        const Id dataset(H5Dopen2(group, "gray_512x512", H5P_DEFAULT), &H5Dclose, "reopen gray");
         tagImage(dataset, "IMAGE_GRAYSCALE");
-        numericAttribute<std::uint8_t>(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_UINT8,
-                                       {2}, {0, 255});
+        numericAttribute<std::uint8_t>(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_UINT8, {2},
+                                       {0, 255});
     }
 
     // Indexed colour: the raster holds palette indices and the palette is a
@@ -1177,8 +1131,7 @@ void writeImages(hid_t file)
         }
         writeDataset(group, "palette", H5T_NATIVE_UINT8, {256, 3}, palette.data());
         {
-            const Id dataset(H5Dopen2(group, "palette", H5P_DEFAULT), &H5Dclose,
-                             "reopen palette");
+            const Id dataset(H5Dopen2(group, "palette", H5P_DEFAULT), &H5Dclose, "reopen palette");
             stringAttribute(dataset, "CLASS", "PALETTE");
             stringAttribute(dataset, "PAL_VERSION", "1.2");
             stringAttribute(dataset, "PAL_COLORMODEL", "RGB");
@@ -1191,20 +1144,18 @@ void writeImages(hid_t file)
                 indices[y * indexed + x] = static_cast<std::uint8_t>((x * 4) ^ (y * 4));
             }
         }
-        writeDataset(group, "indexed_64x64", H5T_NATIVE_UINT8, {indexed, indexed},
-                     indices.data());
+        writeDataset(group, "indexed_64x64", H5T_NATIVE_UINT8, {indexed, indexed}, indices.data());
         const Id dataset(H5Dopen2(group, "indexed_64x64", H5P_DEFAULT), &H5Dclose,
                          "reopen indexed");
         tagImage(dataset, "IMAGE_INDEXED");
 
         // The spec's PALETTE attribute is a reference to the palette dataset.
         H5R_ref_t reference{};
-        must(H5Rcreate_object(group, "palette", H5P_DEFAULT, &reference),
-             "reference to palette");
+        must(H5Rcreate_object(group, "palette", H5P_DEFAULT, &reference), "reference to palette");
         const Id space = makeSpace({1});
         const Id attribute(
-            H5Acreate2(dataset, "PALETTE", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT),
-            &H5Aclose, "create PALETTE attribute");
+            H5Acreate2(dataset, "PALETTE", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
+            "create PALETTE attribute");
         must(H5Awrite(attribute, H5T_STD_REF, &reference), "write PALETTE attribute");
         must(H5Rdestroy(&reference), "release reference");
     }
@@ -1218,9 +1169,8 @@ void writeImages(hid_t file)
         for (hsize_t f = 0; f < frames; ++f) {
             for (hsize_t y = 0; y < side; ++y) {
                 for (hsize_t x = 0; x < side; ++x) {
-                    const double hue = std::fmod(static_cast<double>(x) / side +
-                                                     static_cast<double>(f) / frames,
-                                                 1.0);
+                    const double hue = std::fmod(
+                        static_cast<double>(x) / side + static_cast<double>(f) / frames, 1.0);
                     hueToRgb(hue, 1.0 - static_cast<double>(y) / side,
                              &stack[((f * side + y) * side + x) * 3]);
                 }
@@ -1245,18 +1195,17 @@ void writeImages(hid_t file)
             for (hsize_t x = 0; x < side; ++x) {
                 for (hsize_t b = 0; b < bands; ++b) {
                     const double v =
-                        std::sin((static_cast<double>(x) + static_cast<double>(b) * 3.0) /
-                                 8.0) *
+                        std::sin((static_cast<double>(x) + static_cast<double>(b) * 3.0) / 8.0) *
                         std::cos(static_cast<double>(y) / 6.0);
                     cube[(y * side + x) * bands + b] =
                         static_cast<std::uint16_t>((v + 1.0) * 32000.0);
                 }
             }
         }
-        writeDataset(group, "multispectral_64x64x12", H5T_NATIVE_UINT16,
-                     {side, side, bands}, cube.data(), chunked({16, 16, 12}));
-        const Id dataset(H5Dopen2(group, "multispectral_64x64x12", H5P_DEFAULT),
-                         &H5Dclose, "reopen multispectral");
+        writeDataset(group, "multispectral_64x64x12", H5T_NATIVE_UINT16, {side, side, bands},
+                     cube.data(), chunked({16, 16, 12}));
+        const Id dataset(H5Dopen2(group, "multispectral_64x64x12", H5P_DEFAULT), &H5Dclose,
+                         "reopen multispectral");
         stringAttribute(dataset, "dimensions", "row, column, band");
     }
 
@@ -1271,15 +1220,13 @@ void writeImages(hid_t file)
                 pixels[y * side + x] = static_cast<std::uint8_t>(x * 8);
             }
         }
-        writeDataset(group, "gray_white_is_zero", H5T_NATIVE_UINT8, {side, side},
-                     pixels.data());
+        writeDataset(group, "gray_white_is_zero", H5T_NATIVE_UINT8, {side, side}, pixels.data());
         const Id dataset(H5Dopen2(group, "gray_white_is_zero", H5P_DEFAULT), &H5Dclose,
                          "reopen inverted gray");
         tagImage(dataset, "IMAGE_GRAYSCALE");
-        numericAttribute<std::uint8_t>(dataset, "IMAGE_WHITE_IS_ZERO", H5T_NATIVE_UINT8,
-                                       {}, {1});
-        numericAttribute<std::uint8_t>(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_UINT8,
-                                       {2}, {0, 248});
+        numericAttribute<std::uint8_t>(dataset, "IMAGE_WHITE_IS_ZERO", H5T_NATIVE_UINT8, {}, {1});
+        numericAttribute<std::uint8_t>(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_UINT8, {2},
+                                       {0, 248});
         stringAttribute(dataset, "DISPLAY_ORIGIN", "LL");
     }
 
@@ -1293,10 +1240,8 @@ void writeImages(hid_t file)
         for (std::size_t i = 0; i < pixels.size(); ++i) {
             pixels[i] = static_cast<std::uint8_t>(i);
         }
-        writeDataset(group, "mislabelled_truecolor", H5T_NATIVE_UINT8, {side, side},
-                     pixels.data());
-        tagImageByName(group, "mislabelled_truecolor", "IMAGE_TRUECOLOR",
-                       "INTERLACE_PIXEL");
+        writeDataset(group, "mislabelled_truecolor", H5T_NATIVE_UINT8, {side, side}, pixels.data());
+        tagImageByName(group, "mislabelled_truecolor", "IMAGE_TRUECOLOR", "INTERLACE_PIXEL");
     }
 
     // A continuous field rather than a picture: the same raster read as an
@@ -1307,16 +1252,14 @@ void writeImages(hid_t file)
             for (hsize_t x = 0; x < size; ++x) {
                 const double dx = (static_cast<double>(x) - 128.0) / 32.0;
                 const double dy = (static_cast<double>(y) - 128.0) / 32.0;
-                field[y * size + x] = std::exp(-(dx * dx + dy * dy) / 8.0) *
-                                      std::sin(dx * 2.0) * std::cos(dy * 2.0);
+                field[y * size + x] =
+                    std::exp(-(dx * dx + dy * dy) / 8.0) * std::sin(dx * 2.0) * std::cos(dy * 2.0);
             }
         }
-        writeDataset(group, "field_256x256", H5T_NATIVE_DOUBLE, {size, size},
-                     field.data(), chunked({32, 32}));
-        const Id dataset(H5Dopen2(group, "field_256x256", H5P_DEFAULT), &H5Dclose,
-                         "reopen field");
-        numericAttribute<double>(dataset, "valid_range", H5T_NATIVE_DOUBLE, {2},
-                                 {-1.0, 1.0});
+        writeDataset(group, "field_256x256", H5T_NATIVE_DOUBLE, {size, size}, field.data(),
+                     chunked({32, 32}));
+        const Id dataset(H5Dopen2(group, "field_256x256", H5P_DEFAULT), &H5Dclose, "reopen field");
+        numericAttribute<double>(dataset, "valid_range", H5T_NATIVE_DOUBLE, {2}, {-1.0, 1.0});
         stringAttribute(dataset, "units", "volt");
     }
 }
@@ -1341,8 +1284,7 @@ void writeLarge(hid_t file)
         Id props = chunked({100, 100});
         must(H5Pset_shuffle(props), "shuffle");
         must(H5Pset_deflate(props, 4), "deflate");
-        writeDataset(group, "grid_2000x2000", H5T_NATIVE_INT32, {side, side},
-                     values.data(), props);
+        writeDataset(group, "grid_2000x2000", H5T_NATIVE_INT32, {side, side}, values.data(), props);
     }
 
     // Two million samples of a signal: far more points than a plot has pixels.
@@ -1358,10 +1300,8 @@ void writeLarge(hid_t file)
         must(H5Pset_shuffle(props), "shuffle");
         must(H5Pset_deflate(props, 4), "deflate");
         writeDataset(group, "signal_2M", H5T_NATIVE_FLOAT, {count}, signal.data(), props);
-        const Id dataset(H5Dopen2(group, "signal_2M", H5P_DEFAULT), &H5Dclose,
-                         "reopen signal");
-        stringAttribute(dataset, "note",
-                        "A spike narrower than the plot's stride is not drawn");
+        const Id dataset(H5Dopen2(group, "signal_2M", H5P_DEFAULT), &H5Dclose, "reopen signal");
+        stringAttribute(dataset, "note", "A spike narrower than the plot's stride is not drawn");
         doubleAttribute(dataset, "sample_rate_hz", 1000.0);
     }
 
@@ -1378,10 +1318,8 @@ void writeLarge(hid_t file)
         }
         Id props = chunked({8192, 4});
         must(H5Pset_deflate(props, 4), "deflate");
-        writeDataset(group, "table_500000x4", H5T_NATIVE_FLOAT, {rows, 4}, table.data(),
-                     props);
-        const Id dataset(H5Dopen2(group, "table_500000x4", H5P_DEFAULT), &H5Dclose,
-                         "reopen table");
+        writeDataset(group, "table_500000x4", H5T_NATIVE_FLOAT, {rows, 4}, table.data(), props);
+        const Id dataset(H5Dopen2(group, "table_500000x4", H5P_DEFAULT), &H5Dclose, "reopen table");
         stringArrayAttribute(dataset, "column_names", {"t", "sin", "cos", "counter"});
     }
 
@@ -1393,12 +1331,302 @@ void writeLarge(hid_t file)
         const std::int32_t fill = 7;
         must(H5Pset_fill_value(props, H5T_NATIVE_INT32, &fill), "fill");
         must(H5Pset_alloc_time(props, H5D_ALLOC_TIME_LATE), "late allocation");
-        writeDataset(group, "unallocated_100000x10000", H5T_NATIVE_INT32, {100000, 10000},
-                     nullptr, props);
-        const Id dataset(H5Dopen2(group, "unallocated_100000x10000", H5P_DEFAULT),
-                         &H5Dclose, "reopen unallocated");
+        writeDataset(group, "unallocated_100000x10000", H5T_NATIVE_INT32, {100000, 10000}, nullptr,
+                     props);
+        const Id dataset(H5Dopen2(group, "unallocated_100000x10000", H5P_DEFAULT), &H5Dclose,
+                         "reopen unallocated");
         stringAttribute(dataset, "note",
                         "10^9 elements, 0 bytes stored: every cell reads back as 7");
+    }
+}
+
+// --- /plotting: what the plot has to survive -------------------------------
+//
+// Every other group in this file is about what HDF5 can express. This one is
+// about what a *reader* then does with it: long traces, noisy ones, and the
+// handful of shapes that quietly defeat a plot which thins by taking every nth
+// element. Each dataset here is one case, and the note on each says which.
+//
+// Nothing here is compressed, and that is deliberate twice over. Deflate on
+// white noise spends processor time to save nothing -- it is what
+// incompressible means -- and a stress set that shrank to a tenth of its size
+// would not be stressing the read path it exists to stress. So these are
+// chunked and stored plain, and this group is most of what example.h5 weighs.
+
+void writePlotting(hid_t file)
+{
+    const Id group = makeGroup(file, "plotting");
+    stringAttribute(group, "purpose",
+                    "Long, noisy and pathological traces: the plot's own stress set");
+
+    // One generator for the whole group, seeded, so that this is the same file
+    // every time it is written. The screenshots and the suite both depend on
+    // that.
+    std::mt19937_64 rng(0x5EED5CA1EULL);
+
+    // Noise taken from the generator's own bits rather than through a
+    // std::distribution. The standard specifies mt19937_64's output sequence
+    // exactly and says nothing whatever about how a distribution turns it into
+    // a number, so a file written through <random>'s distributions is a
+    // different file on a different standard library. This one is not.
+    const auto uniform = [&rng] {
+        return static_cast<double>(rng() >> 11) / 9007199254740992.0 * 2.0 - 1.0;
+    };
+    // ...and an approximately normal one out of four of those, which at these
+    // amplitudes is indistinguishable from a bell and is four multiplies.
+    const auto bell = [&uniform] { return (uniform() + uniform() + uniform() + uniform()) / 2.0; };
+
+    // Ten million samples of a real instrument's output: a slow drift, a
+    // mid-band oscillation, broadband noise on top, and seventeen single-sample
+    // impulses. int16 because that is what an ADC writes, and because twenty
+    // megabytes of it is enough to be difficult without being unreasonable.
+    //
+    // This is the dataset the whole plot is arranged around. Thinned to a
+    // couple of thousand drawn points it has a stride of nearly five thousand,
+    // so every one of those impulses falls between two samples a stride would
+    // have taken. Drawn as a min/max envelope none of them can be missed.
+    {
+        constexpr hsize_t count = 10000000;
+        std::vector<std::int16_t> trace(count);
+        for (hsize_t i = 0; i < count; ++i) {
+            const double t = static_cast<double>(i);
+            const double value = 9000.0 * std::sin(t / 640000.0) + 2500.0 * std::sin(t / 1730.0) +
+                                 700.0 * std::sin(t / 37.0) + 900.0 * bell();
+            trace[i] = static_cast<std::int16_t>(std::clamp(value, -32000.0, 32000.0));
+        }
+        // Seventeen impulses, spread over the whole record and at indices no
+        // round stride lands on. Spread, because a first draft put nine of them
+        // in the first tenth of the trace and left the rest of it to be taken
+        // on trust.
+        constexpr hsize_t impulses[] = {15013,   611953,  1299709, 1999993, 2750159, 3497861,
+                                        4256233, 4999999, 5800079, 6500011, 6969971, 7500013,
+                                        8388617, 8999993, 9500003, 9799999, 9999991};
+        bool up = true;
+        for (const hsize_t at : impulses) {
+            trace[at] = up ? std::int16_t{32000} : std::int16_t{-32000};
+            up = !up;
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "adc_10M", H5T_NATIVE_INT16, {count}, trace.data(), props);
+        const Id dataset(H5Dopen2(group, "adc_10M", H5P_DEFAULT), &H5Dclose, "reopen adc_10M");
+        stringAttribute(dataset, "note",
+                        "Seventeen one-sample impulses in ten million. A stride "
+                        "of ~4900 lands on none of them; an envelope keeps all "
+                        "seventeen");
+        doubleAttribute(dataset, "sample_rate_hz", 100000.0);
+    }
+
+    // Ten thousand noisy channels. What the legend's `all` costs, and the case
+    // the old plot could not draw at all: Qt Graphs segfaulted in its curve
+    // renderer somewhere above a million points and was killed for memory above
+    // that. Ten thousand lines of a thousand samples is ten million.
+    {
+        constexpr hsize_t lines = 10000;
+        constexpr hsize_t length = 1024;
+        std::vector<std::int16_t> channels(lines * length);
+        for (hsize_t line = 0; line < lines; ++line) {
+            const double offset = static_cast<double>(line) * 0.37;
+            for (hsize_t i = 0; i < length; ++i) {
+                const double t = static_cast<double>(i);
+                const double value = 6000.0 * std::sin(t / 90.0 + offset) +
+                                     1500.0 * std::sin(t / 11.0 - offset) + 2000.0 * bell();
+                channels[line * length + i] =
+                    static_cast<std::int16_t>(std::clamp(value, -32000.0, 32000.0));
+            }
+        }
+        // One chunk per row, because a line is a row and the plot reads a line
+        // at a time. A chunk spanning sixty-four rows would move a hundred and
+        // twenty-eight kilobytes to answer for two.
+        const Id props = chunked({1, length});
+        writeDataset(group, "noisy_lines_10000x1024", H5T_NATIVE_INT16, {lines, length},
+                     channels.data(), props);
+        const Id dataset(H5Dopen2(group, "noisy_lines_10000x1024", H5P_DEFAULT), &H5Dclose,
+                         "reopen noisy_lines");
+        stringAttribute(dataset, "note", "Select all in the legend: ten thousand lines at once");
+    }
+
+    // A tone whose period is very close to the stride a thinned plot takes.
+    //
+    // The reason this is here rather than in /large: stride sampling of it does
+    // not look thinned, it looks like *different data*. Walking the phase by a
+    // three-hundredth of a cycle per drawn point turns a 1 kHz tone into a slow
+    // swell that is not in the file at all -- the classic aliasing picture, and
+    // the strongest argument there is for taking the extremes of a bucket
+    // rather than one sample out of it.
+    {
+        constexpr hsize_t count = 1000000;
+        std::vector<float> beat(count);
+        // The plot draws about a thousand buckets, so the stride is about 977.
+        const double period = 977.0 * (1.0 + 1.0 / 300.0);
+        for (hsize_t i = 0; i < count; ++i) {
+            const double phase = 2.0 * std::numbers::pi * static_cast<double>(i) / period;
+            beat[i] = static_cast<float>(std::sin(phase) + 0.02 * bell());
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "beat_1M", H5T_NATIVE_FLOAT, {count}, beat.data(), props);
+        const Id dataset(H5Dopen2(group, "beat_1M", H5P_DEFAULT), &H5Dclose, "reopen beat_1M");
+        stringAttribute(dataset, "note",
+                        "A tone at almost exactly the thinning stride. Sampled by "
+                        "stride it becomes a slow swell that is not in the data");
+    }
+
+    // Quiet noise with twelve single-sample spikes in it, at prime indices.
+    // The same case as adc_10M above, made small and obvious enough to check by
+    // eye: the extent of the dataset is +/-9 and a plot that thins by stride
+    // reports +/-0.05.
+    {
+        constexpr hsize_t count = 1000000;
+        std::vector<float> quiet(count);
+        for (hsize_t i = 0; i < count; ++i) {
+            quiet[i] = static_cast<float>(0.05 * bell());
+        }
+        constexpr hsize_t spikes[] = {7919,   65537,  167449, 262147, 373587, 499979,
+                                      611953, 732541, 811319, 888887, 941083, 999983};
+        bool up = true;
+        for (const hsize_t at : spikes) {
+            quiet[at] = up ? 9.0F : -9.0F;
+            up = !up;
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "spikes_1M", H5T_NATIVE_FLOAT, {count}, quiet.data(), props);
+        const Id dataset(H5Dopen2(group, "spikes_1M", H5P_DEFAULT), &H5Dclose, "reopen spikes_1M");
+        stringAttribute(dataset, "note",
+                        "Twelve spikes of +/-9 in noise of +/-0.05. If the y axis "
+                        "reads +/-0.05, the spikes were thinned away");
+    }
+
+    // Noise with five runs of missing data in it, from three samples to twelve
+    // per cent of the line.
+    //
+    // A gap is not a zero and it is not a straight line drawn across the
+    // absence: dropping the unreadable samples and handing the survivors to a
+    // line renderer draws a clean diagonal over a hundred and twenty thousand
+    // readings that were never taken.
+    {
+        constexpr hsize_t count = 1000000;
+        std::vector<float> gappy(count);
+        for (hsize_t i = 0; i < count; ++i) {
+            const double t = static_cast<double>(i);
+            gappy[i] = static_cast<float>(std::sin(t / 20000.0) + 0.25 * bell());
+        }
+        const auto nothing = std::numeric_limits<float>::quiet_NaN();
+        struct Run
+        {
+            hsize_t first;
+            hsize_t length;
+        };
+        constexpr Run runs[] = {{101234, 3},      {230000, 1000}, {400000, 25000},
+                                {600000, 120000}, {900000, 40},   {999000, 1000}};
+        for (const Run& run : runs) {
+            for (hsize_t i = 0; i < run.length && run.first + i < count; ++i) {
+                gappy[run.first + i] = nothing;
+            }
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "gaps_1M", H5T_NATIVE_FLOAT, {count}, gappy.data(), props);
+        const Id dataset(H5Dopen2(group, "gaps_1M", H5P_DEFAULT), &H5Dclose, "reopen gaps_1M");
+        stringAttribute(dataset, "note",
+                        "Six runs of NaN, the longest 120000 samples. Each must be "
+                        "a gap in the line and not a line drawn across it");
+    }
+
+    // Eighteen decades of it, with zeros and negatives mixed in.
+    //
+    // The case the y axis cannot show whole: everything below a millionth of
+    // the peak is the same pixel row as the axis, so reading the small end is
+    // zooming to it -- and what must survive that is the envelope, because a
+    // stride through a sweep this steep reaches whichever decade it lands on
+    // and not the one the reader is looking for. The zeros and the negatives
+    // are here because an extent taken over them is the extent the axis has to
+    // hold, sign and all.
+    {
+        constexpr hsize_t count = 200000;
+        std::vector<double> decades(count);
+        for (hsize_t i = 0; i < count; ++i) {
+            // A swept exponent rather than a random walk. A walk of two hundred
+            // thousand steps covers whatever it happens to cover -- the first
+            // draft of this reached five decades and the note beside it claimed
+            // eighteen -- and a dataset whose difficulty is the range it spans
+            // has to span it on purpose.
+            const double sweep = 9.0 * std::sin(static_cast<double>(i) / 21000.0);
+            decades[i] = std::pow(10.0, std::clamp(sweep + 0.6 * bell(), -9.5, 9.5));
+        }
+        for (const hsize_t at : {5000, 40000, 41000, 120000}) {
+            decades[at] = 0.0;
+        }
+        for (const hsize_t at : {60000, 60001, 60002, 170000}) {
+            decades[at] = -decades[at];
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "decades_200k", H5T_NATIVE_DOUBLE, {count}, decades.data(), props);
+        const Id dataset(H5Dopen2(group, "decades_200k", H5P_DEFAULT), &H5Dclose,
+                         "reopen decades_200k");
+        stringAttribute(dataset, "note",
+                        "1e-9 to 1e9, with four zeros and four negatives. Zoom to "
+                        "the small end: the envelope must still have it");
+    }
+
+    // Ordinary readings next to numbers that do not fit a float.
+    //
+    // A projected pixel coordinate is a double until the moment it becomes a
+    // vertex, and 1e300 in a window a unit wide projects to 1e302 pixels, which
+    // is infinity as a float32. An infinity in a vertex buffer is not a point
+    // off screen; it is a triangle the rasteriser may do anything at all with.
+    {
+        constexpr hsize_t count = 100000;
+        std::vector<double> extremes(count);
+        for (hsize_t i = 0; i < count; ++i) {
+            extremes[i] = std::sin(static_cast<double>(i) / 900.0) + 0.1 * bell();
+        }
+        extremes[20000] = 1e300;
+        extremes[20001] = -1e300;
+        extremes[55000] = std::numeric_limits<double>::infinity();
+        extremes[55001] = -std::numeric_limits<double>::infinity();
+        extremes[80000] = std::numeric_limits<double>::quiet_NaN();
+        extremes[99999] = 1e-300;
+        const Id props = chunked({16384});
+        writeDataset(group, "extremes_100k", H5T_NATIVE_DOUBLE, {count}, extremes.data(), props);
+        const Id dataset(H5Dopen2(group, "extremes_100k", H5P_DEFAULT), &H5Dclose,
+                         "reopen extremes_100k");
+        stringAttribute(dataset, "note",
+                        "Contains 1e300, -1e300, both infinities, a NaN and 1e-300 "
+                        "among ordinary values");
+    }
+
+    // A time base and the signal that belongs to it, as a pair.
+    //
+    // The x here is seconds since 1970 at one-millisecond steps, which is what
+    // every logger in the world writes and is exactly where float32 gives up:
+    // near 1.7e9 the spacing between representable floats is 128, so a line
+    // whose x is cast to float before it is projected collapses into a
+    // staircase of flat treads two minutes wide. Draw volts_500k against
+    // epoch_seconds_500k in a custom plot tab to see whether it does.
+    {
+        constexpr hsize_t count = 500000;
+        std::vector<double> seconds(count);
+        std::vector<float> volts(count);
+        constexpr double epoch = 1.7e9;
+        for (hsize_t i = 0; i < count; ++i) {
+            const double t = static_cast<double>(i);
+            seconds[i] = epoch + t * 0.001;
+            volts[i] = static_cast<float>(2.5 + 0.4 * std::sin(t / 5000.0) +
+                                          0.15 * std::sin(t / 61.0) + 0.08 * bell());
+        }
+        const Id props = chunked({65536});
+        writeDataset(group, "epoch_seconds_500k", H5T_NATIVE_DOUBLE, {count}, seconds.data(),
+                     props);
+        const Id timeBase(H5Dopen2(group, "epoch_seconds_500k", H5P_DEFAULT), &H5Dclose,
+                          "reopen epoch_seconds_500k");
+        stringAttribute(timeBase, "units", "seconds since 1970-01-01T00:00:00Z");
+        stringAttribute(timeBase, "note",
+                        "A float32 near 1.7e9 has a spacing of 128 seconds. Use "
+                        "this as a custom plot's time base");
+
+        const Id signalProps = chunked({65536});
+        writeDataset(group, "volts_500k", H5T_NATIVE_FLOAT, {count}, volts.data(), signalProps);
+        const Id signal(H5Dopen2(group, "volts_500k", H5P_DEFAULT), &H5Dclose, "reopen volts_500k");
+        stringAttribute(signal, "units", "V");
+        stringAttribute(signal, "x_axis", "/plotting/epoch_seconds_500k");
     }
 }
 
@@ -1411,25 +1639,20 @@ void writeLinks(hid_t file, const std::string& externalFileName)
 
     // Hard: a second name for the same object. Nothing distinguishes the
     // original from the link; both are the object.
-    must(H5Lcreate_hard(file, "/data/matrix", group, "hard_to_matrix", H5P_DEFAULT,
-                        H5P_DEFAULT),
+    must(H5Lcreate_hard(file, "/data/matrix", group, "hard_to_matrix", H5P_DEFAULT, H5P_DEFAULT),
          "hard link to a dataset");
-    must(H5Lcreate_hard(file, "/data", group, "hard_to_data_group", H5P_DEFAULT,
-                        H5P_DEFAULT),
+    must(H5Lcreate_hard(file, "/data", group, "hard_to_data_group", H5P_DEFAULT, H5P_DEFAULT),
          "hard link to a group");
 
     // Soft: a stored path, resolved on use. The target may be anything, or
     // nothing at all.
-    must(
-        H5Lcreate_soft("/data/matrix", group, "soft_to_matrix", H5P_DEFAULT, H5P_DEFAULT),
-        "soft link to a dataset");
+    must(H5Lcreate_soft("/data/matrix", group, "soft_to_matrix", H5P_DEFAULT, H5P_DEFAULT),
+         "soft link to a dataset");
     must(H5Lcreate_soft("/images", group, "soft_to_images", H5P_DEFAULT, H5P_DEFAULT),
          "soft link to a group");
-    must(H5Lcreate_soft("/no/such/object", group, "soft_dangling", H5P_DEFAULT,
-                        H5P_DEFAULT),
+    must(H5Lcreate_soft("/no/such/object", group, "soft_dangling", H5P_DEFAULT, H5P_DEFAULT),
          "dangling soft link");
-    must(H5Lcreate_soft("/links/soft_to_matrix", group, "soft_to_soft", H5P_DEFAULT,
-                        H5P_DEFAULT),
+    must(H5Lcreate_soft("/links/soft_to_matrix", group, "soft_to_soft", H5P_DEFAULT, H5P_DEFAULT),
          "soft link to a soft link");
     // A soft link that points at its own container: legal, and a loop.
     must(H5Lcreate_soft("/links", group, "soft_to_self", H5P_DEFAULT, H5P_DEFAULT),
@@ -1439,14 +1662,14 @@ void writeLinks(hid_t file, const std::string& externalFileName)
     must(H5Lcreate_external(externalFileName.c_str(), "/external/squares", group,
                             "external_dataset", H5P_DEFAULT, H5P_DEFAULT),
          "external link to a dataset");
-    must(H5Lcreate_external(externalFileName.c_str(), "/external", group,
-                            "external_group", H5P_DEFAULT, H5P_DEFAULT),
+    must(H5Lcreate_external(externalFileName.c_str(), "/external", group, "external_group",
+                            H5P_DEFAULT, H5P_DEFAULT),
          "external link to a group");
     must(H5Lcreate_external(externalFileName.c_str(), "/no/such/object", group,
                             "external_missing_target", H5P_DEFAULT, H5P_DEFAULT),
          "external link to a missing object");
-    must(H5Lcreate_external("no_such_file.h5", "/anything", group,
-                            "external_missing_file", H5P_DEFAULT, H5P_DEFAULT),
+    must(H5Lcreate_external("no_such_file.h5", "/anything", group, "external_missing_file",
+                            H5P_DEFAULT, H5P_DEFAULT),
          "external link to a missing file");
 
     // A hard link from a subgroup back to its ancestor: the cycle a tree that
@@ -1454,8 +1677,7 @@ void writeLinks(hid_t file, const std::string& externalFileName)
     {
         const Id loop = makeGroup(group, "loop");
         stringAttribute(loop, "note", "Contains a hard link back to /links");
-        must(H5Lcreate_hard(file, "/links", loop, "back_to_links", H5P_DEFAULT,
-                            H5P_DEFAULT),
+        must(H5Lcreate_hard(file, "/links", loop, "back_to_links", H5P_DEFAULT, H5P_DEFAULT),
              "cycle");
     }
 }
@@ -1529,8 +1751,8 @@ void writeStress(hid_t file)
         for (int depth = 0; depth < 24; ++depth) {
             char name[32] = {};
             std::snprintf(name, sizeof(name), "level_%02d", depth);
-            levels.emplace_back(H5Gcreate2(parent, depth == 0 ? "deep" : name,
-                                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
+            levels.emplace_back(H5Gcreate2(parent, depth == 0 ? "deep" : name, H5P_DEFAULT,
+                                           H5P_DEFAULT, H5P_DEFAULT),
                                 &H5Gclose, "deep group");
             parent = levels.back();
         }
@@ -1548,8 +1770,7 @@ void writeStress(hid_t file)
         writeDataset(names, "with\ttab", H5T_NATIVE_INT32, {}, &value);
         writeDataset(names, "1_leading_digit", H5T_NATIVE_INT32, {}, &value);
         writeDataset(names, "UPPER_and_lower", H5T_NATIVE_INT32, {}, &value);
-        writeDataset(names, "\u00fc\u00f1\u00ef\u00e7\u00f8d\u00e9", H5T_NATIVE_INT32, {},
-                     &value);
+        writeDataset(names, "\u00fc\u00f1\u00ef\u00e7\u00f8d\u00e9", H5T_NATIVE_INT32, {}, &value);
         writeDataset(names, "\u6e2c\u5b9a\u5024", H5T_NATIVE_INT32, {}, &value);
         writeDataset(names, "emoji \U0001F30D name", H5T_NATIVE_INT32, {}, &value);
         writeDataset(names, std::string(200, 'x').c_str(), H5T_NATIVE_INT32, {}, &value);
@@ -1560,12 +1781,10 @@ void writeStress(hid_t file)
     // so the order HDF5 hands them back is not alphabetical.
     {
         Id props(H5Pcreate(H5P_GROUP_CREATE), &H5Pclose, "group creation plist");
-        must(H5Pset_link_creation_order(props,
-                                        H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED),
+        must(H5Pset_link_creation_order(props, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED),
              "track creation order");
-        const Id ordered(
-            H5Gcreate2(group, "creation_order", H5P_DEFAULT, props, H5P_DEFAULT),
-            &H5Gclose, "creation-order group");
+        const Id ordered(H5Gcreate2(group, "creation_order", H5P_DEFAULT, props, H5P_DEFAULT),
+                         &H5Gclose, "creation-order group");
         stringAttribute(ordered, "note", "Created zulu, mike, alpha -- in that order");
         const std::int32_t value = 0;
         writeDataset(ordered, "zulu", H5T_NATIVE_INT32, {}, &value);
@@ -1612,15 +1831,13 @@ void writeReferences(hid_t file)
         }
         const Id dataset(H5Dopen2(group, "reference_object", H5P_DEFAULT), &H5Dclose,
                          "reopen object references");
-        stringAttribute(dataset, "targets",
-                        "/data/matrix, /images, /committed/celsius_t");
+        stringAttribute(dataset, "targets", "/data/matrix, /images, /committed/celsius_t");
     }
 
     // A region reference: not an object, but a selection inside one.
     {
         const hsize_t matrixDims[] = {4, 3};
-        const Id space(H5Screate_simple(2, matrixDims, nullptr), &H5Sclose,
-                       "region space");
+        const Id space(H5Screate_simple(2, matrixDims, nullptr), &H5Sclose, "region space");
         const hsize_t start[] = {1, 0};
         const hsize_t count[] = {2, 2};
         must(H5Sselect_hyperslab(space, H5S_SELECT_SET, start, nullptr, count, nullptr),
@@ -1653,20 +1870,17 @@ void writeRootAttributes(hid_t file)
     {
         const Id type = fixedString(32);
         const Id space(H5Screate(H5S_SCALAR), &H5Sclose, "attribute space");
-        const Id attribute(
-            H5Acreate2(file, "generator", type, space, H5P_DEFAULT, H5P_DEFAULT),
-            &H5Aclose, "fixed string attribute");
+        const Id attribute(H5Acreate2(file, "generator", type, space, H5P_DEFAULT, H5P_DEFAULT),
+                           &H5Aclose, "fixed string attribute");
         char text[32] = {};
         std::snprintf(text, sizeof(text), "make-example-file");
         must(H5Awrite(attribute, type, text), "write fixed string attribute");
     }
 
-    stringArrayAttribute(file, "history",
-                         {"created", "checked against h5dump", "read by H5Scope"});
+    stringArrayAttribute(file, "history", {"created", "checked against h5dump", "read by H5Scope"});
     numericAttribute<double>(file, "coefficients", H5T_NATIVE_DOUBLE, {5},
                              {1.0, -0.5, 0.25, -0.125, 0.0625});
-    numericAttribute<std::int32_t>(file, "shape_2x3", H5T_NATIVE_INT32, {2, 3},
-                                   {1, 2, 3, 4, 5, 6});
+    numericAttribute<std::int32_t>(file, "shape_2x3", H5T_NATIVE_INT32, {2, 3}, {1, 2, 3, 4, 5, 6});
     // Zero elements: an attribute that exists and holds nothing.
     numericAttribute<std::int32_t>(file, "empty_attribute", H5T_NATIVE_INT32, {0}, {});
     // More elements than any panel will print, so the rendering has to elide.
@@ -1675,11 +1889,9 @@ void writeRootAttributes(hid_t file)
         for (std::size_t i = 0; i < many.size(); ++i) {
             many[i] = static_cast<std::int32_t>(i);
         }
-        numericAttribute<std::int32_t>(file, "long_attribute", H5T_NATIVE_INT32, {1000},
-                                       many);
+        numericAttribute<std::int32_t>(file, "long_attribute", H5T_NATIVE_INT32, {1000}, many);
     }
-    stringAttribute(file, "unicode \u2713",
-                    "value with \u00e9\u00e8\u00ea and \u6f22\u5b57");
+    stringAttribute(file, "unicode \u2713", "value with \u00e9\u00e8\u00ea and \u6f22\u5b57");
 
     // A compound attribute and an enum attribute: both are as legal on an
     // attribute as on a dataset, and both need the same rendering.
@@ -1687,8 +1899,7 @@ void writeRootAttributes(hid_t file)
         const Id type(H5Tcreate(H5T_COMPOUND, sizeof(Simple)), &H5Tclose,
                       "compound attribute type");
         must(H5Tinsert(type, "id", HOFFSET(Simple, id), H5T_NATIVE_INT32), "id");
-        must(H5Tinsert(type, "value", HOFFSET(Simple, value), H5T_NATIVE_DOUBLE),
-             "value");
+        must(H5Tinsert(type, "value", HOFFSET(Simple, value), H5T_NATIVE_DOUBLE), "value");
         const Id space(H5Screate(H5S_SCALAR), &H5Sclose, "attribute space");
         const Id attribute(
             H5Acreate2(file, "compound_attribute", type, space, H5P_DEFAULT, H5P_DEFAULT),
@@ -1699,9 +1910,8 @@ void writeRootAttributes(hid_t file)
     {
         const Id type = qualityEnum();
         const Id space(H5Screate(H5S_SCALAR), &H5Sclose, "attribute space");
-        const Id attribute(
-            H5Acreate2(file, "quality", type, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
-            "enum attribute");
+        const Id attribute(H5Acreate2(file, "quality", type, space, H5P_DEFAULT, H5P_DEFAULT),
+                           &H5Aclose, "enum attribute");
         const std::int32_t value = 2;
         must(H5Awrite(attribute, type, &value), "write enum attribute");
     }
@@ -1715,12 +1925,11 @@ void writeRootReferenceAttribute(hid_t file)
          "reference for the root attribute");
     const Id space(H5Screate(H5S_SCALAR), &H5Sclose, "attribute space");
     const Id attribute(
-        H5Acreate2(file, "cover_image", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT),
-        &H5Aclose, "reference attribute");
+        H5Acreate2(file, "cover_image", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT), &H5Aclose,
+        "reference attribute");
     must(H5Awrite(attribute, H5T_STD_REF, &reference), "write reference attribute");
     must(H5Rdestroy(&reference), "release reference");
 }
-
 
 // --- the scale file: thousands of each, rather than one of everything ------
 //
@@ -1767,8 +1976,8 @@ void writeScaleSettings(hid_t run, const ScaleSpec& spec)
     }
 }
 
-void writeScaleChannels(hid_t detector, const ScaleSpec& spec,
-                        const std::vector<float>& frame, hid_t createProps)
+void writeScaleChannels(hid_t detector, const ScaleSpec& spec, const std::vector<float>& frame,
+                        hid_t createProps)
 {
     const std::vector<hsize_t> dims{static_cast<hsize_t>(spec.frames),
                                     static_cast<hsize_t>(spec.rows),
@@ -1779,18 +1988,27 @@ void writeScaleChannels(hid_t detector, const ScaleSpec& spec,
         if (spec.attributesPerChannel <= 0) {
             continue;
         }
-        const Id dataset(H5Dopen2(detector, name, H5P_DEFAULT), &H5Dclose,
-                         "reopen channel");
+        const Id dataset(H5Dopen2(detector, name, H5P_DEFAULT), &H5Dclose, "reopen channel");
         // The four a real acquisition writes, then filler. A tree that tags
         // rows carrying attributes has to ask every row, and the answer here
         // is always yes -- which is the expensive shape, not the easy one.
         for (int a = 0; a < spec.attributesPerChannel; ++a) {
             switch (a) {
-            case 0:  stringAttribute(dataset, "units", "counts"); break;
-            case 1:  doubleAttribute(dataset, "scale", 1.0 + 0.001 * c); break;
-            case 2:  doubleAttribute(dataset, "offset", -0.5); break;
-            case 3:  intAttribute(dataset, "channel", c); break;
-            default: intAttribute(dataset, Name("extra_%02d", a), a); break;
+            case 0:
+                stringAttribute(dataset, "units", "counts");
+                break;
+            case 1:
+                doubleAttribute(dataset, "scale", 1.0 + 0.001 * c);
+                break;
+            case 2:
+                doubleAttribute(dataset, "offset", -0.5);
+                break;
+            case 3:
+                intAttribute(dataset, "channel", c);
+                break;
+            default:
+                intAttribute(dataset, Name("extra_%02d", a), a);
+                break;
             }
         }
     }
@@ -1808,8 +2026,8 @@ void writeScaleContents(hid_t file, const ScaleSpec& spec)
     // Chunked along whole frames: the layout a detector writer produces, and
     // the one that puts a chunk index in every dataset's header for a tree
     // walk to trip over.
-    Id createProps = chunked({1, static_cast<hsize_t>(spec.rows),
-                              static_cast<hsize_t>(spec.columns)});
+    Id createProps =
+        chunked({1, static_cast<hsize_t>(spec.rows), static_cast<hsize_t>(spec.columns)});
     if (spec.compress) {
         must(H5Pset_shuffle(createProps), "shuffle");
         must(H5Pset_deflate(createProps, 1), "deflate");
@@ -1827,8 +2045,7 @@ void writeScaleContents(hid_t file, const ScaleSpec& spec)
             const Id detectors = makeGroup(run, "detectors");
             for (int d = 0; d < spec.detectorsPerRun; ++d) {
                 const Id detector = makeGroup(detectors, Name("det_%02d", d));
-                stringAttribute(detector, "serial",
-                                std::string(Name("SN-%05d", r * 16 + d)));
+                stringAttribute(detector, "serial", std::string(Name("SN-%05d", r * 16 + d)));
                 writeScaleChannels(detector, spec, frame, createProps);
             }
             writeScaleSettings(run, spec);
@@ -1848,8 +2065,7 @@ void writeScaleContents(hid_t file, const ScaleSpec& spec)
             const Id session = makeGroup(sessions, Name("session_%03d", s));
             intAttribute(session, "index", s);
             for (int f = 0; f < spec.framesPerSession; ++f) {
-                writeDataset(session, Name("frame_%03d", f), H5T_NATIVE_INT32, {},
-                             &value);
+                writeDataset(session, Name("frame_%03d", f), H5T_NATIVE_INT32, {}, &value);
             }
         }
     }
@@ -1875,12 +2091,10 @@ void writeScaleContents(hid_t file, const ScaleSpec& spec)
         for (int r = 0; r < spec.runs; r += 10) {
             char target[64] = {};
             std::snprintf(target, sizeof(target), "/runs/run_%04d", r);
-            must(H5Lcreate_soft(target, aliases, Name("alias_%04d", r), H5P_DEFAULT,
-                                H5P_DEFAULT),
+            must(H5Lcreate_soft(target, aliases, Name("alias_%04d", r), H5P_DEFAULT, H5P_DEFAULT),
                  "create alias");
         }
-        must(H5Lcreate_soft("/runs/run_999999", aliases, "broken", H5P_DEFAULT,
-                            H5P_DEFAULT),
+        must(H5Lcreate_soft("/runs/run_999999", aliases, "broken", H5P_DEFAULT, H5P_DEFAULT),
              "create broken alias");
     }
 }
@@ -1906,8 +2120,8 @@ void writeExampleFiles(const std::filesystem::path& directory)
     } restore{previous};
 
     {
-        const Id file(H5Fcreate("example.h5", H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT),
-                      &H5Fclose, "create example.h5");
+        const Id file(H5Fcreate("example.h5", H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), &H5Fclose,
+                      "create example.h5");
         writeRootAttributes(file);
         writeData(file);
         writeTypes(file);
@@ -1916,6 +2130,7 @@ void writeExampleFiles(const std::filesystem::path& directory)
         writeFilters(file);
         writeImages(file);
         writeLarge(file);
+        writePlotting(file);
         writeLinks(file, externalName);
         writeStress(file);
         writeReferences(file);
@@ -1928,7 +2143,6 @@ void writeExampleFiles(const std::filesystem::path& directory)
     // cannot be decoded.
     must(H5Zunregister(kPretendLz4.id), "unregister the stand-in filter");
 }
-
 
 std::size_t writeScaleFile(const std::filesystem::path& path, const ScaleSpec& spec)
 {
@@ -1943,8 +2157,7 @@ std::size_t writeScaleFile(const std::filesystem::path& path, const ScaleSpec& s
         // an acquisition writes a header, then its data, then the next header,
         // so the metadata a tree reads is scattered through the gigabytes it
         // does not. Tuning that away here would tune away the measurement.
-        const Id file(H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT,
-                                H5P_DEFAULT),
+        const Id file(H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT),
                       &H5Fclose, "create the scale file");
         writeScaleContents(file, spec);
     }

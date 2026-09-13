@@ -21,12 +21,14 @@
 # have -- but `depend-info` needs no compiler and answers the question that
 # matters.
 #
-# H5Scope links Qt, HDF5 and about twenty further libraries statically, and
-# is conveyed under the GPL because Qt Graphs is GPL-3.0-only. Section 6 of the
-# GPL therefore requires the source of everything inside the executable to
-# accompany it. Pointing at upstream would not do: vcpkg patches what it builds
-# -- 23 patches to qtbase alone -- so the sources that correspond to this
-# binary are the upstream archives *plus* the port files that modify them.
+# H5Scope links Qt, HDF5 and about twenty further libraries statically and is
+# conveyed under the GPL. Section 6 of the GPL therefore requires the source of
+# everything inside the executable to accompany it -- and it requires that
+# whether or not anything inside obliges the GPL, which since the plot stopped
+# being drawn by Qt Graphs nothing does. Pointing at upstream would not do:
+# vcpkg patches what it builds -- 23 patches to qtbase alone -- so the sources
+# that correspond to this binary are the upstream archives *plus* the port
+# files that modify them.
 #
 # What lands in the bundle:
 #
@@ -230,8 +232,8 @@ echo "windows: ${#windows_packages[@]} packages, all covered"
 # and --only-downloads does not *install* qtbase, so that include fails and the
 # port dies before it reaches its own download call. vcpkg calls the flag a
 # "best-effort attempt" and exits 0 regardless, so the first bundle cut this way
-# was missing qtdeclarative, qtgraphs, qtquick3d, qtsvg, qtshadertools,
-# qtlanguageserver and qtquicktimeline -- most of Qt -- and said nothing.
+# was missing qtdeclarative, qtsvg, qtshadertools, qtlanguageserver and the
+# rest -- most of Qt -- and said nothing.
 #
 # A bundle that is quietly missing what the binary was built from is worse than
 # no bundle at all, so the archives are fetched here from the URL and verified

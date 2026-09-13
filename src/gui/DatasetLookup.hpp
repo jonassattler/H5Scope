@@ -144,6 +144,12 @@ private:
                                std::vector<std::vector<hsize_t>>& indices,
                                std::vector<bool>& drop, QString& error);
 
+/// Which dimension of `indices` the line runs along: the first one the
+/// subscript did not write as a bare index. Only meaningful once the selection
+/// is known to be a line, which is to say exactly one survives.
+[[nodiscard]] std::size_t lineDimension(const std::vector<std::vector<hsize_t>>& indices,
+                                        const std::vector<bool>& drop);
+
 /// Thin the surviving dimension of `indices` to at most `maxPoints`, and
 /// return the stride that was applied.
 ///
@@ -155,5 +161,16 @@ private:
 /// show.
 int thinToPoints(std::vector<std::vector<hsize_t>>& indices,
                  const std::vector<bool>& drop, int maxPoints);
+
+/// Narrow the surviving dimension of `indices` to the `span` elements starting
+/// at `first`, clamped to what it already selects.
+///
+/// The closer look, as a read. A line the reader has zoomed into is a run of
+/// itself, and reading that run is how an octave of zoom becomes an octave of
+/// detail rather than a stretch of what was already drawn -- the elements
+/// outside it are never touched, so the read stays proportional to what is on
+/// screen. See gui::PlotWindow for where the run comes from.
+void windowLine(std::vector<std::vector<hsize_t>>& indices, const std::vector<bool>& drop,
+                long long first, long long span);
 
 } // namespace gui

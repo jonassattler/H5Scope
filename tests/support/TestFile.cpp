@@ -7,6 +7,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <random>
@@ -300,6 +301,25 @@ void writeFixture(const std::string& path)
             data[i] = static_cast<std::int32_t>(i);
         }
         writeDataset(file, "long_vec", H5T_NATIVE_INT32, {1000}, data.data());
+    }
+
+    // --- a line long enough to be looked at closely -----------------------
+    // The plot summarises a line to a couple of thousand points however long it
+    // is, and reads the run the reader has zoomed into again at a finer bucket
+    // -- so a test of that needs a line whose whole-line summary is thinned and
+    // whose tenth is not. Twenty thousand is the smallest round number that is
+    // both, and it costs the fixture 160 kB.
+    //
+    // The spike is one sample wide on purpose. It is what an envelope keeps and
+    // a stride loses, and at the closest look it is the file's own value rather
+    // than a bucket's extreme.
+    {
+        std::vector<double> data(20000);
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            data[i] = std::sin(static_cast<double>(i) / 300.0);
+        }
+        data[12345] = 9.0;
+        writeDataset(file, "trace", H5T_NATIVE_DOUBLE, {20000}, data.data());
     }
 
     // --- empty dataset ----------------------------------------------------
