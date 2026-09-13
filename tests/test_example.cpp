@@ -15,16 +15,18 @@
 #include "ExampleFile.hpp"
 
 #include "gui/AppController.hpp"
-#include "support/AsyncModels.hpp"
-#include "gui/H5Thread.hpp"
 #include "gui/DatasetImage.hpp"
+#include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
+#include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -100,8 +102,7 @@ h5test::Reader openExample()
     return h5test::Reader(example().path());
 }
 
-const h5core::NodeInfo* find(const std::vector<h5core::NodeInfo>& nodes,
-                             const std::string& name)
+const h5core::NodeInfo* find(const std::vector<h5core::NodeInfo>& nodes, const std::string& name)
 {
     const auto it = std::find_if(nodes.begin(), nodes.end(),
                                  [&](const auto& node) { return node.name == name; });
@@ -137,8 +138,7 @@ std::optional<long long> readSyscalls()
 /// Waits for the listing before looking through it: the tree answers with what
 /// it has and asks the file for the rest, so a count taken the instant it is
 /// asked for is zero by design.
-QModelIndex indexForName(QAbstractItemModel* tree, const QModelIndex& parent,
-                         const QString& name)
+QModelIndex indexForName(QAbstractItemModel* tree, const QModelIndex& parent, const QString& name)
 {
     const int rows = h5test::settledRowCount(tree, parent);
     for (int row = 0; row < rows; ++row) {
@@ -257,18 +257,15 @@ TEST_CASE("a broken link can be selected and explains itself", "[example][links]
     // it, so the panels kept describing whatever was selected before.
     REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/links/external_missing_target")));
     CHECK(infoRow(controller, QStringLiteral("Link")) == QStringLiteral("External link"));
-    CHECK(infoRow(controller, QStringLiteral("File")) ==
-          QStringLiteral("example_external.h5"));
-    CHECK(infoRow(controller, QStringLiteral("Target")) ==
-          QStringLiteral("/no/such/object"));
+    CHECK(infoRow(controller, QStringLiteral("File")) == QStringLiteral("example_external.h5"));
+    CHECK(infoRow(controller, QStringLiteral("Target")) == QStringLiteral("/no/such/object"));
     CHECK_FALSE(controller.datasetTabVisible());
     CHECK_FALSE(controller.metadataTabVisible());
     // No object behind the name means no attribute count to state.
     CHECK_FALSE(controller.statusRight().contains(QStringLiteral(" attrs")));
 }
 
-TEST_CASE("a null dataspace holds nothing, not one unreadable value",
-          "[example][dataspace]")
+TEST_CASE("a null dataspace holds nothing, not one unreadable value", "[example][dataspace]")
 {
     const auto file = openExample();
     const h5test::Dataset dataset(file, "/data/null_space");
@@ -299,8 +296,7 @@ TEST_CASE("the table of a null dataspace is empty", "[example][dataspace][gui]")
     CHECK(infoRow(controller, QStringLiteral("Dataspace")) == QStringLiteral("Null"));
 }
 
-TEST_CASE("datatypes HDF5 2.x added, and widths a switch would miss",
-          "[example][datatype]")
+TEST_CASE("datatypes HDF5 2.x added, and widths a switch would miss", "[example][datatype]")
 {
     const auto file = openExample();
 
@@ -335,8 +331,7 @@ TEST_CASE("datatypes HDF5 2.x added, and widths a switch would miss",
     }
 }
 
-TEST_CASE("a type the library cannot convert is refused before it is read",
-          "[example][datatype]")
+TEST_CASE("a type the library cannot convert is refused before it is read", "[example][datatype]")
 {
     const auto file = openExample();
     const h5test::Dataset dataset(file, "/types/time_unix");
@@ -359,8 +354,7 @@ TEST_CASE("a type the library cannot convert is refused before it is read",
     }
 }
 
-TEST_CASE("a missing filter blocks the data only when it is mandatory",
-          "[example][filters]")
+TEST_CASE("a missing filter blocks the data only when it is mandatory", "[example][filters]")
 {
     const auto file = openExample();
 
@@ -404,8 +398,7 @@ TEST_CASE("storage that is not in this file says where it is", "[example][storag
     SECTION("raw data in a companion file")
     {
         const h5test::Dataset dataset(file, "/storage/external_raw");
-        CHECK(dataset.info().externalFiles ==
-              std::vector<std::string>{"example_raw.bin"});
+        CHECK(dataset.info().externalFiles == std::vector<std::string>{"example_raw.bin"});
     }
 
     SECTION("a virtual dataset names every source it stitches together")
@@ -454,8 +447,7 @@ TEST_CASE("a named datatype shows the type it holds", "[example][datatype][gui]"
     CHECK(infoRow(controller, QStringLiteral("Class")) == QStringLiteral("Float"));
 }
 
-TEST_CASE("an attribute holding no elements is not an unreadable one",
-          "[example][attributes]")
+TEST_CASE("an attribute holding no elements is not an unreadable one", "[example][attributes]")
 {
     const auto file = openExample();
     CHECK(attributeValue(file, "/", "empty_attribute") == "[]");
@@ -463,8 +455,7 @@ TEST_CASE("an attribute holding no elements is not an unreadable one",
     // into silence.
     CHECK(attributeValue(file, "/", "format_version") == "3");
     CHECK(attributeValue(file, "/", "quality") == "GOOD");
-    CHECK_THAT(attributeValue(file, "/", "long_attribute"),
-               ContainsSubstring("(744 more)"));
+    CHECK_THAT(attributeValue(file, "/", "long_attribute"), ContainsSubstring("(744 more)"));
 }
 
 TEST_CASE("a dataset larger than memory is browsed, not loaded", "[example][large]")
@@ -481,13 +472,10 @@ TEST_CASE("a dataset larger than memory is browsed, not loaded", "[example][larg
     // The far corner of a billion elements, and only the block around it is
     // read -- a frame after it is asked for, which is what the settle is.
     CHECK(h5test::settledData(controller.datasetModel(),
-                              controller.datasetModel()->index(99999, 9999),
-                              Qt::DisplayRole)
-              .toString()
-          == QStringLiteral("7"));
+                              controller.datasetModel()->index(99999, 9999), Qt::DisplayRole)
+              .toString() == QStringLiteral("7"));
 
-    const auto* table =
-        qobject_cast<const gui::DatasetTableModel*>(controller.datasetModel());
+    const auto* table = qobject_cast<const gui::DatasetTableModel*>(controller.datasetModel());
     REQUIRE(table != nullptr);
     const auto grid = table->sampleValues(0, -1, 64, 0, -1, 64);
     CHECK(grid.rows == 64);
@@ -501,8 +489,7 @@ TEST_CASE("a dataset that declares itself an image opens as one", "[example][ima
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
 
-    const auto* table =
-        qobject_cast<const gui::DatasetTableModel*>(controller.datasetModel());
+    const auto* table = qobject_cast<const gui::DatasetTableModel*>(controller.datasetModel());
     REQUIRE(table != nullptr);
 
     SECTION("pixel-interleaved truecolour: height on y, width on x, one channel")
@@ -512,8 +499,7 @@ TEST_CASE("a dataset that declares itself an image opens as one", "[example][ima
         // would give and what no reader wants to look at.
         CHECK(controller.datasetModel()->rowCount() == 256);
         CHECK(controller.datasetModel()->columnCount() == 256);
-        CHECK(controller.sliceExpression() ==
-              QStringLiteral("/images/rgb_256x256x3[:, :, 0]"));
+        CHECK(controller.sliceExpression() == QStringLiteral("/images/rgb_256x256x3[:, :, 0]"));
         CHECK(controller.datasetImage()->width() == 256);
         CHECK(controller.datasetImage()->height() == 256);
     }
@@ -540,8 +526,7 @@ TEST_CASE("a dataset that declares itself an image opens as one", "[example][ima
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/images/indexed_64x64")));
         CHECK(controller.datasetModel()->rowCount() == 64);
         CHECK(controller.datasetModel()->columnCount() == 64);
-        CHECK(controller.sliceExpression() ==
-              QStringLiteral("/images/indexed_64x64[:, :]"));
+        CHECK(controller.sliceExpression() == QStringLiteral("/images/indexed_64x64[:, :]"));
     }
 
     SECTION("the pinned channel is a starting point, not a binding")
@@ -550,8 +535,7 @@ TEST_CASE("a dataset that declares itself an image opens as one", "[example][ima
         auto* setup = qobject_cast<gui::TableSetupModel*>(controller.tableSetupModel());
         REQUIRE(setup != nullptr);
         setup->setIndex(2, 2); // the blue channel
-        CHECK(controller.sliceExpression() ==
-              QStringLiteral("/images/rgb_256x256x3[:, :, 2]"));
+        CHECK(controller.sliceExpression() == QStringLiteral("/images/rgb_256x256x3[:, :, 2]"));
         CHECK(controller.datasetModel()->rowCount() == 256);
 
         // And the whole channel axis is still reachable: nothing is hidden,
@@ -562,8 +546,7 @@ TEST_CASE("a dataset that declares itself an image opens as one", "[example][ima
     }
 }
 
-TEST_CASE("the image defaults come from the metadata, not from the data",
-          "[example][images]")
+TEST_CASE("the image defaults come from the metadata, not from the data", "[example][images]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
@@ -714,8 +697,7 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         CHECK(element.fields[4].value == "BAD");
 
         CHECK_THAT(element.json, ContainsSubstring(R"("station": "ST-000")"));
-        CHECK_THAT(element.json,
-                   ContainsSubstring(R"("position": {"x": 0, "y": 0, "z": 0})"));
+        CHECK_THAT(element.json, ContainsSubstring(R"("position": {"x": 0, "y": 0, "z": 0})"));
         CHECK_THAT(element.json, ContainsSubstring(R"("samples": [0, 0.25, 0.5, 0.75])"));
         CHECK_THAT(element.json, ContainsSubstring(R"("quality": "BAD")"));
     }
@@ -745,10 +727,9 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
         REQUIRE(table != nullptr);
         const QVariantMap element = table->elementAt(1, 2);
-        CHECK(element.value(QStringLiteral("label")).toString()
-              == QStringLiteral("[1,2]"));
-        CHECK(element.value(QStringLiteral("json")).toString()
-              == QStringLiteral(R"({"id": 7, "value": 0.875})"));
+        CHECK(element.value(QStringLiteral("label")).toString() == QStringLiteral("[1,2]"));
+        CHECK(element.value(QStringLiteral("json")).toString() ==
+              QStringLiteral(R"({"id": 7, "value": 0.875})"));
         CHECK(element.value(QStringLiteral("fields")).toList().size() == 2);
 
         // A cell that is not there is not an error, it is nothing.
@@ -756,8 +737,7 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
     }
 }
 
-TEST_CASE("the colour axis comes from the file, and stays the reader's",
-          "[example][images]")
+TEST_CASE("the colour axis comes from the file, and stays the reader's", "[example][images]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
@@ -847,8 +827,8 @@ TEST_CASE("the colour axis comes from the file, and stays the reader's",
     {
         // Twelve bands, no Image spec attributes at all: the default is the
         // ordinary table, four thousand rows of twelve columns.
-        REQUIRE(h5test::selectAndSettle(controller, 
-            QStringLiteral("/images/multispectral_64x64x12")));
+        REQUIRE(
+            h5test::selectAndSettle(controller, QStringLiteral("/images/multispectral_64x64x12")));
         REQUIRE(image->channelDimension() == -1);
         REQUIRE(controller.datasetModel()->rowCount() == 64 * 64);
         const QString slice = controller.sliceExpression();
@@ -890,8 +870,8 @@ TEST_CASE("the colour axis comes from the file, and stays the reader's",
         // indices inside, so they were all clamped to zero -- and by the time
         // a reader named an axis, red, green and blue were the same channel
         // and a truecolour picture came out grey.
-        REQUIRE(h5test::selectAndSettle(controller, 
-            QStringLiteral("/images/multispectral_64x64x12")));
+        REQUIRE(
+            h5test::selectAndSettle(controller, QStringLiteral("/images/multispectral_64x64x12")));
         REQUIRE(image->channelDimension() == -1);
 
         image->setChannelDimension(2);
@@ -908,8 +888,8 @@ TEST_CASE("the colour axis comes from the file, and stays the reader's",
 
     SECTION("four channels can be read as RGBA")
     {
-        REQUIRE(h5test::selectAndSettle(controller, 
-            QStringLiteral("/images/multispectral_64x64x12")));
+        REQUIRE(
+            h5test::selectAndSettle(controller, QStringLiteral("/images/multispectral_64x64x12")));
         image->setChannelDimension(2);
         image->setColorMode(gui::DatasetImage::ColorMode::Rgba);
         CHECK(image->colorMode() == gui::DatasetImage::ColorMode::Rgba);
@@ -955,8 +935,7 @@ TEST_CASE("the colour axis comes from the file, and stays the reader's",
     }
 }
 
-TEST_CASE("only a dataset that says it is an image is treated as one",
-          "[example][images]")
+TEST_CASE("only a dataset that says it is an image is treated as one", "[example][images]")
 {
     const auto file = openExample();
 
@@ -967,11 +946,9 @@ TEST_CASE("only a dataset that says it is an image is treated as one",
         CHECK(h5test::Dataset(file, "/images/gray_512x512").info().image.has_value());
         // Image-shaped and silent about it: rank 3 with three trailing
         // channels, and rank 4 of RGB frames.
-        CHECK_FALSE(h5test::Dataset(file, "/images/multispectral_64x64x12")
-                        .info()
-                        .image.has_value());
         CHECK_FALSE(
-            h5test::Dataset(file, "/images/stack_8x64x64x3").info().image.has_value());
+            h5test::Dataset(file, "/images/multispectral_64x64x12").info().image.has_value());
+        CHECK_FALSE(h5test::Dataset(file, "/images/stack_8x64x64x3").info().image.has_value());
         // CLASS="PALETTE" is not CLASS="IMAGE".
         CHECK_FALSE(h5test::Dataset(file, "/images/palette").info().image.has_value());
         CHECK_FALSE(h5test::Dataset(file, "/data/matrix").info().image.has_value());
@@ -1005,8 +982,7 @@ TEST_CASE("only a dataset that says it is an image is treated as one",
     }
 }
 
-TEST_CASE("the interlace and the origin are read as the spec defines them",
-          "[example][images]")
+TEST_CASE("the interlace and the origin are read as the spec defines them", "[example][images]")
 {
     const auto file = openExample();
 
@@ -1034,15 +1010,13 @@ TEST_CASE("the interlace and the origin are read as the spec defines them",
     CHECK(h5test::Dataset(file, "/images/gray_512x512").info().image->originHonoured);
 }
 
-TEST_CASE("the tree tags the datasets that declare themselves images",
-          "[example][images][tree]")
+TEST_CASE("the tree tags the datasets that declare themselves images", "[example][images][tree]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
     QAbstractItemModel* tree = controller.treeModel();
 
-    const QModelIndex images =
-        indexForName(tree, QModelIndex{}, QStringLiteral("images"));
+    const QModelIndex images = indexForName(tree, QModelIndex{}, QStringLiteral("images"));
     REQUIRE(images.isValid());
 
     const auto tagged = [&](const char* name) {
@@ -1067,17 +1041,14 @@ TEST_CASE("the tree tags the datasets that declare themselves images",
 // makes the tag worth drawing is what it says when the pointer rests on it --
 // and that has to be the thing the reader would ask next, which is never "this
 // has attributes" but how many, and never "this is a link" but where to.
-TEST_CASE("every tree tag carries the fact behind it",
-          "[example][tree][tags]")
+TEST_CASE("every tree tag carries the fact behind it", "[example][tree][tags]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
     QAbstractItemModel* tree = controller.treeModel();
 
-    const QModelIndex images =
-        indexForName(tree, QModelIndex{}, QStringLiteral("images"));
-    const QModelIndex links =
-        indexForName(tree, QModelIndex{}, QStringLiteral("links"));
+    const QModelIndex images = indexForName(tree, QModelIndex{}, QStringLiteral("images"));
+    const QModelIndex links = indexForName(tree, QModelIndex{}, QStringLiteral("links"));
     REQUIRE(images.isValid());
     REQUIRE(links.isValid());
 
@@ -1093,14 +1064,12 @@ TEST_CASE("every tree tag carries the fact behind it",
     // [I] -- which kind of picture the file says it is. The Data Viewer opens
     // on a raster rather than on a table of channels because of this word.
     const QModelIndex rgb = at(images, "rgb_256x256x3");
-    CHECK(role(rgb, gui::H5TreeModel::ImageSubclassRole).toString()
-          == QStringLiteral("Truecolour"));
-    CHECK(role(at(images, "indexed_64x64"),
-               gui::H5TreeModel::ImageSubclassRole).toString()
-          == QStringLiteral("Indexed"));
+    CHECK(role(rgb, gui::H5TreeModel::ImageSubclassRole).toString() ==
+          QStringLiteral("Truecolour"));
+    CHECK(role(at(images, "indexed_64x64"), gui::H5TreeModel::ImageSubclassRole).toString() ==
+          QStringLiteral("Indexed"));
     // Nothing that is not an image claims to be one.
-    CHECK(role(at(images, "palette"),
-               gui::H5TreeModel::ImageSubclassRole).toString().isEmpty());
+    CHECK(role(at(images, "palette"), gui::H5TreeModel::ImageSubclassRole).toString().isEmpty());
 
     // [A] -- how many, not merely that there are some.
     CHECK(role(rgb, gui::H5TreeModel::HasAttributesRole).toBool());
@@ -1111,8 +1080,7 @@ TEST_CASE("every tree tag carries the fact behind it",
     // [L] -- where it leads, and for a broken one which half is missing. A
     // hard link leads nowhere but to itself and says nothing.
     const auto description = [&](const char* name) {
-        return role(at(links, name),
-                    gui::H5TreeModel::LinkDescriptionRole).toString();
+        return role(at(links, name), gui::H5TreeModel::LinkDescriptionRole).toString();
     };
     CHECK_THAT(description("soft_to_matrix").toStdString(),
                ContainsSubstring("Soft link") && ContainsSubstring("/data/matrix"));
@@ -1120,48 +1088,42 @@ TEST_CASE("every tree tag carries the fact behind it",
 
     // The two that fail, which are the rows drawn in red. An external link has
     // two things that can be absent and the sentence has to say which.
-    CHECK_FALSE(role(at(links, "soft_dangling"),
-                     gui::H5TreeModel::LinkResolvesRole).toBool());
+    CHECK_FALSE(role(at(links, "soft_dangling"), gui::H5TreeModel::LinkResolvesRole).toBool());
     CHECK_THAT(description("soft_dangling").toStdString(),
                ContainsSubstring("no object at that path"));
     CHECK_THAT(description("external_missing_file").toStdString(),
-               ContainsSubstring("External link")
-                   && ContainsSubstring("the file or the object is missing"));
+               ContainsSubstring("External link") &&
+                   ContainsSubstring("the file or the object is missing"));
 }
 
 // A count and its noun are one phrase. "1 items" and "Element size 1 bytes"
 // are not phrases; they are a number with a fixed string stapled to it.
-TEST_CASE("counts read in the singular when there is one of them",
-          "[example][tree][info]")
+TEST_CASE("counts read in the singular when there is one of them", "[example][tree][info]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
     QAbstractItemModel* tree = controller.treeModel();
 
     // /links/loop holds exactly one member.
-    const QModelIndex links =
-        indexForName(tree, QModelIndex{}, QStringLiteral("links"));
+    const QModelIndex links = indexForName(tree, QModelIndex{}, QStringLiteral("links"));
     REQUIRE(links.isValid());
     const QModelIndex loop = indexForName(tree, links, QStringLiteral("loop"));
     REQUIRE(loop.isValid());
-    CHECK(h5test::settledData(tree, loop, gui::H5TreeModel::MetaRole).toString()
-          == QStringLiteral("1 item"));
+    CHECK(h5test::settledData(tree, loop, gui::H5TreeModel::MetaRole).toString() ==
+          QStringLiteral("1 item"));
 
     // ...and a group with more than one still reads in the plural.
-    CHECK(h5test::settledData(tree, links, gui::H5TreeModel::MetaRole).toString()
-          == QStringLiteral("12 items"));
+    CHECK(h5test::settledData(tree, links, gui::H5TreeModel::MetaRole).toString() ==
+          QStringLiteral("12 items"));
 
     // uint8 is one byte wide; int32 is four.
     REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/images/mislabelled_truecolor")));
-    CHECK(infoRow(controller, QStringLiteral("Element size"))
-          == QStringLiteral("1 byte"));
+    CHECK(infoRow(controller, QStringLiteral("Element size")) == QStringLiteral("1 byte"));
     REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/big_endian_int32")));
-    CHECK(infoRow(controller, QStringLiteral("Element size"))
-          == QStringLiteral("4 bytes"));
+    CHECK(infoRow(controller, QStringLiteral("Element size")) == QStringLiteral("4 bytes"));
 }
 
-TEST_CASE("every row of the tree says something about itself",
-          "[example][tree]")
+TEST_CASE("every row of the tree says something about itself", "[example][tree]")
 {
     gui::AppController controller;
     REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
@@ -1175,10 +1137,10 @@ TEST_CASE("every row of the tree says something about itself",
         const int count = h5test::settledRowCount(tree, parent);
         for (int row = 0; row < count; ++row) {
             const QModelIndex node = tree->index(row, 0, parent);
-            const QString path = h5test::settledData(
-                tree, node, gui::H5TreeModel::PathRole).toString();
-            const QString meta = h5test::settledData(
-                tree, node, gui::H5TreeModel::MetaRole).toString();
+            const QString path =
+                h5test::settledData(tree, node, gui::H5TreeModel::PathRole).toString();
+            const QString meta =
+                h5test::settledData(tree, node, gui::H5TreeModel::MetaRole).toString();
             INFO(path.toStdString());
             CHECK_FALSE(meta.isEmpty());
             ++rows;
@@ -1188,16 +1150,14 @@ TEST_CASE("every row of the tree says something about itself",
     walk(walk, QModelIndex{});
     CHECK(rows > 100);
 
-    const QModelIndex committed =
-        indexForName(tree, QModelIndex{}, QStringLiteral("committed"));
+    const QModelIndex committed = indexForName(tree, QModelIndex{}, QStringLiteral("committed"));
     REQUIRE(committed.isValid());
-    const QModelIndex celsius =
-        indexForName(tree, committed, QStringLiteral("celsius_t"));
+    const QModelIndex celsius = indexForName(tree, committed, QStringLiteral("celsius_t"));
     REQUIRE(celsius.isValid());
     // A committed type has no shape and no children; what it is *of* is the
     // whole of what the row has to say.
-    CHECK(h5test::settledData(tree, celsius, gui::H5TreeModel::MetaRole).toString()
-          == QStringLiteral("float64"));
+    CHECK(h5test::settledData(tree, celsius, gui::H5TreeModel::MetaRole).toString() ==
+          QStringLiteral("float64"));
 }
 
 TEST_CASE("the hierarchy survives its own awkward shapes", "[example][tree]")
@@ -1228,8 +1188,8 @@ TEST_CASE("the hierarchy survives its own awkward shapes", "[example][tree]")
 
     SECTION("a group's size is the same whether it is counted or listed")
     {
-        for (const char* path : {"/stress/many_children_4096", "/stress/nested_16x64",
-                                 "/stress/empty_group", "/"}) {
+        for (const char* path :
+             {"/stress/many_children_4096", "/stress/nested_16x64", "/stress/empty_group", "/"}) {
             INFO(path);
             CHECK(file.memberCount(path) == file.children(path).size());
         }
@@ -1253,8 +1213,7 @@ TEST_CASE("a loop in the file is shown once and never followed", "[example][tree
         // The case that has no identity at all until the link is followed,
         // which is why this is settled when a row is identified and not when
         // its parent is listed.
-        const QModelIndex self =
-            indexForName(&tree, links, QStringLiteral("soft_to_self"));
+        const QModelIndex self = indexForName(&tree, links, QStringLiteral("soft_to_self"));
         REQUIRE(self.isValid());
         CHECK(h5test::settledData(&tree, self, gui::H5TreeModel::IsCyclicRole).toBool());
         CHECK_FALSE(h5test::settledHasChildren(&tree, self));
@@ -1265,13 +1224,12 @@ TEST_CASE("a loop in the file is shown once and never followed", "[example][tree
     {
         const QModelIndex loop = indexForName(&tree, links, QStringLiteral("loop"));
         REQUIRE(loop.isValid());
-        const QModelIndex back =
-            indexForName(&tree, loop, QStringLiteral("back_to_links"));
+        const QModelIndex back = indexForName(&tree, loop, QStringLiteral("back_to_links"));
         REQUIRE(back.isValid());
         CHECK(h5test::settledData(&tree, back, gui::H5TreeModel::IsCyclicRole).toBool());
         CHECK_FALSE(h5test::settledHasChildren(&tree, back));
-        CHECK(h5test::settledData(&tree, back, gui::H5TreeModel::MetaRole).toString()
-              == QStringLiteral("cycle"));
+        CHECK(h5test::settledData(&tree, back, gui::H5TreeModel::MetaRole).toString() ==
+              QStringLiteral("cycle"));
     }
 }
 
@@ -1293,8 +1251,7 @@ TEST_CASE("no HDF5 error stack reaches a reader", "[example][errors]")
     }
 }
 
-TEST_CASE("the tree costs what is on screen, not what is in the file",
-          "[example][tree][cost]")
+TEST_CASE("the tree costs what is on screen, not what is in the file", "[example][tree][cost]")
 {
     // The property the whole design of H5TreeModel rests on, asserted in the
     // one unit that means the same thing on every machine: read syscalls.
@@ -1321,8 +1278,7 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
 
     SECTION("expanding a group of four thousand does not open four thousand objects")
     {
-        const QModelIndex wide =
-            h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
+        const QModelIndex wide = h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
         REQUIRE(wide.isValid());
 
         const long long before = *readSyscalls();
@@ -1338,8 +1294,7 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
 
     SECTION("drawing a screenful of it costs a screenful, not a group")
     {
-        const QModelIndex wide =
-            h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
+        const QModelIndex wide = h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
         REQUIRE(h5test::settledRowCount(&tree, wide) == 4096);
 
         constexpr int kViewport = 40;
@@ -1358,9 +1313,8 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
         INFO("reads to draw 40 of 4096 rows: " << spent);
         CHECK(spent < 4 * kViewport);
         // ...and they really were described.
-        CHECK_FALSE(tree.data(tree.index(0, 0, wide), gui::H5TreeModel::MetaRole)
-                        .toString()
-                        .isEmpty());
+        CHECK_FALSE(
+            tree.data(tree.index(0, 0, wide), gui::H5TreeModel::MetaRole).toString().isEmpty());
     }
 
     SECTION("a member count beside a group row is not taken by counting")
@@ -1368,8 +1322,7 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
         // Sixteen groups of sixty-four. Saying how many members each one holds
         // by listing it costs 1024 link resolutions to draw 16 rows, which is
         // quadratic in the shape acquisition files actually have.
-        const QModelIndex nested =
-            h5test::reveal(tree, QStringLiteral("/stress/nested_16x64"));
+        const QModelIndex nested = h5test::reveal(tree, QStringLiteral("/stress/nested_16x64"));
         REQUIRE(nested.isValid());
         const int rows = h5test::settledRowCount(&tree, nested);
         REQUIRE(rows == 16);
@@ -1383,14 +1336,13 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
 
         INFO("reads to draw 16 member counts: " << spent);
         CHECK(spent < 4 * rows);
-        CHECK(tree.data(tree.index(0, 0, nested), gui::H5TreeModel::MetaRole).toString()
-              == QStringLiteral("64 items"));
+        CHECK(tree.data(tree.index(0, 0, nested), gui::H5TreeModel::MetaRole).toString() ==
+              QStringLiteral("64 items"));
     }
 
     SECTION("a row that has already been drawn is free the second time")
     {
-        const QModelIndex wide =
-            h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
+        const QModelIndex wide = h5test::reveal(tree, QStringLiteral("/stress/many_children_4096"));
         REQUIRE(h5test::settledRowCount(&tree, wide) == 4096);
         const QModelIndex first = tree.index(0, 0, wide);
         (void)h5test::settledData(&tree, first, gui::H5TreeModel::MetaRole);
@@ -1406,5 +1358,130 @@ TEST_CASE("the tree costs what is on screen, not what is in the file",
         // per node and kept.
         CHECK(*readSyscalls() - before <= 2);
         CHECK(gui::H5Thread::instance().outstanding() == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /plotting: the stress set, held to what its notes claim
+// ---------------------------------------------------------------------------
+//
+// Each dataset in that group carries a note saying which way it is difficult.
+// A note is a comment and a comment is not checked, so these are the same
+// claims asserted -- and asserted through the plot, because every one of them
+// is about what survives being reduced to something a screen can show.
+
+TEST_CASE("the plot's stress set is as difficult as it says", "[example][plotting][gui]")
+{
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
+    gui::DatasetPlot* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+
+    SECTION("twelve one-sample spikes in a million survive the thinning")
+    {
+        // The claim the whole plot is arranged around, and the one that is
+        // trivially falsifiable: the extent is +/-9 and the noise it hides in
+        // is +/-0.05, so an extent of +/-0.05 means the spikes were thinned
+        // away.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/spikes_1M")));
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->pointCount() <= gui::DatasetPlot::kMaxPoints);
+        CHECK(plot->maximum() == 9.0);
+        CHECK(plot->minimum() == -9.0);
+    }
+
+    SECTION("seventeen impulses in ten million survive it too")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/adc_10M")));
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->sourcePointCount() == 10000000);
+        CHECK(plot->pointCount() <= gui::DatasetPlot::kMaxPoints);
+        // A stride over ten million points into two thousand is nearly five
+        // thousand wide, and none of the seventeen indices is a multiple of it.
+        CHECK(plot->maximum() == 32000.0);
+        CHECK(plot->minimum() == -32000.0);
+    }
+
+    SECTION("missing data arrives missing, and is not filled in")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/gaps_1M")));
+        REQUIRE(plot->hasData());
+
+        const gui::PlotLine line = plot->lineOf(0);
+        REQUIRE(line.count > 0);
+        const std::vector<QPointF> drawable = gui::samplesOf(line, plot->drawingAxis());
+        // A fifth of the line is missing, so a good fraction of what was read
+        // has to be missing too -- and what is left is what gets drawn, with
+        // the holes ending one stroke and starting the next.
+        CHECK(drawable.size() < static_cast<std::size_t>(line.count));
+        CHECK(drawable.size() > static_cast<std::size_t>(line.count) / 2);
+    }
+
+    SECTION("eighteen decades, including values a logarithm has no answer for")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/decades_200k")));
+        REQUIRE(plot->hasData());
+        // Both ends of the range are present, which is what makes it
+        // unreadable on a linear axis.
+        CHECK(plot->maximum() > 1e6);
+        // ...and there are negatives in it, which a logarithmic axis has to
+        // leave as gaps rather than clamp to its floor.
+        CHECK(plot->minimum() < 0.0);
+    }
+
+    SECTION("numbers that do not fit a float, among ordinary ones")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/extremes_100k")));
+        REQUIRE(plot->hasData());
+        // The infinities are not readings and are not counted; 1e300 is.
+        CHECK(plot->maximum() == 1e300);
+        CHECK(plot->minimum() == -1e300);
+    }
+
+    SECTION("a time base where float32 gives up")
+    {
+        REQUIRE(
+            h5test::selectAndSettle(controller, QStringLiteral("/plotting/epoch_seconds_500k")));
+        REQUIRE(plot->hasData());
+        CHECK(plot->minimum() >= 1.7e9);
+        CHECK(plot->maximum() <= 1.7e9 + 500.0);
+
+        // The trap itself, stated as arithmetic rather than as a comment: two
+        // timestamps a millisecond apart are the same float32.
+        const auto first = static_cast<float>(1.7e9);
+        const auto second = static_cast<float>(1.7e9 + 0.001);
+        CHECK(first == second);
+    }
+
+    SECTION("ten thousand lines at once")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/plotting/noisy_lines_10000x1024")));
+        REQUIRE(plot->hasData());
+        CHECK(plot->sourceSeriesCount() == 10000);
+        // A selection opens on a window, and says so.
+        CHECK(plot->seriesCount() == gui::DatasetPlot::initialSeriesLimit());
+
+        plot->selectAll();
+        CHECK(plot->seriesCount() == 10000);
+        // And past a thousand lines they share a budget rather than each
+        // holding the full couple of thousand points: ten thousand of those
+        // would be a hundred and sixty megabytes held, and twenty million
+        // doubles walked on every frame of a drag.
+        CHECK(plot->pointCount() <= gui::DatasetPlot::kMinPoints);
+        CHECK(plot->pointCount() > 0);
+    }
+
+    SECTION("a tone at the thinning stride is still a tone")
+    {
+        // Sampled by stride this becomes a slow swell that is not in the file.
+        // Drawn as an envelope its extremes are its own, at every zoom.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/beat_1M")));
+        REQUIRE(plot->hasData());
+        REQUIRE(plot->thinned());
+        CHECK(plot->maximum() > 0.95);
+        CHECK(plot->minimum() < -0.95);
     }
 }
