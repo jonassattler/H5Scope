@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 
 namespace gui {
 namespace {
@@ -416,8 +417,8 @@ void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out)
         std::vector<QPointF> unit;
         unit.reserve(kMarkerSides);
         for (int i = 0; i < kMarkerSides; ++i) {
-            const double angle =
-                2.0 * M_PI * static_cast<double>(i) / static_cast<double>(kMarkerSides);
+            const double angle = 2.0 * std::numbers::pi_v<double> * static_cast<double>(i) /
+                                 static_cast<double>(kMarkerSides);
             unit.emplace_back(std::cos(angle), std::sin(angle));
         }
         return unit;
