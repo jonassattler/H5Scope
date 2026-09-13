@@ -432,7 +432,10 @@ Rectangle {
                             shown.push(qsTr("y %1 … %2").arg(plot.minimum.toPrecision(4))
                                                         .arg(plot.maximum.toPrecision(4)))
                         }
-                        return shown
+                        // And what the pointer is on, when it is on
+                        // something. Appended, so the facts that are always
+                        // there never move under a reader following a line.
+                        return shown.concat(plotSurface.readingFacts)
                     }
                 }
 

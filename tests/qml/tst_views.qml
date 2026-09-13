@@ -2113,6 +2113,147 @@ TestCase {
                "the crosshair must leave with it")
     }
 
+    /// The numbers go in the bar below the plot, not in a box on top of it.
+    ///
+    /// They were in a box on top of it, because that is where a plotting
+    /// library puts them. It is the wrong place here: this application already
+    /// has a strip along the foot of every view whose whole job is to say what
+    /// is on screen in numbers, and a second readout in a second style over the
+    /// picture is a second convention.
+    function test_the_reading_is_reported_in_the_footer() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+
+        compare(plot.readingFacts.length, 0)
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        // The line it came from -- there are sixty-four of them here -- and the
+        // two numbers.
+        const facts = plot.readingFacts
+        compare(facts.length, 3)
+        verify(String(facts[0]).startsWith("line "), "got " + facts[0])
+        verify(String(facts[1]).startsWith("x "), "got " + facts[1])
+        verify(String(facts[2]).startsWith("y "), "got " + facts[2])
+        // The default axis counts elements, so an x reads as a whole number
+        // rather than as "12.0000" -- four digits of decoration on a count.
+        verify(!String(facts[1]).includes("."), "got " + facts[1])
+
+        mouseMove(lines, -20, -20)
+        waitForRendering(win.view)
+        compare(plot.readingFacts.length, 0)
+    }
+
+    /// ...and a plot of one line does not say which line.
+    ///
+    /// "Which" has no answer worth printing there, and a line's name can be a
+    /// bare row index -- which read as a stray number sitting between two facts
+    /// that were labelled: "1 LINE . 1000 POINTS . Y 0.000 ... 999.0 . 0 . X 450".
+    function test_a_single_line_is_not_named_in_the_reading() {
+        verify(select("/long_vec"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        compare(AppController.datasetPlot.seriesCount, 1)
+
+        mouseMove(lines, Math.round(lines.width * 0.45),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        const facts = plot.readingFacts
+        compare(facts.length, 2)
+        verify(String(facts[0]).startsWith("x "), "got " + facts[0])
+        verify(String(facts[1]).startsWith("y "), "got " + facts[1])
+
+        mouseMove(lines, -20, -20)
+    }
+
+    /// The crosshair is a control now, and it can be turned off.
+    function test_the_cursor_can_be_turned_off() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot.showCursor, "the cursor is on by default")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+
+        plot.showCursor = false
+        waitForRendering(win.view)
+        verify(!plot.reading.valid,
+               "turning the cursor off must stop it reading")
+        compare(plot.readingFacts.length, 0)
+
+        plot.showCursor = true
+    }
+
+    /// The crosshair is clipped to the pane, and that is not tidiness.
+    ///
+    /// The sample nearest the pointer need not be on screen. Zoom the y axis
+    /// into a narrow band and point at part of the line that has left it: the
+    /// nearest sample is hundreds of pixels above or below the frame, and the
+    /// rule through it was drawn there -- across the bar above the plot.
+    ///
+    /// Asserted in two halves, because either alone would pass on a broken
+    /// build: that the dangerous state is reachable at all, and that the thing
+    /// which contains it is the pane.
+    function test_the_crosshair_stays_inside_the_plot_area() {
+        verify(select("/long_vec")) // a ramp from 0 to 999
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        const frame = lines.parent
+        const cursor = findChild(win.view, "plotCursor")
+        verify(cursor, "the crosshair must be reachable")
+
+        // Whatever else is true, it is clipped and it is the pane.
+        verify(cursor.clip, "the crosshair must be clipped")
+        compare(cursor.x, frame.area.x)
+        compare(cursor.y, frame.area.y)
+        compare(cursor.width, frame.area.width)
+        compare(cursor.height, frame.area.height)
+
+        // A narrow band around the middle of a ramp: at the left-hand end of
+        // the line every sample is far below it.
+        plot.zoomY = 20
+        waitForRendering(win.view)
+        mouseMove(lines, 2, Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid)
+        verify(plot.reading.py > frame.area.height,
+               "the nearest sample must be below the pane for this to test "
+               + "anything: py = " + plot.reading.py + " of " + frame.area.height)
+
+        plot.zoomY = 1
+        mouseMove(lines, -20, -20)
+    }
+
     /// A logarithmic y axis: the other thing the plot could not do. 2-D Qt
     /// Graphs ships a value axis, a bar category axis and a date-time axis, and
     /// the only logarithm in the module is a formatter for the 3-D surfaces.

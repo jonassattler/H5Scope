@@ -29,6 +29,9 @@ Item {
     // --- settings, written by PlotSettingsPanel -------------------------
     property bool showGrid: true
     property bool showMarkers: false
+    /// Whether pointing at the plot reads the sample under the pointer: a
+    /// crosshair on the plot and a line of numbers in the bar below it.
+    property bool showCursor: true
     /// A logarithmic y axis: the first of the two things this plot could not do
     /// while it drew through Qt Graphs. 2-D Qt Graphs ships a value axis, a bar
     /// category axis and a date-time axis, and nothing logarithmic at any
@@ -478,19 +481,53 @@ Item {
 
         markers: surface.showMarkers
         markerSize: Theme.plotMarkerSize
+        showCursor: surface.showCursor
+    }
 
-        // What to call the line the crosshair landed on. The frame knows the
-        // numbers; only the thing being drawn knows the names, and the index
-        // it hands back is a position in the drawn set rather than a row of
-        // any table.
-        labelForLine: (position) => {
-            if (!surface.plot)
-                return ""
-            const drawn = surface.plot.drawnSeries
-            if (position < 0 || position >= drawn.length)
-                return ""
-            return surface.plot.seriesLabel(drawn[position])
+    /// What the pointer is over, snapped to the nearest drawn sample:
+    /// `{ valid, line, x, y, px, py }`. Invalid when the pointer is elsewhere
+    /// or the reader has turned the cursor off.
+    readonly property var reading: frame.reading
+
+    /// The same thing written out, for the bar below the plot to print.
+    ///
+    /// It used to be a box floating in the corner of the pane. That is where a
+    /// plotting library puts it and it is the wrong place here, because this
+    /// application already has a strip along the foot of every view whose whole
+    /// job is to say what is on screen in numbers -- and a second readout in a
+    /// second style, over the top of the picture, is a second convention.
+    ///
+    /// The frame knows the numbers; only the thing being drawn knows the names,
+    /// and the index it hands back is a position in the drawn set rather than a
+    /// row of any table.
+    readonly property var readingFacts: {
+        if (!surface.reading.valid)
+            return []
+        const facts = []
+        const drawn = surface.plot ? surface.plot.drawnSeries : []
+        // Which line, and only when there is more than one -- "which" has no
+        // answer worth printing about a plot of a single line, and a line's
+        // name can be a bare row index, which read as a stray number between
+        // two facts that were labelled.
+        if (drawn.length > 1) {
+            const position = surface.reading.line
+            if (position >= 0 && position < drawn.length) {
+                facts.push(qsTr("line %1")
+                           .arg(surface.plot.seriesLabel(drawn[position])))
+            }
         }
+        facts.push(qsTr("x %1").arg(surface.readingNumber(surface.reading.x)))
+        facts.push(qsTr("y %1").arg(surface.readingNumber(surface.reading.y)))
+        return facts
+    }
+
+    /// One reading, written. Six significant figures, except for a whole
+    /// number: the default x axis is the element's own index, and "12.0000" is
+    /// four digits of decoration on a count.
+    function readingNumber(value) {
+        if (!isFinite(value))
+            return String(value)
+        return Number.isInteger(value) ? String(value) : value.toPrecision(6)
     }
 
     /// Hand the lines over and dress them.
@@ -574,7 +611,7 @@ Item {
         "rangeStart", "rangeStep", "rangeStop", "locks",
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
-        "showGrid", "showMarkers", "logY"
+        "showGrid", "showMarkers", "logY", "showCursor"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -612,7 +649,7 @@ Item {
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
-                "showGrid", "showMarkers", "logY", "highlighted",
+                "showGrid", "showMarkers", "logY", "showCursor", "highlighted",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
