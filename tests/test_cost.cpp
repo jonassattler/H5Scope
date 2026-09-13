@@ -425,6 +425,11 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         // the samples are already in hand, so moving it must not reach the
         // file -- and a change that made it do so would not look like a bug,
         // it would look like the plot had become slow.
+        //
+        // This is the *renderer's* window, and it is still true of it word for
+        // word. The model has a window of its own now -- see the closer-look
+        // case below -- and the boundary between them is exactly this: the item
+        // never reads, the model reads once the view has stopped moving.
         gui::PlotItem item;
         (void)counted.plot.pointCount();
         Counted::settleAll();
@@ -445,6 +450,335 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(cost.elements == 0);
     }
 
+    SECTION("a closer look is read once, after the view has stopped moving")
+    {
+        // The whole point of the closer look: zooming in resolves detail
+        // instead of stretching a summary. What it must not do is read while
+        // the reader is still moving, and what it must not cost is more than
+        // the run on screen.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount(); // the whole line, at 1024 buckets
+        Counted::settleAll();
+
+        // Just past one settle, which is the pane's own read and nothing else:
+        // the octaves read ahead of the reader each wait out a settle of their
+        // own, so the first of them has not gone yet.
+        const auto cost = wide.measure([&] {
+            wide.plot.setVisibleRange(0.0, 10000.0);
+            h5test::settleFor(220);
+        });
+
+        CHECK(cost.crossings == 1);
+        // Twice the visible span, because that is what a run is, and not one
+        // element more. The whole line is a million.
+        CHECK(cost.elements == 32768);
+        // And one read, because thirty-two thousand elements fit in a single
+        // hyperslab. The run is what decides the round trips; the thousand
+        // buckets it is folded into decide nothing about them.
+        CHECK(cost.reads == 1);
+
+        // Then the octaves out, one settle apart, and then nothing. That is
+        // what the outward direction costs and why it is spent while the reader
+        // is looking rather than while they are waiting -- going *in* needs no
+        // read at all, because a run is read finer than the pane asked.
+        //
+        // A bound rather than a count: each of these runs is four times as wide
+        // as the one below it, so the second is skipped whenever the first
+        // already covers where it would have looked. What must hold is that
+        // there are not more of them than were asked for, and that they stop.
+        const auto ahead = wide.measure([&] { h5test::settleFor(900); });
+        CHECK(ahead.crossings >= 1);
+        CHECK(ahead.crossings <= DatasetPlot::kPrefetchOctaves);
+
+        const auto quiet = wide.measure([&] { h5test::settleFor(500); });
+        CHECK(quiet.crossings == 0);
+        CHECK(quiet.reads == 0);
+    }
+
+    SECTION("a gesture in flight reads nothing")
+    {
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        // Sixty pushes of the view, as a wheel spun through six octaves or a
+        // drag across the pane. Not one of them may reach the file: the run is
+        // only worth reading once the reader has stopped somewhere.
+        const auto cost = wide.measure([&] {
+            for (int step = 0; step < 60; ++step) {
+                const double span = 400000.0 / (1.0 + static_cast<double>(step));
+                wide.plot.setVisibleRange(500000.0 - span, 500000.0 + span);
+            }
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+    }
+
+    SECTION("panning inside the run in hand reads nothing")
+    {
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        wide.plot.setVisibleRange(0.0, 10000.0);
+        // Long enough for the octaves read ahead of the reader as well, so what
+        // is counted below is the pan and not the prefetch finishing.
+        h5test::settleFor(1200);
+        Counted::settleAll();
+
+        // A run is twice the pane and steps by a quarter of itself, so a pan of
+        // most of a screenful is still the same run -- which is what the
+        // alignment buys, stated in the only units that matter.
+        const auto cost = wide.measure([&] {
+            wide.plot.setVisibleRange(4000.0, 14000.0);
+            wide.plot.setVisibleRange(8000.0, 18000.0);
+            h5test::settleFor(300);
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+    }
+
+    SECTION("zooming back out reads nothing")
+    {
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        wide.plot.setVisibleRange(0.0, 10000.0);
+        h5test::settleFor(1200);
+        Counted::settleAll();
+
+        // The whole-line summary was never thrown away, so going back to it is
+        // a draw and not a read. That is the reason the runs sit beside it
+        // rather than replacing it.
+        const auto cost = wide.measure([&] {
+            wide.plot.setVisibleRange(0.0, 1000000.0);
+            h5test::settleFor(300);
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+        CHECK(wide.plot.pointCount() == 2 * 1024);
+    }
+
+    SECTION("the next octave in is already in hand")
+    {
+        // The prefetch, counted. A run is read one octave finer than the pane
+        // needs -- see DatasetPlot::detailBuckets -- and the whole argument for
+        // it is that the octave costs nothing to read and saves the reader a
+        // wait. Both halves are here: the settled read that follows a zoom, and
+        // then the next step in, which must not read at all.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        const auto arriving = wide.measure([&] {
+            wide.plot.setVisibleRange(0.0, 10000.0);
+            h5test::settleFor(1200); // the run, and the octaves read ahead of it
+        });
+        CHECK(arriving.crossings >= 2);
+        CHECK(arriving.crossings <= 1 + DatasetPlot::kPrefetchOctaves);
+
+        const auto stepping = wide.measure([&] {
+            // Half the span, about the same centre: one octave in.
+            wide.plot.setVisibleRange(2500.0, 7500.0);
+            h5test::settleFor(1200);
+        });
+        CHECK(stepping.crossings == 0);
+        CHECK(stepping.reads == 0);
+        CHECK(stepping.elements == 0);
+
+        // ...and it is drawn at the finer bucket rather than stretched, which
+        // is what makes the step worth prefetching in the first place.
+        CHECK(wide.plot.thinned());
+        CHECK(wide.plot.pointCount() > 2 * 1024);
+    }
+
+    SECTION("the octaves out are already in hand")
+    {
+        // The direction that used to flicker. Zooming out past the run in hand
+        // fell back to the whole-line summary -- correct, and as many octaves
+        // too coarse as the reader was zoomed in -- and then sharpened a tenth
+        // of a second later when the next run landed. The runs read ahead of
+        // them are what removes that: each is four times as wide as the one
+        // below it, so a handful of octaves are covered by two of them.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        const double coarse = wide.plot.lineOf(0).positionStep;
+
+        // Somewhere in the middle of the line, so that nothing is answered by
+        // the run simply running into the end of the data.
+        wide.plot.setVisibleRange(400000.0, 410000.0);
+        h5test::settleFor(1200);
+        Counted::settleAll();
+        const double close = wide.plot.lineOf(0).positionStep;
+        REQUIRE(close < coarse);
+
+        // Three octaves out, one at a time. None of them reads, and none of
+        // them falls back to the whole-line summary.
+        double low = 400000.0;
+        double high = 410000.0;
+        for (int octave = 1; octave <= 3; ++octave) {
+            const double centre = (low + high) / 2.0;
+            const double half = (high - low);
+            low = centre - half;
+            high = centre + half;
+
+            // The gesture itself: nothing is read, and the frame after it is
+            // already drawn from a run rather than from the whole-line summary.
+            // That second half is the whole point -- the flicker was never a
+            // read, it was the picture coarsening while one was on its way.
+            const auto gesture = wide.measure([&] { wide.plot.setVisibleRange(low, high); });
+            CHECK(gesture.crossings == 0);
+            CHECK(gesture.reads == 0);
+            CHECK(wide.plot.lineOf(0).positionStep < coarse);
+
+            // Behind it the prefetch may take another octave, which the reader
+            // never waits for: the picture above was right before it started.
+            h5test::settleFor(400);
+            Counted::settleAll();
+            CHECK(wide.plot.lineOf(0).positionStep < coarse);
+        }
+    }
+
+    SECTION("a thousand lines drawn at once read no closer look at all")
+    {
+        // Past a few hundred strokes over one another the picture is a
+        // distribution rather than a line. Re-reading every one of them on
+        // every settled zoom would spend the whole cost of the selection again
+        // to sharpen something nobody can follow, so the closer look stops
+        // being offered and the lines stretch as they always did.
+        Counted many({1000, 100000});
+        many.plot.selectAll();
+        (void)many.plot.pointCount();
+        Counted::settleAll();
+        REQUIRE(many.plot.seriesCount() == 1000);
+
+        const auto cost = many.measure([&] {
+            many.plot.setVisibleRange(0.0, 1000.0);
+            h5test::settleFor(300);
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+    }
+
+    SECTION("a wider pane reads the same elements in more buckets")
+    {
+        // What a line is thinned to follows the pane -- a bucket is a column --
+        // so a wider window asks for more buckets. What it must not do is read
+        // more of the file, or make more round trips for them: an envelope
+        // reads every element exactly once either way, in reads of up to
+        // kReadRun, and the bucket count decides only how many answers those
+        // elements are folded into.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        // The wait is inside the measurement, not before it: a pane that is
+        // being dragged reads nothing at all, and what is counted here is the
+        // one read at the end of the gesture. See DatasetPlot::setPaneColumns.
+        const auto resize = [&](int columns) {
+            return wide.measure([&] {
+                wide.plot.setPaneColumns(columns);
+                h5test::settleFor(DatasetPlot::kResizeMilliseconds + 200);
+                (void)wide.plot.pointCount();
+            });
+        };
+
+        const auto narrow = resize(512);
+        const int few = wide.plot.pointCount();
+
+        const auto broad = resize(2048);
+        const int many = wide.plot.pointCount();
+
+        // The bucket is a ceiling and so is the count of them, so a budget of
+        // n buckets is n or a few less -- 1e6 into 2048 is a bucket of 489,
+        // which is 2045 of them. Written as the arithmetic rather than as the
+        // answer, because the answer is not the round number and pretending it
+        // is would be a test that agrees with a comment instead of with a read.
+        const auto bucketsFor = [](int budget) {
+            const int stride = (1000000 + budget - 1) / budget;
+            return (1000000 + stride - 1) / stride;
+        };
+        CHECK(few == 2 * bucketsFor(512));
+        CHECK(many == 2 * bucketsFor(2048));
+        // The whole line, exactly once, both times. Not "about the whole line":
+        // a read is cut back to a whole number of buckets precisely so that no
+        // element is read twice at the seam between two of them.
+        CHECK(narrow.elements == 1000000);
+        CHECK(broad.elements == 1000000);
+
+        // And in the same number of round trips, because a round trip is a
+        // hyperslab of up to kReadRun elements and has nothing to do with how
+        // many buckets those elements are folded into. This is the number that
+        // used to follow the bucket count -- one read per bucket -- and it is
+        // where the cost of the legend's `all` on a ten-thousand-line table
+        // was: a hundred and twenty-eight buckets of eight elements each is a
+        // hundred and twenty-eight reads to move a kilobyte, ten thousand
+        // times over.
+        CHECK(narrow.reads == broad.reads);
+        // Sixteen reads of sixty-five thousand cover a million, and cutting
+        // each of them back to a whole number of buckets can cost one more.
+        CHECK(narrow.reads >= 1000000 / 65536);
+        CHECK(narrow.reads <= 2 + 1000000 / 65536);
+        CHECK(narrow.crossings == 1);
+        CHECK(broad.crossings == 1);
+    }
+
+    SECTION("a bucket of eight elements is not a read of eight elements")
+    {
+        // The shape of the legend's `all`, in miniature: many lines, so few
+        // points each, so a small bucket. What must not happen is a round trip
+        // per bucket -- the reads follow the length of the line, not the number
+        // of answers it is folded into.
+        Counted many({64, 4096});
+        many.plot.selectAll();
+        const auto cost = many.measure([&] {
+            (void)many.plot.pointCount();
+            Counted::settleAll();
+        });
+        REQUIRE(many.plot.seriesCount() == 64);
+        CHECK(cost.elements == 64 * 4096);
+        // One read a line, because a line is four thousand elements and a read
+        // carries sixty-five thousand. One per bucket would be sixty-four
+        // times that.
+        CHECK(cost.reads <= 2 * 64);
+    }
+
+    SECTION("a pane being dragged reads nothing at all")
+    {
+        // The counted form of "the plot must not flicker under the reader's
+        // hand". A window dragged from narrow to wide crosses a column quantum
+        // every sixty-four pixels, and each crossing used to be every drawn
+        // line read again -- so a drag was dozens of reads of the whole file
+        // and dozens of blank frames, to arrive at a width the reader had not
+        // chosen yet.
+        Counted wide({1, 1000000});
+        // The surface measuring itself for the first time is not a gesture and
+        // does not wait -- see DatasetPlot::setPaneColumns -- so the pane is
+        // measured once here and the drag below is a drag.
+        wide.plot.setPaneColumns(512);
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        const auto dragging = wide.measure([&] {
+            for (int columns = 576; columns <= 2048; columns += 64) {
+                wide.plot.setPaneColumns(columns);
+                (void)wide.plot.pointCount();
+            }
+        });
+        CHECK(dragging.crossings == 0);
+        CHECK(dragging.reads == 0);
+        CHECK(dragging.elements == 0);
+
+        // ...and the moment it stops, once.
+        const auto settled = wide.measure([&] {
+            h5test::settleFor(DatasetPlot::kResizeMilliseconds + 200);
+            (void)wide.plot.pointCount();
+        });
+        CHECK(settled.crossings == 1);
+        CHECK(settled.elements == 1000000);
+    }
+
     SECTION("a selection of thousands holds fewer points in each line")
     {
         // kMaxPoints each was right while a selection was sixty-four lines.
@@ -461,7 +795,9 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         Counted::settleAll();
 
         CHECK(many.plot.seriesCount() == 10000);
-        CHECK(few == DatasetPlot::kMaxPoints);
+        // Two values a bucket and a bucket a column, at the width a pane is
+        // assumed to have until the surface measures itself.
+        CHECK(few == 2 * DatasetPlot::kDefaultColumns);
         CHECK(many.plot.pointCount() <= DatasetPlot::kMinPoints);
         // ...and it is still an envelope, so nothing has been skipped over.
         CHECK(many.plot.thinned());

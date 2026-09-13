@@ -351,69 +351,127 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
         }
     };
 
+    // The extremes of `values[from, to)`, and where each of them occurred, or
+    // no answer at all when there is nothing finite in that run.
+    struct Extremes
+    {
+        double lowest = 0.0;
+        double highest = 0.0;
+        qsizetype lowAt = -1;
+        qsizetype highAt = -1;
+
+        [[nodiscard]] bool found() const { return lowAt >= 0; }
+        /// The two, in the order they occurred. A bucket of two elements *is*
+        /// its two elements, and emitting them smallest-first would turn every
+        /// descending pair in the line the other way up.
+        [[nodiscard]] double first() const { return lowAt <= highAt ? lowest : highest; }
+        [[nodiscard]] double second() const { return lowAt <= highAt ? highest : lowest; }
+    };
+
+    // A read length cut back to a whole number of buckets, so that no read ever
+    // stops inside one.
+    //
+    // Without it the walk is still correct -- a bucket a read stopped inside is
+    // left for the next one -- but the elements between the bucket's start and
+    // that stopping point are then read twice, and "an envelope reads every
+    // element exactly once" is a count tests/test_cost.cpp holds this to.
+    // A bucket wider than a whole read is the one case that cannot be cut back
+    // and is summarised from as much of itself as came back, which is what the
+    // one-read-per-bucket arrangement did to every bucket at this size.
+    const auto wholeBuckets = [](qint64 length, int stride) {
+        return length > stride ? (length / stride) * stride : length;
+    };
+
+    const auto extremesOf = [](const std::vector<double>& values, qsizetype from, qsizetype to) {
+        Extremes found;
+        for (qsizetype i = from; i < to; ++i) {
+            const double value = values[i];
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            if (found.lowAt < 0 || value < found.lowest) {
+                found.lowest = value;
+                found.lowAt = i;
+            }
+            if (found.highAt < 0 || value > found.highest) {
+                found.highest = value;
+                found.highAt = i;
+            }
+        }
+        return found;
+    };
+
     if (envelopeColumns) {
-        // One read per bucket, which is exactly what the strided path below
-        // does -- it reads one element per drawn point. The difference is that
-        // this one reads the whole run those elements were being chosen from,
-        // and kReadRun is 65536, so a bucket fits in a single read for any
-        // dataset up to a couple of hundred million points a line.
+        // Every element of the row, in reads of up to kReadRun -- and then as
+        // many whole buckets as each of those covers, summarised out of the
+        // buffer.
         //
-        // That is the whole of the cost. In exchange a spike one sample wide
-        // cannot be missed, because it is selected for *being* extreme rather
-        // than for landing where a stride happened to fall -- and the extent
-        // the y axis is drawn against becomes the line's true extent rather
-        // than the extent of a sample of it.
+        // The reads and the buckets used to be the same thing: one read per
+        // bucket, which was defensible because it is what the strided path
+        // below costs too -- it reads one element per drawn point. It stopped
+        // being defensible the moment a bucket got small. `all` on a table of
+        // ten thousand rows gives each line 128 buckets of eight elements, and
+        // that arrangement asked HDF5 for eight values 1.28 million times to
+        // move twenty megabytes; the reader waited two seconds for it, and
+        // essentially all of that was per-call overhead rather than I/O.
+        //
+        // Nothing about what is drawn changes. The same elements are read and
+        // the same extremes come out of them, because a bucket is never split
+        // across two reads: one that stops inside a bucket leaves it for the
+        // next, and the only bucket summarised from part of itself is one wider
+        // than a whole read -- which is the degradation the old code took for
+        // every bucket at kReadRun, kept here for the same reason.
+        //
+        // What it buys is that a spike one sample wide cannot be missed -- it
+        // is selected for *being* extreme rather than for landing where a
+        // stride happened to fall -- and the extent the y axis is drawn against
+        // is the line's true extent rather than the extent of a sample of it.
         try {
             for (int r = 0; r < grid.rows; ++r) {
                 const auto row = static_cast<int>(firstRow + qint64{r} * grid.rowStride);
-                for (int b = 0; b < buckets; ++b) {
+                int b = 0;
+                while (b < buckets) {
                     const qint64 wanted = qint64{b} * grid.columnStride;
                     const auto column = static_cast<int>(firstColumn + wanted);
-                    const auto span = static_cast<int>(
-                        std::min<qint64>(grid.columnStride, columnExtent - wanted));
-                    // Scattered Custom indices break the run, and the bucket is
-                    // then only partly covered. That is the same degradation
-                    // the strided path takes, and for the same reason.
-                    const int run = axes.runLength(column, std::min(span, kReadRun));
+                    // Scattered Custom indices break the run, and the buckets
+                    // past the break are then left for the read after this one.
+                    const auto limit = static_cast<int>(
+                        wholeBuckets(std::min<qint64>(kReadRun, columnExtent - wanted),
+                                     grid.columnStride));
+                    const int run = axes.runLength(column, std::max(limit, 1));
 
                     std::vector<hsize_t> offset = axes.coordinates(row, column);
                     std::vector<hsize_t> count(axes.rank(), 1);
                     count[lastX] = static_cast<hsize_t>(std::max(run, 1));
                     const h5core::NumericWindow window = source.readNumericWindow(offset, count);
-
-                    double lowest = 0.0;
-                    double highest = 0.0;
-                    qsizetype lowAt = -1;
-                    qsizetype highAt = -1;
                     const auto seen = static_cast<qsizetype>(window.values.size());
-                    for (qsizetype i = 0; i < seen; ++i) {
-                        const double value = window.values[i];
-                        if (!std::isfinite(value)) {
-                            continue;
-                        }
-                        if (lowAt < 0 || value < lowest) {
-                            lowest = value;
-                            lowAt = i;
-                        }
-                        if (highAt < 0 || value > highest) {
-                            highest = value;
-                            highAt = i;
-                        }
-                    }
-                    if (lowAt < 0) {
-                        continue; // the whole bucket stays NaN, which is what it is
-                    }
-                    note(lowest);
-                    note(highest);
 
-                    // In the order they occur, so the stroke keeps the
-                    // direction the data has. At a stride of two that is not a
-                    // nicety -- the two values *are* the two elements, and
-                    // emitting them smallest-first would swap every descending
-                    // pair in the line.
-                    const auto at = static_cast<std::size_t>(r) * grid.columns + 2 * b;
-                    grid.values[at] = lowAt <= highAt ? lowest : highest;
-                    grid.values[at + 1] = lowAt <= highAt ? highest : lowest;
+                    const int started = b;
+                    for (; b < buckets; ++b) {
+                        const qint64 at = qint64{b} * grid.columnStride;
+                        const auto from = static_cast<qsizetype>(at - wanted);
+                        if (from >= seen) {
+                            break;
+                        }
+                        const qint64 span =
+                            std::min<qint64>(grid.columnStride, columnExtent - at);
+                        const auto to = static_cast<qsizetype>(std::min<qint64>(from + span, seen));
+                        if (to - from < span && b > started) {
+                            break; // the read stopped inside it; the next one covers it whole
+                        }
+                        const Extremes found = extremesOf(window.values, from, to);
+                        if (!found.found()) {
+                            continue; // the whole bucket stays NaN, which is what it is
+                        }
+                        note(found.lowest);
+                        note(found.highest);
+                        const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
+                        grid.values[out] = found.first();
+                        grid.values[out + 1] = found.second();
+                    }
+                    if (b == started) {
+                        ++b; // a read that yielded nothing must not stall the walk
+                    }
                 }
             }
         }
@@ -424,53 +482,59 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
     }
 
     if (envelopeRows) {
-        // The mirror of the block above, down the other axis: one read per
-        // bucket of rows, the extremes of what came back, in the order they
-        // occurred.
+        // The mirror of the block above, down the other axis, and batched the
+        // same way: a read of up to kReadRun rows, then every whole bucket of
+        // rows that read covers. A span of rows is one hyperslab exactly as a
+        // span of columns is; it is merely not a contiguous one, because a row
+        // of a 2-D dataset is as long as the dataset is wide.
+        //
+        // This is the case that matters most. defaultOnX keeps a rank-1
+        // dimension on the row axis so a vector still reads as a column in the
+        // grid, which makes every trace, every spectrum and every log in every
+        // file a line down the rows.
         try {
             for (int c = 0; c < grid.columns; ++c) {
                 const auto column = static_cast<int>(firstColumn + qint64{c} * grid.columnStride);
-                for (int b = 0; b < rowBuckets; ++b) {
+                int b = 0;
+                while (b < rowBuckets) {
                     const qint64 wanted = qint64{b} * grid.rowStride;
                     const auto row = static_cast<int>(firstRow + wanted);
-                    const auto span =
-                        static_cast<int>(std::min<qint64>(grid.rowStride, rowExtent - wanted));
-                    const int run = axes.rowRunLength(row, std::min(span, kReadRun));
+                    const auto limit = static_cast<int>(wholeBuckets(
+                        std::min<qint64>(kReadRun, rowExtent - wanted), grid.rowStride));
+                    const int run = axes.rowRunLength(row, std::max(limit, 1));
 
                     std::vector<hsize_t> offset = axes.coordinates(row, column);
                     std::vector<hsize_t> count(axes.rank(), 1);
                     count[lastY] = static_cast<hsize_t>(std::max(run, 1));
                     const h5core::NumericWindow window = source.readNumericWindow(offset, count);
-
-                    double lowest = 0.0;
-                    double highest = 0.0;
-                    qsizetype lowAt = -1;
-                    qsizetype highAt = -1;
                     const auto seen = static_cast<qsizetype>(window.values.size());
-                    for (qsizetype i = 0; i < seen; ++i) {
-                        const double value = window.values[i];
-                        if (!std::isfinite(value)) {
-                            continue;
-                        }
-                        if (lowAt < 0 || value < lowest) {
-                            lowest = value;
-                            lowAt = i;
-                        }
-                        if (highAt < 0 || value > highest) {
-                            highest = value;
-                            highAt = i;
-                        }
-                    }
-                    if (lowAt < 0) {
-                        continue; // the whole bucket stays NaN, which is what it is
-                    }
-                    note(lowest);
-                    note(highest);
 
-                    const auto first = static_cast<std::size_t>(2 * b) * grid.columns + c;
-                    const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
-                    grid.values[first] = lowAt <= highAt ? lowest : highest;
-                    grid.values[second] = lowAt <= highAt ? highest : lowest;
+                    const int started = b;
+                    for (; b < rowBuckets; ++b) {
+                        const qint64 at = qint64{b} * grid.rowStride;
+                        const auto from = static_cast<qsizetype>(at - wanted);
+                        if (from >= seen) {
+                            break;
+                        }
+                        const qint64 span = std::min<qint64>(grid.rowStride, rowExtent - at);
+                        const auto to = static_cast<qsizetype>(std::min<qint64>(from + span, seen));
+                        if (to - from < span && b > started) {
+                            break; // the read stopped inside it; the next one covers it whole
+                        }
+                        const Extremes found = extremesOf(window.values, from, to);
+                        if (!found.found()) {
+                            continue; // the whole bucket stays NaN, which is what it is
+                        }
+                        note(found.lowest);
+                        note(found.highest);
+                        const auto first = static_cast<std::size_t>(2 * b) * grid.columns + c;
+                        const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
+                        grid.values[first] = found.first();
+                        grid.values[second] = found.second();
+                    }
+                    if (b == started) {
+                        ++b; // a read that yielded nothing must not stall the walk
+                    }
                 }
             }
         }
@@ -587,20 +651,31 @@ DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) cons
         grids.assign(requests.size(), refusal);
         return grids;
     }
-    return H5Thread::instance().invoke([&](H5Session& session) {
-        std::vector<NumericGrid> read;
-        read.reserve(requests.size());
+    return H5Thread::instance().invoke([&, axes = axes_](H5Session& session) {
         const h5core::DataSource* source = session.source();
-        for (const SampleRequest& request : requests) {
-            const TableAxes& axes = request.axes.has_value() ? *request.axes : axes_;
-            read.push_back(source == nullptr ? NumericGrid{}
-                                             : sampleFrom(*source, axes, request.firstRow,
-                                                          request.rowSpan, request.maxRows,
-                                                          request.firstColumn, request.columnSpan,
-                                                          request.maxColumns, request.envelope));
-        }
-        return read;
+        return source == nullptr ? std::vector<NumericGrid>(requests.size())
+                                 : readSamples(*source, axes, requests);
     });
+}
+
+std::vector<DatasetTableModel::NumericGrid>
+DatasetTableModel::readSamples(const h5core::DataSource& source, const TableAxes& axes,
+                               const std::vector<SampleRequest>& requests)
+{
+    // On the HDF5 thread, and everything it needs is an argument -- which is
+    // the whole reason it is static. The blocking form above waits for it, and
+    // DatasetPlot runs the same batch inside a submit() so that a closer look
+    // at a line never stops the window; neither of them could share the body if
+    // it reached for a member.
+    std::vector<NumericGrid> read;
+    read.reserve(requests.size());
+    for (const SampleRequest& request : requests) {
+        read.push_back(sampleFrom(source, request.axes.has_value() ? *request.axes : axes,
+                                  request.firstRow, request.rowSpan, request.maxRows,
+                                  request.firstColumn, request.columnSpan, request.maxColumns,
+                                  request.envelope));
+    }
+    return read;
 }
 
 QVariant DatasetTableModel::data(const QModelIndex& index, int role) const

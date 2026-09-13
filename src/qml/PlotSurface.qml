@@ -32,12 +32,6 @@ Item {
     /// Whether pointing at the plot reads the sample under the pointer: a
     /// crosshair on the plot and a line of numbers in the bar below it.
     property bool showCursor: true
-    /// A logarithmic y axis: the first of the two things this plot could not do
-    /// while it drew through Qt Graphs. 2-D Qt Graphs ships a value axis, a bar
-    /// category axis and a date-time axis, and nothing logarithmic at any
-    /// price -- the only log axis in the module is a formatter for the 3-D
-    /// surfaces.
-    property bool logY: false
 
     /// Whether this is the presentation on screen. Reading `plot.hasData`
     /// samples the file, so every path into the plot is guarded by this: a
@@ -312,11 +306,22 @@ Item {
     property real zoomY: 1.0
     property real panY: 0.0
 
-    /// Ceiling on magnification. The sample behind the plot holds at most a
-    /// couple of thousand points per line, so beyond this there is nothing
-    /// further to resolve -- reading between two samples is the data settings
-    /// panel's job, which subsets the dataset and re-reads it.
-    readonly property real maxZoom: 256.0
+    /// Ceiling on magnification.
+    ///
+    /// This was 256 flat, and the note beside it said why: the sample behind
+    /// the plot held at most a couple of thousand points of the *whole* line,
+    /// so past that there was nothing further to resolve and zooming only
+    /// stretched what was already drawn.
+    ///
+    /// That is no longer true. The plot object reads the run the reader is
+    /// looking at again, at a finer bucket, whenever they stop moving -- see
+    /// DatasetPlot::setVisibleRange -- so each octave in is an octave of real
+    /// detail until the line is drawn sample for sample. The ceiling is
+    /// therefore about the data rather than about the cache: enough
+    /// magnification to put a handful of elements across the pane, and no more,
+    /// because a pane showing fewer than that is showing a gap between two
+    /// samples rather than a line.
+    readonly property real maxZoom: Math.max(256.0, surface.dataLength / 16)
 
     readonly property bool zoomed: zoomX !== 1.0 || zoomY !== 1.0
                                    || panX !== 0.0 || panY !== 0.0
@@ -378,7 +383,16 @@ Item {
                  pan: surface.clampPan(centre - (low + high) / 2.0, next, low, high) }
     }
 
-    function zoomAt(px, py, factor) {
+    /// Zoom about (px, py) by `factor`, on the axes `axes` names: "x", "y" or
+    /// "both".
+    ///
+    /// One axis at a time is what the modifiers ask for, and it is not a
+    /// convenience. A plot of a long trace is read by stretching time without
+    /// changing what an amplitude is worth, and a plot of a narrow band is read
+    /// the other way round; a zoom that always takes both makes either of those
+    /// a zoom followed by a correcting pan, done by eye. Shift for x and Ctrl
+    /// for y, which is the pair every other plot in the field uses.
+    function zoomAt(px, py, factor, axes) {
         const area = surface.plotRect
         if (area.width <= 0 || area.height <= 0)
             return
@@ -386,16 +400,36 @@ Item {
         // y grows downward on screen and upward on the axis.
         const fy = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
 
-        const x = surface.zoomedAxis(surface.zoomX, surface.panX,
-                                     surface.axisMinX, surface.axisMaxX,
-                                     fx, factor)
-        const y = surface.zoomedAxis(surface.zoomY, surface.panY,
-                                     surface.lowerBound, surface.upperBound,
-                                     fy, factor)
-        surface.zoomX = x.zoom
-        surface.panX = x.pan
-        surface.zoomY = y.zoom
-        surface.panY = y.pan
+        if (axes !== "y") {
+            const x = surface.zoomedAxis(surface.zoomX, surface.panX,
+                                         surface.axisMinX, surface.axisMaxX,
+                                         fx, factor)
+            surface.zoomX = x.zoom
+            surface.panX = x.pan
+        }
+        if (axes !== "x") {
+            const y = surface.zoomedAxis(surface.zoomY, surface.panY,
+                                         surface.lowerBound, surface.upperBound,
+                                         fy, factor)
+            surface.zoomY = y.zoom
+            surface.panY = y.pan
+        }
+    }
+
+    /// Which axes a wheel event with these modifiers zooms.
+    ///
+    /// Shift alone is x, Ctrl alone is y, and everything else -- neither, both,
+    /// or one of them with a third key held -- is both. Both is the default
+    /// rather than nothing, because a modifier this file does not know about is
+    /// a modifier some window manager put there and not an instruction.
+    function zoomAxesFor(modifiers) {
+        const shift = (modifiers & Qt.ShiftModifier) !== 0
+        const control = (modifiers & Qt.ControlModifier) !== 0
+        if (shift && !control)
+            return "x"
+        if (control && !shift)
+            return "y"
+        return "both"
     }
 
     /// Drag the view by a pointer movement. The content follows the pointer,
@@ -475,7 +509,6 @@ Item {
         viewMaxX: surface.viewMaxX
         viewMinY: surface.viewMinY
         viewMaxY: surface.viewMaxY
-        logY: surface.logY
         showGrid: surface.showGrid
         tickTarget: surface.tickTarget
 
@@ -537,6 +570,12 @@ Item {
     /// borrowed, so the model empties the item before it frees them -- which is
     /// why there is nothing here to tear down.
     function refill() {
+        // Here as well as on every change of the view, because a plot object
+        // that has just been reset -- a new dataset, a rearranged table -- has
+        // forgotten what was on screen, and this is the first moment it is
+        // being spoken to again.
+        surface.pushColumns()
+        surface.pushRange()
         if (!surface.drawable) {
             frame.lines.clear()
             return
@@ -561,6 +600,82 @@ Item {
                                                                    drawn.length))
             frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))
         }
+    }
+
+    /// Tell the plot object what is on screen.
+    ///
+    /// Not a setting and nothing is drawn from it: it is what lets the object
+    /// decide whether the lines are worth reading again at a finer bucket, and
+    /// the answer is usually no -- a range that resolves to the run already in
+    /// hand costs nothing at all on the other side. The read, when there is
+    /// one, waits for the gesture to stop and then goes out asynchronously, so
+    /// nothing here waits for it and no frame is missed.
+    ///
+    /// Guarded by `active` like every other path into the plot object: a reader
+    /// browsing a large dataset as a table must not pay for a closer look at a
+    /// plot nobody has asked to see.
+    function pushRange() {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.setVisibleRange(surface.viewMinX, surface.viewMaxX)
+    }
+
+    /// Tell it how wide the pane is, in columns.
+    ///
+    /// A bucket is a column: what a line is thinned to is a property of the
+    /// pane it is drawn in and not a constant, and the number used to be a
+    /// constant in both directions -- fewer buckets than pixels on a wide
+    /// screen, which draws an envelope as a hatch of separated teeth instead of
+    /// a band, and more points than anyone can tell apart on a narrow one.
+    ///
+    /// The frame rather than the plot area inside it, which is not a rounding:
+    /// the area's left gutter is measured off the widest y tick label, that
+    /// label is measured off the extent of the data, and the extent moves when
+    /// the resolution does -- a finer bucket can find a more extreme value. So
+    /// a resolution taken from the area is a resolution that decides the gutter
+    /// that decides the resolution, which is exactly the binding loop Qt
+    /// reported the first time this was written that way. The frame's own width
+    /// depends on nothing the plot draws.
+    ///
+    /// It overestimates by the gutters, which is what the renderer's tolerance
+    /// for a few points per column is for -- see kSamplesPerColumn. Quantised
+    /// on the other side, so dragging the window's edge does not re-read the
+    /// file once a pixel.
+    ///
+    /// In *device* pixels, which is the other half of "a bucket is a column".
+    /// A pane is laid out in logical pixels and drawn into a framebuffer with
+    /// devicePixelRatio of them for each one, so thinning to the logical width
+    /// on a HiDPI screen hands the renderer one bucket per two or three
+    /// physical columns -- a band drawn at half or a third of the resolution
+    /// the display has, which is the whole of what oversampling would have
+    /// bought and is free to ask for correctly instead.
+    function pushColumns() {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.setPaneColumns(
+            Math.round((frame.width - frame.gutterRight) * surface.pixelRatio))
+    }
+
+    /// Device pixels per logical one, which is the other factor in the pane's
+    /// width. A property rather than a call so that dragging the window onto a
+    /// display with a different scaling re-thins the lines for it -- a resize
+    /// would otherwise be the only thing that ever noticed.
+    ///
+    /// Unqualified `Screen`, which is how an attached property is reached: it
+    /// attaches to the object whose scope names it, and that is this item.
+    readonly property real pixelRatio: Math.max(1, Screen.devicePixelRatio)
+
+    onPixelRatioChanged: surface.pushColumns()
+
+    onViewMinXChanged: surface.pushRange()
+    onViewMaxXChanged: surface.pushRange()
+
+    // A resized window is a different number of columns, and what a line is
+    // thinned to follows it. Quantised on the other side, so a drag of the
+    // frame's edge re-reads every sixty-four pixels rather than every one.
+    Connections {
+        target: frame
+        function onWidthChanged() { surface.pushColumns() }
     }
 
     Component.onCompleted: surface.refill()
@@ -611,7 +726,7 @@ Item {
         "rangeStart", "rangeStep", "rangeStop", "locks",
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
-        "showGrid", "showMarkers", "logY", "showCursor"
+        "showGrid", "showMarkers", "showCursor"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -649,7 +764,7 @@ Item {
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
-                "showGrid", "showMarkers", "logY", "showCursor", "highlighted",
+                "showGrid", "showMarkers", "showCursor", "highlighted",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
@@ -671,6 +786,8 @@ Item {
     // are properties of the *view* and not of the drawing, so they belong to
     // the object that owns the window onto the data.
     Item {
+        objectName: "plotGestures"
+
         anchors.fill: parent
         // The same inset as the graph, so a pointer position in this item is a
         // pointer position in the graph's own coordinates -- which is what
@@ -680,11 +797,22 @@ Item {
 
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            // acceptedModifiers is deliberately left alone. Its default is
+            // Qt.KeyboardModifierMask, which means "whatever is held"; naming
+            // Shift and Control there would require *both* of them at once,
+            // which is the opposite of what this reads.
+            //
             // One notch is 120 eighths of a degree; a trackpad sends fractions
-            // of that, and the exponential keeps both feeling the same.
+            // of that, and the exponential keeps both feeling the same. Held
+            // down, Shift turns a wheel's vertical delta into a horizontal one
+            // on several platforms, so the horizontal one is read when there is
+            // no vertical one -- the notch the reader turned, wherever the
+            // window system filed it.
             onWheel: (event) => {
-                surface.zoomAt(event.x, event.y,
-                               Math.pow(1.25, event.angleDelta.y / 120))
+                const turned = event.angleDelta.y !== 0 ? event.angleDelta.y
+                                                        : event.angleDelta.x
+                surface.zoomAt(event.x, event.y, Math.pow(1.25, turned / 120),
+                               surface.zoomAxesFor(event.modifiers))
             }
         }
 
@@ -707,9 +835,27 @@ Item {
         }
 
         // The way back, without hunting for a button: the same gesture every
-        // map and image viewer uses.
-        TapHandler {
-            onDoubleTapped: surface.resetView()
+        // map and image viewer uses, and the reason it is worth a gesture at
+        // all is that it costs nothing -- the whole-line summary is never
+        // thrown away, so the most zoomed-out picture is always already in hand
+        // and going to it is a draw rather than a read.
+        //
+        // A MouseArea rather than a TapHandler, for exactly the reason
+        // ObjectTree gives at length: TapHandler counts its own taps against
+        // the platform's double-click interval, and anything that takes the
+        // grab in between resets the count -- here the drag handler above, which
+        // takes a passive grab on every press. A MouseArea counts nothing. It
+        // answers the QEvent::MouseButtonDblClick the window system itself
+        // sends, which is a double click by the reader's own settings rather
+        // than by this program's arithmetic.
+        //
+        // Panning still works, and by the same arrangement a Flickable uses: the
+        // drag handler holds a passive grab through the press and takes the
+        // exclusive one the moment the pointer moves past the drag threshold.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            onDoubleClicked: surface.resetView()
         }
     }
 

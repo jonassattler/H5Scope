@@ -1404,6 +1404,46 @@ TEST_CASE("the plot's stress set is as difficult as it says", "[example][plottin
         CHECK(plot->minimum() == -32000.0);
     }
 
+    SECTION("and a closer look at one of them is the sample itself")
+    {
+        // What the whole-line summary cannot do, and what the stress set was
+        // written to make visible. From a mile up, the impulse at 4999999 is
+        // the extreme of a bucket nearly five thousand samples wide -- drawn,
+        // because an envelope cannot lose it, but two pixels wide and sitting
+        // wherever its bucket starts. Zoom in and the plot reads that run of the
+        // file again, until a bucket is one element and what is drawn is what
+        // was recorded.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/adc_10M")));
+        REQUIRE(plot->hasData());
+
+        // Four hundred samples across the pane, which is a bucket of one.
+        plot->setVisibleRange(4999800.0, 5000200.0);
+        h5test::settleFor(300);
+
+        const gui::PlotLine closest = plot->lineOf(0);
+        // Twice the pane's own thousand buckets, because a run is read an
+        // octave finer than the pane needs -- see DatasetPlot::detailBuckets.
+        REQUIRE(closest.count == 2048);
+        CHECK(closest.positionStep == 1.0);
+        CHECK(closest.positionStart == 4999680.0); // aligned to the data, not to the view
+
+        const auto at = static_cast<qsizetype>(4999999 - 4999680);
+        CHECK(closest.values[at] == -32000.0);
+        // Its neighbours are the trace, not the impulse: one sample wide is one
+        // sample wide, which no summary of this line could have said.
+        CHECK(std::abs(closest.values[at - 1]) < 20000.0);
+        CHECK(std::abs(closest.values[at + 1]) < 20000.0);
+
+        // The extent is still the whole record's, so the axis did not rescale
+        // to the run on screen while the reader was looking at it.
+        CHECK(plot->maximum() == 32000.0);
+        CHECK(plot->minimum() == -32000.0);
+
+        // And zooming back out is the summary again, in the same call.
+        plot->setVisibleRange(0.0, 10000000.0);
+        CHECK(plot->lineOf(0).positionStep > 1000.0);
+    }
+
     SECTION("missing data arrives missing, and is not filled in")
     {
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/gaps_1M")));
@@ -1419,15 +1459,15 @@ TEST_CASE("the plot's stress set is as difficult as it says", "[example][plottin
         CHECK(drawable.size() > static_cast<std::size_t>(line.count) / 2);
     }
 
-    SECTION("eighteen decades, including values a logarithm has no answer for")
+    SECTION("eighteen decades, either side of zero")
     {
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/decades_200k")));
         REQUIRE(plot->hasData());
-        // Both ends of the range are present, which is what makes it
-        // unreadable on a linear axis.
+        // Both ends of the range are present and the reader zooms to whichever
+        // of them they are reading: the extent is the whole of it, and the
+        // envelope is what keeps the small end from being thinned away on the
+        // way to a pane that is showing the large one.
         CHECK(plot->maximum() > 1e6);
-        // ...and there are negatives in it, which a logarithmic axis has to
-        // leave as gaps rather than clamp to its floor.
         CHECK(plot->minimum() < 0.0);
     }
 

@@ -1532,11 +1532,13 @@ void writePlotting(hid_t file)
 
     // Eighteen decades of it, with zeros and negatives mixed in.
     //
-    // Unreadable on a linear axis -- everything below a millionth of the peak
-    // is the same pixel row as the axis -- which is what a logarithmic one is
-    // for. The zeros and the negatives are what a log axis has to *refuse*:
-    // there is no logarithm of either, and a plot that clamped them to the
-    // bottom of the pane would be drawing a reading nobody took.
+    // The case the y axis cannot show whole: everything below a millionth of
+    // the peak is the same pixel row as the axis, so reading the small end is
+    // zooming to it -- and what must survive that is the envelope, because a
+    // stride through a sweep this steep reaches whichever decade it lands on
+    // and not the one the reader is looking for. The zeros and the negatives
+    // are here because an extent taken over them is the extent the axis has to
+    // hold, sign and all.
     {
         constexpr hsize_t count = 200000;
         std::vector<double> decades(count);
@@ -1560,8 +1562,8 @@ void writePlotting(hid_t file)
         const Id dataset(H5Dopen2(group, "decades_200k", H5P_DEFAULT), &H5Dclose,
                          "reopen decades_200k");
         stringAttribute(dataset, "note",
-                        "1e-9 to 1e9, with four zeros and four negatives. Turn the "
-                        "y axis logarithmic; those eight must be gaps");
+                        "1e-9 to 1e9, with four zeros and four negatives. Zoom to "
+                        "the small end: the envelope must still have it");
     }
 
     // Ordinary readings next to numbers that do not fit a float.

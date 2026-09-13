@@ -11,6 +11,22 @@ namespace gui {
 
 DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent) : QObject(parent), table_(table)
 {
+    // The closer look waits for the gesture to stop. Restarted by every push of
+    // the view, so a wheel spun through six octaves reads once and a drag reads
+    // when it ends -- and what is already on screen keeps being drawn until it
+    // does.
+    settle_.setSingleShot(true);
+    settle_.setInterval(kSettleMilliseconds);
+    connect(&settle_, &QTimer::timeout, this, &DatasetPlot::askForDetail);
+
+    // And the pane waits for the drag to stop. A window dragged from narrow to
+    // wide crosses a dozen column quanta, and each crossing used to be a
+    // re-read of every drawn line -- which the reader saw as a plot flickering
+    // under their hand while they were still deciding how wide they wanted it.
+    resize_.setSingleShot(true);
+    resize_.setInterval(kResizeMilliseconds);
+    connect(&resize_, &QTimer::timeout, this, &DatasetPlot::applyColumns);
+
     // Two different events, deliberately. setDataset() and setLayout() both
     // reset the model, but only one of them is a new selection.
     connect(table_, &DatasetTableModel::datasetChanged, this, [this] {
@@ -46,10 +62,56 @@ void DatasetPlot::releaseDrawing() const
     }
 }
 
+void DatasetPlot::retire(std::map<int, std::vector<double>>& cache) const
+{
+    if (cache.empty()) {
+        return;
+    }
+    if (drawing_ == nullptr) {
+        // Nothing is reading it, so there is nothing to keep it alive for. This
+        // is also what bounds the store: without it a plot nobody is drawing --
+        // headless, or on a tab that is not on screen -- would accumulate one
+        // cache per change until something filled a renderer.
+        cache.clear();
+        return;
+    }
+    // Moved rather than copied, and that is what makes this free: a std::map
+    // move relinks nodes, so every mapped vector stays at the address the
+    // renderer was given. `drawing_` is deliberately left alone -- the item is
+    // still reading these values and is still the thing that has to be emptied
+    // if they ever do have to go.
+    retired_.push_back(std::move(cache));
+    cache.clear();
+}
+
+void DatasetPlot::retire(std::vector<double>& values) const
+{
+    if (values.empty() || drawing_ == nullptr) {
+        values.clear();
+        return;
+    }
+    std::map<int, std::vector<double>> one;
+    one.emplace(0, std::move(values));
+    values.clear();
+    retired_.push_back(std::move(one));
+}
+
 void DatasetPlot::invalidate()
 {
+    // The one place that empties the renderer rather than retiring what it is
+    // reading. A new dataset is not a coarser reading of the old one: drawing
+    // the old line for another frame would be drawing the wrong file.
     releaseDrawing();
     lines_.clear();
+    retired_.clear();
+    // And the closer look with them. A new table is a new window onto it: what
+    // was being looked at closely was a run of the old one, and the range the
+    // surface last pushed is in the old table's x. Both are forgotten here and
+    // the surface pushes the current view again on its next refill, which is
+    // why this does not try to keep them.
+    clearDetail();
+    viewMin_ = 0.0;
+    viewMax_ = 0.0;
     // The geometry of the table went with them. Unlike the extent below, these
     // two are not recomputed on every ensure() -- they belong to the table
     // rather than to the drawn set, so hiding a line must not disturb them --
@@ -89,12 +151,83 @@ void DatasetPlot::selectAll()
     selectFirst(sourceSeriesCount());
 }
 
-int DatasetPlot::pointsFor(int lines)
+int DatasetPlot::pointsFor(int lines) const
 {
+    // A bucket is a column, and a bucket answers with two values.
+    const int pane = 2 * columns_;
     if (lines <= 0) {
-        return kMaxPoints;
+        return std::clamp(pane, kMinPoints, kMaxPoints);
     }
-    return std::clamp(kPointBudget / lines, kMinPoints, kMaxPoints);
+    return std::clamp(std::min(kPointBudget / lines, pane), kMinPoints, kMaxPoints);
+}
+
+void DatasetPlot::applyCap(int cap)
+{
+    if (cap == cap_) {
+        return;
+    }
+    // A line already held was read at the old resolution, with an x arithmetic
+    // that is one number for all of them, so it has to be read again. It is
+    // retired rather than freed: until the new reading is in hand it is the
+    // picture on screen, and a pane that empties itself while the reader
+    // resizes the window is a worse reading of the data than one drawn at the
+    // bucket they had a moment ago.
+    retire(lines_);
+    // The closer look is cut to the same budget -- its buckets are worked out
+    // from `cap_` -- so a line held at the old one is a line at the wrong
+    // resolution with the wrong x arithmetic. It goes the same way.
+    clearDetail();
+    cap_ = cap;
+    sampled_ = false;
+}
+
+void DatasetPlot::applyColumns()
+{
+    if (wantedColumns_ == columns_) {
+        return;
+    }
+    columns_ = wantedColumns_;
+    const int cap = pointsFor(static_cast<int>(drawn_.size()));
+    if (cap == cap_) {
+        // A wider pane that asks for the same number of points is not a
+        // re-read: the budget, not the pane, was what bounded this line.
+        return;
+    }
+    applyCap(cap);
+    emit changed();
+    refreshDetail();
+}
+
+void DatasetPlot::setPaneColumns(int columns)
+{
+    // Down to the quantum, and never to nothing. See kColumnQuantum for why
+    // down rather than to the nearest.
+    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
+                                     kMinPoints / 2, kMaxPoints / 2);
+    if (quantised == wantedColumns_) {
+        return;
+    }
+    wantedColumns_ = quantised;
+    if (wantedColumns_ == columns_) {
+        // Dragged out and back again inside one gesture. Nothing to do, and
+        // nothing to wait for either.
+        resize_.stop();
+        return;
+    }
+    if (!measured_) {
+        // The surface measuring itself for the first time. There is no gesture
+        // to wait out and nothing for the wait to protect: whatever has been
+        // read so far was read at an assumed width, so making this one wait
+        // would open every plot at the wrong resolution and re-read every line
+        // of it a fifth of a second later.
+        measured_ = true;
+        resize_.stop();
+        applyColumns();
+        return;
+    }
+    // Otherwise nothing happens here. See the note on the declaration: the read
+    // is at the end of the drag, not once per sixty-four pixels of it.
+    resize_.start();
 }
 
 void DatasetPlot::selectFirst(int count)
@@ -114,15 +247,11 @@ void DatasetPlot::selectFirst(int count)
     // Only here, and pointedly not in setSeriesVisible: ticking one name in a
     // legend of ten thousand must not re-read the other nine thousand nine
     // hundred and ninety-nine.
-    const int cap = pointsFor(total);
-    if (cap != cap_) {
-        releaseDrawing();
-        lines_.clear();
-        cap_ = cap;
-    }
+    applyCap(pointsFor(total));
 
     sampled_ = false;
     emit changed();
+    refreshDetail();
 }
 
 void DatasetPlot::selectNone()
@@ -130,6 +259,7 @@ void DatasetPlot::selectNone()
     drawn_.clear();
     sampled_ = false;
     emit changed();
+    refreshDetail();
 }
 
 QString DatasetPlot::seriesExpression(int series) const
@@ -163,6 +293,10 @@ void DatasetPlot::setSeriesVisible(int series, bool visible)
     }
     sampled_ = false;
     emit changed();
+    // A line ticked while the reader is looking closely has no closer look of
+    // its own yet. It draws from the whole-line summary -- correct, and coarse
+    // -- until the next settle reads the one run it is missing.
+    refreshDetail();
 }
 
 DatasetTableModel::SampleRequest DatasetPlot::requestFor(int series) const
@@ -249,14 +383,26 @@ void DatasetPlot::ensure() const
     // re-read of a line still on screen, not to accumulate every line the
     // reader has ever ticked.
     //
-    // Which makes this one of the two places a held line can be destroyed, so
-    // it is one of the two places the drawing is released first. Everything
-    // that clears `sampled_` emits changed() with it, so QML is already on its
-    // way to re-filling; the frames in between draw nothing rather than
-    // reading a vector that has gone.
-    releaseDrawing();
-    for (auto it = lines_.begin(); it != lines_.end();) {
-        it = seriesVisible(it->first) ? std::next(it) : lines_.erase(it);
+    // A line the renderer is reading cannot simply be erased, so the ones that
+    // go are moved into the retired store instead -- the same double buffering
+    // applyCap() uses, for the same reason. Extracting a node keeps the vector
+    // exactly where it is, which is what any pointer already handed out
+    // requires.
+    const auto prune = [this](std::map<int, std::vector<double>>& cache) {
+        std::map<int, std::vector<double>> gone;
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (seriesVisible(it->first)) {
+                it = std::next(it);
+                continue;
+            }
+            const auto at = it++;
+            gone.insert(cache.extract(at));
+        }
+        retire(gone);
+    };
+    prune(lines_);
+    for (Detail& level : levels_) {
+        prune(level.lines);
     }
 
     readMissing();
@@ -308,7 +454,14 @@ int DatasetPlot::seriesCount() const
 int DatasetPlot::pointCount() const
 {
     ensure();
-    return points_;
+    // What is drawn, which is the closer look while there is one. The footer
+    // says how many points are on screen, and the answer changed the moment
+    // part of the line started being read at a finer bucket than the rest of it
+    // ever was.
+    const int at = drawnLevel();
+    return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
+               ? levels_[static_cast<std::size_t>(at)].points
+               : points_;
 }
 
 int DatasetPlot::sourceSeriesCount() const
@@ -319,7 +472,10 @@ int DatasetPlot::sourceSeriesCount() const
 bool DatasetPlot::thinned() const
 {
     ensure();
-    return step_ > 1.0;
+    const int at = drawnLevel();
+    return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
+               ? levels_[static_cast<std::size_t>(at)].step > 1.0
+               : step_ > 1.0;
 }
 
 double DatasetPlot::minimum() const
@@ -349,6 +505,9 @@ void DatasetPlot::setXStart(double value)
     }
     xStart_ = value;
     emit xAxisChanged();
+    // The axis decides what a position is worth in x, so moving it moves which
+    // elements the reader is looking at without the view having moved at all.
+    refreshDetail();
 }
 
 void DatasetPlot::setXStep(double value)
@@ -358,6 +517,7 @@ void DatasetPlot::setXStep(double value)
     }
     xStep_ = value;
     emit xAxisChanged();
+    refreshDetail();
 }
 
 bool DatasetPlot::numeric() const
@@ -389,6 +549,31 @@ PlotLine DatasetPlot::lineOf(int series) const
 {
     ensure();
     PlotLine line;
+
+    // The closer look, while it covers what is on screen and this line has one.
+    //
+    // It is a second summary of the same line rather than a replacement for the
+    // first, and this is where that pays: the moment the reader zooms out past
+    // the run in hand, or pans off the end of it, the whole-line summary below
+    // is what is drawn. That one covers everything by construction, so a zoom
+    // out is a correct picture in the same frame instead of half a line until a
+    // read lands.
+    const int at = drawnLevel();
+    if (at >= 0) {
+        const Detail& level = levels_[static_cast<std::size_t>(at)];
+        const auto closer = level.lines.find(series);
+        if (closer != level.lines.end() && !closer->second.empty()) {
+            line.values = closer->second.data();
+            line.count = static_cast<qsizetype>(closer->second.size());
+            // Where the run starts, in the same table positions the whole-line
+            // summary counts in -- which is the whole of what PlotLine needs to
+            // draw a piece of a line in the right place.
+            line.positionStart = static_cast<double>(level.window.first);
+            line.positionStep = level.step;
+            return line;
+        }
+    }
+
     const auto held = lines_.find(series);
     if (held == lines_.end() || points_ <= 0) {
         return line;
@@ -417,6 +602,432 @@ PlotAxis DatasetPlot::drawingAxis() const
     return axis;
 }
 
+// ---------------------------------------------------------------------------
+// The closer look
+// ---------------------------------------------------------------------------
+
+void DatasetPlot::setVisibleRange(double xMin, double xMax)
+{
+    if (viewMin_ == xMin && viewMax_ == xMax) {
+        return;
+    }
+    // Whether the run in hand still covers the pane is a property of the view,
+    // so it can change without anything being read -- and when it does, a
+    // different set of values has to reach the renderer. That is what this is
+    // watching for; the read, if there is one, is a tenth of a second away.
+    const std::optional<PlotWindow> drawing = drawnWindow();
+    viewMin_ = xMin;
+    viewMax_ = xMax;
+    refreshDetail();
+    if (drawnWindow() != drawing) {
+        emit changed();
+    }
+}
+
+bool DatasetPlot::visiblePositions(double& first, double& last) const
+{
+    if (!std::isfinite(viewMin_) || !std::isfinite(viewMax_) || !std::isfinite(xStart_) ||
+        !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return false;
+    }
+    // x = start + position * step, so a position is the same arithmetic run
+    // backwards. A negative step draws the line right to left and the two ends
+    // change places with it.
+    double low = (viewMin_ - xStart_) / xStep_;
+    double high = (viewMax_ - xStart_) / xStep_;
+    if (low > high) {
+        std::swap(low, high);
+    }
+    if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
+        return false;
+    }
+    first = low;
+    last = high;
+    return true;
+}
+
+std::optional<PlotWindow> DatasetPlot::detailFor(int buckets) const
+{
+    if (drawn_.empty() || static_cast<int>(drawn_.size()) > kWindowedSeries) {
+        // Past a few hundred strokes over one another the picture is a
+        // distribution rather than a line, and re-reading every one of them
+        // each time the reader zooms would spend the whole cost of the
+        // selection again to sharpen something nobody can follow.
+        return {};
+    }
+    double low = 0.0;
+    double high = 0.0;
+    if (!visiblePositions(low, high)) {
+        return {};
+    }
+    return windowFor(low, high, static_cast<long long>(sourcePointCount()), buckets);
+}
+
+int DatasetPlot::paneBuckets() const
+{
+    // Half as many buckets as points, because an envelope answers with two
+    // values for each of them -- the same trade requestFor() makes.
+    return cap_ / 2;
+}
+
+int DatasetPlot::detailBuckets() const
+{
+    // One octave finer than the pane needs, which is the cheapest prefetch
+    // there is.
+    //
+    // A read costs its *span*: an envelope moves every element of the run
+    // whatever bucket it folds them into, so asking for twice as many buckets
+    // over the same run touches exactly the same file and the same number of
+    // hyperslabs, and answers with twice as many points. What that buys is the
+    // next octave in: the reader's next step down is already in hand and is a
+    // draw rather than a read, where before it was a stretched picture for a
+    // tenth of a second and then a jump. It also draws better standing still --
+    // four points a column rather than two is real detail inside the column
+    // rather than a vertical bar across it.
+    //
+    // Nothing like it exists for the octave *out*: that view is wider than this
+    // run, and no amount of resolution inside a run makes it cover more of the
+    // line. kPrefetchOctaves is how that direction is answered instead.
+    //
+    // Taken only while the drawn set can afford to hold it twice, because that
+    // is what it costs: every drawn line holds a whole-line summary and a run,
+    // and this doubles the second of them.
+    const int lines = std::max(static_cast<int>(drawn_.size()), 1);
+    return kPointBudget / lines >= 2 * cap_ ? 2 * paneBuckets() : paneBuckets();
+}
+
+int DatasetPlot::heldLevels() const
+{
+    // A run is about `cap_` doubles per line -- paneBuckets() buckets, and a
+    // bucket answers with two values -- so how many of them there is room for
+    // is the budget divided by what one costs. One line gets all of them; a
+    // selection wide enough to be spending the budget on the summaries
+    // themselves keeps the run it is on and nothing else.
+    const int lines = std::max(static_cast<int>(drawn_.size()), 1);
+    const int affordable = kPointBudget / std::max(lines * 2 * cap_, 1);
+    return std::clamp(affordable, 1, kHeldLevels);
+}
+
+bool DatasetPlot::drawnPositions(double& first, double& last) const
+{
+    if (!visiblePositions(first, last)) {
+        return false;
+    }
+    // Against the data rather than against the view: a pane showing the end of
+    // the line shows some empty axis past it, and a run that reaches the last
+    // element covers everything there is to draw out there.
+    first = std::max(first, 0.0);
+    last = std::min(last, static_cast<double>(sourcePointCount()));
+    return true;
+}
+
+int DatasetPlot::drawnLevel() const
+{
+    double low = 0.0;
+    double high = 0.0;
+    if (levels_.empty() || !drawnPositions(low, high)) {
+        return -1;
+    }
+    // The finest run that covers the pane. They all hold about the same number
+    // of points, so a finer one is more detail on screen for the same cost --
+    // and the coarser ones are still here for the moment the reader zooms out
+    // past this one, which is the whole reason there is more than one.
+    int best = -1;
+    for (std::size_t i = 0; i < levels_.size(); ++i) {
+        const Detail& level = levels_[i];
+        if (level.lines.empty() || !level.window.covers(low, high)) {
+            continue;
+        }
+        const bool whole = std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
+            return level.lines.find(series) != level.lines.end();
+        });
+        if (!whole) {
+            continue;
+        }
+        if (best < 0 || level.window.bucket < levels_[static_cast<std::size_t>(best)].window.bucket) {
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+std::optional<PlotWindow> DatasetPlot::drawnWindow() const
+{
+    const int at = drawnLevel();
+    return at < 0 ? std::optional<PlotWindow>{}
+                  : levels_[static_cast<std::size_t>(at)].window;
+}
+
+int DatasetPlot::levelAt(const PlotWindow& window) const
+{
+    for (std::size_t i = 0; i < levels_.size(); ++i) {
+        if (levels_[i].window == window) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool DatasetPlot::levelServes(const PlotWindow& needed) const
+{
+    // drawnLevel() is the *finest* run that covers the pane, so if its bucket
+    // is too coarse no other one's is fine enough either.
+    const int at = drawnLevel();
+    return at >= 0 && levels_[static_cast<std::size_t>(at)].window.bucket <= needed.bucket;
+}
+
+bool DatasetPlot::served(double low, double high, long long bucket) const
+{
+    low = std::max(low, 0.0);
+    high = std::min(high, static_cast<double>(sourcePointCount()));
+    return std::any_of(levels_.begin(), levels_.end(), [&](const Detail& level) {
+        if (level.window.bucket > bucket || !level.window.covers(low, high)) {
+            return false;
+        }
+        return std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
+            return level.lines.find(series) != level.lines.end();
+        });
+    });
+}
+
+std::optional<PlotWindow> DatasetPlot::detailWanted() const
+{
+    const std::optional<PlotWindow> needed = detailFor(paneBuckets());
+    if (!needed.has_value()) {
+        return {};
+    }
+    if (!levelServes(*needed)) {
+        // What the pane is waiting for, an octave finer than it asked. First,
+        // because it is the only one the reader can see.
+        std::optional<PlotWindow> want = detailFor(detailBuckets());
+        if (!want.has_value()) {
+            // The finer run would reach past the end of the line, so there is
+            // no octave to take -- but the pane still wants a finer bucket than
+            // the whole-line summary has. Only lines between one and two panes'
+            // worth of buckets long land here.
+            want = needed;
+        }
+        return want;
+    }
+    // The pane is answered, so what is left is idle work: the octaves out that
+    // the reader has not asked for yet, nearest first.
+    //
+    // Measured from the *run* the pane is being drawn from rather than from the
+    // view, and that is not a detail. A run is twice the pane wide and steps by
+    // a quarter of itself, so panning about inside one leaves this arithmetic
+    // untouched -- which is what keeps "panning reads nothing" true of the
+    // prefetch as well as of the picture. Taken from the view, every pan would
+    // shift the octaves a little and eventually ask for one.
+    const int at = drawnLevel();
+    if (at < 0) {
+        return {};
+    }
+    const PlotWindow base = levels_[static_cast<std::size_t>(at)].window;
+    const double centre = static_cast<double>(base.first) + static_cast<double>(base.span) / 2.0;
+    const double half = static_cast<double>(base.span) / 2.0;
+    const auto length = static_cast<long long>(sourcePointCount());
+    for (int octave = 1; octave <= kPrefetchOctaves; ++octave) {
+        const auto reach = static_cast<double>(1 << octave);
+        const double low = centre - half * reach;
+        const double high = centre + half * reach;
+        const std::optional<PlotWindow> out = windowFor(low, high, length, paneBuckets());
+        if (!out.has_value()) {
+            // That far out the whole-line summary already covers it, and so
+            // does everything past it.
+            break;
+        }
+        // Asked about the range rather than about the window, because a run
+        // already in hand may answer for this octave without being the run this
+        // would have read: one the reader zoomed in from is finer and wider
+        // than what is being asked for here, and re-reading it would be a round
+        // trip spent on nothing.
+        if (!served(low, high, out->bucket)) {
+            return out;
+        }
+    }
+    return {};
+}
+
+void DatasetPlot::refreshDetail()
+{
+    if (!detailFor(paneBuckets()).has_value()) {
+        dropDetail();
+        return;
+    }
+    wanted_ = detailWanted();
+    if (!wanted_.has_value()) {
+        // Everything worth holding is held. Not a read, not a signal, not even
+        // a timer -- which is what makes panning inside a run free.
+        settle_.stop();
+        return;
+    }
+    settle_.start();
+}
+
+void DatasetPlot::trimLevels()
+{
+    const int allowed = heldLevels();
+    if (static_cast<int>(levels_.size()) <= allowed) {
+        return;
+    }
+    const std::optional<PlotWindow> needed = detailFor(paneBuckets());
+    // Octaves away from the bucket the pane is asking for. The runs nearest the
+    // reader are the ones they are about to want; the ones furthest away are
+    // the ones the whole-line summary is closest to standing in for.
+    const auto distance = [&needed](const Detail& level) {
+        if (!needed.has_value()) {
+            return 0.0;
+        }
+        return std::abs(std::log2(static_cast<double>(level.window.bucket)) -
+                        std::log2(static_cast<double>(std::max<long long>(needed->bucket, 1))));
+    };
+    while (static_cast<int>(levels_.size()) > allowed) {
+        std::size_t worst = 0;
+        for (std::size_t i = 1; i < levels_.size(); ++i) {
+            if (distance(levels_[i]) > distance(levels_[worst])) {
+                worst = i;
+            }
+        }
+        retire(levels_[worst].lines);
+        levels_.erase(levels_.begin() + static_cast<long>(worst));
+    }
+}
+
+void DatasetPlot::askForDetail()
+{
+    if (!wanted_.has_value() || table_ == nullptr || !table_->present() || !table_->numeric()) {
+        return;
+    }
+    const PlotWindow want = *wanted_;
+
+    // Every drawn line that has not been read at this run. Usually all of them
+    // -- the run is one this object has never held -- and sometimes one, which
+    // is a line ticked in the legend while the reader was already looking
+    // closely.
+    const int at = levelAt(want);
+    std::vector<int> series;
+    for (const int line : drawn_) {
+        if (at < 0 || levels_[static_cast<std::size_t>(at)].lines.find(line) ==
+                          levels_[static_cast<std::size_t>(at)].lines.end()) {
+            series.push_back(line);
+        }
+    }
+    if (series.empty()) {
+        return;
+    }
+
+    std::vector<DatasetTableModel::SampleRequest> requests;
+    requests.reserve(series.size());
+    for (const int line : series) {
+        requests.push_back(detailRequestFor(line, want));
+    }
+
+    // One crossing for the whole set, which is what kWindowedSeries is: the
+    // guard is one kReadBatch, so a closer look is never more than a single job
+    // however many lines are drawn.
+    //
+    // Submitted rather than waited for, and this is the whole point of the
+    // arrangement. There is already a correct picture on screen; blocking the
+    // window to replace it with a sharper one would be spending the reader's
+    // attention to save them nothing. Anything asked for and no longer wanted
+    // is disowned by its ticket rather than painted.
+    requests_.reset();
+    asked_ = want;
+    H5Thread::instance().submit(
+        requests_,
+        [axes = table_->axes(), requests](H5Session& session) {
+            const h5core::DataSource* source = session.source();
+            return source == nullptr ? std::vector<DatasetTableModel::NumericGrid>(requests.size())
+                                     : DatasetTableModel::readSamples(*source, axes, requests);
+        },
+        [this, want, series](std::vector<DatasetTableModel::NumericGrid> grids) {
+            takeDetail(want, series, std::move(grids));
+        });
+}
+
+void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& series,
+                             std::vector<DatasetTableModel::NumericGrid> grids)
+{
+    asked_.reset();
+    if (wanted_ != detail) {
+        // The reader moved on while this was out. Dropping it is not a loss:
+        // whatever they moved to has already armed the next read.
+        return;
+    }
+
+    int at = levelAt(detail);
+    if (at < 0) {
+        // A resolution this object has not held before. Nothing is retired --
+        // the runs it already has are the ones the reader zoomed through and
+        // are exactly what makes going back free.
+        levels_.push_back(Detail{detail, 1.0, 0, {}});
+        at = static_cast<int>(levels_.size()) - 1;
+    }
+    Detail& level = levels_[static_cast<std::size_t>(at)];
+
+    const std::size_t count = std::min(series.size(), grids.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        DatasetTableModel::NumericGrid& grid = grids[i];
+        if (!grid.values.empty()) {
+            // Every line covers the same run, so these are the same for all of
+            // them and the last word is as good as the first.
+            level.points = seriesFromRows_ ? grid.columns : grid.rows;
+            level.step = seriesFromRows_ ? grid.columnStep : grid.rowStep;
+        }
+        // Even when it read nothing. An entry that is there and empty is what
+        // stops this line from being asked for over and over; lineOf() falls
+        // back to a coarser run, or to the whole-line summary, which is what a
+        // line that will not read closely should draw.
+        auto held = level.lines.find(series[i]);
+        if (held != level.lines.end()) {
+            retire(held->second);
+        }
+        level.lines[series[i]] = std::move(grid.values);
+    }
+
+    trimLevels();
+    emit changed();
+    // And on to the next octave, if there is one worth reading. The chain is
+    // what keeps the prefetch idle work: each run waits out its own settle, so
+    // a reader who starts moving again cancels the rest of it.
+    refreshDetail();
+}
+
+void DatasetPlot::clearDetail()
+{
+    settle_.stop();
+    requests_.reset();
+    asked_.reset();
+    wanted_.reset();
+    for (Detail& level : levels_) {
+        retire(level.lines);
+    }
+    levels_.clear();
+}
+
+void DatasetPlot::dropDetail()
+{
+    const bool anything = !levels_.empty();
+    clearDetail();
+    if (anything) {
+        emit changed();
+    }
+}
+
+DatasetTableModel::SampleRequest DatasetPlot::detailRequestFor(int series,
+                                                               const PlotWindow& detail) const
+{
+    // The same rectangle requestFor() names, narrowed to the run. The axis the
+    // line runs down is the one that carries the window, which is why the two
+    // branches differ by more than their order.
+    const auto first = static_cast<int>(detail.first);
+    const auto span = static_cast<int>(detail.span);
+    return seriesFromRows_ ? DatasetTableModel::SampleRequest{series,         1,  1,   first, span,
+                                                              detail.columns, {}, true}
+                           : DatasetTableModel::SampleRequest{
+                                 first, span, detail.columns, series, 1, 1, {}, true};
+}
+
 void DatasetPlot::fill(PlotItem* target)
 {
     if (target == nullptr) {
@@ -430,6 +1041,10 @@ void DatasetPlot::fill(PlotItem* target)
     }
     target->setLines(std::move(lines), drawingAxis());
     drawing_ = target;
+    // ...and now, and only now, is nothing reading what was retired. This is
+    // the one place those vectors are freed, because it is the one place a
+    // renderer that was borrowing them has just been given something else.
+    retired_.clear();
 }
 
 } // namespace gui

@@ -31,10 +31,10 @@ selectedShape(const std::vector<std::vector<hsize_t>>& indices,
     return shape;
 }
 
-/// Which dimension of `indices` is the one that survives. Only meaningful once
-/// the selection is known to be a line, which is to say exactly one does.
-[[nodiscard]] std::size_t survivor(const std::vector<std::vector<hsize_t>>& indices,
-                                   const std::vector<bool>& drop)
+} // namespace
+
+std::size_t lineDimension(const std::vector<std::vector<hsize_t>>& indices,
+                          const std::vector<bool>& drop)
 {
     for (std::size_t d = 0; d < indices.size(); ++d) {
         if (d >= drop.size() || !drop[d]) {
@@ -43,8 +43,6 @@ selectedShape(const std::vector<std::vector<hsize_t>>& indices,
     }
     return 0;
 }
-
-} // namespace
 
 Expression splitExpression(const QString& text)
 {
@@ -173,7 +171,7 @@ int thinToPoints(std::vector<std::vector<hsize_t>>& indices,
     if (indices.empty() || maxPoints <= 0) {
         return 1;
     }
-    const std::size_t d = survivor(indices, drop);
+    const std::size_t d = lineDimension(indices, drop);
     std::vector<hsize_t>& along = indices[d];
     const std::size_t length = along.size();
     if (length <= static_cast<std::size_t>(maxPoints)) {
@@ -193,6 +191,26 @@ int thinToPoints(std::vector<std::vector<hsize_t>>& indices,
     }
     along = std::move(thinned);
     return static_cast<int>(stride);
+}
+
+void windowLine(std::vector<std::vector<hsize_t>>& indices, const std::vector<bool>& drop,
+                long long first, long long span)
+{
+    if (indices.empty() || span <= 0) {
+        return;
+    }
+    std::vector<hsize_t>& along = indices[lineDimension(indices, drop)];
+    const auto length = static_cast<long long>(along.size());
+    // Clamped rather than refused. The run was worked out from what the entry
+    // was last read as, and the reader may have retyped the subscript since;
+    // reading the part that still exists is a better answer than reading none
+    // of it, and the next settle asks for the right one.
+    const long long start = std::clamp<long long>(first, 0, length);
+    const long long stop = std::clamp<long long>(first + span, start, length);
+    if (start == 0 && stop == length) {
+        return;
+    }
+    along = std::vector<hsize_t>(along.begin() + start, along.begin() + stop);
 }
 
 DatasetLookup::DatasetLookup(QObject* parent) : QObject(parent) {}

@@ -16,6 +16,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <optional>
 #include <vector>
 
 namespace gui {
@@ -228,6 +229,24 @@ public:
     Q_INVOKABLE void selectNone();
     Q_INVOKABLE void selectFirst(int count);
 
+    /// What the reader is looking at, in the x the axis prints.
+    ///
+    /// The same question DatasetPlot::setVisibleRange answers, asked of a tab
+    /// whose lines come from all over the file: which of them are worth reading
+    /// again over the run that is on screen, at a bucket fine enough for
+    /// zooming in to mean something. Resolved per entry, because entries have
+    /// their own lengths and their own scaling, and refused outright in Dataset
+    /// mode -- a time base need not be monotonic, so a range of x is not a range
+    /// of indices and there is nothing to narrow a read to.
+    Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
+
+    /// How wide the pane the lines are drawn in is, in device-independent
+    /// pixels. The same rule the plot tab follows -- a bucket is a column --
+    /// and for the same reason; see DatasetPlot::setPaneColumns -- including
+    /// the debounce, so a drag of the window's edge costs one read at the end
+    /// of it rather than one per sixty-four pixels.
+    Q_INVOKABLE void setPaneColumns(int columns);
+
     /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
     /// crossing, no points built on the way, and the values are **borrowed**.
     Q_INVOKABLE void fill(gui::PlotItem* target);
@@ -255,6 +274,12 @@ public:
 
     /// Read everything again. Coalesced: several edits in one turn of the
     /// event loop produce one job and one crossing.
+    ///
+    /// It does not empty the renderer. What is on screen goes on being drawn
+    /// until the answer lands and fill() hands over the replacement, which is
+    /// what keeps a tab from flashing blank every time a row is added, a slider
+    /// is dragged or the pane changes width. discard() is the version for the
+    /// cases where the old line is no longer a reading of anything.
     void invalidate();
 
 signals:
@@ -273,6 +298,22 @@ signals:
     void crowding(const QString& path, int lines);
 
 private:
+    /// One resolution of an entry's closer look: an aligned run of that
+    /// entry's own elements, summarised at one bucket size.
+    ///
+    /// The plot tab's DatasetPlot::Detail holds one of these for every drawn
+    /// line at once, because every line of a table is the same length and takes
+    /// the same run. Here they are per entry, because these lines come from all
+    /// over the file and need not be the same length as one another.
+    struct Level
+    {
+        PlotWindow window;
+        /// Elements of this line between one of its drawn points and the next.
+        /// Half a bucket, as `Entry::step` is.
+        double step = 1.0;
+        std::vector<double> values;
+    };
+
     struct Entry
     {
         QString expression;
@@ -286,6 +327,17 @@ private:
         std::vector<double> values;
         double step = 1.0;    ///< axis positions between drawn points
         int sourceLength = 0; ///< elements the slice has in the file
+
+        /// The closer look: the same line over an aligned run of itself, read
+        /// at a finer bucket because the reader has zoomed into that run.
+        ///
+        /// Held *beside* the whole-line summary rather than instead of it, and
+        /// several at once, for the reasons DatasetPlot::Detail gives: the
+        /// extent stays the line's own so the y axis does not rescale as detail
+        /// arrives, zooming in either direction draws from what is already in
+        /// hand, and there is always something correct on screen while a read
+        /// is in flight. Empty when there is none, which is the usual case.
+        std::vector<Level> levels;
     };
 
     /// One line as the job hands it back.
@@ -298,6 +350,54 @@ private:
     };
 
     void refresh();
+
+    // --- the closer look ---------------------------------------------------
+    /// The run of its own elements `entry` would be read over, or nothing when
+    /// there is no point: no window pushed, a time base, a line already drawn
+    /// sample for sample, or a reader zoomed out far enough that the whole-line
+    /// summary is as fine.
+    [[nodiscard]] std::optional<PlotWindow> closerFor(const Entry& entry, int buckets) const;
+    /// How many axis positions one element of `entry` covers: one under Align,
+    /// and the axis divided by the line under Stretch.
+    [[nodiscard]] double stretchScale(const Entry& entry) const;
+    /// Where the visible range falls in `entry`'s own element indices,
+    /// ascending. This is the inverse of the map lineOf() draws with -- point
+    /// for point under Align, and spread over the whole axis under Stretch --
+    /// and it is why Dataset mode has no closer look: that map is a lookup
+    /// table which need not be monotonic and cannot be run backwards.
+    [[nodiscard]] bool lineRange(const Entry& entry, double& first, double& last) const;
+    /// The finest run of `entry` that covers what is on screen, or -1. An entry
+    /// is drawn from one of its runs only while one covers, and from the
+    /// whole-line summary -- which covers everything by construction --
+    /// otherwise.
+    [[nodiscard]] int drawnLevel(const Entry& entry) const;
+    [[nodiscard]] bool closerCovers(const Entry& entry) const { return drawnLevel(entry) >= 0; }
+    /// Whether some run of `entry` covers `low`..`high` of its own elements at a
+    /// bucket no coarser than `bucket`. What the prefetch asks about an octave
+    /// it is thinking of reading; see DatasetPlot::served.
+    [[nodiscard]] bool served(const Entry& entry, double low, double high,
+                              long long bucket) const;
+    /// The run to read next for `entry`: the one the pane is waiting for, or --
+    /// when the pane is already answered -- the nearest octave out that nothing
+    /// in hand covers. Nothing when there is nothing left worth reading.
+    [[nodiscard]] std::optional<PlotWindow> closerWanted(const Entry& entry) const;
+    /// Drop the runs of `entry` furthest from the one the pane is on, down to
+    /// heldLevels().
+    void trimLevels(Entry& entry);
+    /// How many resolutions each entry may hold at once.
+    [[nodiscard]] int heldLevels() const;
+    /// How many entries are being drawn from a closer look. Not interesting in
+    /// itself: it changes exactly when a different set of values has to reach
+    /// the renderer, which is when the surface has to be told to fill again.
+    [[nodiscard]] int closerDrawn() const;
+    /// Work out what the view wants of each entry, drop what nobody wants, and
+    /// arm the read for the rest. Every path that can change the answer ends
+    /// here.
+    void refreshCloser();
+    /// Ask for it. What the settle timer calls.
+    void askForCloser();
+    /// Forget every closer look, without saying so.
+    void clearCloser();
     void touch(int row, const QVector<int>& roles = {});
     /// The extent, the point total and whether anything is drawable, worked
     /// out once per read rather than per binding.
@@ -306,15 +406,38 @@ private:
     [[nodiscard]] double positionOf(const Entry& entry, std::size_t at) const;
     /// Stop whatever was last filled from reading the entries' values.
     ///
-    /// The borrow contract, honoured -- see DatasetPlot::releaseDrawing. Here
-    /// there are more ways to destroy a line, because an entry is a row the
-    /// reader can remove, reorder or retype, so this is called from
-    /// invalidate(), from announce() and from the top of the read that
-    /// replaces the values.
+    /// The borrow contract, honoured the blunt way -- see
+    /// DatasetPlot::releaseDrawing. The renderer draws nothing until it is
+    /// filled again, so this is only right where the values are about to stop
+    /// being a reading of anything: a row removed, a row retyped, the whole tab
+    /// replaced. Everywhere else retire() is what keeps the contract.
     void releaseDrawing();
-    /// Release the drawing and say that the lines changed. Every path that
-    /// changes what is drawn or what it holds ends here.
+    /// Empty the renderer and read everything again. The four places where the
+    /// line on screen is about to become the wrong line rather than a coarser
+    /// one.
+    void discard();
+    /// Keep values alive that the renderer may still be pointing into, until
+    /// fill() hands it their replacement.
+    ///
+    /// See DatasetPlot::retire, which is the same thing over a map. A
+    /// std::vector move takes the buffer with it, so the pointer the item holds
+    /// goes on naming the same doubles.
+    void retire(std::vector<double>& values);
+    /// Say that the lines changed. It does not touch the renderer: whatever it
+    /// is drawing stays on the pane until the surface fills it again, which is
+    /// a frame later and is a frame of the old picture rather than of none.
     void announce();
+    /// Take the pane width the surface last pushed. What the debounce timer
+    /// calls; see setPaneColumns.
+    void applyColumns();
+    /// Buckets a whole line is reduced to: the pane's own width in columns.
+    [[nodiscard]] int bucketBudget() const;
+    /// ...and buckets a closer look is read into, which is an octave finer
+    /// while the tab can afford to hold it. See the definition.
+    [[nodiscard]] int closerBuckets() const;
+    /// Whether a run `entry` holds already answers `needed` -- it covers the
+    /// pane and its bucket is no coarser. Where the prefetch octave is spent.
+    [[nodiscard]] bool closerSuffices(const Entry& entry, const PlotWindow& needed) const;
     /// Whether align and stretch differ for this entry.
     [[nodiscard]] bool scalable(const Entry& entry) const;
 
@@ -341,32 +464,66 @@ private:
     /// What fill() last handed the entries to, so it can be emptied before
     /// they are freed.
     QPointer<PlotItem> drawing_;
+    /// Values the renderer may still be reading, kept alive until it is handed
+    /// their replacement. See retire(); fill() is what empties this.
+    std::vector<std::vector<double>> retired_;
+
+    /// The last range the surface pushed, in the x the axis prints.
+    double viewMin_ = 0.0;
+    double viewMax_ = 0.0;
+    /// Columns the pane has, quantised, until the surface says otherwise.
+    int columns_ = kDefaultColumns;
+    /// ...and the width the surface last pushed, waiting for the drag to stop.
+    int wantedColumns_ = kDefaultColumns;
+    /// Whether the surface has ever said how wide the pane is. The first time
+    /// it does is not a gesture and does not wait; see setPaneColumns.
+    bool measured_ = false;
 
     H5Requests requests_;
+    /// The closer looks in flight, disowned separately from the reads above: a
+    /// refresh supersedes a closer look, and a closer look must not supersede a
+    /// refresh.
+    H5Requests closerRequests_;
     /// Fires once per turn of the event loop however many edits landed in it.
     /// A reader dragging a slider or holding a key down must not put one job
     /// on the thread per keystroke.
     QTimer coalesce_;
+    /// Fires once the view has stopped moving, which is when a closer look is
+    /// worth reading. A wheel spin or a drag restarts it, so a gesture in
+    /// flight reads nothing at all.
+    QTimer settle_;
+    /// Fires once the pane has stopped changing width. See setPaneColumns.
+    QTimer resize_;
 
 public:
-    /// Points per entry. The plot tab's number, for the plot tab's reason:
-    /// beyond a couple of thousand a line is drawing more detail than a screen
-    /// can resolve.
-    static constexpr int kMaxPoints = 2048;
-    /// The longest line that is reduced by taking the extremes of each bucket
-    /// rather than by taking every nth element.
+    /// Columns assumed until the surface has measured itself, and the most
+    /// points an entry is ever reduced to. The plot tab's numbers, for the plot
+    /// tab's reasons -- see DatasetPlot::kDefaultColumns and kMaxPoints.
     ///
-    /// An envelope has to read the whole line before it can reduce it, and
-    /// postproc::read materialises what it reads. Four million doubles is
-    /// thirty-two megabytes held for as long as it takes to walk them, which
-    /// is what this number is really about -- the read itself is one hyperslab
-    /// and is cheaper than the two thousand a thinned selection costs.
-    ///
-    /// Past it a line is thinned by stride, and the old caveat stands: a spike
-    /// narrower than one stride is not drawn. Nothing warns about that, because
-    /// the line the reader typed is still the line they get -- it is the
-    /// summary that is coarser.
-    static constexpr int kEnvelopeElements = 1 << 22;
+    /// They have to be the same numbers. A reader who puts /plotting/adc_10M on
+    /// the Plot tab and the same slice in a custom tab is looking at one
+    /// dataset, and the two pictures of it differing in any way they can see is
+    /// a bug in whichever of them they are not looking at.
+    static constexpr int kDefaultColumns = 1024;
+    static constexpr int kMaxPoints = 16384;
+    static constexpr int kColumnQuantum = 64;
+    static constexpr int kMinPoints = 256;
+    /// How long the view has to hold still before a closer look is read. The
+    /// same tenth of a second the plot tab waits -- see
+    /// DatasetPlot::kSettleMilliseconds.
+    static constexpr int kSettleMilliseconds = 150;
+    /// ...and how long the pane has to hold still before it is re-read. The
+    /// same fifth of a second the plot tab waits -- see
+    /// DatasetPlot::kResizeMilliseconds.
+    static constexpr int kResizeMilliseconds = 200;
+    /// How far out a run is read before the reader has asked for it, and how
+    /// many resolutions are held at once. The plot tab's numbers, for the plot
+    /// tab's reasons -- see DatasetPlot::kPrefetchOctaves and kHeldLevels.
+    static constexpr int kPrefetchOctaves = 2;
+    static constexpr int kHeldLevels = 5;
+    /// Doubles held for everything this tab draws. The plot tab's number, for
+    /// the plot tab's reason -- see DatasetPlot::kPointBudget.
+    static constexpr int kPointBudget = 1 << 21;
     /// Lines past which adding a whole dataset asks first.
     ///
     /// Not a limit. Past a few dozen, strokes over one another stop separating

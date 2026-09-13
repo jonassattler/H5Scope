@@ -18,8 +18,8 @@
 // have -- it filled a QXYSeries with data-space points -- and which survives as
 // a seam precisely because the renderer no longer needs it.
 //
-// Four things in here are the reason the plot is ours rather than a library's,
-// and all four are cheap once the projection is:
+// Three things in here are the reason the plot is ours rather than a library's,
+// and all three are cheap once the projection is:
 //
 // 1. Decimation by min/max envelope rather than by stride. Stride selects by
 //    position and reaches an extremum only by luck;
@@ -40,26 +40,16 @@
 //    handing the survivors to a line renderer draws a straight line *across*
 //    the missing data, which is a reading of data that was never taken. A run
 //    of them ends the stroke here and the next run starts a new one.
-//
-// 4. A logarithmic y axis, which 2-D Qt Graphs cannot express at any price.
 
 #include <QtCore/QPointF>
 #include <QtGui/QColor>
 
 #include <cmath>
 
+#include <optional>
 #include <vector>
 
 namespace gui {
-
-/// How far below the largest value a logarithmic axis reaches when the data
-/// itself gives no floor -- which it does not, because a log axis has to put
-/// its bottom somewhere when the values reach zero or go negative.
-///
-/// Stated rather than derived so that the chrome can state the same thing.
-/// Nothing in QML computes it: PlotItem::yFraction() is what the ticks ask,
-/// so the grid and the curve cannot disagree about where a value sits.
-inline constexpr double kLogDecades = 6.0;
 
 /// One line to draw.
 ///
@@ -109,6 +99,66 @@ struct PlotLine
     double width = 1.0;
 };
 
+/// One closer look at a line: an aligned run of it, to be summarised at a
+/// bucket finer than the whole of it could be.
+///
+/// The whole-line summary a model holds is fixed -- so many points however long
+/// the line is -- which means zooming into it stretches what is drawn rather
+/// than resolving it. Reading the run the reader is looking at again, at a
+/// finer bucket, is what turns an octave of zoom into an octave of detail. This
+/// is where that run is decided; who reads it, and when, is the model's own
+/// business.
+///
+/// **Aligned**, for the same reason the renderer's buckets are aligned -- see
+/// the long note in projectLine(). A run derived from the view slides its
+/// boundaries with every pixel of pan, so the two extremes each bucket selects
+/// keep changing and the line crawls and boils under the pointer. These are
+/// powers of two in the data's own index space: panning translates the line
+/// rigidly and zooming steps one octave at a time.
+struct PlotWindow
+{
+    /// The first element of the line this covers, in the line's own indices.
+    long long first = 0;
+    /// How many elements: `bucket * columns`, except at the end of the line
+    /// where it is what is left.
+    long long span = 0;
+    /// Elements per bucket. A power of two, and 1 when the reader is close
+    /// enough that the run is drawn sample for sample.
+    long long bucket = 1;
+    /// Buckets. Asked of a read as its cap, so that the stride it works out is
+    /// exactly `bucket` -- a run clamped by the end of the line would otherwise
+    /// be read at a finer stride than every other one, and its buckets would
+    /// not line up with theirs.
+    int columns = 0;
+
+    [[nodiscard]] bool operator==(const PlotWindow&) const = default;
+
+    /// Whether this run holds everything between `low` and `high`, in the same
+    /// indices. Callers clamp those two to the data first: a pane showing the
+    /// end of a line shows some empty axis past it, and a run reaching the last
+    /// element covers everything there is to draw out there.
+    [[nodiscard]] bool covers(double low, double high) const
+    {
+        return static_cast<double>(first) <= low && static_cast<double>(first + span) >= high;
+    }
+};
+
+/// The closer look at `low`..`high` of a line of `length` elements, given a
+/// budget of `buckets` buckets -- or nothing when the whole-line summary is
+/// already at least as fine, which is the answer whenever the reader is zoomed
+/// out.
+///
+/// The run is twice the width of what is visible, so the reader can pan off the
+/// middle of it and still be looking at data that has been read while the next
+/// one is on its way, and it steps by a quarter of itself rather than by the
+/// whole: the pane is half the run wide, so a quarter-run step leaves the run in
+/// hand still covering the pane for one step past the boundary that asked for
+/// the next one. Without that, every crossing would fall back to the coarse
+/// summary for as long as the read took and a slow pan would flicker between
+/// the two.
+[[nodiscard]] std::optional<PlotWindow> windowFor(double low, double high, long long length,
+                                                  long long buckets);
+
 /// How the shared x axis turns a position into a value.
 struct PlotAxis
 {
@@ -135,11 +185,24 @@ struct PlotView
     double xMax = 1.0;
     double yMin = 0.0;
     double yMax = 1.0;
-    bool logY = false;
 
     /// The pane, in item coordinates.
     double width = 0.0;
     double height = 0.0;
+
+    /// Device pixels per item coordinate: the window's devicePixelRatio.
+    ///
+    /// A pane is measured in logical pixels and drawn into a framebuffer with
+    /// this many physical ones for each of them, so on a HiDPI display "one
+    /// bucket per column" over the logical width is one bucket per *two*
+    /// physical columns, and half the resolution the screen can show is thrown
+    /// away before anything is drawn. Every column count below is therefore
+    /// taken over `width * pixelRatio`, which is what the reader's screen
+    /// actually has.
+    ///
+    /// One by default, so a test that describes a pane without a window gets
+    /// the arithmetic it would have had.
+    double pixelRatio = 1.0;
 
     /// Most envelope columns one line may spend, or 0 for one per pixel.
     ///
@@ -185,12 +248,8 @@ struct PlotProjected
 /// sixteen bytes a point built and copied per refill is what the old boundary
 /// cost. It exists as the seam tests/test_customplot.cpp asserts the x
 /// arithmetic through, and it agrees with projectLine() by construction --
-/// both ask xOf() and both apply drawable() below.
+/// both drop a sample that does not read.
 [[nodiscard]] std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis);
-
-/// Whether a value can be drawn on this view at all: finite, and above zero
-/// when the axis is logarithmic.
-[[nodiscard]] bool drawable(double value, bool logY);
 
 /// Where `value` sits up the pane, as a fraction from the bottom.
 ///
@@ -207,19 +266,25 @@ struct PlotProjected
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
                           std::vector<QPointF>& points, std::vector<PlotRun>& runs);
 
-/// How far a mitred join may reach past the stroke before it is cut.
+/// How far a mitred join may reach past the stroke before it is given up.
 ///
-/// An envelope turns through very nearly 180 degrees at a one-sample spike --
-/// up one column and straight back down -- and an uncut miter at that angle is
-/// a spear several hundred pixels long thrown across the pane. Four is the
-/// conventional limit and is invisible at these widths.
+/// An envelope turns through very nearly 180 degrees at every column -- up to
+/// the bucket's high, back down to the next one's low -- and a miter at that
+/// angle is a spear several hundred pixels long thrown across the pane. Four is
+/// the conventional limit.
+///
+/// Past it the join becomes a butt: the two segments end and start on the same
+/// perpendicular. *Not* a miter cut short, which is what this used to do and is
+/// the wrong shape -- the bisector of two nearly opposite normals points along
+/// the stroke rather than across it, so clamping its length left a whisker
+/// standing out of every extreme of every envelope column. A butt at a one- or
+/// two-pixel stroke is what a round join would have drawn anyway.
 inline constexpr double kMiterLimit = 4.0;
 
-/// Below this the two normals at a join have cancelled, which is a true
-/// reversal, and there is no miter direction to find. The join becomes a butt
-/// end, which at a one- or two-pixel stroke is what a round join would have
-/// drawn anyway.
-inline constexpr double kMiterEpsilon = 1e-6;
+/// The smallest `1 + n1.n2` a join can have and still be mitred within the
+/// limit above. The miter reaches sqrt(2 / sum) times the half width, so a
+/// limit of four is a sum of an eighth.
+inline constexpr double kMiterFloor = 2.0 / (kMiterLimit * kMiterLimit);
 
 /// A stroke thinner than this has no area to rasterise and would disappear
 /// rather than draw faintly. Not a design decision -- Theme.plotLineWidth is
@@ -248,6 +313,23 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
         return;
     }
     const double half = (width > kMinStrokeWidth ? width : kMinStrokeWidth) / 2.0;
+
+    // Which side of the path the first vertex of each pair is on, carried along
+    // the run.
+    //
+    // This is the whole reason an envelope drew as a comb of spindles rather
+    // than as a band. A triangle strip pairs each station's two vertices with
+    // the next station's two, and the quad between them is only a quad while
+    // both pairs are the same way round. At a reversal -- which is *every*
+    // station of an envelope, up to the high and straight back down -- the
+    // normal flips to the other side of the path, so the two sides crossed and
+    // every quad rasterised as an hourglass pinched to a point in the middle:
+    // half the ink, and a black gap where the join should have been solid.
+    //
+    // Screen space has no memory of which side was "left", so the test is
+    // simply whether this station's offset still points the way the last one
+    // did. It costs a dot product per station and nothing else.
+    QPointF carried;
 
     // The normal of the segment leaving station `k`. A segment of no length has
     // no direction, so it keeps the one before it -- which happens in an
@@ -283,22 +365,28 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
         // Written without normalising the bisector, because it does not have to
         // be. Both normals are unit, so |n1 + n2|^2 is 2 + 2d for d = n1 . n2,
         // and the reach that keeps a corner square works out as 1 / (1 + d) --
-        // no square root at all. The only case that needs one is a corner sharp
-        // enough for the miter to be cut, which at a limit of four is d below
-        // -0.875, and an envelope's columns are nowhere near it.
+        // no square root at all.
+        //
+        // Past the miter limit the join is a butt instead: both segments end on
+        // the one perpendicular they very nearly share. The bisector of two
+        // opposed normals points *along* the stroke, so a miter cut to length
+        // there is not a join at all, it is a whisker standing out of the line
+        // -- and at 180 degrees it is the spear kMiterLimit is named for.
         QPointF offset = leaving;
         if (i > 0 && i < count - 1) {
             const double dot = entering.x() * leaving.x() + entering.y() * leaving.y();
             const double sum = 1.0 + dot;
-            if (sum > kMiterEpsilon) {
-                const double bisectorX = entering.x() + leaving.x();
-                const double bisectorY = entering.y() + leaving.y();
-                const double reach = sum < 2.0 / (kMiterLimit * kMiterLimit)
-                                         ? kMiterLimit / std::sqrt(2.0 * sum)
-                                         : 1.0 / sum;
-                offset = QPointF(bisectorX * reach, bisectorY * reach);
+            if (sum >= kMiterFloor) {
+                offset =
+                    QPointF((entering.x() + leaving.x()) / sum, (entering.y() + leaving.y()) / sum);
             }
         }
+
+        // ...and it goes on the side the run has been using. See `carried`.
+        if (i > 0 && offset.x() * carried.x() + offset.y() * carried.y() < 0.0) {
+            offset = QPointF(-offset.x(), -offset.y());
+        }
+        carried = offset;
 
         const double ox = offset.x() * half;
         const double oy = offset.y() * half;

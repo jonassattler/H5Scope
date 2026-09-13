@@ -4,11 +4,10 @@
 // What the plot decides before a pixel is touched.
 //
 // Every case here is a regression the plot library evaluation turned up, and
-// four of them are things the plot got wrong for as long as it drew through Qt
+// three of them are things the plot got wrong for as long as it drew through Qt
 // Graphs: a one-sample spike thinned away by a stride, a run of missing data
-// drawn as a straight line across the absence, an epoch timestamp collapsed
-// into a staircase by a float32 vertex, and a logarithmic axis that could not
-// be expressed at all.
+// drawn as a straight line across the absence, and an epoch timestamp collapsed
+// into a staircase by a float32 vertex.
 //
 // No window, no engine, no file. gui::projectLine takes doubles and fills two
 // vectors, which is what makes it assertable here rather than through a grab of
@@ -247,46 +246,48 @@ TEST_CASE("an epoch timestamp draws as a line and not as a staircase", "[plot]")
     CHECK(distinctIfCastFirst < 4);
 }
 
-// --- the logarithmic axis --------------------------------------------------
-
-TEST_CASE("a logarithmic axis spaces the decades evenly", "[plot]")
+TEST_CASE("a pane of device pixels is summarised at the resolution it has", "[plot]")
 {
-    gui::PlotView view = paneOver(0.0, 4.0, 1.0, 10000.0);
-    view.logY = true;
+    // A pane is laid out in logical pixels and drawn into a framebuffer with
+    // devicePixelRatio of them for each one. Summarising to the logical count
+    // -- which is what this did -- hands a HiDPI display one bucket per two or
+    // three physical columns, so a band is drawn at half or a third of the
+    // resolution the screen can show, and every line in the application looks
+    // slightly coarser than it needed to on the machines most readers have.
+    std::vector<double> values(100000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sin(static_cast<double>(i) / 97.0);
+    }
+    const gui::PlotLine line = lineOver(values);
+    const gui::PlotAxis axis;
 
-    CHECK(gui::yFractionOf(1.0, view) == Approx(0.0));
-    CHECK(gui::yFractionOf(10.0, view) == Approx(0.25));
-    CHECK(gui::yFractionOf(100.0, view) == Approx(0.5));
-    CHECK(gui::yFractionOf(10000.0, view) == Approx(1.0));
-}
+    gui::PlotView logical = paneOver(0.0, 100000.0, -1.0, 1.0);
+    const Projected coarse = project(line, axis, logical);
 
-TEST_CASE("a logarithmic axis treats a value at or below zero as missing", "[plot]")
-{
-    // Not clamped to the floor, which would draw a reading nobody took at the
-    // bottom of the pane. There is no logarithm of zero and the plot says so by
-    // leaving a gap.
-    const std::vector<double> values{1.0, 10.0, 0.0, -5.0, 100.0, 1000.0};
+    gui::PlotView physical = logical;
+    physical.pixelRatio = 2.0;
+    const Projected fine = project(line, axis, physical);
 
-    gui::PlotView view = paneOver(0.0, 5.0, 1.0, 1000.0);
-    view.logY = true;
-    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+    // Both are envelopes -- there are a hundred samples per logical column --
+    // and the finer one resolves twice as much of the line, because the bucket
+    // halves and the buckets are powers of two.
+    // Twice, give or take the one bucket at each end that the halving rounds
+    // differently -- the buckets are aligned to the data's own index space, so
+    // the count is a ceiling rather than a ratio.
+    REQUIRE(coarse.points.size() > 2);
+    CHECK(fine.points.size() <= 2 * coarse.points.size());
+    CHECK(fine.points.size() > 2 * coarse.points.size() - 8);
 
-    REQUIRE(drawn.runs.size() == 2);
-    CHECK(drawn.runs[0].count == 2);
-    CHECK(drawn.runs[1].count == 2);
-}
+    // ...and it is the same line, drawn over the same pane: the extremes do not
+    // move, only how many places along it are given one.
+    CHECK(highestPoint(fine) == Approx(highestPoint(coarse)).margin(1.0));
 
-TEST_CASE("a logarithmic axis puts its floor six decades below the top", "[plot]")
-{
-    // The data cannot say where the bottom of a log axis is when it reaches
-    // zero, so the plot states it -- and states it in one place, so that the
-    // ticks and the curve agree.
-    gui::PlotView view = paneOver(0.0, 4.0, 0.0, 1000.0);
-    view.logY = true;
-
-    CHECK(gui::kLogDecades == 6.0);
-    CHECK(gui::yFractionOf(1000.0, view) == Approx(1.0));
-    CHECK(gui::yFractionOf(0.001, view) == Approx(0.0));
+    // A ratio below one is a window system saying something this cannot use.
+    // It is floored rather than believed, because half a column is not a
+    // resolution to summarise to.
+    gui::PlotView broken = logical;
+    broken.pixelRatio = 0.25;
+    CHECK(project(line, axis, broken).points.size() == coarse.points.size());
 }
 
 // --- where a sample sits along x ------------------------------------------
@@ -1117,4 +1118,209 @@ TEST_CASE("a bucket is a power of two, so zooming steps by octaves", "[plot]")
     const std::size_t justAbove = pointsAcross(33000.0);
     const std::size_t justBelow = pointsAcross(31000.0);
     CHECK(static_cast<double>(justBelow) > 1.5 * static_cast<double>(justAbove));
+}
+
+// ---------------------------------------------------------------------------
+// The closer look: which run of a line a zoomed-in reader is asking for
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a reader who has not zoomed in is asking for nothing", "[plot]")
+{
+    // The whole-line summary a model holds is `buckets` buckets of the whole
+    // line. While the pane shows all of it, a second read at the same budget
+    // would be the same read -- so there is nothing to ask for, and the answer
+    // is "none" rather than a window that happens to be the whole line.
+    CHECK_FALSE(gui::windowFor(0.0, 1000000.0, 1000000, 1024).has_value());
+    CHECK_FALSE(gui::windowFor(-50.0, 1000050.0, 1000000, 1024).has_value());
+    // Nor while the line is short enough to be drawn sample for sample.
+    CHECK_FALSE(gui::windowFor(0.0, 500.0, 1000, 1024).has_value());
+    // Nor of a degenerate view.
+    CHECK_FALSE(gui::windowFor(10.0, 10.0, 1000000, 1024).has_value());
+    CHECK_FALSE(gui::windowFor(0.0, 1.0, 0, 1024).has_value());
+    CHECK_FALSE(gui::windowFor(0.0, 1.0, 1000000, 0).has_value());
+}
+
+TEST_CASE("a closer look is twice the width of the pane", "[plot]")
+{
+    // Twice, so that the reader can pan off the middle of it and still be
+    // looking at data that has been read while the next run is on its way.
+    const auto window = gui::windowFor(0.0, 10000.0, 1000000, 1024);
+    REQUIRE(window.has_value());
+
+    CHECK(window->bucket == 32); // 2 * 10000 / 1024, to the next power of two
+    CHECK(window->span == 32768);
+    CHECK(window->columns == 1024);
+    CHECK(window->span >= 2 * 10000);
+    CHECK(window->covers(0.0, 10000.0));
+    // ...and a bucket small enough that the run is drawn at about the
+    // resolution the whole line was, over a hundredth of the data.
+    CHECK(window->bucket * window->columns == window->span);
+}
+
+TEST_CASE("a closer look steps by a quarter of itself", "[plot]")
+{
+    // The property that keeps a slow pan from flickering. The pane is half the
+    // run wide, so stepping the run by a quarter leaves the run in hand still
+    // covering the pane for one step past the boundary that asked for the next
+    // one -- which is the step the read has to land in.
+    const auto first = gui::windowFor(0.0, 10000.0, 1000000, 1024);
+    REQUIRE(first.has_value());
+
+    // Panning inside the quarter asks for nothing at all: the same run.
+    CHECK(gui::windowFor(4000.0, 14000.0, 1000000, 1024) == first);
+    CHECK(gui::windowFor(8191.0, 18191.0, 1000000, 1024) == first);
+
+    // Crossing it asks for the next run along, and the one in hand still holds
+    // everything on screen while that read is out.
+    const auto next = gui::windowFor(9000.0, 19000.0, 1000000, 1024);
+    REQUIRE(next.has_value());
+    CHECK(next->first == 8192);
+    CHECK(next->first != first->first);
+    CHECK(first->covers(9000.0, 19000.0));
+}
+
+TEST_CASE("a closer look is aligned to the data and not to the view", "[plot]")
+{
+    // The same argument as the renderer's buckets, one level up: a run whose
+    // boundaries moved with the view would re-summarise the same samples
+    // differently on every pan, and the line would crawl even though each
+    // picture of it was honest.
+    for (double at = 0.0; at < 40000.0; at += 137.0) {
+        const auto window = gui::windowFor(at, at + 10000.0, 1000000, 1024);
+        REQUIRE(window.has_value());
+        CHECK(window->bucket == 32);
+        CHECK(window->first % window->bucket == 0);
+        CHECK(window->first % 8192 == 0); // a quarter of the run
+        CHECK(window->covers(at, at + 10000.0));
+    }
+}
+
+TEST_CASE("zooming a closer look steps one octave at a time", "[plot]")
+{
+    long long previous = 0;
+    for (double span : {40000.0, 20000.0, 10000.0, 5000.0, 2500.0, 1250.0}) {
+        const auto window = gui::windowFor(500000.0, 500000.0 + span, 1000000, 1024);
+        REQUIRE(window.has_value());
+        // A power of two every time, halving as the span halves.
+        CHECK((window->bucket & (window->bucket - 1)) == 0);
+        if (previous > 0) {
+            CHECK(window->bucket == previous / 2);
+        }
+        previous = window->bucket;
+    }
+    // ...until the run is drawn sample for sample, which is the end of it.
+    const auto closest = gui::windowFor(500000.0, 500100.0, 1000000, 1024);
+    REQUIRE(closest.has_value());
+    CHECK(closest->bucket == 1);
+    CHECK(closest->span == 1024);
+}
+
+TEST_CASE("a closer look at the end of a line keeps the stride of the others",
+          "[plot]")
+{
+    // A run clamped by the end of the data is shorter, and a read asked for a
+    // fixed budget of points would answer it at a finer stride than every other
+    // run -- so its buckets would not line up with theirs, and the crawl this
+    // whole arrangement prevents would reappear in the last screenful of every
+    // dataset. The bucket count travels with the run for exactly this reason.
+    const auto window = gui::windowFor(99000.0, 99900.0, 100000, 1024);
+    REQUIRE(window.has_value());
+
+    CHECK(window->bucket == 2);
+    CHECK(window->first == 98816);
+    CHECK(window->first % window->bucket == 0);
+    CHECK(window->span == 100000 - 98816); // what is left, not the whole run
+    CHECK(window->span < window->bucket * 1024);
+    // Ceiling division of the clamped span, which is what makes a read work out
+    // a stride of exactly `bucket` -- the same arithmetic sampleFrom applies.
+    CHECK(window->columns == (window->span + window->bucket - 1) / window->bucket);
+    CHECK((window->span + window->columns - 1) / window->columns == window->bucket);
+}
+
+TEST_CASE("a view off the end of the data asks for what is there", "[plot]")
+{
+    // Not a crash and not a run past the end: a view a long way outside the
+    // line still resolves to indices that exist, or to nothing.
+    const auto beyond = gui::windowFor(2000000.0, 2010000.0, 1000000, 1024);
+    if (beyond.has_value()) {
+        CHECK(beyond->first >= 0);
+        CHECK(beyond->first + beyond->span <= 1000000);
+    }
+    const auto before = gui::windowFor(-50000.0, -40000.0, 1000000, 1024);
+    if (before.has_value()) {
+        CHECK(before->first == 0);
+    }
+    // And one written with numbers no arithmetic can use is simply refused.
+    const double huge = 1e300;
+    const auto silly = gui::windowFor(-huge, huge, 1000000, 1024);
+    CHECK_FALSE(silly.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// The stroke, where an envelope actually puts it
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an envelope's zigzag strokes as a band, not as a comb", "[plot]")
+{
+    // The bug that made /plotting/adc_10M -- ten million samples, drawn as a
+    // min/max band -- come out as a comb of spindles with black between them.
+    //
+    // An envelope reverses direction at *every* station: up to the bucket's
+    // high, straight back down to the next one's low. The two normals at such a
+    // join are very nearly opposite, so their bisector points *along* the
+    // stroke rather than across it -- and the join mitred that bisector and cut
+    // it to the limit, which put the station's two vertices four half-widths
+    // apart in y instead of one half-width either side in x. Every quad between
+    // two stations became a sliver. Measured on the picture, a column of the
+    // band carried 38 pixels of ink where the band was 86 pixels tall.
+    //
+    // Two properties say it is right, and the first is the one that failed:
+    // each pair straddles its own station by the width asked for, and
+    // consecutive pairs are the same way round, so the strip is quads rather
+    // than hourglasses.
+    std::vector<QPointF> zigzag;
+    for (int column = 0; column < 40; ++column) {
+        const double x = static_cast<double>(column);
+        zigzag.emplace_back(x, 100.0);       // the bucket's low
+        zigzag.emplace_back(x + 0.5, 10.0);  // and its high, half a bucket along
+    }
+
+    std::vector<QPointF> stroke;
+    gui::strokeRun(zigzag.data(), static_cast<int>(zigzag.size()), 1.0, stroke);
+    REQUIRE(stroke.size() == zigzag.size() * 2);
+
+    for (std::size_t station = 0; station < zigzag.size(); ++station) {
+        const QPointF above = stroke[station * 2];
+        const QPointF below = stroke[station * 2 + 1];
+        INFO("station " << station);
+        // The width it was asked for, across the line. Four half-widths of
+        // whisker is what this used to be.
+        CHECK(std::hypot(above.x() - below.x(), above.y() - below.y()) == Approx(1.0).margin(0.001));
+        // Centred on the station rather than reaching past it.
+        CHECK((above.x() + below.x()) / 2.0 == Approx(zigzag[station].x()).margin(0.001));
+        CHECK((above.y() + below.y()) / 2.0 == Approx(zigzag[station].y()).margin(0.001));
+
+        if (station > 0) {
+            const QPointF previous = stroke[(station - 1) * 2] - stroke[(station - 1) * 2 + 1];
+            const QPointF current = above - below;
+            INFO("the strip turns inside out here");
+            CHECK(previous.x() * current.x() + previous.y() * current.y() > 0.0);
+        }
+    }
+}
+
+TEST_CASE("a gentle corner still gets its miter", "[plot]")
+{
+    // The other side of the same decision: giving up past the limit must not
+    // mean giving up at every bend. A corner the miter can reach round keeps
+    // the stroke square through it, which is what the right-angle case above
+    // measures and what this one holds at a shallower angle.
+    const std::vector<QPointF> bend{{0.0, 0.0}, {100.0, 0.0}, {200.0, 20.0}};
+    std::vector<QPointF> stroke;
+    gui::strokeRun(bend.data(), static_cast<int>(bend.size()), 2.0, stroke);
+
+    REQUIRE(stroke.size() == 6);
+    const double corner = std::hypot(stroke[2].x() - stroke[3].x(), stroke[2].y() - stroke[3].y());
+    CHECK(corner > 2.0);
+    CHECK(corner < 2.0 * gui::kMiterLimit);
 }

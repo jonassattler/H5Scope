@@ -88,23 +88,28 @@ tests and `make-screenshots` never touch the user's settings.
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without
-losing the one that matters, and how a stroke is built out of triangles — and
+losing the one that matters, which run of a line a zoomed-in reader is asking to
+have read again, and how a stroke is built out of triangles — and
 it has no renderer in it, which is what lets `tests/test_plotprojection.cpp`
 assert all of it with no window. `gui::PlotItem` is the part that has one.
 `src/qml/PlotFrame.qml` draws the gutters, the rules, the ticks and the labels.
-Read the header of `PlotProjection.hpp` before changing any of it: the four
+Read the header of `PlotProjection.hpp` before changing any of it: the three
 things listed there are why this is ours rather than Qt Graphs', and each of
 them is a defect of the thing it replaced.
 
 Two rules hold across that boundary. **A tick is drawn where the curve was
-drawn, or it is a lie** — the log floor is `PlotItem.logDecades` and nothing in
-QML derives it a second time; `tst_views` asserts the two mappings agree.
+drawn, or it is a lie** — `PlotFrame.yFraction()` and `PlotItem::yFraction()`
+are two implementations of one rule and `tst_views` asserts they agree, over the
+window on screen and outside it.
 And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
-their own cache and copy nothing, so every path that can free or prune a held
-line calls `PlotItem::clear()` first. There are two such places in
-`DatasetPlot` and they are named in the code; `test_models` and
-`test_customplot` do the dangerous thing thirteen ways and check the item
-stopped reading.
+their own cache and copy nothing, so no path may free or prune a held line
+without saying something about it first. There are two things it can say, and
+invariant 6 below is where the difference lives: `PlotItem::clear()`, where the
+old line stops being a reading of anything, and `retire()`, where it is the same
+data read again and goes on being drawn until the replacement arrives.
+`test_models` and `test_customplot` do the dangerous thing both ways and check
+what the item is reading afterwards — by dereferencing it, because a line count
+would be just as happy over freed memory.
 
 ## Invariants worth knowing before editing
 
@@ -137,13 +142,74 @@ stopped reading.
    plot reads a line. Postprocessing is the exception — it must materialise, and
    is capped at `postproc::kMaxElements` (2^24 doubles, 128 MB).
 
-   What the plot reads is now a min/max **envelope** rather than every nth
-   element: it reads the bucket those elements were being chosen from and keeps
-   its extremes, so a spike one sample wide cannot be thinned away. That costs
-   no extra round trips — a bucket is one hyperslab either way — and
-   `tests/test_cost.cpp` asserts both halves of it. Zoom and pan read nothing
-   at all; that is asserted too, because a change that made them read would not
-   look like a bug, it would look like the plot had become slow.
+   What the plot reads is a min/max **envelope** rather than every nth element:
+   it reads the elements those samples were being chosen from and keeps the
+   extremes of each bucket, so a spike one sample wide cannot be thinned away.
+   It reads the same elements a stride would have skipped over and no more, in
+   hyperslabs of up to `kReadRun` — a read carries as many whole buckets as it
+   can reach, so the round trips follow the *length of the line* and not the
+   number of buckets it is folded into. They used to follow the bucket count,
+   and `all` on a ten-thousand-line table was 1.28 million reads of eight
+   values each: two seconds of a frozen window to move twenty megabytes.
+   `tests/test_cost.cpp` holds both halves — the elements exactly once, the
+   reads bounded by `kReadRun`. **Both** plots reduce a line that way, by the
+   same arithmetic, because a reader who puts a dataset on the Plot tab and the
+   same slice in a custom tab is looking at one dataset: `test_customplot`
+   compares the two value for value.
+
+   **A bucket is a column, and a column is a device pixel.** What a line is
+   thinned to follows the pane — `setPaneColumns`, quantised — rather than
+   being a constant, because a constant is wrong in both directions: fewer
+   buckets than the pane has pixel columns draws an envelope as a hatch of
+   separated teeth instead of a band, and more points than can be told apart
+   are read and held for nothing. The width is measured in *device* pixels
+   (`PlotSurface.pushColumns`, `PlotView::pixelRatio`), because a pane is laid
+   out in logical ones and drawn into a framebuffer with `devicePixelRatio` of
+   them for each — so a HiDPI display summarising to the logical count throws
+   away exactly that factor before anything is drawn. Down to the quantum
+   rather than up, because the renderer summarises again in powers of two if it
+   is handed more than `kSamplesPerColumn` points per column.
+
+   **A closer look re-reads, and several are held at once.** The whole-line
+   summary is of the *whole* line, so zooming in used to stretch it rather than
+   resolve it. The plot reads the run on screen again at a finer bucket once the
+   view has stopped moving — `gui::windowFor` decides the run,
+   `DatasetPlot::setVisibleRange` and `CustomPlot::setVisibleRange` ask for it —
+   and keeps the whole-line summary beside it, so the y axis stays the line's
+   true extent.
+
+   The two directions of a zoom are not the same shape, and that is why there
+   are two mechanisms. Going **in** is free: a run costs its *span*, so it is
+   read an octave finer than the pane needs (`detailBuckets`, `closerBuckets`)
+   and the step down lands on detail that came with it. Going **out** cannot be
+   free that way — the next view is wider than the run in hand and no resolution
+   inside it helps — so runs are read *ahead* of the reader, `kPrefetchOctaves`
+   of them, each four times as wide as the one below it. Those reads happen
+   while the reader is looking rather than while they are waiting, chained one
+   settle apart so any gesture cancels the rest. Runs are never thrown away
+   when the view leaves them either, up to `kHeldLevels`, so retracing a zoom
+   costs nothing at all.
+
+   What `test_cost` holds it to: the **renderer** never reads, a gesture in
+   flight never reads, the pane's own read is one crossing, panning inside a run
+   reads nothing — the prefetch is measured from the *run* rather than from the
+   view, which is what keeps that true — and stepping in or out is a draw in the
+   same frame, never a fall back to the whole-line summary. A change that made
+   any of those read would not look like a bug, it would look like the plot had
+   become slow.
+
+   **Nothing is freed under a renderer that is reading it, and nothing blanks
+   the pane to avoid that.** The borrow contract has two halves.
+   `releaseDrawing()` empties the item and is right only where the old line
+   stops being a reading of anything — a new dataset, a row removed or retyped.
+   Everywhere else — re-thinning for a pane of a different width, a closer look
+   replaced, the cache pruned to the drawn set — the old values are **retired**
+   (`DatasetPlot::retire`, `CustomPlot::retire`) and freed in `fill()`, the one
+   moment a renderer that was borrowing them has just been handed something
+   else. Releasing everywhere was a blank pane for a frame or more on every one
+   of those, which is what the reader saw when a rail opened. A resize is also
+   debounced (`kResizeMilliseconds`), so a drag of the window's edge reads once
+   at the end rather than once per sixty-four pixels.
 7. **The version is counted from release tags**, never typed. Major/minor live
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
 8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`

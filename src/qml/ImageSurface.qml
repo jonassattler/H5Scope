@@ -299,8 +299,15 @@ Item {
                 }
             }
 
-            TapHandler {
-                onDoubleTapped: surface.resetView()
+            // The way back. A MouseArea rather than a TapHandler for the reason
+            // ObjectTree gives at length and PlotSurface repeats: TapHandler
+            // counts its own taps, and the drag handler above takes a passive
+            // grab on every press, which resets the count. A MouseArea answers
+            // the double click the window system itself reports.
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                onDoubleClicked: surface.resetView()
             }
         }
     }

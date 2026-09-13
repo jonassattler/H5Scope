@@ -11,10 +11,23 @@
 namespace gui {
 namespace {
 
-// Below this many samples per pixel column the envelope has nothing left to
-// do: two per column is its own output rate, so emitting an envelope of fewer
-// than two samples a column would draw more vertices than there are samples.
-constexpr double kSamplesPerColumn = 2.0;
+// How many samples a pixel column may hold before the envelope takes over.
+//
+// Two per column is the envelope's own output rate, so below two it would draw
+// more vertices than there are samples and there is nothing left for it to do.
+// The threshold is twice that, and the slack is deliberate: the models thin a
+// line to about two points per column already -- a bucket is a column -- and
+// they are working from the frame's width rather than from the plot area inside
+// it, because taking it from the area is a binding loop (see
+// PlotSurface.pushColumns). So what arrives here is a little denser than two a
+// column rather than a little sparser.
+//
+// Without the slack that overshoot would be expensive out of all proportion:
+// the bucket below is rounded up to a power of two, so a hair over two samples
+// a column buys a bucket of four and *halves* the horizontal resolution. Four
+// stations a column drawn straight is a few thousand vertices more and the
+// picture the data actually has.
+constexpr double kSamplesPerColumn = 4.0;
 
 // How far outside the pane a projected point is allowed to land.
 //
@@ -32,8 +45,12 @@ constexpr double kSamplesPerColumn = 2.0;
 // it is the only place in this file where the arithmetic is allowed to lie.
 constexpr double kFarAway = 1e7;
 
-/// The y axis resolved into the space the values are actually mapped in: the
-/// values themselves, or their logarithms.
+/// The y axis, and whether it has a span to divide by at all.
+///
+/// A degenerate view -- a flat series with no padding, a bound that came
+/// through as NaN -- has no answer to "where does this value sit", and every
+/// caller has to notice that before it divides. One struct so that they all
+/// notice it the same way.
 struct YMapping
 {
     double low = 0.0;
@@ -43,25 +60,58 @@ struct YMapping
 
 YMapping mappingFor(const PlotView& view)
 {
-    double low = view.yMin;
-    double high = view.yMax;
-    if (view.logY) {
-        // A log axis has to put its floor somewhere when the data reaches zero
-        // or goes negative, and the data cannot say where. kLogDecades below
-        // the top is what a reader of a log plot expects to see.
-        high = std::max(view.yMax, std::numeric_limits<double>::min());
-        low = view.yMin > 0.0 ? view.yMin : high * std::pow(10.0, -kLogDecades);
-        low = std::log10(low);
-        high = std::log10(high);
-    }
+    const double low = view.yMin;
+    const double high = view.yMax;
     return {low, high, std::isfinite(high - low) && std::abs(high - low) > 0.0};
 }
 
 } // namespace
 
-bool drawable(double value, bool logY)
+std::optional<PlotWindow> windowFor(double low, double high, long long length, long long buckets)
 {
-    return std::isfinite(value) && (!logY || value > 0.0);
+    if (length <= 0 || buckets <= 0) {
+        return {};
+    }
+    if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
+        return {};
+    }
+
+    // A bucket small enough to put `buckets` of them across twice the visible
+    // span. A power of two, and ceiling rather than nearest, so that zooming
+    // steps from one octave to the next -- an arbitrary bucket would shimmer,
+    // because every pixel of zoom would change which samples each of them
+    // holds. Bounded rather than open, because a span that has gone to infinity
+    // under a degenerate view would otherwise not stop.
+    const double wanted = 2.0 * (high - low) / static_cast<double>(buckets);
+    long long bucket = 1;
+    while (static_cast<double>(bucket) < wanted && bucket < (std::int64_t{1} << 40)) {
+        bucket <<= 1;
+    }
+
+    const long long span = bucket * buckets;
+    if (span >= length) {
+        // The whole-line summary already covers this much at this bucket or
+        // finer. There is nothing a second read could add.
+        return {};
+    }
+
+    const long long stride = std::max<long long>(bucket, (buckets / 4) * bucket);
+    // Clamped in double before the cast: a view a long way off the data gives a
+    // bound that does not fit in a long long at all.
+    const double aligned =
+        std::floor(low / static_cast<double>(stride)) * static_cast<double>(stride);
+    auto first = static_cast<long long>(std::clamp(aligned, 0.0, static_cast<double>(length - 1)));
+    first -= first % stride; // back onto the alignment after the clamp
+
+    const long long take = std::min(span, length - first);
+    if (take <= 0) {
+        return {};
+    }
+    const auto columns = static_cast<int>((take + bucket - 1) / bucket);
+    if (columns <= 0) {
+        return {};
+    }
+    return PlotWindow{first, take, bucket, columns};
 }
 
 double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
@@ -113,8 +163,7 @@ double yFractionOf(double value, const PlotView& view)
     if (!mapping.usable) {
         return 0.0;
     }
-    const double mapped = view.logY ? std::log10(value) : value;
-    return (mapped - mapping.low) / (mapping.high - mapping.low);
+    return (value - mapping.low) / (mapping.high - mapping.low);
 }
 
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
@@ -146,10 +195,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // timestamp drawing as a line here and as a staircase anywhere that casts
     // first.
     const double ySpan = mapping.high - mapping.low;
-    const auto toY = [&](double value) {
-        const double mapped = view.logY ? std::log10(value) : value;
-        return h - (mapped - mapping.low) / ySpan * h;
-    };
+    const auto toY = [&](double value) { return h - (value - mapping.low) / ySpan * h; };
     const auto toX = [&](double x) { return (x - view.xMin) / xSpan * w; };
 
     // Where the current run started, as an index into `points`.
@@ -194,7 +240,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         for (std::int64_t i = 0; i < count; ++i) {
             const double value = line.values[i];
             const double x = xOf(line, axis, i);
-            if (!drawable(value, view.logY) || !std::isfinite(x)) {
+            if (!std::isfinite(value) || !std::isfinite(x)) {
                 closeRun();
                 continue;
             }
@@ -235,7 +281,12 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     }
 
     const std::int64_t visible = last - first + 1;
-    std::int64_t columns = static_cast<std::int64_t>(std::ceil(w));
+    // The physical columns the pane has, not the logical ones. See
+    // PlotView::pixelRatio: on a HiDPI display those differ by two or three,
+    // and summarising to the logical count throws away exactly that factor
+    // before a pixel is touched.
+    std::int64_t columns =
+        static_cast<std::int64_t>(std::ceil(w * std::max(view.pixelRatio, 1.0)));
     if (view.maxColumns > 0) {
         columns = std::min<std::int64_t>(columns, view.maxColumns);
     }
@@ -243,17 +294,23 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 
     if (visible <= static_cast<std::int64_t>(kSamplesPerColumn) * columns) {
         // Zoomed in far enough that the envelope would emit more vertices than
-        // there are samples. Draw the samples.
+        // there are values. Draw them.
         for (std::int64_t i = first; i <= last; ++i) {
             const double value = line.values[i];
-            if (!drawable(value, view.logY)) {
+            if (!std::isfinite(value)) {
                 closeRun();
                 continue;
             }
             place(toX(x0 + static_cast<double>(i) * dx), toY(value));
         }
         closeRun();
-        return added(false);
+        // ...and they are samples only if the model did not summarise them on
+        // the way here. A step of one is one drawn point per element; anything
+        // wider means each of these is the extreme of a bucket, and a marker on
+        // it would be punctuation on a reading nobody took. This is not the
+        // same question as whether the loop above ran: a summary fine enough to
+        // fit four points in a column is still a summary.
+        return added(line.positionStep > 1.0);
     }
 
     // The envelope, over buckets that are a power of two wide and aligned to
@@ -304,7 +361,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         std::int64_t highIndex = -1;
         for (std::int64_t i = i0; i <= i1; ++i) {
             const double value = line.values[i];
-            if (!drawable(value, view.logY)) {
+            if (!std::isfinite(value)) {
                 continue;
             }
             if (value < lowest) {

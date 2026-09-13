@@ -304,25 +304,6 @@ SettingsPanel {
             onToggled: { if (panel.target) panel.target.showMarkers = checked }
         }
 
-        /// A logarithmic y axis.
-        ///
-        /// The plot could not offer this at all while it drew through Qt
-        /// Graphs: the 2-D half of that library ships a value axis, a bar
-        /// category axis and a date-time axis, and the only logarithm in it is
-        /// a formatter for the 3-D surfaces. It is here because the plot is
-        /// drawn by this application now, and because a reader looking at a
-        /// spectrum, a decay or anything else that spans decades cannot read
-        /// it on a linear axis at all.
-        ///
-        /// A value at or below zero has no logarithm and is drawn as a gap
-        /// rather than clamped to the floor -- clamping would put a reading
-        /// nobody took at the bottom of the pane.
-        AppCheckBox {
-            text: qsTr("logarithmic y")
-            checked: panel.target ? panel.target.logY : false
-            onToggled: { if (panel.target) panel.target.logY = checked }
-        }
-
         /// Pointing at the plot reads the sample under the pointer, and says so
         /// in the bar below it. Off for a reader who wants the footer to hold
         /// still while they look at it.

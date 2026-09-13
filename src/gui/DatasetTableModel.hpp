@@ -282,6 +282,19 @@ public:
     [[nodiscard]] std::vector<NumericGrid>
     sampleValues(const std::vector<SampleRequest>& requests) const;
 
+    /// The same batch against a source the caller already has, with no waiting
+    /// of its own. Static because it runs on the HDF5 thread: everything it
+    /// needs is an argument, which is what makes it safe to call from inside a
+    /// submitted job as well as from the blocking form above.
+    ///
+    /// DatasetPlot is why it is public. A closer look at a line is a second
+    /// read of what is already on screen, so it must not stop the window the
+    /// way the blocking form would -- and the policy about *when* to ask
+    /// belongs to the plot rather than in here.
+    [[nodiscard]] static std::vector<NumericGrid>
+    readSamples(const h5core::DataSource& source, const TableAxes& axes,
+                const std::vector<SampleRequest>& requests);
+
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
 

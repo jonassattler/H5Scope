@@ -166,15 +166,6 @@ void PlotItem::setYMax(double value)
     }
 }
 
-void PlotItem::setLogY(bool on)
-{
-    if (view_.logY != on) {
-        view_.logY = on;
-        Q_EMIT viewChanged();
-        update();
-    }
-}
-
 void PlotItem::setMarkers(bool on)
 {
     if (markers_ != on) {
@@ -200,16 +191,9 @@ double PlotItem::yFraction(double value) const
 
 double PlotItem::valueAt(double fraction) const
 {
-    if (!view_.logY) {
-        return view_.yMin + fraction * (view_.yMax - view_.yMin);
-    }
-    // The same floor the projection arrives at, and arrived at the same way --
-    // see mappingFor() in PlotProjection.cpp. This is the one piece of
-    // arithmetic the chrome and the curve have to agree about, so it is written
-    // as the exact inverse of yFraction() and nothing else.
-    const double high = std::max(view_.yMax, std::numeric_limits<double>::min());
-    const double low = view_.yMin > 0.0 ? view_.yMin : high * std::pow(10.0, -kLogDecades);
-    return std::pow(10.0, std::log10(low) + fraction * (std::log10(high) - std::log10(low)));
+    // The exact inverse of yFraction(), which is the one piece of arithmetic
+    // the chrome and the curve have to agree about.
+    return view_.yMin + fraction * (view_.yMax - view_.yMin);
 }
 
 double PlotItem::xFraction(double x) const
@@ -271,7 +255,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
             // way out of the file like everything else.
             for (qsizetype i = 0; i < line.count; ++i) {
                 const double value = line.values[i];
-                if (!drawable(value, view_.logY)) {
+                if (!std::isfinite(value)) {
                     continue;
                 }
                 const double x = xOf(line, axis_, i);
@@ -303,7 +287,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
                     continue;
                 }
                 const double value = line.values[at];
-                if (!drawable(value, view_.logY)) {
+                if (!std::isfinite(value)) {
                     continue;
                 }
                 consider(index, at, xOf(line, axis_, at), value);
@@ -342,6 +326,9 @@ PlotView PlotItem::viewForFrame() const
     PlotView view = view_;
     view.width = width();
     view.height = height();
+    // What the framebuffer has, rather than what the layout counts in. See
+    // PlotView::pixelRatio.
+    view.pixelRatio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
     // Two stroke vertices per projected point, two points per column, and the
     // budget is counted in stroke vertices.
     const int lines = std::max(lineCount(), 1);

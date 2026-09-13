@@ -9,22 +9,19 @@ import H5Scope.Backend
 ///
 /// This is the half of a plotting library that is not the plotting. Qt Graphs
 /// drew it, and drawing it here is what the move off Qt Graphs costs -- about
-/// two hundred lines, against a library that could not put a logarithm on an
-/// axis, redrew a series to change its colour, and segfaulted at ten million
-/// points. The tick arithmetic was never Qt Graphs' anyway: niceStep() has been
-/// in PlotSurface since the day it turned out the library spaced its ticks from
-/// the range an axis *declares* rather than the range it is showing, so a
-/// zoomed-in axis kept the spacing of the whole dataset and printed one lonely
-/// tick.
+/// two hundred lines, against a library that redrew a series to change its
+/// colour and segfaulted at ten million points. The tick arithmetic was never
+/// Qt Graphs' anyway: niceStep() has been in PlotSurface since the day it
+/// turned out the library spaced its ticks from the range an axis *declares*
+/// rather than the range it is showing, so a zoomed-in axis kept the spacing of
+/// the whole dataset and printed one lonely tick.
 ///
 /// One rule holds this file together: **a tick is drawn where the curve was
-/// drawn, or it is a lie**. The x axis is linear and the arithmetic is a
-/// subtraction, so that half is trivially true. The y axis may be logarithmic,
-/// and there the floor is not in the data -- a log axis whose values reach zero
-/// has to put its bottom somewhere -- so the constant that decides it comes out
-/// of the renderer, as PlotItem.logDecades, rather than being written here a
-/// second time. tst_views asserts that this file's yFraction() and the item's
-/// agree, because that is the one thing that could quietly drift.
+/// drawn, or it is a lie**. Both axes are linear and the arithmetic is a
+/// subtraction, so both halves of it are a fraction of a span and the renderer
+/// computes the same fraction of the same span; tst_views asserts that this
+/// file's yFraction() and the item's agree, because that is the one thing that
+/// could quietly drift.
 Item {
     id: frame
 
@@ -34,7 +31,6 @@ Item {
     property real viewMaxX: 1.0
     property real viewMinY: 0.0
     property real viewMaxY: 1.0
-    property bool logY: false
 
     property bool showGrid: true
     /// Roughly how many ticks an axis carries.
@@ -133,31 +129,15 @@ Item {
     }
 
     // --- where a value sits ----------------------------------------------
-    /// The bottom and the top of the y axis, as values.
-    ///
-    /// The same as viewMinY and viewMaxY on a linear axis, and not the same on
-    /// a logarithmic one whose data reaches zero: there is no logarithm of
-    /// zero, so the axis takes a floor of `logDecades` below its top. The rule
-    /// is three lines and the constant is the renderer's, which is the only
-    /// part of it that could be got wrong in one place and not the other.
-    readonly property real axisHigh:
-        frame.logY ? Math.max(frame.viewMaxY, Number.MIN_VALUE) : frame.viewMaxY
-    readonly property real axisLow: {
-        if (!frame.logY)
-            return frame.viewMinY
-        return frame.viewMinY > 0 ? frame.viewMinY
-                                  : frame.axisHigh * Math.pow(10, -plotLines.logDecades)
-    }
-
     /// Where `value` sits up the pane, as a fraction from the bottom.
+    ///
+    /// The bottom and the top of the axis are the window the surface resolved,
+    /// with nothing between them and the data: this is the same subtraction the
+    /// renderer does, over the same two numbers, which is what makes a tick land
+    /// where the curve did.
     function yFraction(value) {
-        if (!frame.logY) {
-            const span = frame.axisHigh - frame.axisLow
-            return span > 0 ? (value - frame.axisLow) / span : 0
-        }
-        const low = Math.log(frame.axisLow) / Math.LN10
-        const high = Math.log(frame.axisHigh) / Math.LN10
-        return high > low ? (Math.log(value) / Math.LN10 - low) / (high - low) : 0
+        const span = frame.viewMaxY - frame.viewMinY
+        return span > 0 ? (value - frame.viewMinY) / span : 0
     }
 
     /// ...and along it.
@@ -231,20 +211,6 @@ Item {
         return found
     }
 
-    /// The decades in `low`..`high`, thinned so that a range of thirty of them
-    /// does not print thirty labels on top of one another.
-    function decadesBetween(low, high) {
-        const found = []
-        if (!(low > 0) || !(high > low))
-            return found
-        const first = Math.ceil(Math.log(low) / Math.LN10)
-        const last = Math.floor(Math.log(high) / Math.LN10)
-        const every = Math.max(1, Math.ceil((last - first + 1) / frame.tickTarget))
-        for (let d = first; d <= last; d += every)
-            found.push({ power: d, value: Math.pow(10, d) })
-        return found
-    }
-
     /// One entry per tick, carrying where it goes as well as what it says.
     ///
     /// The position is computed here rather than in the delegate's binding so
@@ -267,24 +233,9 @@ Item {
 
     readonly property var yTicks: {
         const out = []
-        if (frame.logY) {
-            const decades = frame.decadesBetween(frame.axisLow, frame.axisHigh)
-            for (let i = 0; i < decades.length; ++i) {
-                const power = decades[i].power
-                out.push({ at: frame.yFraction(decades[i].value),
-                           // Plain digits where they are short enough to read
-                           // at a glance, and a power everywhere else. A log
-                           // axis spanning six decades printing "0.000001" up
-                           // its side is an axis nobody reads.
-                           text: (power >= -3 && power <= 4)
-                                 ? decades[i].value.toString()
-                                 : "1e" + power })
-            }
-            return out
-        }
-        const span = frame.axisHigh - frame.axisLow
+        const span = frame.viewMaxY - frame.viewMinY
         const step = frame.niceStep(span, frame.tickTarget)
-        const values = frame.ticksBetween(frame.axisLow, frame.axisHigh, step)
+        const values = frame.ticksBetween(frame.viewMinY, frame.viewMaxY, step)
         for (let i = 0; i < values.length; ++i) {
             out.push({ at: frame.yFraction(values[i]),
                        text: frame.labelFor(values[i], span) })
@@ -359,7 +310,6 @@ Item {
         xMax: frame.viewMaxX
         yMin: frame.viewMinY
         yMax: frame.viewMaxY
-        logY: frame.logY
         markers: frame.markers
         markerSize: frame.markerSize
 

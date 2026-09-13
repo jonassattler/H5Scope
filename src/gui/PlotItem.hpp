@@ -53,39 +53,17 @@ class PlotItem : public QQuickItem
     Q_PROPERTY(double yMin READ yMin WRITE setYMin NOTIFY viewChanged FINAL)
     Q_PROPERTY(double yMax READ yMax WRITE setYMax NOTIFY viewChanged FINAL)
 
-    /// A logarithmic y axis, which is one of the two things the plot could not
-    /// do before. The chrome has to agree -- decade ticks, and a label format
-    /// to match -- or the grid lies about where the curve is, which is what
-    /// viewLow/viewHigh and yFraction() below are for.
-    Q_PROPERTY(bool logY READ logY WRITE setLogY NOTIFY viewChanged FINAL)
-
-    /// The values at the bottom and the top of the pane.
-    ///
-    /// The same as yMin and yMax on a linear axis, and pointedly not the same
-    /// on a logarithmic one: a log axis whose data reaches zero has to put its
-    /// floor somewhere, and these are where it put it. The chrome binds to
-    /// these rather than to yMin/yMax so that it draws the axis the curve was
-    /// drawn against.
-    Q_PROPERTY(double viewLow READ viewLow NOTIFY viewChanged FINAL)
-    Q_PROPERTY(double viewHigh READ viewHigh NOTIFY viewChanged FINAL)
-
     /// Punctuation on the line: a dot at every sample.
     ///
-    /// Only where the line is drawn sample for sample. Once the envelope is
-    /// summarising, a drawn point is two samples out of a column of a thousand
-    /// and a dot on it would mark nothing -- so a decimated line carries no
-    /// markers however this is set, and zooming in is what brings them back.
+    /// Only where the line is drawn sample for sample. Once anything is
+    /// summarising -- this item's own envelope, or the model's on the way out
+    /// of the file -- a drawn point is two samples out of a column of a
+    /// thousand and a dot on it would mark nothing, so a summarised line
+    /// carries no markers however this is set. Zooming in is what brings them
+    /// back, because that is what makes a bucket one element.
     Q_PROPERTY(bool markers READ markers WRITE setMarkers NOTIFY markersChanged FINAL)
     /// How wide a marker is, across. Theme.plotMarkerSize.
     Q_PROPERTY(double markerSize READ markerSize WRITE setMarkerSize NOTIFY markersChanged FINAL)
-
-    /// How far below the largest value a logarithmic axis reaches when the
-    /// data gives no floor, which it does not when the values reach zero.
-    ///
-    /// Exposed because the chrome has to put its ticks where the curve was
-    /// drawn, and the two therefore have to agree about where the bottom of
-    /// the axis is. The constant is shared from here rather than written twice.
-    Q_PROPERTY(double logDecades READ logDecades CONSTANT FINAL)
 
     /// Points projected for the last frame, over every line together.
     ///
@@ -159,12 +137,8 @@ public:
     [[nodiscard]] double xMax() const { return view_.xMax; }
     [[nodiscard]] double yMin() const { return view_.yMin; }
     [[nodiscard]] double yMax() const { return view_.yMax; }
-    [[nodiscard]] bool logY() const { return view_.logY; }
     [[nodiscard]] bool markers() const { return markers_; }
     [[nodiscard]] double markerSize() const { return markerSize_; }
-    [[nodiscard]] static double logDecades() { return kLogDecades; }
-    [[nodiscard]] double viewLow() const { return valueAt(0.0); }
-    [[nodiscard]] double viewHigh() const { return valueAt(1.0); }
     [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
     [[nodiscard]] int drawnRunCount() const { return drawnRuns_; }
 
@@ -172,7 +146,6 @@ public:
     void setXMax(double value);
     void setYMin(double value);
     void setYMax(double value);
-    void setLogY(bool on);
     void setMarkers(bool on);
     void setMarkerSize(double size);
 

@@ -1774,14 +1774,13 @@ TestCase {
     /// The ticks are drawn where the curve is.
     ///
     /// The chrome and the renderer each map a value to a place on the pane,
-    /// and they are two implementations of one rule -- three lines of it, and
-    /// on a logarithmic axis the floor those three lines choose is not in the
-    /// data at all. If they ever disagree the grid does not look wrong, it
-    /// looks authoritative and reads off by a pixel or by a decade.
+    /// and they are two implementations of one rule -- three lines of it, in
+    /// QML and in C++. If they ever disagree the grid does not look wrong, it
+    /// looks authoritative and reads off by a pixel.
     ///
-    /// So the two are asserted against each other directly. The constant that
-    /// decides the log floor is shared -- PlotItem.logDecades -- and this is
-    /// what watches the arithmetic around it.
+    /// So the two are asserted against each other directly, over the window on
+    /// screen and over a window twice as tall: a rule that happens to hold at
+    /// the ends of one span is not the same rule.
     function test_the_ticks_agree_with_the_renderer_about_where_a_value_sits() {
         verify(select("/compressed"))
 
@@ -1804,18 +1803,11 @@ TestCase {
             }
         }
 
-        plot.logY = false
-        waitForRendering(win.view)
         agreesOver(lines.yMin, lines.yMax)
-
-        plot.logY = true
-        waitForRendering(win.view)
-        agreesOver(lines.viewLow, lines.viewHigh)
-        // ...including below the floor a log axis had to invent, which is the
-        // part neither of them could have taken from the data.
-        agreesOver(lines.viewLow / 10, lines.viewHigh)
-
-        plot.logY = false
+        // ...and outside it, which is where a stroke that leaves the pane is
+        // projected to and where an off-by-a-sign would show.
+        agreesOver(lines.yMin - (lines.yMax - lines.yMin),
+                   lines.yMax + (lines.yMax - lines.yMin))
     }
 
     /// Start, step and stop: any two describe the x axis and the third follows
@@ -1968,6 +1960,208 @@ TestCase {
         compare(plot.autoRange, undefined)
         compare(plot.rangeMinimum, undefined)
         compare(plot.rangeMaximum, undefined)
+    }
+
+    /// Zooming in reads the run on screen again, and says so in the footer.
+    ///
+    /// The whole chain, from a gesture on the surface to a different set of
+    /// values reaching the renderer. The plot holds a summary of the whole line
+    /// -- a couple of thousand points however long it is -- so zooming used to
+    /// stretch that summary, and the surface's ceiling on magnification was
+    /// pinned at 256 for exactly that reason. Now the surface tells the plot
+    /// object what is on screen, the object reads that run again once the view
+    /// has stopped moving, and the readout stops saying "thinned" when a bucket
+    /// has become one element.
+    function test_zooming_in_reads_the_run_on_screen_again() {
+        verify(select("/trace")) // 20000 elements, summarised to 2000 points
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const backing = AppController.datasetPlot
+
+        // Let the pane's own width land before anything is counted. The surface
+        // pushes it on its first refill and the plot object waits out the drag
+        // -- kResizeMilliseconds -- so a count taken before that is a count at
+        // whatever width the window this test replaced happened to have.
+        wait(600)
+        waitForRendering(win.view)
+
+        // The ceiling is the data's now rather than a constant.
+        compare(plot.maxZoom, Math.max(256, 20000 / 16))
+
+        // How many points that is follows the pane -- a bucket is a column --
+        // so what is asserted here is the shape of the answer and not a number
+        // that would change with the size of the window this test opens.
+        const whole = backing.pointCount
+        verify(whole > 0)
+        verify(whole <= 2 * 20000)
+        verify(backing.thinned, "the whole line does not fit in what is drawn")
+        const summarised = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(summarised > 20, "the line must be drawn at all: " + summarised)
+
+        // Two hundred times in, about the middle: a hundred elements across the
+        // pane, which is a bucket of one however wide the pane is.
+        const area = plot.plotRect
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 200)
+        compare(plot.zoomX, 200)
+        // The wheel takes both axes with it, and this dataset's spike is nine
+        // where its sine is one -- so fifty times in on y is a band of empty
+        // air above the line. Put y back: what is being asked about here is
+        // resolution along x.
+        plot.zoomY = 1.0
+        plot.panY = 0.0
+        // The gesture itself reads nothing; the tenth of a second after it
+        // does.
+        wait(400)
+        waitForRendering(win.view)
+
+        verify(!backing.thinned, "at a bucket of one the samples are the file's")
+        verify(backing.pointCount > 0)
+        // And it is drawn where the pane is. A run carries an offset into the
+        // line it came from -- PlotLine::positionStart -- and a run drawn
+        // without it would be a line somewhere off the frame and a blank plot,
+        // which every count above would still agree with.
+        const resolved = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(resolved > 20, "the run that was read must be on the pane: " + resolved)
+
+        // And back out, which needs no read at all: the whole-line summary was
+        // never thrown away.
+        plot.resetView()
+        compare(backing.pointCount, whole)
+        verify(backing.thinned)
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), summarised)
+    }
+
+    /// A pane that changes width keeps its picture.
+    ///
+    /// What a line is thinned to follows the pane -- a bucket is a column --
+    /// so every change of width is a question for the plot object. Opening a
+    /// rail is the sharpest form of it: the pane narrows by a couple of hundred
+    /// pixels in one step, and what the reader saw was the plot go blank and
+    /// stay blank until they moved the pointer into it.
+    ///
+    /// So this asserts the picture rather than the counts: there is a line on
+    /// the pane before the rail opens, and there is one on the frame after it.
+    function test_a_rail_opening_does_not_empty_the_plot() {
+        verify(select("/trace"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot.drawable)
+        const before = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(before > 20, "the line must be drawn to begin with: " + before)
+
+        win.view.toggleRail("data")
+        compare(win.view.rail, "data")
+        waitForRendering(win.view)
+        verify(plot.drawable, "the plot must still know it has something to draw")
+        const narrowed = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(narrowed > 20, "the line must survive the rail opening: " + narrowed)
+
+        win.view.toggleRail("data")
+        compare(win.view.rail, "")
+        waitForRendering(win.view)
+        const restored = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(restored > 20, "...and closing it again: " + restored)
+
+        // ...and it survives the slower version of the same thing: a window
+        // dragged wider a step at a time. Every one of those steps used to be a
+        // re-read of every drawn line, and the reader saw the pane flicker
+        // under their hand. The picture is asserted after each, because a blank
+        // frame in the middle of a drag is exactly what this is about.
+        for (let width = 900; width >= 600; width -= 40) {
+            win.width = width
+            waitForRendering(win.view)
+            const during = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+            verify(during > 20,
+                   "the line must be drawn at every width: " + width
+                   + " gave " + during)
+        }
+        // And once the drag stops, the pane is re-thinned for the width it
+        // ended at.
+        // Comfortably past DatasetPlot::kResizeMilliseconds, which is 200.
+        wait(600)
+        waitForRendering(win.view)
+        const settled = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(settled > 20, "...and after it settles: " + settled)
+    }
+
+    /// Shift zooms x alone; Ctrl zooms y alone.
+    ///
+    /// A plot of a long trace is read by stretching time without changing what
+    /// an amplitude is worth, and a plot of a narrow band is read the other way
+    /// round. A wheel that always took both axes made either of those a zoom
+    /// followed by a correcting pan, done by eye -- so the two modifiers every
+    /// other plot in the field uses do here what they do there.
+    ///
+    /// Through zoomAxesFor() and zoomAt() rather than through a synthesised
+    /// wheel event: what is being asserted is which axis moves, and QtQuickTest
+    /// cannot put a modifier on a wheel the WheelHandler will accept.
+    function test_a_modifier_holds_one_axis_still() {
+        verify(select("/compressed"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        const area = plot.plotRect
+        const px = area.x + area.width / 2
+        const py = area.y + area.height / 2
+
+        compare(plot.zoomAxesFor(Qt.NoModifier), "both")
+        compare(plot.zoomAxesFor(Qt.ShiftModifier), "x")
+        compare(plot.zoomAxesFor(Qt.ControlModifier), "y")
+        // Both together is neither, because a modifier this file does not know
+        // about is a window manager's and not an instruction.
+        compare(plot.zoomAxesFor(Qt.ShiftModifier | Qt.ControlModifier), "both")
+
+        plot.zoomAt(px, py, 4, "x")
+        compare(plot.zoomX, 4)
+        compare(plot.zoomY, 1)
+        compare(plot.panY, 0)
+
+        plot.resetView()
+        plot.zoomAt(px, py, 4, "y")
+        compare(plot.zoomY, 4)
+        compare(plot.zoomX, 1)
+        compare(plot.panX, 0)
+
+        plot.resetView()
+        plot.zoomAt(px, py, 4, "both")
+        compare(plot.zoomX, 4)
+        compare(plot.zoomY, 4)
+
+        // ...and the way back is a double tap, which is the gesture every map
+        // and image viewer uses. It costs nothing: the whole-line summary is
+        // never thrown away, so the most zoomed-out picture is always already
+        // in hand and going to it is a draw.
+        const gestures = findChild(win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+        doubleClickOn(gestures)
+        waitForRendering(win.view)
+        compare(plot.zoomX, 1)
+        compare(plot.zoomY, 1)
+        compare(plot.panX, 0)
+        compare(plot.panY, 0)
+        verify(!plot.zoomed)
+
+        // ...and the drag still pans, which is the thing the double click could
+        // have cost: the two gestures share one press, and a mouse area that
+        // took the grab and kept it would have frozen the view.
+        plot.zoomAt(px, py, 8, "both")
+        const started = plot.panX
+        mouseDrag(gestures, Math.round(gestures.width / 2),
+                  Math.round(gestures.height / 2), -80, 0)
+        waitForRendering(win.view)
+        verify(plot.panX !== started,
+               "dragging must still move the view: " + plot.panX)
+
+        plot.resetView()
     }
 
     /// The highlight is drawn, and it is drawn wider.
@@ -2149,9 +2343,31 @@ TestCase {
         // rather than as "12.0000" -- four digits of decoration on a count.
         verify(!String(facts[1]).includes("."), "got " + facts[1])
 
+        // ...at the right-hand end of the bar, and not appended to the run of
+        // facts on the left. Appended, a reading that grew a digit moved the
+        // line count and the point count under a reader who was watching them.
+        // The plot's own footer, not the first one in the tree: the view
+        // carries three of them -- table, plot, image -- and findChild answers
+        // with whichever it reaches first.
+        const footer = findChild(win.view, "plotFooter")
+        verify(footer, "the plot's footer must be reachable")
+        const trailing = findChild(footer, "footerTrailing")
+        verify(trailing, "the footer must carry a right-hand readout")
+        verify(trailing.visible, "it must be showing: " + trailing.text)
+        for (let i = 0; i < facts.length; ++i) {
+            verify(String(trailing.text).includes(String(facts[i])),
+                   "the reading must be in the right-hand readout: got "
+                   + trailing.text)
+        }
+        verify(trailing.x + trailing.width > footer.width / 2,
+               "the reading must sit in the right-hand half of the bar: "
+               + (trailing.x + trailing.width) + " of " + footer.width)
+
         mouseMove(lines, -20, -20)
         waitForRendering(win.view)
         compare(plot.readingFacts.length, 0)
+        verify(!trailing.visible,
+               "with nothing under the pointer the right-hand readout goes")
     }
 
     /// ...and a plot of one line does not say which line.
@@ -2252,47 +2468,6 @@ TestCase {
 
         plot.zoomY = 1
         mouseMove(lines, -20, -20)
-    }
-
-    /// A logarithmic y axis: the other thing the plot could not do. 2-D Qt
-    /// Graphs ships a value axis, a bar category axis and a date-time axis, and
-    /// the only logarithm in the module is a formatter for the 3-D surfaces.
-    function test_the_y_axis_can_be_logarithmic() {
-        verify(select("/compressed"))
-        const win = createTemporaryObject(viewWindowComponent, testCase)
-        waitForRendering(win.view)
-        win.view.show("plot")
-        waitForRendering(win.view)
-
-        const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
-
-        verify(!lines.logY)
-        const linearLow = lines.viewLow
-        const linearHigh = lines.viewHigh
-
-        plot.logY = true
-        waitForRendering(win.view)
-        verify(lines.logY, "the setting must reach the renderer")
-
-        // The decades are evenly spaced, which is the whole of what a log axis
-        // is: the middle of the pane is the geometric mean of its ends, not the
-        // arithmetic one.
-        const low = lines.viewLow
-        const high = lines.viewHigh
-        verify(low > 0, "a logarithmic axis cannot reach zero: " + low)
-        const middle = lines.valueAt(0.5)
-        fuzzyCompare(Math.log(middle),
-                     (Math.log(low) + Math.log(high)) / 2, 1e-6)
-        verify(Math.abs(middle - (low + high) / 2) > 1e-9,
-               "a logarithmic middle must not be the arithmetic one")
-
-        // ...and it is a different picture, not merely a different setting.
-        plot.logY = false
-        waitForRendering(win.view)
-        compare(lines.viewLow, linearLow)
-        compare(lines.viewHigh, linearHigh)
     }
 
     function test_a_reversed_cycle_runs_the_other_way() {
