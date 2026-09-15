@@ -788,14 +788,17 @@ void CustomPlot::setVisibleRange(double xMin, double xMax)
     if (viewMin_ == xMin && viewMax_ == xMax) {
         return;
     }
-    // Whether a run in hand still covers the pane is a property of the view, so
-    // it can change without anything being read -- and when it does, a
-    // different set of values has to reach the renderer.
-    const int drawnCloser = closerDrawn();
+    // Which run in hand covers the pane is a property of the view, so it can
+    // change without anything being read -- and when it does, a different set
+    // of values has to reach the renderer. See closerDrawing(): this compares
+    // *which* run each entry is drawn from, because an entry stepping from one
+    // held run to another is the case that has to be noticed and the one a
+    // count of them cannot see.
+    const std::vector<std::optional<PlotWindow>> drawing = closerDrawing();
     viewMin_ = xMin;
     viewMax_ = xMax;
     refreshCloser();
-    if (closerDrawn() != drawnCloser) {
+    if (closerDrawing() != drawing) {
         announce();
     }
 }
@@ -943,15 +946,20 @@ void CustomPlot::trimLevels(Entry& entry)
     }
 }
 
-int CustomPlot::closerDrawn() const
+std::vector<std::optional<PlotWindow>> CustomPlot::closerDrawing() const
 {
-    int drawn = 0;
+    std::vector<std::optional<PlotWindow>> drawing;
+    drawing.reserve(entries_.size());
     for (const Entry& entry : entries_) {
-        if (entry.drawn && closerCovers(entry)) {
-            ++drawn;
+        if (!entry.drawn) {
+            continue;
         }
+        const int at = drawnLevel(entry);
+        drawing.push_back(at < 0
+                              ? std::optional<PlotWindow>{}
+                              : entry.levels[static_cast<std::size_t>(at)].window);
     }
-    return drawn;
+    return drawing;
 }
 
 bool CustomPlot::closerSuffices(const Entry& entry, const PlotWindow& needed) const
@@ -1259,6 +1267,7 @@ PlotAxis CustomPlot::drawingAxis() const
     if (xMode_ == Dataset) {
         axis.values = xValues_.data();
         axis.count = static_cast<qsizetype>(xValues_.size());
+        axis.valueStep = xValueStep_;
     }
     return axis;
 }
@@ -1415,6 +1424,7 @@ void CustomPlot::refresh()
     if (asks.empty()) {
         xProblem_.clear();
         retire(xValues_);
+        xValueStep_ = 1.0;
         xSourceLength_ = 0;
         clearCloser();
         recount();
@@ -1461,6 +1471,11 @@ void CustomPlot::refresh()
                     xProblem_ = answer.problem;
                     retire(xValues_);
                     xValues_ = std::move(answer.values);
+                    // The time base's own thinning, which is what turns an
+                    // axis position back into one of these values. It is not
+                    // the entries' -- they are thinned against the same pane
+                    // and need not be the same length as it.
+                    xValueStep_ = answer.step;
                     xSourceLength_ = answer.sourceLength;
                 }
                 at = 1;
@@ -1468,6 +1483,7 @@ void CustomPlot::refresh()
             else {
                 xProblem_.clear();
                 retire(xValues_);
+                xValueStep_ = 1.0;
                 xSourceLength_ = 0;
             }
 

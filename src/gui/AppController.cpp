@@ -160,7 +160,7 @@ void AppController::applyDataSource()
 
     const QString path = currentPath_;
     const bool pipeline = postprocessModel_->active();
-    const TableLayout layout = tableSetupModel_->layout();
+    TableLayout layout = tableSetupModel_->layout();
 
     if (!pipeline) {
         // The common case, and it reads nothing. What the table is being told
@@ -169,7 +169,10 @@ void AppController::applyDataSource()
         // grid asks. Doing it here rather than a round trip later is what keeps
         // rearranging a table immediate.
         datasetModel_->setSource(true, datasetInfo_, path);
-        datasetModel_->setLayout(layout);
+        // Moved rather than copied. A layout names every index it selects, so
+        // on a ten-million-element vector it is eighty megabytes, and this
+        // branch is the last reader of it.
+        datasetModel_->setLayout(std::move(layout));
         const QString message = datasetModel_->errorText();
         if (datasetMessage_ != message) {
             datasetMessage_ = message;

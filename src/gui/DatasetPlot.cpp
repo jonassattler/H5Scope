@@ -75,12 +75,24 @@ void DatasetPlot::retire(std::map<int, std::vector<double>>& cache) const
         cache.clear();
         return;
     }
-    // Moved rather than copied, and that is what makes this free: a std::map
-    // move relinks nodes, so every mapped vector stays at the address the
-    // renderer was given. `drawing_` is deliberately left alone -- the item is
-    // still reading these values and is still the thing that has to be emptied
-    // if they ever do have to go.
-    retired_.push_back(std::move(cache));
+    // The values out of the map rather than the map itself, and that is the
+    // whole of what a retired line is: a buffer nothing must free yet. Moving a
+    // std::vector takes the buffer with it, so every pointer the renderer was
+    // given goes on naming the same doubles -- and a std::vector<double> move
+    // is noexcept, so growing the store can only ever move them too. Keeping
+    // the maps here meant growing a std::vector of std::map, which takes the
+    // copy on a library whose map move is not noexcept and frees what this
+    // exists to protect. See the note on Detail.
+    //
+    // `drawing_` is deliberately left alone -- the item is still reading these
+    // values and is still the thing that has to be emptied if they ever do have
+    // to go.
+    retired_.reserve(retired_.size() + cache.size());
+    for (auto& held : cache) {
+        if (!held.second.empty()) {
+            retired_.push_back(std::move(held.second));
+        }
+    }
     cache.clear();
 }
 
@@ -90,10 +102,8 @@ void DatasetPlot::retire(std::vector<double>& values) const
         values.clear();
         return;
     }
-    std::map<int, std::vector<double>> one;
-    one.emplace(0, std::move(values));
+    retired_.push_back(std::move(values));
     values.clear();
-    retired_.push_back(std::move(one));
 }
 
 void DatasetPlot::invalidate()
@@ -959,8 +969,11 @@ void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& s
     if (at < 0) {
         // A resolution this object has not held before. Nothing is retired --
         // the runs it already has are the ones the reader zoomed through and
-        // are exactly what makes going back free.
-        levels_.push_back(Detail{detail, 1.0, 0, {}});
+        // are exactly what makes going back free. Which is what this push_back
+        // has to keep true: it may reallocate `levels_` while the renderer is
+        // reading one of the runs already in it, so a Detail is move-only and
+        // the relocation cannot be a copy. See the declaration.
+        levels_.emplace_back(detail);
         at = static_cast<int>(levels_.size()) - 1;
     }
     Detail& level = levels_[static_cast<std::size_t>(at)];

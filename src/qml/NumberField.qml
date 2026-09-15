@@ -31,7 +31,17 @@ TextField {
     signal committed(int amount)
 
     text: String(control.value)
-    validator: IntValidator { bottom: control.from; top: control.to }
+    // Digits and a sign, and not an IntValidator, for the reason RealField
+    // gives at length about DoubleValidator: that one asks the reader's locale
+    // what a whole number looks like, and a locale whose group separator is "."
+    // accepts "1.234" and hands it to parseInt, which reads up to the dot and
+    // answers **one**. An index box that turns a thousand into one because of
+    // where the machine is set up is worse than one that refuses the key.
+    //
+    // The bounds go with it, and nothing is lost: commit() and nudge() clamp to
+    // [from, to] anyway, because a validator cannot refuse a prefix of a number
+    // that is about to be in range.
+    validator: RegularExpressionValidator { regularExpression: /^[-+]?\d*$/ }
     font: Theme.monoSmall
     color: Theme.textPrimary
     selectionColor: Theme.accent

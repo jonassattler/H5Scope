@@ -335,6 +335,77 @@ TestCase {
         compare(field.formatted(2.6), "3")
     }
 
+    /// ...and reads back every notation a reader might write it in.
+    ///
+    /// The bug this pins down: the boxes validated against DoubleValidator and
+    /// IntValidator, which ask the reader's *locale* what a number looks like.
+    /// On a German desktop that refused the "." key outright -- "0.2", "-3.5",
+    /// "0.0002" and "1.2e3" could not be typed into a manual range at all --
+    /// while "0,2" passed the validator and went to parseFloat, which reads up
+    /// to the comma and returns zero. Both notations are taken now and both
+    /// mean the same number, and the test runs under whatever locale the
+    /// machine is set to, because the point of the change is that the locale no
+    /// longer decides.
+    function test_a_number_box_takes_either_decimal_separator() {
+        const field = createTemporaryObject(realFieldComponent, testCase)
+        verify(field, "the field must instantiate")
+
+        const same = [["0.2", "0,2", 0.2],
+                      ["-3.5", "-3,5", -3.5],
+                      ["0.0002", "0,0002", 0.0002],
+                      ["1.2e3", "1,2e3", 1200],
+                      ["2.5e-7", "2,5e-7", 2.5e-7]]
+        for (let i = 0; i < same.length; ++i) {
+            const wanted = same[i][2]
+            for (const written of [same[i][0], same[i][1]]) {
+                field.text = written
+                verify(field.acceptableInput, "the box must accept " + written)
+                fuzzyCompare(field.number(written), wanted,
+                             Math.abs(wanted) * 1e-9 + 1e-12)
+            }
+        }
+
+        // A number with no fractional part is unchanged by any of it, and a
+        // leading separator is a number a reader really does type.
+        field.text = "12"
+        verify(field.acceptableInput)
+        compare(field.number("12"), 12)
+        for (const written of [".5", ",5"]) {
+            field.text = written
+            verify(field.acceptableInput, "the box must accept " + written)
+            compare(field.number(written), 0.5)
+        }
+
+        // Half-way through being typed into, a box holds something that is not
+        // a number yet. commit() asks for one, gets NaN and leaves the value
+        // alone -- which is why nothing here has to be refused at the keystroke.
+        verify(isNaN(field.number("")))
+        verify(isNaN(field.number("-")))
+        compare(field.number("1."), 1)
+        compare(field.number("1,"), 1)
+
+        // Two separators is not a number in either notation, and neither is a
+        // group separator, which is what the locale's own validator used to let
+        // through.
+        for (const refused of ["1.2.3", "1,2,3", "1.2,3", "1 234", "e5", "x"]) {
+            field.text = refused
+            verify(!field.acceptableInput, "the box must refuse " + refused)
+        }
+
+        // The whole-number box has the same defect and the same fix: on a
+        // locale whose group separator is a point, IntValidator accepted
+        // "1.234" and parseInt answered one.
+        const whole = createTemporaryObject(numberFieldComponent, testCase)
+        whole.from = 0
+        whole.to = 100000
+        whole.text = "1234"
+        verify(whole.acceptableInput)
+        for (const refused of ["1.234", "1,234", "12.5"]) {
+            whole.text = refused
+            verify(!whole.acceptableInput, "the index box must refuse " + refused)
+        }
+    }
+
     /// One press of an arrow moves a whole-number box by one, and a box of
     /// values by about five per cent of what it is holding.
     function test_a_number_box_steps_by_something_sensible() {
@@ -2478,15 +2549,15 @@ TestCase {
         const plot = findChild(view, "plotSurface")
 
         plot.colorMode = "viridis"
-        const first = String(plot.seriesColor(0, 6))
-        const last = String(plot.seriesColor(5, 6))
+        const first = String(plot.seriesColor(0, 0, 6))
+        const last = String(plot.seriesColor(5, 5, 6))
         verify(first !== last)
 
         // Which end of a ramp is the dark one is a property of the ramp and not
         // of the data, so reversing swaps the ends and nothing else.
         plot.colorsReversed = true
-        compare(String(plot.seriesColor(0, 6)), last)
-        compare(String(plot.seriesColor(5, 6)), first)
+        compare(String(plot.seriesColor(0, 0, 6)), last)
+        compare(String(plot.seriesColor(5, 5, 6)), first)
 
         plot.colorsReversed = false
         plot.colorMode = "same"
@@ -2512,17 +2583,17 @@ TestCase {
         const stops = Theme.colorRamps["viridis"]
         // Six lines across the whole map take the sixths of it that avoid both
         // ends: (i + 1) / 7.
-        compare(String(plot.seriesColor(0, 6)),
+        compare(String(plot.seriesColor(0, 0, 6)),
                 String(Theme.rampColor(stops, 1 / 7)))
-        compare(String(plot.seriesColor(5, 6)),
+        compare(String(plot.seriesColor(5, 5, 6)),
                 String(Theme.rampColor(stops, 6 / 7)))
 
         // The top half of the map: the same six shares, taken out of the half
         // the reader kept rather than out of the whole of it.
         plot.colorFrom = 0.5
-        compare(String(plot.seriesColor(0, 6)),
+        compare(String(plot.seriesColor(0, 0, 6)),
                 String(Theme.rampColor(stops, 0.5 + 0.5 / 7)))
-        compare(String(plot.seriesColor(5, 6)),
+        compare(String(plot.seriesColor(5, 5, 6)),
                 String(Theme.rampColor(stops, 0.5 + 0.5 * 6 / 7)))
 
         plot.colorFrom = 0
@@ -2578,13 +2649,13 @@ TestCase {
         // The default gives every line a colour of its own; "same" is still
         // there for a reader who wants the bundle back.
         compare(plot.colorMode, "spectrum")
-        verify(String(plot.seriesColor(0, 6)) !== String(plot.seriesColor(5, 6)))
+        verify(String(plot.seriesColor(0, 0, 6)) !== String(plot.seriesColor(5, 5, 6)))
 
         plot.colorMode = "same"
-        compare(String(plot.seriesColor(0, 6)), String(plot.seriesColor(5, 6)))
+        compare(String(plot.seriesColor(0, 0, 6)), String(plot.seriesColor(5, 5, 6)))
 
         plot.colorMode = "viridis"
-        verify(String(plot.seriesColor(0, 6)) !== String(plot.seriesColor(5, 6)),
+        verify(String(plot.seriesColor(0, 0, 6)) !== String(plot.seriesColor(5, 5, 6)),
                "a ramp must give the ends of the bundle different colours")
 
         // The lines sit at the middles of n equal shares of the map, never at
@@ -2593,12 +2664,12 @@ TestCase {
         // them on two of the lines every time.
         const stops = Theme.colorRamps["viridis"]
         for (let i = 0; i < 6; ++i) {
-            compare(String(plot.seriesColor(i, 6)),
+            compare(String(plot.seriesColor(i, i, 6)),
                     String(Theme.rampColor(stops, (i + 1) / 7)))
         }
-        verify(String(plot.seriesColor(0, 6)) !== String(Qt.color(stops[0])),
+        verify(String(plot.seriesColor(0, 0, 6)) !== String(Qt.color(stops[0])),
                "the dark end of the map is not spent on a line")
-        verify(String(plot.seriesColor(5, 6))
+        verify(String(plot.seriesColor(5, 5, 6))
                !== String(Qt.color(stops[stops.length - 1])),
                "nor is the pale end")
 
@@ -2607,18 +2678,18 @@ TestCase {
         plot.colorRangeTo = "#ffffff"
         // Three lines take the quarters, so the middle one is halfway between
         // black and white -- which is grey, in RGB, as the mix is defined.
-        const middle = plot.seriesColor(1, 3)
+        const middle = plot.seriesColor(1, 1, 3)
         verify(Math.abs(middle.r - 0.5) < 0.01, "midpoint r: " + middle.r)
         // ...and the other two are the quarter and the three-quarter greys
         // rather than pure black and pure white.
-        verify(Math.abs(plot.seriesColor(0, 3).r - 0.25) < 0.01)
-        verify(Math.abs(plot.seriesColor(2, 3).r - 0.75) < 0.01)
+        verify(Math.abs(plot.seriesColor(0, 0, 3).r - 0.25) < 0.01)
+        verify(Math.abs(plot.seriesColor(2, 2, 3).r - 0.75) < 0.01)
 
         // One line has nothing to separate from, and takes the middle of the
         // map. That is the case the rule most exists for: a single line used
         // to be drawn in the map's first colour, which on a viridis is very
         // nearly the plot's own ground.
-        verify(Math.abs(plot.seriesColor(0, 1).r - 0.5) < 0.01)
+        verify(Math.abs(plot.seriesColor(0, 0, 1).r - 0.5) < 0.01)
 
         plot.colorMode = "same"
     }
@@ -2648,14 +2719,17 @@ TestCase {
             // Entry i, verbatim -- not interpolated, and not a share of
             // anything. A palette hands back what it holds.
             for (let i = 0; i < n; ++i) {
-                compare(String(plot.seriesColor(i, n)), String(Qt.color(stops[i])),
+                compare(String(plot.seriesColor(i, i, n)), String(Qt.color(stops[i])),
                         names[p] + " line " + i)
             }
 
             // Past the end it starts over, and it keeps starting over.
-            compare(String(plot.seriesColor(n, 999)), String(Qt.color(stops[0])))
-            compare(String(plot.seriesColor(n + 3, 999)), String(Qt.color(stops[3])))
-            compare(String(plot.seriesColor(2 * n + 1, 999)), String(Qt.color(stops[1])))
+            compare(String(plot.seriesColor(n, n, 999)),
+                    String(Qt.color(stops[0])))
+            compare(String(plot.seriesColor(n + 3, n + 3, 999)),
+                    String(Qt.color(stops[3])))
+            compare(String(plot.seriesColor(2 * n + 1, 2 * n + 1, 999)),
+                    String(Qt.color(stops[1])))
         }
 
         plot.colorMode = "spectrum"
@@ -2677,15 +2751,15 @@ TestCase {
         const plot = findChild(view, "plotSurface")
 
         plot.colorMode = "spectrum"
-        const alone = String(plot.seriesColor(2, 3))
-        compare(String(plot.seriesColor(2, 40)), alone,
+        const alone = String(plot.seriesColor(2, 2, 3))
+        compare(String(plot.seriesColor(2, 2, 40)), alone,
                 "how many lines are drawn must not recolour line 2")
 
         // The map band is a map's control, and the panel hides it here; it
         // must not reach the colours either way.
         plot.colorFrom = 0.4
         plot.colorTo = 0.6
-        compare(String(plot.seriesColor(2, 3)), alone,
+        compare(String(plot.seriesColor(2, 2, 3)), alone,
                 "the map band must not touch a palette")
         plot.colorFrom = 0
         plot.colorTo = 1
@@ -2693,10 +2767,58 @@ TestCase {
         // A map does the opposite, which is what the palette is being
         // contrasted with.
         plot.colorMode = "viridis"
-        verify(String(plot.seriesColor(2, 3)) !== String(plot.seriesColor(2, 40)),
+        verify(String(plot.seriesColor(2, 2, 3)) !== String(plot.seriesColor(2, 2, 40)),
                "a map re-cuts its shares when the count changes")
 
         plot.colorMode = "spectrum"
+    }
+
+    /// ...and it holds it still in the picture, not only in the arithmetic.
+    ///
+    /// The case above asks the rule a question. This one unticks a line and
+    /// looks at what the renderer was handed, which is where the promise was
+    /// actually being broken: the surface named a line by its place among the
+    /// *drawn* ones, so hiding one slid every line after it a colour down the
+    /// palette. A reader following a green stroke watched it turn blue for no
+    /// reason they had anything to do with, and the arithmetic above passed
+    /// throughout, because it was never the thing that was wrong.
+    function test_hiding_a_line_leaves_the_others_the_colour_they_were() {
+        verify(select("/cube")) // 6 rows
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        const backing = AppController.datasetPlot
+        compare(plot.colorMode, "spectrum")
+        tryVerify(() => lines.lineCount() === 6, 5000, "six lines are drawn")
+
+        const before = []
+        for (let i = 0; i < 6; ++i)
+            before.push(String(lines.seriesColor(i)))
+
+        // The second line goes. The four after it each move up one place in
+        // what the item is handed, and must not move one place along the
+        // palette with it.
+        backing.setSeriesVisible(1, false)
+        tryVerify(() => lines.lineCount() === 5, 5000, "one line goes")
+
+        const kept = [0, 2, 3, 4, 5]
+        for (let k = 0; k < kept.length; ++k) {
+            compare(String(lines.seriesColor(k)), before[kept[k]],
+                    "line " + kept[k] + " must keep the colour it had")
+        }
+
+        // And it comes back to its own colour rather than to the one at the
+        // end of the queue.
+        backing.setSeriesVisible(1, true)
+        tryVerify(() => lines.lineCount() === 6, 5000, "and comes back")
+        for (let i = 0; i < 6; ++i) {
+            compare(String(lines.seriesColor(i)), before[i],
+                    "line " + i + " must be back where it started")
+        }
     }
 
     /// Reversing a palette turns the order of its entries around, the way
@@ -2713,15 +2835,15 @@ TestCase {
         const n = stops.length
 
         plot.colorsReversed = true
-        compare(String(plot.seriesColor(0, n)), String(Qt.color(stops[n - 1])))
-        compare(String(plot.seriesColor(1, n)), String(Qt.color(stops[n - 2])))
+        compare(String(plot.seriesColor(0, 0, n)), String(Qt.color(stops[n - 1])))
+        compare(String(plot.seriesColor(1, 1, n)), String(Qt.color(stops[n - 2])))
         // ...and it still wraps, from the other end. Counting backwards past
         // zero is where a plain % would hand back stops[-1].
-        compare(String(plot.seriesColor(n, n)), String(Qt.color(stops[n - 1])))
-        compare(String(plot.seriesColor(n + 1, n)), String(Qt.color(stops[n - 2])))
+        compare(String(plot.seriesColor(n, n, n)), String(Qt.color(stops[n - 1])))
+        compare(String(plot.seriesColor(n + 1, n + 1, n)), String(Qt.color(stops[n - 2])))
 
         plot.colorsReversed = false
-        compare(String(plot.seriesColor(0, n)), String(Qt.color(stops[0])))
+        compare(String(plot.seriesColor(0, 0, n)), String(Qt.color(stops[0])))
     }
 
     /// Every colour in every palette reads against the ground of the theme it

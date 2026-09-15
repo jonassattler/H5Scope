@@ -158,6 +158,14 @@ private:
                                  std::vector<IndexExpression>& chosen,
                                  QStringList& written, QString& error) const;
     [[nodiscard]] std::vector<hsize_t> indicesFor(const Dimension& dimension) const;
+    /// How many indices that selection has, without writing any of them down.
+    ///
+    /// The panel prints this beside every dimension, and a dimension of ten
+    /// million answered it by building ten million indices and taking the size
+    /// of them -- eighty megabytes to print a number the arithmetic already
+    /// knows. Only a Custom subscript has to be resolved, and that one is
+    /// resolved already.
+    [[nodiscard]] hsize_t countFor(const Dimension& dimension) const;
     /// Announce a change to one row, and the layout change behind it.
     void touch(int dimension, const std::vector<int>& roles);
 

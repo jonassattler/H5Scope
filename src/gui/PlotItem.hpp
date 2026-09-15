@@ -112,6 +112,17 @@ public:
     Q_INVOKABLE void setSeriesOpacity(int index, double opacity);
     Q_INVOKABLE void setSeriesWidth(int index, double width);
 
+    /// What line `index` is actually going to be drawn in.
+    ///
+    /// Nothing in the application reads this back -- the colour goes one way,
+    /// from the surface into the frame. It is here so that a test can hold the
+    /// rule that decides it: which colour a line takes is arithmetic done in
+    /// QML over the drawn set, and a colour that is only ever written is a
+    /// rule no test can check. Unticking one line used to recolour the rest
+    /// under a palette, and it went unnoticed because the only witness was the
+    /// screen.
+    [[nodiscard]] Q_INVOKABLE QColor seriesColor(int index) const;
+
     /// Where `value` sits up the pane, as a fraction from the bottom, and back
     /// again. The chrome's ticks go through these rather than deriving the
     /// mapping a second time, because a tick drawn where the curve is not is

@@ -215,11 +215,15 @@ Item {
     /// bundle of them.
     property int highlighted: -1
 
-    /// The colour line `position` of `count` takes.
+    /// The colour of line `series`, drawn `position` of `count`.
     ///
-    /// `count` is what the maps need and what a palette ignores: a share of a
-    /// continuum only exists once you know how many shares there are, where a
-    /// palette entry is the position itself. The rest of this note is about
+    /// Three numbers for one line, because the two kinds of cycle ask
+    /// different questions of it. `series` is *which* line it is -- its own
+    /// index in the legend, the number that names it whether it is drawn or
+    /// not -- and it is the whole of a palette's answer. `position` and
+    /// `count` place it among the lines currently drawn, which is what a map
+    /// needs and what a palette ignores: a share of a continuum only exists
+    /// once you know how many shares there are. The rest of this note is about
     /// the maps.
     ///
     /// The lines sit at the *middles* of `count` equal shares of the map
@@ -238,23 +242,29 @@ Item {
     ///
     /// The reader's own band (colorFrom .. colorTo) still applies on top, so
     /// narrowing the map narrows what these shares are taken out of.
-    function seriesColor(position, count) {
+    function seriesColor(series, position, count) {
         if (surface.colorMode === "same")
             return surface.colorSingle
 
         // A palette is asked which line this is rather than how far along it
         // sits, so none of the arithmetic below applies to one: not the shares
         // -- there is no continuum to take shares of -- and not the reader's
-        // band. The position is the answer, counted along a cycle that
+        // band. The line's own index is the answer, counted along a cycle that
         // repeats, and it does not move when a line is added or taken away.
         // That is the second thing a palette buys over a map: on a map every
         // line changes colour when one of them is unticked.
+        //
+        // `series` and not `position`, which is the whole of that promise.
+        // Asked where the line sat among the drawn ones, a palette kept the
+        // promise only until the reader unticked something: hiding the first
+        // of five lines handed the second line the first one's colour, and the
+        // reader watching one stroke saw it change under them -- the exact
+        // failure a palette is here to not have.
         const palette = Theme.categoricalPalettes[surface.colorMode]
         if (palette) {
             return Theme.categoricalColor(
                 palette,
-                surface.colorsReversed ? palette.length - 1 - position
-                                       : position)
+                surface.colorsReversed ? palette.length - 1 - series : series)
         }
 
         let at = count > 0 ? (position + 1) / (count + 1) : 0.5
@@ -595,7 +605,13 @@ Item {
     function restyle() {
         const drawn = surface.plot ? surface.plot.drawnSeries : []
         for (let i = 0; i < drawn.length; ++i) {
-            frame.lines.setSeriesColor(i, surface.seriesColor(i, drawn.length))
+            // Two indices, and the difference between them is what a palette
+            // holds still by: `i` is the line's place in what was handed to the
+            // item, `drawn[i]` is which line of the legend it is. The colour
+            // answers to the second, the way the opacity and the width already
+            // did.
+            frame.lines.setSeriesColor(
+                i, surface.seriesColor(drawn[i], i, drawn.length))
             frame.lines.setSeriesOpacity(i, surface.seriesOpacity(drawn[i],
                                                                    drawn.length))
             frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))

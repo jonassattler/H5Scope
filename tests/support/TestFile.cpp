@@ -322,6 +322,22 @@ void writeFixture(const std::string& path)
         writeDataset(file, "trace", H5T_NATIVE_DOUBLE, {20000}, data.data());
     }
 
+    // --- a time base as long as that line ---------------------------------
+    // /series/time is 64 elements and is never thinned, which is exactly the
+    // case a custom tab drawn against a time base used to get right and the
+    // only one the suite had. A time base the length of a real log is read the
+    // way every other line is -- summarised to about a pane's worth of points
+    // -- and that is where the arithmetic that puts a sample at an x has to
+    // hold: the entry and its axis are thinned by their own strides and the
+    // two need not be the same number.
+    {
+        std::vector<double> data(20000);
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            data[i] = static_cast<double>(i) / 1000.0;
+        }
+        writeDataset(file, "trace_time", H5T_NATIVE_DOUBLE, {20000}, data.data());
+    }
+
     // --- empty dataset ----------------------------------------------------
     writeDataset(file, "empty", H5T_NATIVE_INT32, {0}, nullptr);
 

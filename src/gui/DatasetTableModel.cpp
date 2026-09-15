@@ -41,13 +41,13 @@ void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QStrin
     emit datasetChanged();
 }
 
-void DatasetTableModel::setLayout(const TableLayout& layout)
+void DatasetTableModel::setLayout(TableLayout layout)
 {
     if (!present_ || layout.rank() != info_.rank() || layout.onX.size() != layout.indices.size()) {
         return;
     }
     beginResetModel();
-    rebuild(layout);
+    rebuild(std::move(layout));
     endResetModel();
 }
 
@@ -651,10 +651,15 @@ DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) cons
         grids.assign(requests.size(), refusal);
         return grids;
     }
-    return H5Thread::instance().invoke([&, axes = axes_](H5Session& session) {
+    // By reference, not by value. invoke() blocks until the job has run, so
+    // `axes_` cannot move underneath it -- and a copy of it copies the whole
+    // selection, which is one index per element of every dimension. On a
+    // ten-million-element vector that is eighty megabytes of memcpy per read,
+    // paid on every block the plot samples.
+    return H5Thread::instance().invoke([&](H5Session& session) {
         const h5core::DataSource* source = session.source();
         return source == nullptr ? std::vector<NumericGrid>(requests.size())
-                                 : readSamples(*source, axes, requests);
+                                 : readSamples(*source, axes_, requests);
     });
 }
 

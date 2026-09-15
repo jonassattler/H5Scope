@@ -882,6 +882,59 @@ TestCase {
         compare(plot.seriesCount, 2)
     }
 
+    /// Taking a line out of the picture leaves the others the colour they
+    /// were.
+    ///
+    /// Reported from use, and a custom tab is where it bites: the lines are a
+    /// handful the reader put together deliberately, and unticking one to look
+    /// underneath it recoloured the rest. The palette was being asked where a
+    /// line sat among the *drawn* ones rather than which line of the tab it
+    /// was, so hiding the first of three handed the second the first one's
+    /// colour. A palette exists to answer "which line is this" and nothing
+    /// else; see the note on PlotSurface.seriesColor.
+    function test_hiding_a_line_does_not_recolour_the_ones_left() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        plot.addExpression("/series/time[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        verify(lines, "the drawn lines must be reachable")
+        compare(surface.colorMode, "spectrum")
+        tryVerify(() => lines.lineCount() === 3, 5000, "three lines are drawn")
+
+        const before = []
+        for (let i = 0; i < 3; ++i)
+            before.push(String(lines.seriesColor(i)))
+        verify(before[0] !== before[1] && before[1] !== before[2],
+               "a palette must give three lines three colours")
+
+        // The middle one goes. The last one moves up a place in what the item
+        // is handed, and must not take the colour of the line that left.
+        plot.setSeriesVisible(1, false)
+        settleReads()
+        tryVerify(() => lines.lineCount() === 2, 5000, "one line goes")
+        compare(String(lines.seriesColor(0)), before[0])
+        compare(String(lines.seriesColor(1)), before[2],
+                "the third line keeps its own colour")
+
+        plot.setSeriesVisible(1, true)
+        settleReads()
+        tryVerify(() => lines.lineCount() === 3, 5000, "and comes back")
+        for (let i = 0; i < 3; ++i) {
+            compare(String(lines.seriesColor(i)), before[i],
+                    "line " + i + " must be back where it started")
+        }
+    }
+
     // --- the legend's own menu ---------------------------------------------
 
     function test_the_line_menu_carries_no_blank_row() {

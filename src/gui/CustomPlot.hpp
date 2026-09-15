@@ -17,6 +17,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace gui {
@@ -340,6 +341,23 @@ private:
         std::vector<Level> levels;
     };
 
+    // Both of these live in a std::vector that is pushed to while the renderer
+    // is reading the values in it -- `entries_`, and each entry's own `levels`
+    // -- so both have to relocate by moving. A std::vector reallocates with
+    // std::move_if_noexcept and takes the *copy* whenever the element's move is
+    // not noexcept and a copy exists, which deep-copies every held vector into
+    // the new storage and then frees the originals the item is drawing from.
+    //
+    // These two are noexcept today because everything in them is: QString,
+    // std::vector and the scalars. That was true of DatasetPlot::Detail as well
+    // until it grew a std::map, whose move is not noexcept on MSVC's library --
+    // and the only thing that ever said so was a SIGSEGV on Windows CI. Stated
+    // here so that the next member to arrive says it at the compiler instead.
+    static_assert(std::is_nothrow_move_constructible_v<Level>,
+                  "a Level must relocate by moving: a copy frees the values PlotItem borrows");
+    static_assert(std::is_nothrow_move_constructible_v<Entry>,
+                  "an Entry must relocate by moving: a copy frees the values PlotItem borrows");
+
     /// One line as the job hands it back.
     struct LineData
     {
@@ -386,10 +404,33 @@ private:
     void trimLevels(Entry& entry);
     /// How many resolutions each entry may hold at once.
     [[nodiscard]] int heldLevels() const;
-    /// How many entries are being drawn from a closer look. Not interesting in
-    /// itself: it changes exactly when a different set of values has to reach
-    /// the renderer, which is when the surface has to be told to fill again.
-    [[nodiscard]] int closerDrawn() const;
+    /// Which run each drawn entry is being drawn from, in the order fill()
+    /// hands them over, and nothing for an entry drawn from its whole-line
+    /// summary.
+    ///
+    /// Not a count, and that is the whole of the distinction. This used to
+    /// answer "how many entries have a closer look", on the reasoning that the
+    /// number changes exactly when a different set of values has to reach the
+    /// renderer -- which is false, and the plot showed it. An entry holds
+    /// several runs at once (see Entry::levels), so zooming out steps from the
+    /// fine one to a coarser one already in hand: both are a closer look, the
+    /// count stays where it was, nothing was announced, and the renderer went
+    /// on drawing the *fine* run over a pane it no longer covered. What the
+    /// reader saw was the line drawn across part of the frame with nothing
+    /// either side of it, and a further gesture putting it right -- because
+    /// eventually some entry left the covered set altogether and the count
+    /// finally moved.
+    ///
+    /// It takes a touchpad to find, and that is not luck. A wheel notch is a
+    /// quarter of an octave and a flick of it usually leaves every held run at
+    /// once, which the count does notice; a trackpad sends a twelfth of a notch
+    /// at a time and walks the view off one run and onto the next, which is
+    /// exactly the step the count cannot see.
+    ///
+    /// The windows themselves, rather than the index of the level holding them:
+    /// trimLevels() erases from the middle of the vector, so an index means a
+    /// different run before and after.
+    [[nodiscard]] std::vector<std::optional<PlotWindow>> closerDrawing() const;
     /// Work out what the view wants of each entry, drop what nobody wants, and
     /// arm the read for the rest. Every path that can change the answer ends
     /// here.
@@ -450,6 +491,10 @@ private:
     QString xExpression_;
     QString xProblem_;
     std::vector<double> xValues_;
+    /// Axis positions between one of those values and the next: the time base
+    /// is thinned like every other line, and this is by how much. See
+    /// PlotAxis::valueStep -- without it a thinned axis is read past its end.
+    double xValueStep_ = 1.0;
     int xSourceLength_ = 0;
     double xMinimum_ = 0.0;
     double xMaximum_ = 1.0;
@@ -467,6 +512,12 @@ private:
     /// Values the renderer may still be reading, kept alive until it is handed
     /// their replacement. See retire(); fill() is what empties this.
     std::vector<std::vector<double>> retired_;
+
+    // The bare buffers rather than whatever they came out of, for the reason
+    // DatasetPlot::retired_ now gives: growing this must move them, and a
+    // std::vector<double> move is noexcept on every implementation.
+    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
+                  "the retired store must relocate by moving, or it frees what it holds alive");
 
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;

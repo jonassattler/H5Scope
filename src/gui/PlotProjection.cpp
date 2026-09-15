@@ -123,7 +123,16 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
     }
     // The time base has a value at each of its own positions and nowhere in
     // between, so a point that falls between two of them takes the nearer.
-    const double index = std::round(position);
+    //
+    // At the share of the axis the position is, not at the position itself:
+    // `values` holds the time base's *drawn* points and a position counts the
+    // elements they were summarised from. See PlotAxis::valueStep -- with a
+    // time base twenty thousand elements long summarised to two thousand
+    // points, reading it at the position is reading ten times past its end.
+    if (!(std::abs(axis.valueStep) > 0.0)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double index = std::round(position / axis.valueStep);
     if (!(index >= 0.0) || !(index < static_cast<double>(axis.count))) {
         // Past the end of the time base. The line stops here rather than being
         // drawn against an x that does not exist, which is what "align" means
