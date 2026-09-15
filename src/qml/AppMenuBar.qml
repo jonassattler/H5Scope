@@ -180,6 +180,29 @@ Rectangle {
         onTriggered: Theme.dark = !Theme.dark
     }
 
+    // The three rows of Settings > RAM Budget. Not checkable Actions, for the
+    // reason darkAction above is not: `checked` would have to be bound to the
+    // controller's property, and triggering the row would overwrite that
+    // binding. The bullet follows AppController.ramBudget through
+    // AppMenuItem.marked instead.
+    Action {
+        id: lowRamAction
+        text: qsTr("Low")
+        onTriggered: AppController.ramBudget = AppController.LowRam
+    }
+
+    Action {
+        id: mediumRamAction
+        text: qsTr("Medium")
+        onTriggered: AppController.ramBudget = AppController.MediumRam
+    }
+
+    Action {
+        id: greedyRamAction
+        text: qsTr("Greedy")
+        onTriggered: AppController.ramBudget = AppController.GreedyRam
+    }
+
     Action {
         id: aboutAction
         text: qsTr("About H5Scope…")
@@ -366,6 +389,40 @@ Rectangle {
             AppMenuItem {
                 action: darkAction
                 marked: Theme.dark
+            }
+        }
+
+        // Between View and Help, and on its own rather than folded into View,
+        // because it is the one drawer in this bar that is not about the file
+        // or about what is drawn from it. It says how much of the machine this
+        // program may use.
+        AppMenu {
+            title: qsTr("Settings")
+
+            // How much memory the plots may spend holding what they have read.
+            //
+            // Not a resolution setting and not a limit on what can be opened:
+            // every tier draws the same picture of the same data. What it buys
+            // is that the picture is drawn again from memory instead of from
+            // the file -- so on a large dataset it is the difference between
+            // zooming back out being instant and being a read of twenty million
+            // elements. Greedy is worth taking on a machine with the memory to
+            // spare; low is for one without it.
+            AppMenu {
+                title: qsTr("RAM Budget")
+
+                AppMenuItem {
+                    action: lowRamAction
+                    marked: AppController.ramBudget === AppController.LowRam
+                }
+                AppMenuItem {
+                    action: mediumRamAction
+                    marked: AppController.ramBudget === AppController.MediumRam
+                }
+                AppMenuItem {
+                    action: greedyRamAction
+                    marked: AppController.ramBudget === AppController.GreedyRam
+                }
             }
         }
 

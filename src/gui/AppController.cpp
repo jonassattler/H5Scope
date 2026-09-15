@@ -11,6 +11,7 @@
 #include "H5TreeModel.hpp"
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
+#include "PlotBudget.hpp"
 #include "TableSetupModel.hpp"
 #include "TreeFilterProxyModel.hpp"
 #include "h5core/Dataset.hpp"
@@ -26,6 +27,8 @@
 #include <QFileInfo>
 #include <QLocale>
 #include <QSettings>
+
+#include <algorithm>
 #include <QVariantMap>
 
 #include <hdf5.h>
@@ -33,6 +36,29 @@
 #include <algorithm>
 
 namespace gui {
+
+namespace {
+
+/// The reader's three choices, as the budget's own three.
+///
+/// Two enumerations rather than one, because they answer to different things:
+/// this one is a setting with a name in a menu and a number in QSettings, and
+/// PlotBudget's is what the arithmetic switches on. Folding them would put a
+/// QML-facing enumeration in a file that has no Qt in its argument.
+Appetite appetiteOf(AppController::RamBudget budget)
+{
+    switch (budget) {
+    case AppController::LowRam:
+        return Appetite::Low;
+    case AppController::GreedyRam:
+        return Appetite::Greedy;
+    case AppController::MediumRam:
+        break;
+    }
+    return Appetite::Medium;
+}
+
+} // namespace
 
 AppController::AppController(QObject* parent)
     : QObject(parent),
@@ -54,11 +80,19 @@ AppController::AppController(QObject* parent)
     // all until a host application has named itself, which keeps the tests off
     // the user's own settings.
     if (!QCoreApplication::organizationName().isEmpty()) {
-        recent_ = QSettings().value(QStringLiteral("recentFiles")).toStringList();
+        QSettings settings;
+        recent_ = settings.value(QStringLiteral("recentFiles")).toStringList();
         while (recent_.size() > kMaxRecentFiles) {
             recent_.removeLast();
         }
+        // ...and how much the reader said the plots may hold. Read before the
+        // plots are made below, so the first line drawn is already read under
+        // the budget they chose rather than under the default and then again.
+        const int stored =
+            settings.value(QStringLiteral("ramBudget"), static_cast<int>(MediumRam)).toInt();
+        ramBudget_ = static_cast<RamBudget>(std::clamp(stored, 0, 2));
     }
+    PlotBudget::instance().setAppetite(appetiteOf(ramBudget_));
     // Three readings of one table. Both of these follow datasetModel_'s resets
     // on their own, so nothing here has to tell them the selection moved.
     datasetPlot_ = new DatasetPlot(datasetModel_, this);
@@ -524,6 +558,23 @@ void AppController::remember(const QString& path)
         settings.setValue(QStringLiteral("recentFiles"), recent_);
     }
     emit recentFilesChanged();
+}
+
+void AppController::setRamBudget(RamBudget budget)
+{
+    if (ramBudget_ == budget) {
+        return;
+    }
+    ramBudget_ = budget;
+    // The plots hear it through PlotBudget rather than from here: there is one
+    // of this object and any number of them, and a tab made after this was set
+    // must get the same answer as one made before it.
+    PlotBudget::instance().setAppetite(appetiteOf(ramBudget_));
+    if (!QCoreApplication::organizationName().isEmpty()) {
+        QSettings settings;
+        settings.setValue(QStringLiteral("ramBudget"), static_cast<int>(ramBudget_));
+    }
+    emit ramBudgetChanged();
 }
 
 void AppController::clearRecentFiles()

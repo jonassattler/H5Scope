@@ -6,6 +6,7 @@
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
+#include "PlotBudget.hpp"
 #include "PlotLevels.hpp"
 
 #include <QAbstractListModel>
@@ -146,6 +147,7 @@ public:
     Q_ENUM(Roles)
 
     CustomPlot(QString name, DatasetLookup* lookup, QObject* parent = nullptr);
+    ~CustomPlot() override;
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
@@ -476,6 +478,9 @@ private:
     /// Take the pane width the surface last pushed. What the debounce timer
     /// calls; see setPaneColumns.
     void applyColumns();
+    /// Take the share of memory this tab is now allowed. See
+    /// DatasetPlot::applyBudget, which does the same thing for the same reason.
+    void applyBudget();
     /// Buckets a whole line is reduced to: the pane's own width in columns.
     [[nodiscard]] int bucketBudget() const;
     /// ...and buckets a closer look is read into, which is an octave finer
@@ -564,10 +569,8 @@ public:
     static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
     /// See PlotLevels.hpp, which is where the argument for it is.
     static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
-    static constexpr int kHeldLevels = 5;
-    /// Doubles held for everything this tab draws. The plot tab's number, for
-    /// the plot tab's reason -- see DatasetPlot::kPointBudget.
-    static constexpr int kPointBudget = 1 << 21;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kHeldLevels = gui::kHeldLevels;
     /// Lines past which adding a whole dataset asks first.
     ///
     /// Not a limit. Past a few dozen, strokes over one another stop separating

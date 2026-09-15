@@ -6,6 +6,7 @@
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
+#include "PlotBudget.hpp"
 #include "PlotLevels.hpp"
 
 #include <QObject>
@@ -115,6 +116,7 @@ class DatasetPlot : public QObject
 
 public:
     explicit DatasetPlot(DatasetTableModel* table, QObject* parent = nullptr);
+    ~DatasetPlot() override;
 
     [[nodiscard]] bool seriesFromRows() const { return seriesFromRows_; }
     void setSeriesFromRows(bool fromRows);
@@ -268,6 +270,11 @@ private:
     /// Take the pane width the surface last pushed. What the debounce timer
     /// calls; see setPaneColumns.
     void applyColumns();
+    /// Take the share of memory this object is now allowed: a different
+    /// appetite, or a custom tab opened or closed. Nothing is re-read -- what
+    /// may be *drawn* has not changed -- but runs beyond the new allowance are
+    /// given up, and a larger one may make another worth reading.
+    void applyBudget();
     /// Stop whatever was last filled from reading `lines_` or `windowLines_`.
     ///
     /// The borrow contract, honoured the blunt way: the renderer is emptied and
@@ -519,10 +526,18 @@ public:
     static constexpr int kMaxPoints = gui::kMaxPoints;
     /// See PlotLevels.hpp, which is where the argument for it is.
     static constexpr int kMinPoints = gui::kMinPoints;
-    /// Doubles held for the drawn set, all lines together. Two million of
-    /// them, which is sixteen megabytes -- and, far more to the point, two
-    /// million the projection has to walk on every frame of a drag.
-    static constexpr int kPointBudget = 1 << 21;
+    /// Doubles the *renderer* walks, all drawn lines together.
+    ///
+    /// Two million of them, which is sixteen megabytes and, far more to the
+    /// point, two million the projection walks on every frame of a drag. This
+    /// one is bounded by the frame rate rather than by the machine, so it does
+    /// not move with the reader's RAM budget: a workstation with five hundred
+    /// gigabytes does not have a faster projection than a laptop, it merely has
+    /// room to *hold* more. What may be held is gui::PlotBudget, and separating
+    /// the two is what lets that one be large.
+    ///
+    /// It was called kPointBudget when it was both.
+    static constexpr int kDrawBudget = 1 << 21;
     /// Lines a new selection opens on. A ceiling on what the reader is shown
     /// before they have asked for anything, not on what they may ask for:
     /// the legend ticks any line in the table and `select all` takes them all.
@@ -537,13 +552,8 @@ public:
     static constexpr int kSettleMilliseconds = gui::kSettleMilliseconds;
     /// See PlotLevels.hpp, which is where the argument for it is.
     static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
-    /// Runs held at once, at most.
-    ///
-    /// The run the pane is on, the two read ahead of it, and two the reader has
-    /// already been through -- because a run is not thrown away when the view
-    /// leaves it, so zooming back along the way you came costs nothing at all.
-    /// Bounded by the budget as well: see heldLevels().
-    static constexpr int kHeldLevels = 5;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kHeldLevels = gui::kHeldLevels;
     /// See PlotLevels.hpp, which is where the argument for it is.
     static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
     /// Lines past which no closer look is read at all.

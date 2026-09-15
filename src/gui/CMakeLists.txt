@@ -15,6 +15,7 @@ qt_add_library(gui STATIC
   PlotItem.cpp
   PlotProjection.cpp
   PlotLevels.cpp
+  PlotBudget.cpp
   Rendering.cpp
   DatasetImage.cpp
   DatasetImageProvider.cpp

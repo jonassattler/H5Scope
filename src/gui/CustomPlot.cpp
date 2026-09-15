@@ -4,6 +4,7 @@
 #include "CustomPlot.hpp"
 
 #include "H5Session.hpp"
+#include "PlotBudget.hpp"
 #include "PlotLevels.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
@@ -217,6 +218,27 @@ struct Reply
 
 } // namespace
 
+CustomPlot::~CustomPlot()
+{
+    // Disconnected first, and this is not tidiness. leave() tells every other
+    // plot that its share just grew, and a signal emitted from a destructor
+    // reaches this object's own slot as well -- ~QObject, which is what breaks
+    // the connections, runs after this body. applyBudget() then asks the model
+    // how long the line is, through a table that is already gone.
+    disconnect(&PlotBudget::instance(), nullptr, this, nullptr);
+    PlotBudget::instance().leave();
+}
+
+void CustomPlot::applyBudget()
+{
+    // Nothing is re-read. What each entry draws is sized by the pane; what
+    // changes here is how many runs there is room to keep beside it.
+    for (Entry& entry : entries_) {
+        trimLevels(entry);
+    }
+    refreshCloser();
+}
+
 long long CustomPlot::hyperslabs()
 {
     return gHyperslabs.load(std::memory_order_relaxed);
@@ -225,6 +247,12 @@ long long CustomPlot::hyperslabs()
 CustomPlot::CustomPlot(QString name, DatasetLookup* lookup, QObject* parent)
     : QAbstractListModel(parent), name_(std::move(name)), lookup_(lookup)
 {
+    // One budget, shared out between this tab, every other tab and the Plot
+    // tab. See PlotBudget: a per-object constant times the number of objects is
+    // how a generous number becomes an unbounded one.
+    PlotBudget::instance().join();
+    connect(&PlotBudget::instance(), &PlotBudget::changed, this, &CustomPlot::applyBudget);
+
     coalesce_.setSingleShot(true);
     coalesce_.setInterval(0);
     connect(&coalesce_, &QTimer::timeout, this, &CustomPlot::refresh);
@@ -906,8 +934,9 @@ int CustomPlot::heldLevels() const
     // of a few entries gets all of them; one carrying hundreds keeps the run it
     // is on and nothing else.
     const int entries = std::max(seriesCount(), 1);
-    const int affordable = kPointBudget / std::max(entries * 4 * bucketBudget(), 1);
-    return std::clamp(affordable, 1, kHeldLevels);
+    const long long affordable =
+        PlotBudget::instance().share() / std::max<long long>(entries * 4LL * bucketBudget(), 1);
+    return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
 void CustomPlot::trimLevels(Entry& entry)

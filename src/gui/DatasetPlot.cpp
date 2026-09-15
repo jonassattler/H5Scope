@@ -3,6 +3,7 @@
 
 #include "DatasetPlot.hpp"
 
+#include "gui/PlotBudget.hpp"
 #include "gui/PlotLevels.hpp"
 
 #include <algorithm>
@@ -17,6 +18,13 @@ DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent) : QObject(pa
     // the view, so a wheel spun through six octaves reads once and a drag reads
     // when it ends -- and what is already on screen keeps being drawn until it
     // does.
+    // One budget, shared out between this and every custom tab -- so opening a
+    // tab makes every other one's share smaller and closing it hands the memory
+    // back, rather than each holding its own constant and the window holding
+    // the sum of them.
+    PlotBudget::instance().join();
+    connect(&PlotBudget::instance(), &PlotBudget::changed, this, &DatasetPlot::applyBudget);
+
     settle_.setSingleShot(true);
     settle_.setInterval(kSettleMilliseconds);
     connect(&settle_, &QTimer::timeout, this, &DatasetPlot::askForDetail);
@@ -54,6 +62,26 @@ DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent) : QObject(pa
         reseed();
         invalidate();
     });
+}
+
+DatasetPlot::~DatasetPlot()
+{
+    // Disconnected first, and this is not tidiness. leave() tells every other
+    // plot that its share just grew, and a signal emitted from a destructor
+    // reaches this object's own slot as well -- ~QObject, which is what breaks
+    // the connections, runs after this body. applyBudget() then asks the model
+    // how long the line is, through a table that is already gone.
+    disconnect(&PlotBudget::instance(), nullptr, this, nullptr);
+    PlotBudget::instance().leave();
+}
+
+void DatasetPlot::applyBudget()
+{
+    // Nothing is re-read and nothing is released: what is drawn is sized by the
+    // pane and by kDrawBudget, neither of which this touches. What changes is
+    // how many runs there is room to keep beside it.
+    trimLevels();
+    refreshDetail();
 }
 
 void DatasetPlot::releaseDrawing() const
@@ -170,7 +198,7 @@ int DatasetPlot::pointsFor(int lines) const
     if (lines <= 0) {
         return std::clamp(pane, kMinPoints, kMaxPoints);
     }
-    return std::clamp(std::min(kPointBudget / lines, pane), kMinPoints, kMaxPoints);
+    return std::clamp(std::min(kDrawBudget / lines, pane), kMinPoints, kMaxPoints);
 }
 
 void DatasetPlot::applyCap(int cap)
@@ -705,7 +733,8 @@ int DatasetPlot::detailBuckets() const
     // is what it costs: every drawn line holds a whole-line summary and a run,
     // and this doubles the second of them.
     const int lines = std::max(static_cast<int>(drawn_.size()), 1);
-    return kPointBudget / lines >= 2 * cap_ ? 2 * paneBuckets() : paneBuckets();
+    const long long share = PlotBudget::instance().share();
+    return share / lines >= 2LL * cap_ ? 2 * paneBuckets() : paneBuckets();
 }
 
 int DatasetPlot::heldLevels() const
@@ -716,8 +745,9 @@ int DatasetPlot::heldLevels() const
     // selection wide enough to be spending the budget on the summaries
     // themselves keeps the run it is on and nothing else.
     const int lines = std::max(static_cast<int>(drawn_.size()), 1);
-    const int affordable = kPointBudget / std::max(lines * 2 * cap_, 1);
-    return std::clamp(affordable, 1, kHeldLevels);
+    const long long affordable =
+        PlotBudget::instance().share() / std::max<long long>(lines * 2LL * cap_, 1);
+    return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
 bool DatasetPlot::drawnPositions(double& first, double& last) const

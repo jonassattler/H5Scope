@@ -193,6 +193,22 @@ struct PlotFocus
     bool active = false;
 };
 
+/// Runs held at once, at most.
+///
+/// The run the pane is on, the ones read ahead of it in both directions, and
+/// the ones the reader has already been through -- because a run is not thrown
+/// away when the view leaves it, so zooming back along the way you came costs
+/// nothing at all.
+///
+/// It was five, and five was not a judgement about zooming: it was what sixteen
+/// megabytes could hold. A reader who zoomed in six octaves had evicted the way
+/// back before they got there and paid for all of it again on the way out. The
+/// real bound is memory, and memory is now gui::PlotBudget's to answer -- see
+/// each plot's heldLevels(), which divides the share by what one run costs.
+/// This is only the ceiling past which another octave is answering a question
+/// nobody asks: sixteen of them spans more zoom than any dataset has.
+inline constexpr int kHeldLevels = 16;
+
 /// How many octaves in are read towards the focus before the reader asks.
 ///
 /// Four, and it is nearly free: a run costs its span, and each octave in is

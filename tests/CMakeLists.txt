@@ -52,6 +52,17 @@ add_executable(test_plotprojection test_plotprojection.cpp)
 target_link_libraries(test_plotprojection PRIVATE gui Catch2::Catch2WithMain)
 catch_discover_tests(test_plotprojection)
 
+# --- which runs to hold, and which to read next ---------------------------
+# The other half of the same argument. gui::PlotLevels is the fold a line is
+# reduced by and the policy over the runs it is reduced into, and both plots
+# call it rather than carrying a copy each -- which they did, along with nine
+# constants copied between them under comments saying they had to match.
+# Nothing here opens a file or makes a window: the whole of it is doubles, a
+# vector of windows and a view.
+add_executable(test_plotlevels test_plotlevels.cpp)
+target_link_libraries(test_plotlevels PRIVATE gui Catch2::Catch2WithMain)
+catch_discover_tests(test_plotlevels)
+
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature
 # whose whole subject is reading several datasets at once, which is the thing
