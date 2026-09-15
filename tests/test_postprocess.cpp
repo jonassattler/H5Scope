@@ -576,6 +576,77 @@ TEST_CASE("a pipeline can be asked for only part of itself", "[postproc][pipelin
     REQUIRE(postproc::trace(cube, steps, 99).output == std::vector<hsize_t>{4});
 }
 
+TEST_CASE("a shape is worked out without resolving what it counts",
+          "[postproc][pipeline]")
+{
+    // The shape of a slice is how many indices each subscript names, and
+    // nothing else. Working that out by writing the indices down and measuring
+    // them is what made selecting a large dataset slow: the panel asks for this
+    // on every keystroke and on every change of selection, and `:` on a
+    // dimension of ten million resolved to eighty megabytes built and freed.
+    //
+    // A shape no machine could hold the indices of is how that is asserted
+    // without a clock in the test: a duration measures the machine and a count
+    // measures the program, and the count here would be "one allocation" --
+    // which nothing in this suite can see. The dimensions below are 10^9 and
+    // 10^7, so an implementation that resolved them would ask for eight
+    // gigabytes and this test would fail by dying rather than by reporting.
+    // That is the intended failure and it is not subtle, which is the point.
+    const std::vector<hsize_t> enormous{1000000000, 10000000};
+    const std::vector<Step> whole = {{OperationKind::Slice, ":, :"}};
+    REQUIRE(postproc::trace(enormous, whole, 1).output == enormous);
+
+    SECTION("and every way of writing one is counted the same way it is read")
+    {
+        // The two readers of a slice line share a grammar and must not drift
+        // apart in it, so each of these is counted and resolved and the answers
+        // compared. A bare index drops its dimension and a list of one does
+        // not, which is the distinction most easily lost.
+        const std::vector<hsize_t> shape{10, 12};
+        const QStringList lines{":, :",      "3, :",      "3:7, 2:5",  "::2, ::3",
+                                "::-1, :",   "9:4:-1, :", "[3], :",    "[0,2,5], :",
+                                "-3:, :",    ":-1, :",    "0, 0",      "...",
+                                "5",         "[0,2,0], :"};
+        for (const QString& line : lines) {
+            INFO(line.toStdString());
+            const postproc::Trace counted = postproc::trace(
+                shape, {{OperationKind::Slice, line}}, 1);
+
+            std::vector<postproc::IndexExpression> chosen;
+            QStringList written;
+            QString error;
+            REQUIRE(postproc::readSubscripts(line, shape, chosen, written, error));
+            std::vector<hsize_t> resolved;
+            for (const postproc::IndexExpression& subscript : chosen) {
+                if (subscript.form != postproc::IndexExpression::Form::Single) {
+                    resolved.push_back(static_cast<hsize_t>(subscript.indices.size()));
+                }
+            }
+            CHECK(counted.ok());
+            CHECK(counted.output == resolved);
+        }
+    }
+
+    SECTION("...and a line that will not read is refused in the same words")
+    {
+        const std::vector<hsize_t> shape{10, 12};
+        const QStringList refused{"20, :", "3:3, :", "0, 0, 0", "1.5, :",
+                                  "[, :",  "::0, :", "..., ..."};
+        for (const QString& line : refused) {
+            INFO(line.toStdString());
+            const postproc::Trace counted = postproc::trace(
+                shape, {{OperationKind::Slice, line}}, 1);
+
+            std::vector<postproc::IndexExpression> chosen;
+            QStringList written;
+            QString error;
+            CHECK_FALSE(postproc::readSubscripts(line, shape, chosen, written, error));
+            CHECK_FALSE(counted.ok());
+            CHECK(counted.error == error);
+        }
+    }
+}
+
 TEST_CASE("a scalar has no subscripts and is not asked for any",
           "[postproc][pipeline]")
 {

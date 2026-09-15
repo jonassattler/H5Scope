@@ -420,14 +420,19 @@ ShapeResult shapeAfter(const Step& step, const std::vector<hsize_t>& shape)
 
     switch (step.kind) {
     case OperationKind::Slice: {
-        std::vector<std::vector<hsize_t>> indices;
-        std::vector<bool> drop;
-        if (!readSlice(step.argument, shape, indices, drop, result.error)) {
+        // Counted, not resolved. A shape needs how many each subscript names
+        // and nothing else, and `:` on a dimension of ten million resolves to
+        // ten million indices -- eighty megabytes built, measured and freed.
+        // This is asked of every step on every keystroke and on every change of
+        // selection, which is what made picking a large dataset slow: a quarter
+        // of a second spent describing a table before anything was read.
+        std::vector<SubscriptCount> counted;
+        if (!countSubscripts(step.argument, shape, counted, result.error)) {
             return result;
         }
-        for (std::size_t d = 0; d < indices.size(); ++d) {
-            if (!drop[d]) {
-                result.shape.push_back(static_cast<hsize_t>(indices[d].size()));
+        for (const SubscriptCount& subscript : counted) {
+            if (!subscript.drop) {
+                result.shape.push_back(subscript.count);
             }
         }
         return result;

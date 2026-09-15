@@ -127,7 +127,12 @@ public:
 
     /// Choose which indices appear and on which axis. Ignored when its rank
     /// does not match the dataset's.
-    void setLayout(const TableLayout& layout);
+    ///
+    /// By value, so a caller with a layout it is done with can hand it over
+    /// rather than have it copied. A layout names every index it selects, so on
+    /// a ten-million-element vector a copy of one is eighty megabytes; this
+    /// used to take a reference and copy it twice on its way to TableAxes.
+    void setLayout(TableLayout layout);
     [[nodiscard]] const TableLayout& layout() const { return axes_.layout(); }
     /// The table the grid is showing, as geometry. A second reading of the same
     /// dataset -- the image with its colour dimension held at one channel --

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <unordered_set>
 
@@ -79,11 +80,24 @@ void adjustSlice(qint64 extent, qint64 step, std::optional<qint64> start,
     }
 }
 
-/// One term of an expression, appended to `out`. `single` is set when the term
-/// was a bare index and `span` when it was a step-1 slice, so the caller can
-/// tell how the subscript was written.
-bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
-               IndexExpression::Form& form, QString& error)
+/// One term of an expression as arithmetic, before any index is written down:
+/// where it starts, how far it steps, and how many it names.
+///
+/// Split out of parseTerm so that the same grammar can answer "how many" without
+/// producing them. See countSubscripts for why that question is worth its own
+/// path: `:` on a dimension of ten million is ten million indices, and a shape
+/// needs only the number.
+struct Run
+{
+    qint64 from = 0;
+    qint64 step = 1;
+    hsize_t count = 0;
+    IndexExpression::Form form = IndexExpression::Form::Scattered;
+};
+
+/// One term resolved to a Run. The whole of the term grammar lives here; the
+/// two callers below differ only in what they do with the answer.
+bool resolveTerm(QStringView term, hsize_t extent, Run& run, QString& error)
 {
     const auto signedExtent = static_cast<qint64>(extent);
 
@@ -104,8 +118,7 @@ bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
                         .arg(signedExtent);
             return false;
         }
-        out.push_back(static_cast<hsize_t>(resolved));
-        form = IndexExpression::Form::Single;
+        run = Run{resolved, 1, 1, IndexExpression::Form::Single};
         return true;
     }
 
@@ -156,27 +169,40 @@ bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
                 stated(lowerText, QLatin1String("start"), lowerValue),
                 stated(upperText, QLatin1String("end"), upperValue), from, to);
 
-    const std::size_t before = out.size();
-    if (step > 0) {
-        for (qint64 i = from; i < to; i += step) {
-            out.push_back(static_cast<hsize_t>(i));
-        }
-    } else {
-        for (qint64 i = from; i > to; i += step) {
-            out.push_back(static_cast<hsize_t>(i));
-        }
-    }
+    // How many the run names, by arithmetic rather than by counting them out:
+    // ceil((to - from) / step) in the direction of travel, and none at all when
+    // the bounds are the wrong way round for it.
+    const qint64 reach = (step > 0) ? to - from : from - to;
+    const qint64 size = std::abs(step);
+    const hsize_t taken =
+        reach > 0 ? static_cast<hsize_t>((reach + size - 1) / size) : hsize_t{0};
 
-    const std::size_t taken = out.size() - before;
     // A step-1 slice is a run, and a run is something the data settings panel
     // can draw with its own two boxes. Anything else -- a stride, a descent --
     // is only expressible as the expression that produced it.
+    IndexExpression::Form form = IndexExpression::Form::Scattered;
     if (step == 1 && taken > 0) {
         form = (taken == extent) ? IndexExpression::Form::Whole
                                  : IndexExpression::Form::Span;
-    } else {
-        form = IndexExpression::Form::Scattered;
     }
+    run = Run{from, step, taken, form};
+    return true;
+}
+
+/// One term of an expression, appended to `out`, and how it was written.
+bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
+               IndexExpression::Form& form, QString& error)
+{
+    Run run;
+    if (!resolveTerm(term, extent, run, error)) {
+        return false;
+    }
+    out.reserve(out.size() + static_cast<std::size_t>(run.count));
+    qint64 at = run.from;
+    for (hsize_t i = 0; i < run.count; ++i, at += run.step) {
+        out.push_back(static_cast<hsize_t>(at));
+    }
+    form = run.form;
     return true;
 }
 
@@ -315,36 +341,54 @@ IndexExpression parseIndexExpression(const QString& text, hsize_t extent)
     return result;
 }
 
-bool readSubscripts(const QString& text, const std::vector<hsize_t>& shape,
-                    std::vector<IndexExpression>& chosen, QStringList& written,
-                    QString& error)
-{
-    const auto rank = static_cast<qsizetype>(shape.size());
-    if (rank == 0) {
-        // A scalar has no dimensions to subscript, and Python says so: `a[0]`
-        // and `a[:]` on a 0-d array are both "too many indices". `a[...]` is
-        // not, because the dimensions the ellipsis stands for are the ones
-        // nobody wrote, and on a scalar there are none of them -- so it is the
-        // array itself, which is a thing a reader may well want a step to be.
-        const QString line = text.trimmed();
-        if (line.isEmpty() || line == QStringLiteral("...")) {
-            chosen.clear();
-            written.clear();
-            return true;
-        }
-        error = QStringLiteral("a scalar has no dimensions to subscript — "
-                               "'...' is the whole of it");
-        return false;
-    }
+namespace {
 
+/// What a scalar's slice line resolves to: nothing at all, or a refusal.
+///
+/// Its own function because both readers of a slice line have to answer it the
+/// same way and neither has any dimensions to loop over afterwards.
+enum class Scalar
+{
+    NotScalar,
+    Whole,
+    Refused,
+};
+
+Scalar scalarSubscript(const QString& text, qsizetype rank, QString& error)
+{
+    if (rank != 0) {
+        return Scalar::NotScalar;
+    }
+    // A scalar has no dimensions to subscript, and Python says so: `a[0]` and
+    // `a[:]` on a 0-d array are both "too many indices". `a[...]` is not,
+    // because the dimensions the ellipsis stands for are the ones nobody wrote,
+    // and on a scalar there are none of them -- so it is the array itself,
+    // which is a thing a reader may well want a step to be.
+    const QString line = text.trimmed();
+    if (line.isEmpty() || line == QStringLiteral("...")) {
+        return Scalar::Whole;
+    }
+    error = QStringLiteral("a scalar has no dimensions to subscript — "
+                           "'...' is the whole of it");
+    return Scalar::Refused;
+}
+
+/// The slice line split into exactly one subscript per dimension, with the
+/// shorthands filled in.
+///
+/// Both readers of a line go through this, which is what keeps them agreeing
+/// about the two rules that are easy to get subtly different: `...` stands for
+/// however many dimensions nobody wrote a subscript for, and so does the end of
+/// the line.
+bool expandSubscripts(const QString& text, qsizetype rank, QStringList& expanded,
+                      QString& error)
+{
     QStringList terms;
     if (!splitSubscripts(text, terms, error)) {
         return false;
     }
 
-    // `...` stands for however many dimensions nobody wrote a subscript for,
-    // which is what it stands for in numpy. One of them: two would not say how
-    // many each was covering.
+    // One ellipsis: two would not say how many dimensions each was covering.
     const QString ellipsis = QStringLiteral("...");
     qsizetype gap = -1;
     for (qsizetype i = 0; i < terms.size(); ++i) {
@@ -377,7 +421,7 @@ bool readSubscripts(const QString& text, const std::vector<hsize_t>& shape,
     // was marked with "..." or simply left off the end. Both are Python's.
     const QString whole = QStringLiteral(":");
     const qsizetype missing = rank - stated;
-    QStringList expanded;
+    expanded.clear();
     expanded.reserve(rank);
     for (qsizetype i = 0; i < terms.size(); ++i) {
         if (i == gap) {
@@ -393,6 +437,146 @@ bool readSubscripts(const QString& text, const std::vector<hsize_t>& shape,
             expanded << whole;
         }
     }
+    return true;
+}
+
+/// One subscript, counted rather than resolved.
+///
+/// A single term is pure arithmetic, and a single term is what nearly every
+/// subscript is -- `:` above all, which is what every dimension of a freshly
+/// selected dataset carries. Several terms are resolved after all, because
+/// duplicates have to go and only the indices say which; that is affordable for
+/// the same reason the deduplication itself is, a list being something written
+/// by hand and therefore short.
+bool countIndexExpression(const QString& text, hsize_t extent, SubscriptCount& out)
+{
+    if (text.trimmed().isEmpty()) {
+        out.error = QStringLiteral("enter indices, e.g. 0,2,5:9");
+        return false;
+    }
+    if (extent == 0) {
+        out.error = QStringLiteral("this dimension is empty");
+        return false;
+    }
+
+    QStringView body = QStringView(text).trimmed();
+    bool bracketed = false;
+    if (body.startsWith(u'[') && body.endsWith(u']')) {
+        body = body.mid(1, body.size() - 2).trimmed();
+        bracketed = true;
+        if (body.isEmpty()) {
+            out.error = QStringLiteral("enter indices, e.g. 0,2,5:9");
+            return false;
+        }
+    }
+
+    const QList<QStringView> terms = body.split(u',');
+    if (terms.size() != 1) {
+        const IndexExpression resolved = parseIndexExpression(text, extent);
+        if (!resolved.valid()) {
+            out.error = resolved.error;
+            return false;
+        }
+        out.count = static_cast<hsize_t>(resolved.indices.size());
+        out.drop = resolved.form == IndexExpression::Form::Single;
+        return true;
+    }
+
+    const QStringView term = terms.front().trimmed();
+    if (term.isEmpty()) {
+        out.error = QStringLiteral("empty term between commas");
+        return false;
+    }
+    Run run;
+    if (!resolveTerm(term, extent, run, out.error)) {
+        return false;
+    }
+    if (run.count == 0) {
+        out.error = QStringLiteral("selects no indices");
+        return false;
+    }
+    out.count = run.count;
+    // Only a bare index drops its dimension, and only where it was written as
+    // one: `[1]` is a list of a single element and keeps it, which is the same
+    // distinction parseIndexExpression makes by taking the form away from a
+    // bracketed subscript.
+    out.drop = !bracketed && run.form == IndexExpression::Form::Single;
+    return true;
+}
+
+/// "dim 2 has no subscript", as both readers have to say it.
+bool missingSubscript(qsizetype dimension, QString& error)
+{
+    // parseIndexExpression would say "enter indices" here, which is advice for
+    // a box the reader is typing into rather than a report about a line they
+    // have already written.
+    error = QStringLiteral("dim %1 has no subscript — write ':' for the whole "
+                           "of it")
+                .arg(dimension);
+    return false;
+}
+
+} // namespace
+
+bool countSubscripts(const QString& text, const std::vector<hsize_t>& shape,
+                     std::vector<SubscriptCount>& chosen, QString& error)
+{
+    const auto rank = static_cast<qsizetype>(shape.size());
+    switch (scalarSubscript(text, rank, error)) {
+    case Scalar::Whole:
+        chosen.clear();
+        return true;
+    case Scalar::Refused:
+        return false;
+    case Scalar::NotScalar:
+        break;
+    }
+
+    QStringList expanded;
+    if (!expandSubscripts(text, rank, expanded, error)) {
+        return false;
+    }
+
+    chosen.clear();
+    chosen.reserve(shape.size());
+    for (qsizetype d = 0; d < rank; ++d) {
+        const auto slot = static_cast<std::size_t>(d);
+        const QString term = expanded.at(d).trimmed();
+        if (term.isEmpty()) {
+            return missingSubscript(d, error);
+        }
+        SubscriptCount counted;
+        if (!countIndexExpression(term, shape[slot], counted)) {
+            // Which dimension, first: the parser's own messages describe "this
+            // dimension", and on a rank-4 line there are four of those.
+            error = QStringLiteral("dim %1: %2").arg(d).arg(counted.error);
+            return false;
+        }
+        chosen.push_back(std::move(counted));
+    }
+    return true;
+}
+
+bool readSubscripts(const QString& text, const std::vector<hsize_t>& shape,
+                    std::vector<IndexExpression>& chosen, QStringList& written,
+                    QString& error)
+{
+    const auto rank = static_cast<qsizetype>(shape.size());
+    switch (scalarSubscript(text, rank, error)) {
+    case Scalar::Whole:
+        chosen.clear();
+        written.clear();
+        return true;
+    case Scalar::Refused:
+        return false;
+    case Scalar::NotScalar:
+        break;
+    }
+
+    QStringList expanded;
+    if (!expandSubscripts(text, rank, expanded, error)) {
+        return false;
+    }
 
     chosen.clear();
     chosen.reserve(shape.size());
@@ -402,13 +586,7 @@ bool readSubscripts(const QString& text, const std::vector<hsize_t>& shape,
         const auto slot = static_cast<std::size_t>(d);
         const QString term = expanded.at(d).trimmed();
         if (term.isEmpty()) {
-            // parseIndexExpression would say "enter indices" here, which is
-            // advice for a box the reader is typing into rather than a report
-            // about a line they have already written.
-            error = QStringLiteral("dim %1 has no subscript — write ':' "
-                                   "for the whole of it")
-                        .arg(d);
-            return false;
+            return missingSubscript(d, error);
         }
         IndexExpression subscript = parseIndexExpression(term, shape[slot]);
         if (!subscript.valid()) {

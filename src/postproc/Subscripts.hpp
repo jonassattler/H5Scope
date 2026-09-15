@@ -104,6 +104,38 @@ struct IndexExpression {
                                   std::vector<IndexExpression>& chosen,
                                   QStringList& written, QString& error);
 
+/// How many indices one subscript selects, and whether it drops its dimension
+/// -- the same grammar, asked only for the size of what it names.
+struct SubscriptCount {
+    hsize_t count = 0;
+    /// Written as a bare index, which Python removes from the shape.
+    bool drop = false;
+    QString error;
+
+    [[nodiscard]] bool valid() const { return error.isEmpty(); }
+};
+
+/// Read a slice line for its *shape* alone, writing none of the indices down.
+///
+/// The counterpart of readSubscripts, and it exists because a shape is nearly
+/// all anyone asks this grammar for. `:` on a dimension of ten million resolves
+/// to ten million indices -- eighty megabytes built, measured and thrown away --
+/// and postproc::trace asks for the shape of every step of the pipeline every
+/// time a dataset is selected, a slice is edited or a row is added. On
+/// /plotting/adc_10M that was a quarter of a second of a selection that reads
+/// nothing.
+///
+/// Every rule readSubscripts follows is followed here, because both go through
+/// the same expansion and the same term parser: the ellipsis, the trailing
+/// dimensions nobody wrote, the clamping, and the refusal of a selection that
+/// names nothing. A subscript of several terms is still resolved in full --
+/// duplicates have to go and only the indices say which -- and that is
+/// affordable for the reason the deduplication itself is: a list is written by
+/// hand and is short.
+[[nodiscard]] bool countSubscripts(const QString& text,
+                                   const std::vector<hsize_t>& shape,
+                                   std::vector<SubscriptCount>& chosen, QString& error);
+
 /// A subscript as the slice line has to print it: bracketed when it is a list
 /// of several terms, bare when it is one.
 ///

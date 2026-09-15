@@ -130,6 +130,29 @@ std::vector<hsize_t> TableSetupModel::indicesFor(const Dimension& dimension) con
     return indices;
 }
 
+hsize_t TableSetupModel::countFor(const Dimension& dimension) const
+{
+    if (dimension.extent == 0) {
+        return 0;
+    }
+    switch (dimension.mode) {
+    case AxisMode::All:
+        return dimension.extent;
+    case AxisMode::Index:
+        return 1;
+    case AxisMode::Range: {
+        const hsize_t first = std::min(dimension.first, dimension.extent - 1);
+        const hsize_t last = std::min(dimension.last, dimension.extent - 1);
+        return std::max(first, last) - std::min(first, last) + 1;
+    }
+    case AxisMode::Custom:
+        // The one selection that is a list rather than a rule, and it is
+        // already held as one: nothing is built to count it.
+        return static_cast<hsize_t>(dimension.custom.size());
+    }
+    return 0;
+}
+
 QVariant TableSetupModel::data(const QModelIndex& index, int role) const
 {
     if (!index.isValid() || !valid(index.row())) {
@@ -155,7 +178,7 @@ QVariant TableSetupModel::data(const QModelIndex& index, int role) const
     case OnXRole:
         return dimension.onX;
     case SelectedCountRole:
-        return static_cast<qint64>(indicesFor(dimension).size());
+        return static_cast<qint64>(countFor(dimension));
     case SummaryRole:
         return summaryFor(dimension);
     default:
