@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace gui {
@@ -285,10 +286,15 @@ private:
     /// the replacement, and fill() -- the first moment nothing is reading the
     /// old values -- is where they are finally let go.
     ///
-    /// It costs nothing to move: std::map relinks nodes, so every mapped vector
-    /// stays exactly where it was and every pointer the item holds stays good.
-    /// Which is the same property that lets everything else in here insert into
-    /// these maps while the renderer is reading them.
+    /// It costs nothing: a std::vector move takes the buffer with it, so every
+    /// retired vector goes on naming the same doubles at the same address and
+    /// every pointer the item holds stays good. The keys are dropped on the way
+    /// in -- nothing ever looks a retired line up, it only has to stay alive --
+    /// and that is deliberate rather than incidental. See `retired_`.
+    ///
+    /// The maps themselves are safe to insert into meanwhile for the related
+    /// reason: a std::map relinks nodes rather than moving them, so everything
+    /// else in here can add to these caches while the renderer is reading them.
     void retire(std::map<int, std::vector<double>>& cache) const;
     /// One line of one, for the path that replaces a single line of a run the
     /// reader is already looking at: a line ticked back on in the legend.
@@ -303,6 +309,35 @@ private:
     /// kPrefetchOctaves for why the two directions need different things.
     struct Detail
     {
+        explicit Detail(const PlotWindow& at) : window(at) {}
+
+        // Relocated by moving, never by copying -- and the copy is *deleted*
+        // rather than merely never written, because deleting it is the only
+        // thing that makes that true.
+        //
+        // `levels_` is a std::vector of these, and a std::vector reallocates
+        // with std::move_if_noexcept: it takes the copy constructor whenever
+        // the element's move constructor is not `noexcept` and a copy exists,
+        // so that a throw half way through leaves the old storage intact. A
+        // copy here is the use-after-free. It deep-copies every mapped vector
+        // into the new storage and then destroys the originals -- freeing the
+        // exact buffers PlotItem is holding a `PlotLine::values` pointer into,
+        // while it is drawing them.
+        //
+        // Whether that happened was down to the standard library. std::map's
+        // move constructor is noexcept on libstdc++ and libc++, and is not on
+        // MSVC's, whose tree keeps a sentinel node that the move allocates. So
+        // Linux moved and passed, Windows copied, and the second closer look to
+        // land -- the push_back that grows levels_ from one to two -- segfaulted
+        // in the test that dereferences the held line to prove it is still
+        // there. With no copy to fall back on the relocation is a move on every
+        // library, and a std::map move relinks nodes in constant time: every
+        // mapped vector stays at the address the renderer was given.
+        Detail(Detail&&) = default;
+        Detail& operator=(Detail&&) = default;
+        Detail(const Detail&) = delete;
+        Detail& operator=(const Detail&) = delete;
+
         PlotWindow window;
         /// Table positions between one drawn point of this run and the next,
         /// and how many of them there are. Half a bucket, for the reason
@@ -313,6 +348,13 @@ private:
         /// renderer on exactly the same terms.
         std::map<int, std::vector<double>> lines;
     };
+
+    // Asserted rather than left to the one platform that noticed. A member
+    // added later that made a Detail copyable again would put the copy back on
+    // MSVC's library and nowhere else, which is a segfault on Windows CI and a
+    // green run everywhere a reader would be looking.
+    static_assert(!std::is_copy_constructible_v<Detail>,
+                  "a Detail must relocate by moving: a copy frees the values PlotItem borrows");
 
     /// The window the view asks for, or nothing when the whole-line summary is
     /// already as good: zoomed out, too many lines drawn to be worth
@@ -421,9 +463,23 @@ private:
     /// they are freed. A QPointer because the item belongs to a QML scene that
     /// is torn down and rebuilt without telling this object.
     mutable QPointer<PlotItem> drawing_;
-    /// Caches the renderer may still be reading, kept alive until it is handed
+    /// Values the renderer may still be reading, kept alive until it is handed
     /// their replacement. See retire(); fill() is what empties this.
-    mutable std::vector<std::map<int, std::vector<double>>> retired_;
+    ///
+    /// The bare vectors rather than the maps they came out of, which is the
+    /// same shape CustomPlot::retired_ has. That is not tidying: this store
+    /// held `std::map`s, and growing a std::vector of those took the copy that
+    /// std::move_if_noexcept falls back on -- see Detail above for why -- so
+    /// the store whose whole job is to keep the borrowed doubles alive was
+    /// itself freeing them on Windows. A std::vector<double> move is noexcept
+    /// on every implementation, so this one can only ever be moved.
+    mutable std::vector<std::vector<double>> retired_;
+
+    // Stated against the member rather than against the type it happens to hold
+    // today, so that changing it is what has to answer for this.
+    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
+                  "the retired store must relocate by moving, or it frees what it holds alive");
+
     /// The pane width the surface last pushed, waiting for the drag to stop.
     int wantedColumns_ = kDefaultColumns;
     /// Whether the surface has ever said how wide the pane is. The first time

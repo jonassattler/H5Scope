@@ -111,6 +111,19 @@ data read again and goes on being drawn until the replacement arrives.
 what the item is reading afterwards — by dereferencing it, because a line count
 would be just as happy over freed memory.
 
+A held line can also be freed by something that never meant to free anything:
+**a `std::vector` holding one of those caches must relocate by moving, and it
+only does when the element's move constructor is `noexcept` or there is no copy
+constructor to fall back on.** `std::vector` reallocates with
+`std::move_if_noexcept`, so a copyable element whose move can throw is
+*deep-copied* into the new storage and the original freed — with the renderer
+still pointing at it. Whether that happens is down to the standard library:
+`std::map`'s move is `noexcept` on libstdc++ and libc++ and is not on MSVC's, so
+a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
+on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, both
+retired stores hold bare `std::vector<double>`, and `static_assert`s next to
+each of them say so on every platform rather than on the one that noticed.
+
 ## Invariants worth knowing before editing
 
 1. **One thread ever calls into HDF5.** The pinned HDF5 is not thread-safe and

@@ -17,6 +17,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace gui {
@@ -340,6 +341,23 @@ private:
         std::vector<Level> levels;
     };
 
+    // Both of these live in a std::vector that is pushed to while the renderer
+    // is reading the values in it -- `entries_`, and each entry's own `levels`
+    // -- so both have to relocate by moving. A std::vector reallocates with
+    // std::move_if_noexcept and takes the *copy* whenever the element's move is
+    // not noexcept and a copy exists, which deep-copies every held vector into
+    // the new storage and then frees the originals the item is drawing from.
+    //
+    // These two are noexcept today because everything in them is: QString,
+    // std::vector and the scalars. That was true of DatasetPlot::Detail as well
+    // until it grew a std::map, whose move is not noexcept on MSVC's library --
+    // and the only thing that ever said so was a SIGSEGV on Windows CI. Stated
+    // here so that the next member to arrive says it at the compiler instead.
+    static_assert(std::is_nothrow_move_constructible_v<Level>,
+                  "a Level must relocate by moving: a copy frees the values PlotItem borrows");
+    static_assert(std::is_nothrow_move_constructible_v<Entry>,
+                  "an Entry must relocate by moving: a copy frees the values PlotItem borrows");
+
     /// One line as the job hands it back.
     struct LineData
     {
@@ -494,6 +512,12 @@ private:
     /// Values the renderer may still be reading, kept alive until it is handed
     /// their replacement. See retire(); fill() is what empties this.
     std::vector<std::vector<double>> retired_;
+
+    // The bare buffers rather than whatever they came out of, for the reason
+    // DatasetPlot::retired_ now gives: growing this must move them, and a
+    // std::vector<double> move is noexcept on every implementation.
+    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
+                  "the retired store must relocate by moving, or it frees what it holds alive");
 
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;
