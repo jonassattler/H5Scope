@@ -64,18 +64,6 @@ void reduceBuckets(const double* values, long long count, long long bucket, std:
     }
 }
 
-void coarsenEnvelope(const double* pairs, long long buckets, long long factor,
-                     std::vector<double>& out)
-{
-    if (pairs == nullptr || buckets <= 0) {
-        return;
-    }
-    // See the header: the pair buffer is already a sequence in occurrence
-    // order, so folding it by twice the factor is the same question
-    // reduceBuckets() asks of the elements themselves.
-    reduceBuckets(pairs, buckets * 2, std::max<long long>(factor, 1) * 2, out);
-}
-
 namespace {
 
 /// The visible range clamped to the data, which is what a run has to cover.

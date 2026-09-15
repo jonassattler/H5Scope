@@ -603,12 +603,13 @@ PlotLine DatasetPlot::lineOf(int series) const
         const Detail& level = levels_[static_cast<std::size_t>(at)];
         const auto closer = level.lines.find(series);
         if (closer != level.lines.end() && !closer->second.empty()) {
-            line.values = closer->second.data();
-            line.count = static_cast<qsizetype>(closer->second.size());
             // Where the run starts, in the same table positions the whole-line
             // summary counts in -- which is the whole of what PlotLine needs to
             // draw a piece of a line in the right place.
             line.positionStart = static_cast<double>(level.window.first);
+
+            line.values = closer->second.data();
+            line.count = static_cast<qsizetype>(closer->second.size());
             line.positionStep = level.step;
             return line;
         }
@@ -662,6 +663,44 @@ void DatasetPlot::setVisibleRange(double xMin, double xMax)
     if (drawnWindow() != drawing) {
         emit changed();
     }
+}
+
+void DatasetPlot::setZoomFocus(double x, double factor)
+{
+    if (!std::isfinite(x) || !std::isfinite(factor) || !(factor > 0.0)) {
+        clearZoomFocus();
+        return;
+    }
+    focusX_ = x;
+    focusInward_ = factor > 1.0;
+    focusActive_ = true;
+    // Not a read of its own: setVisibleRange arrives in the same turn of the
+    // event loop with the range this zoom produced, and that is what decides
+    // whether anything is worth reading. This only says which way it went.
+}
+
+void DatasetPlot::clearZoomFocus()
+{
+    focusActive_ = false;
+}
+
+PlotFocus DatasetPlot::focusFor() const
+{
+    PlotFocus focus;
+    if (!focusActive_ || !std::isfinite(xStart_) || !std::isfinite(xStep_) ||
+        !(std::abs(xStep_) > 0.0)) {
+        return focus;
+    }
+    // x = start + position * step, so a position is the same arithmetic run
+    // backwards -- the mapping visiblePositions() uses, over one value.
+    const double position = (focusX_ - xStart_) / xStep_;
+    if (!std::isfinite(position)) {
+        return focus;
+    }
+    focus.position = position;
+    focus.inward = focusInward_;
+    focus.active = true;
+    return focus;
 }
 
 bool DatasetPlot::visiblePositions(double& first, double& last) const
@@ -736,6 +775,7 @@ int DatasetPlot::detailBuckets() const
     const long long share = PlotBudget::instance().share();
     return share / lines >= 2LL * cap_ ? 2 * paneBuckets() : paneBuckets();
 }
+
 
 int DatasetPlot::heldLevels() const
 {
@@ -827,7 +867,7 @@ int DatasetPlot::levelAt(const PlotWindow& window) const
 
 std::optional<PlotWindow> DatasetPlot::detailWanted() const
 {
-    return gui::wantedLevel(ladder(), levelView(), focus_);
+    return gui::wantedLevel(ladder(), levelView(), focusFor());
 }
 
 void DatasetPlot::refreshDetail()
@@ -843,6 +883,22 @@ void DatasetPlot::refreshDetail()
         settle_.stop();
         return;
     }
+    if (focusActive_) {
+        // A zoom reads at once rather than waiting the gesture out.
+        //
+        // The settle was protecting a thread that can only run one job after
+        // another from a wheel spun through six octaves, and it protected it by
+        // making the reader wait a tenth of a second at the end of every
+        // gesture for a picture that could have been arriving while they span.
+        // What actually bounds the cost is asking for one run at a time and
+        // letting the reply arm the next -- see inFlight_ -- and with that in
+        // place the wait buys nothing. A pan still settles: a pan has no focus,
+        // and a pan that leaves the run in hand would otherwise read on every
+        // frame of the drag.
+        settle_.stop();
+        askForDetail();
+        return;
+    }
     settle_.start();
 }
 
@@ -852,7 +908,7 @@ void DatasetPlot::trimLevels()
     while (static_cast<int>(levels_.size()) > allowed) {
         // Rebuilt each time round, because erasing one changes which of the
         // rest is coldest.
-        const std::size_t worst = gui::coldestLevel(ladder(), levelView(), focus_);
+        const std::size_t worst = gui::coldestLevel(ladder(), levelView(), focusFor());
         retire(levels_[worst].lines);
         levels_.erase(levels_.begin() + static_cast<long>(worst));
     }
@@ -861,6 +917,15 @@ void DatasetPlot::trimLevels()
 void DatasetPlot::askForDetail()
 {
     if (!wanted_.has_value() || table_ == nullptr || !table_->present() || !table_->numeric()) {
+        return;
+    }
+    if (inFlight_) {
+        // One read out at a time. The reply arms the next one -- takeDetail
+        // ends in refreshDetail() -- so nothing is lost by not asking now, and
+        // what is gained is that a gesture cannot queue reads faster than the
+        // one HDF5 thread can run them. Without it, dropping the settle would
+        // put six runs of a spun wheel in a queue the reader has to wait out
+        // before the one they stopped on is even started.
         return;
     }
     const PlotWindow want = *wanted_;
@@ -896,8 +961,8 @@ void DatasetPlot::askForDetail()
     // window to replace it with a sharper one would be spending the reader's
     // attention to save them nothing. Anything asked for and no longer wanted
     // is disowned by its ticket rather than painted.
-    requests_.reset();
     asked_ = want;
+    inFlight_ = true;
     H5Thread::instance().submit(
         requests_,
         [axes = table_->axes(), requests](H5Session& session) {
@@ -906,6 +971,7 @@ void DatasetPlot::askForDetail()
                                      : DatasetTableModel::readSamples(*source, axes, requests);
         },
         [this, want, series](std::vector<DatasetTableModel::NumericGrid> grids) {
+            inFlight_ = false;
             takeDetail(want, series, std::move(grids));
         });
 }
@@ -915,8 +981,12 @@ void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& s
 {
     asked_.reset();
     if (wanted_ != detail) {
-        // The reader moved on while this was out. Dropping it is not a loss:
-        // whatever they moved to has already armed the next read.
+        // The reader moved on while this was out. Dropping it is not a loss --
+        // but arming the next read is not optional, because only one read is
+        // out at a time now and this reply is what lets the next one go. A
+        // return without it is a plot that stops reading until the reader
+        // touches something.
+        refreshDetail();
         return;
     }
 
@@ -964,7 +1034,12 @@ void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& s
 void DatasetPlot::clearDetail()
 {
     settle_.stop();
+    // A ticket reset means the reply in flight will never call its
+    // continuation, so the flag it would have cleared has to be cleared here.
+    // Otherwise nothing is ever read again: askForDetail() would go on
+    // believing a read it will never hear about is still out.
     requests_.reset();
+    inFlight_ = false;
     asked_.reset();
     wanted_.reset();
     for (Detail& level : levels_) {

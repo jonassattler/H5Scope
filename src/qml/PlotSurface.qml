@@ -342,6 +342,7 @@ Item {
     readonly property rect plotRect: frame.area
 
     function resetView() {
+        surface.clearZoomFocus()
         zoomX = 1.0
         panX = 0.0
         zoomY = 1.0
@@ -411,6 +412,22 @@ Item {
         const fy = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
 
         if (axes !== "y") {
+            // Where the pointer is, in the x the axis prints, before the zoom
+            // moves anything -- which is the value zoomedAxis() is about to
+            // hold still under it.
+            //
+            // This is the one thing the surface has always known and never
+            // said. Only the *resulting* range crossed into the plot object, so
+            // the runs it read ahead of a zoom were centred on the middle of
+            // the frame, and a reader zooming into one corner walked off them
+            // after a step or two and waited for the file each time. Told where
+            // the zoom is going, it reads that way instead -- and reads at once
+            // rather than after the gesture stops, because an inward run costs
+            // half the span of the one above it.
+            surface.pushZoomFocus(surface.viewMinX
+                                  + fx * (surface.viewMaxX - surface.viewMinX),
+                                  factor)
+
             const x = surface.zoomedAxis(surface.zoomX, surface.panX,
                                          surface.axisMinX, surface.axisMaxX,
                                          fx, factor)
@@ -448,6 +465,11 @@ Item {
         const area = surface.plotRect
         if (area.width <= 0 || area.height <= 0)
             return
+        // A drag is not a zoom and has nowhere it is heading, so what is read
+        // ahead goes back to being measured from the run on screen. It also
+        // stops the read going out on every frame of the drag: only a focus
+        // skips the settle.
+        surface.clearZoomFocus()
         const spanX = (surface.axisMaxX - surface.axisMinX) / surface.zoomX
         const spanY = (surface.upperBound - surface.lowerBound) / surface.zoomY
         surface.panX = surface.clampPan(surface.panX - dx * spanX / area.width,
@@ -634,6 +656,24 @@ Item {
         if (!surface.active || !surface.plot)
             return
         surface.plot.setVisibleRange(surface.viewMinX, surface.viewMaxX)
+    }
+
+    /// Tell it where the reader is zooming, and which way.
+    ///
+    /// Pushed before the axis moves, so that the range arriving a moment later
+    /// -- through the bindings, in the same turn -- is read towards the pointer
+    /// rather than towards the middle of the frame. Guarded by `active` like
+    /// every other path into the plot object.
+    function pushZoomFocus(x, factor) {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.setZoomFocus(x, factor)
+    }
+
+    function clearZoomFocus() {
+        if (!surface.active || !surface.plot)
+            return
+        surface.plot.clearZoomFocus()
     }
 
     /// Tell it how wide the pane is, in columns.

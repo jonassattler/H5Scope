@@ -44,6 +44,7 @@
 
 #include <hdf5.h>
 
+#include <algorithm>
 #include <limits>
 #include <cmath>
 #include <vector>
@@ -845,24 +846,51 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
 
     SECTION("the next step in is already in hand")
     {
-        // The prefetch: a run is read an octave finer than the pane needs, so
-        // the reader's next step down lands on values that are already here.
-        // Observable as the pointer -- the same buffer, not a new one -- which
-        // is the only way to say "nothing was read" without counting.
+        // The prefetch: a run is read finer than the pane needs, so the
+        // reader's next step down lands on values that are already here.
+        //
+        // This used to be asserted as the pointer -- the same buffer, not a new
+        // one -- because that was the only way to say "nothing was read"
+        // without counting. There is a count now, and it says it directly;
+        // which matters, because the step down no longer hands back the *same*
+        // buffer. A run is held finer than the pane can show and folded to what
+        // it can, so stepping in re-folds it at an octave finer. Different
+        // pointer, finer picture, still no read, which is the thing that was
+        // being asserted all along.
         plot->setVisibleRange(0.0, 4000.0);
         h5test::settleFor(300);
         settleAll();
         const gui::PlotLine closer = plot->lineOf(0);
         REQUIRE(closer.values != whole.values);
 
+        const long long before = gui::CustomPlot::hyperslabs();
         plot->setVisibleRange(1000.0, 3000.0); // half the span, same centre
         h5test::settleFor(300);
         settleAll();
 
         const gui::PlotLine stepped = plot->lineOf(0);
-        CHECK(stepped.values == closer.values);
-        CHECK(stepped.positionStep == Approx(closer.positionStep));
+        CHECK(gui::CustomPlot::hyperslabs() == before);
+        CHECK(stepped.positionStep <= closer.positionStep);
         CHECK(stepped.positionStart == Approx(closer.positionStart));
+
+        // And it is the same data underneath, whichever buffer it is folded
+        // into: the fold is exact, so a point of the coarser picture is the
+        // extreme of the finer points it was folded from.
+        REQUIRE(stepped.count > 0);
+        double lowest = stepped.values[0];
+        double highest = stepped.values[0];
+        for (qsizetype i = 0; i < stepped.count; ++i) {
+            lowest = std::min(lowest, stepped.values[i]);
+            highest = std::max(highest, stepped.values[i]);
+        }
+        double wasLowest = closer.values[0];
+        double wasHighest = closer.values[0];
+        for (qsizetype i = 0; i < closer.count; ++i) {
+            wasLowest = std::min(wasLowest, closer.values[i]);
+            wasHighest = std::max(wasHighest, closer.values[i]);
+        }
+        CHECK(lowest >= wasLowest);
+        CHECK(highest <= wasHighest);
     }
 
     SECTION("the octaves out are already in hand")

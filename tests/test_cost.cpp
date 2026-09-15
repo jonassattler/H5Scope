@@ -515,6 +515,65 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(cost.reads == 0);
     }
 
+    SECTION("a gesture that says where it is going reads, and reads towards it")
+    {
+        // The other half of the section above, and the reason it is still true
+        // rather than merely still passing: a drag has nowhere it is heading,
+        // so it waits. A *zoom* does, and waiting was costing the reader a
+        // tenth of a second at the end of every gesture for a picture that
+        // could have been arriving while they span the wheel.
+        //
+        // What bounds the cost is not the wait. It is that one read is out at a
+        // time and its reply arms the next, so a wheel spun through six octaves
+        // cannot queue six reads of runs the reader has already left behind on
+        // a thread that runs them one after another.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        const auto cost = wide.measure([&] {
+            // Sixty notches in, about a point a fifth of the way across the
+            // pane -- the corner case, not the middle, because the middle is
+            // what the arithmetic used to assume.
+            double low = 100000.0;
+            double high = 900000.0;
+            const double focus = low + 0.2 * (high - low);
+            for (int step = 0; step < 60; ++step) {
+                wide.plot.setZoomFocus(focus, 1.25);
+                low = focus - (focus - low) / 1.25;
+                high = focus + (high - focus) / 1.25;
+                wide.plot.setVisibleRange(low, high);
+            }
+        });
+
+        // It read while the gesture was in flight, which is the change.
+        CHECK(cost.crossings >= 1);
+        // And not once per notch: one at a time is what holds it down, so sixty
+        // pushes are nothing like sixty reads.
+        CHECK(cost.crossings <= 4);
+
+        // Then it settles, having followed the reader in rather than waited for
+        // them to stop. What matters is that it stops: a ladder that went on
+        // asking for ever finer runs of a line with no more to give would be a
+        // thread that never goes quiet.
+        h5test::settleFor(1500);
+        Counted::settleAll();
+        const auto quiet = wide.measure([&] { h5test::settleFor(500); });
+        CHECK(quiet.crossings == 0);
+        CHECK(quiet.reads == 0);
+
+        // ...and a pan afterwards is a pan: no focus, so the settle is back.
+        wide.plot.clearZoomFocus();
+        const auto dragging = wide.measure([&] {
+            for (int step = 0; step < 20; ++step) {
+                const double at = 200000.0 + 1000.0 * static_cast<double>(step);
+                wide.plot.setVisibleRange(at, at + 50000.0);
+            }
+        });
+        CHECK(dragging.crossings == 0);
+        CHECK(dragging.reads == 0);
+    }
+
     SECTION("panning inside the run in hand reads nothing")
     {
         Counted wide({1, 1000000});

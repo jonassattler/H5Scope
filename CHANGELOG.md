@@ -25,6 +25,33 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.5.2
+
+**The plot holds what it reads.** How much it may hold is now a setting —
+**Settings > RAM Budget**, low, medium or greedy — taken as a fraction of the
+memory the machine actually has instead of a fixed sixteen megabytes shared by
+everything. On a large dataset that is the difference between zooming back out
+being instant and being a fresh read of twenty million elements. The Plot tab
+and every custom tab draw on one budget between them rather than each holding
+its own, and the choice is remembered between runs.
+
+**A zoom is read towards the pointer, while you are still zooming.** The plot
+now knows where a wheel gesture is aimed, so the resolutions it reads ahead
+follow the reader in rather than being centred on the middle of the frame — and
+they go out immediately instead of waiting for the gesture to finish. Four
+octaves inward are read ahead where two outward were before, which they can
+afford because each step in costs half of the one above it. Panning is
+unchanged and still reads nothing until it stops.
+
+**Custom tabs stop asking for one bucket at a time.** A custom plot read one
+hyperslab per drawn point — two thousand round trips per entry on a normal
+window, where the Plot tab read one per sixty-four thousand elements. Same
+picture, a thousand times the work; a twenty-thousand-element line now reads
+once. Datasets named by several entries are also opened once per tab rather
+than once per edit.
+
+Under all three: the two plots shared no code above the values they drew and now
+share the fold and the cache policy, so what is fixed in one is fixed in both.
 ## 0.5.1
 
 **Fixes reported from use.** A custom tab drawn against a time series drew

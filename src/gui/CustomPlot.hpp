@@ -245,6 +245,12 @@ public:
     /// of indices and there is nothing to narrow a read to.
     Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
 
+    /// Where the reader is zooming, and which way. The plot tab's, for the plot
+    /// tab's reasons -- see DatasetPlot::setZoomFocus, which argues it at
+    /// length. PlotSurface.qml drives either one without knowing which it has.
+    Q_INVOKABLE void setZoomFocus(double x, double factor);
+    Q_INVOKABLE void clearZoomFocus();
+
     /// How wide the pane the lines are drawn in is, in device-independent
     /// pixels. The same rule the plot tab follows -- a bucket is a column --
     /// and for the same reason; see DatasetPlot::setPaneColumns -- including
@@ -317,6 +323,7 @@ private:
         /// Half a bucket, as `Entry::step` is.
         double step = 1.0;
         std::vector<double> values;
+
     };
 
     struct Entry
@@ -398,6 +405,8 @@ private:
     /// Into a scratch vector this object keeps, so asking costs no allocation.
     /// The span is good until the next call, for any entry.
     [[nodiscard]] std::span<const HeldLevel> ladder(const Entry& entry) const;
+    /// The focus as the policy wants it, in `entry`'s own element positions.
+    [[nodiscard]] PlotFocus focusFor(const Entry& entry) const;
     /// The finest run of `entry` that covers what is on screen, or -1. See
     /// gui::drawnLevel.
     [[nodiscard]] int drawnLevel(const Entry& entry) const;
@@ -470,7 +479,7 @@ private:
     /// See DatasetPlot::retire, which is the same thing over a map. A
     /// std::vector move takes the buffer with it, so the pointer the item holds
     /// goes on naming the same doubles.
-    void retire(std::vector<double>& values);
+    void retire(std::vector<double>& values) const;
     /// Say that the lines changed. It does not touch the renderer: whatever it
     /// is drawing stays on the pane until the surface fills it again, which is
     /// a frame later and is a frame of the old picture rather than of none.
@@ -495,8 +504,15 @@ private:
     std::vector<Entry> entries_;
     /// An entry's runs as the policy sees them. See ladder().
     mutable std::vector<HeldLevel> ladder_;
-    /// Where the reader is zooming, when they are. See setZoomFocus.
-    PlotFocus focus_;
+    /// Where the reader is zooming, when they are. In the x the axis prints,
+    /// for the reason DatasetPlot keeps it that way -- and mapped onto each
+    /// entry's own elements by focusFor(), because a tab's entries need not be
+    /// the same length as one another or as the axis.
+    double focusX_ = 0.0;
+    bool focusInward_ = true;
+    bool focusActive_ = false;
+    /// Whether a closer look is out. One at a time; see DatasetPlot::inFlight_.
+    bool closerInFlight_ = false;
 
     XMode xMode_ = Index;
     QString xExpression_;
@@ -519,10 +535,10 @@ private:
 
     /// What fill() last handed the entries to, so it can be emptied before
     /// they are freed.
-    QPointer<PlotItem> drawing_;
+    mutable QPointer<PlotItem> drawing_;
     /// Values the renderer may still be reading, kept alive until it is handed
     /// their replacement. See retire(); fill() is what empties this.
-    std::vector<std::vector<double>> retired_;
+    mutable std::vector<std::vector<double>> retired_;
 
     // The bare buffers rather than whatever they came out of, for the reason
     // DatasetPlot::retired_ now gives: growing this must move them, and a

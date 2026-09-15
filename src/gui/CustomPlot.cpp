@@ -767,9 +767,16 @@ int CustomPlot::closerBuckets() const
     // a budget with the others, so the guard is the number of entries drawn
     // rather than a division: past a few dozen runs held at twice the
     // resolution the tab is spending memory on detail nobody asked for.
+    // One octave finer than the pane needs, which is the cheapest prefetch
+    // there is and is what the plot tab does -- see DatasetPlot::detailBuckets
+    // for the argument. Here every entry keeps its own run rather than sharing
+    // a budget with the others, so the guard is the number of entries drawn
+    // rather than a division: past a few dozen runs held at twice the
+    // resolution the tab is spending memory on detail nobody asked for.
     const int pane = bucketBudget();
     return seriesCount() <= kCrowdedLines ? std::min(2 * pane, kMaxPoints) : pane;
 }
+
 
 void CustomPlot::setPaneColumns(int columns)
 {
@@ -877,6 +884,48 @@ bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) cons
     return true;
 }
 
+void CustomPlot::setZoomFocus(double x, double factor)
+{
+    if (!std::isfinite(x) || !std::isfinite(factor) || !(factor > 0.0)) {
+        clearZoomFocus();
+        return;
+    }
+    focusX_ = x;
+    focusInward_ = factor > 1.0;
+    focusActive_ = true;
+}
+
+void CustomPlot::clearZoomFocus()
+{
+    focusActive_ = false;
+}
+
+PlotFocus CustomPlot::focusFor(const Entry& entry) const
+{
+    PlotFocus focus;
+    if (!focusActive_ || xMode_ == Dataset) {
+        // A time base is a lookup table rather than an affine map, so there is
+        // no position to turn an x into -- the same reason lineRange() gives up
+        // on that path.
+        return focus;
+    }
+    if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return focus;
+    }
+    const double scale = stretchScale(entry);
+    if (!(std::abs(scale) > 0.0)) {
+        return focus;
+    }
+    const double position = (focusX_ - xStart_) / xStep_ / scale;
+    if (!std::isfinite(position)) {
+        return focus;
+    }
+    focus.position = position;
+    focus.inward = focusInward_;
+    focus.active = true;
+    return focus;
+}
+
 LevelView CustomPlot::levelView(const Entry& entry) const
 {
     LevelView view;
@@ -945,7 +994,7 @@ void CustomPlot::trimLevels(Entry& entry)
     while (static_cast<int>(entry.levels.size()) > allowed) {
         // Rebuilt each time round, because erasing one changes which of the
         // rest is coldest.
-        const std::size_t worst = gui::coldestLevel(ladder(entry), levelView(entry), focus_);
+        const std::size_t worst = gui::coldestLevel(ladder(entry), levelView(entry), focusFor(entry));
         retire(entry.levels[worst].values);
         entry.levels.erase(entry.levels.begin() + static_cast<long>(worst));
     }
@@ -969,7 +1018,7 @@ std::vector<std::optional<PlotWindow>> CustomPlot::closerDrawing() const
 
 std::optional<PlotWindow> CustomPlot::closerWanted(const Entry& entry) const
 {
-    return gui::wantedLevel(ladder(entry), levelView(entry), focus_);
+    return gui::wantedLevel(ladder(entry), levelView(entry), focusFor(entry));
 }
 
 void CustomPlot::refreshCloser()
@@ -995,7 +1044,14 @@ void CustomPlot::refreshCloser()
             wanted = true;
         }
     }
-    if (wanted) {
+    if (wanted && focusActive_) {
+        // A zoom reads at once rather than waiting the gesture out. See
+        // DatasetPlot::refreshDetail, which argues it: what bounds the cost is
+        // one read at a time, not a wait. A pan has no focus and still settles.
+        settle_.stop();
+        askForCloser();
+    }
+    else if (wanted) {
         settle_.start();
     }
     else {
@@ -1011,6 +1067,11 @@ void CustomPlot::refreshCloser()
 void CustomPlot::askForCloser()
 {
     if (lookup_ == nullptr) {
+        return;
+    }
+    if (closerInFlight_) {
+        // One read out at a time; the reply arms the next. See
+        // DatasetPlot::askForDetail.
         return;
     }
     std::vector<int> rows;
@@ -1036,7 +1097,7 @@ void CustomPlot::askForCloser()
     // already a correct picture on screen; blocking the window to replace it
     // with a sharper one would spend the reader's attention to save them
     // nothing.
-    closerRequests_.reset();
+    closerInFlight_ = true;
     H5Thread::instance().submit(
         closerRequests_,
         [asks](H5Session& session) {
@@ -1049,6 +1110,7 @@ void CustomPlot::askForCloser()
             return reply;
         },
         [this, rows, asks](Reply reply) {
+            closerInFlight_ = false;
             const std::size_t count = std::min(rows.size(), reply.lines.size());
             for (std::size_t i = 0; i < count; ++i) {
                 const auto row = static_cast<std::size_t>(rows[i]);
@@ -1096,7 +1158,11 @@ void CustomPlot::askForCloser()
 void CustomPlot::clearCloser()
 {
     settle_.stop();
+    // A ticket reset means the reply in flight will never call its
+    // continuation, so the flag it would have cleared is cleared here instead.
+    // See DatasetPlot::clearDetail.
     closerRequests_.reset();
+    closerInFlight_ = false;
     for (Entry& entry : entries_) {
         for (Level& level : entry.levels) {
             retire(level.values);
@@ -1139,7 +1205,7 @@ void CustomPlot::releaseDrawing()
     }
 }
 
-void CustomPlot::retire(std::vector<double>& values)
+void CustomPlot::retire(std::vector<double>& values) const
 {
     if (values.empty()) {
         return;
@@ -1189,14 +1255,15 @@ PlotLine CustomPlot::lineOf(int series) const
     // same frame, because it covers everything by construction.
     if (closerCovers(entry)) {
         const Level& level = entry.levels[static_cast<std::size_t>(drawnLevel(entry))];
-        line.values = level.values.data();
-        line.count = static_cast<qsizetype>(level.values.size());
         // The run's own start and step, put back on the axis by the same map
         // the whole line is drawn with. Under Align an element is a position;
         // under Stretch the line is spread over the axis, so both the offset
         // and the step are scaled by the same factor.
         const double scale = stretchScale(entry);
         line.positionStart = static_cast<double>(level.window.first) * scale;
+
+        line.values = level.values.data();
+        line.count = static_cast<qsizetype>(level.values.size());
         line.positionStep = level.step * scale;
         return line;
     }
@@ -1397,6 +1464,7 @@ void CustomPlot::refresh()
     // does not coarsen while the reader types.
     requests_.reset();
     closerRequests_.reset();
+    closerInFlight_ = false;
     H5Thread::instance().submit(
         requests_,
         [asks](H5Session& session) {

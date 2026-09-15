@@ -10,15 +10,7 @@
 // same argument test_plotprojection.cpp makes about the projection, and the
 // reason both of them were split out of the classes that used to hold them.
 //
-// Two of these matter more than the rest.
-//
-// The exactness of coarsenEnvelope() is what the whole cache above rests on: if
-// folding a fine envelope again is not the same answer as reading at that
-// bucket, then every level derived rather than read is a second picture of the
-// same data, which is the defect a custom tab had against the Plot tab for a
-// release and which nobody saw because both pictures looked plausible.
-//
-// And the ladder is where a zoom stops being jumpy. The inward octaves are read
+// The ladder is where a zoom stops being jumpy. The inward octaves are read
 // towards where the pointer is, which is the one thing the surface always knew
 // and never said.
 
@@ -34,19 +26,6 @@
 namespace {
 
 const double kNaN = std::numeric_limits<double>::quiet_NaN();
-
-/// A line with something in it worth finding: a slow ramp with one spike.
-std::vector<double> lineOf(long long length, long long spikeAt)
-{
-    std::vector<double> values(static_cast<std::size_t>(length));
-    for (long long i = 0; i < length; ++i) {
-        values[static_cast<std::size_t>(i)] = std::sin(static_cast<double>(i) / 97.0);
-    }
-    if (spikeAt >= 0 && spikeAt < length) {
-        values[static_cast<std::size_t>(spikeAt)] = 9.0;
-    }
-    return values;
-}
 
 gui::HeldLevel held(long long first, long long span, long long bucket, int columns,
                     bool complete = true)
@@ -110,59 +89,6 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
         REQUIRE(out.size() == 6);
         CHECK(out[4] == 5.0);
         CHECK(out[5] == 5.0);
-    }
-}
-
-TEST_CASE("coarsening an envelope is the same answer as reading at that bucket", "[levels]")
-{
-    // The claim the cache rests on. A level held at a fine bucket answers for
-    // every coarser one without a read, so "without a read" has to mean the
-    // same values and not merely similar ones -- including the spike, which is
-    // what a fold is for, and including the order, which is what says which way
-    // the line was going.
-    const std::vector<double> line = lineOf(4096, 2731);
-
-    for (const long long fine : {1LL, 2LL, 4LL, 8LL, 16LL}) {
-        for (const long long factor : {2LL, 4LL, 8LL, 16LL}) {
-            INFO("fine " << fine << " coarsened by " << factor);
-
-            std::vector<double> read;
-            gui::reduceBuckets(line.data(), 4096, fine, read);
-
-            std::vector<double> direct;
-            gui::reduceBuckets(line.data(), 4096, fine * factor, direct);
-
-            std::vector<double> derived;
-            gui::coarsenEnvelope(read.data(), static_cast<long long>(read.size()) / 2, factor,
-                                 derived);
-
-            REQUIRE(derived.size() == direct.size());
-            for (std::size_t i = 0; i < direct.size(); ++i) {
-                INFO("value " << i);
-                REQUIRE(derived[i] == direct[i]);
-            }
-        }
-    }
-
-    SECTION("including the gaps")
-    {
-        std::vector<double> holed = lineOf(1024, 500);
-        for (std::size_t i = 200; i < 300; ++i) {
-            holed[i] = kNaN;
-        }
-        std::vector<double> read;
-        gui::reduceBuckets(holed.data(), 1024, 2, read);
-        std::vector<double> direct;
-        gui::reduceBuckets(holed.data(), 1024, 8, direct);
-        std::vector<double> derived;
-        gui::coarsenEnvelope(read.data(), static_cast<long long>(read.size()) / 2, 4, derived);
-
-        REQUIRE(derived.size() == direct.size());
-        for (std::size_t i = 0; i < direct.size(); ++i) {
-            INFO("value " << i);
-            const bool both = std::isnan(derived[i]) && std::isnan(direct[i]);
-            REQUIRE((both || derived[i] == direct[i]));
-        }
     }
 }
 

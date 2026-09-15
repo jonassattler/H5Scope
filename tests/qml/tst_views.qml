@@ -3830,10 +3830,26 @@ TestCase {
         const bar = createTemporaryObject(menuBarComponent, testCase)
         verify(bar, "AppMenuBar must instantiate")
 
-        compare(bar.menuCount, 3)
+        compare(bar.menuCount, 4)
         compare(bar.menus.menuAt(0).title, "File")
         compare(bar.menus.menuAt(1).title, "View")
-        compare(bar.menus.menuAt(2).title, "Help")
+        compare(bar.menus.menuAt(2).title, "Settings")
+        compare(bar.menus.menuAt(3).title, "Help")
+
+        // Settings is its own drawer rather than more of View, because it is
+        // the one that is not about the file or about what is drawn from it.
+        // Its single submenu says how much of the machine the plots may spend
+        // holding what they have read, and the bullet follows the controller's
+        // property rather than the row's own `checked`.
+        const settings = bar.menus.menuAt(2)
+        compare(settings.count, 1)
+        const budget = settings.menuAt(0)
+        verify(budget, "RAM Budget must be a real submenu")
+        compare(budget.title, "RAM Budget")
+        compare(budget.count, 3)
+        compare(budget.itemAt(0).text, "Low")
+        compare(budget.itemAt(1).text, "Medium")
+        compare(budget.itemAt(2).text, "Greedy")
 
         // Open, Open Recent, Reload, Close, a rule, Quit.
         const file = bar.menus.menuAt(0)

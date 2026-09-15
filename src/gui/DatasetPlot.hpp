@@ -181,6 +181,29 @@ public:
     /// asynchronously. A drag never reads; a drag that ends does, once.
     Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
 
+    /// Where the reader is zooming, and which way.
+    ///
+    /// `x` is the value under the pointer, in the x the axis prints, and
+    /// `factor` is the wheel notch: above one is in. The surface has always
+    /// known both -- a wheel event carries where it happened, and zoomedAxis()
+    /// uses it to decide what stays still under the pointer -- and until now
+    /// only the *resulting* range crossed into this object. So the runs read
+    /// ahead of a zoom were centred on the view, and a reader zooming into one
+    /// corner of the pane walked off them after a step or two and waited for
+    /// the file each time.
+    ///
+    /// Two things follow from knowing it. The octaves read ahead go towards the
+    /// pointer rather than towards the middle of the frame, and they go *now*
+    /// rather than after the gesture stops: an inward run costs half the span
+    /// of the one above it, so the whole inward ladder is cheaper than the
+    /// single octave outward that was already being read speculatively. See
+    /// gui::kFocusOctavesIn.
+    Q_INVOKABLE void setZoomFocus(double x, double factor);
+
+    /// Forget it: the reader is panning, or has reset the view. What is read
+    /// ahead goes back to being centred on what is on screen.
+    Q_INVOKABLE void clearZoomFocus();
+
     /// How wide the pane the lines are drawn in is, in device-independent
     /// pixels.
     ///
@@ -356,6 +379,7 @@ private:
         /// One entry per drawn line, keyed as `lines_` is. Borrowed by the
         /// renderer on exactly the same terms.
         std::map<int, std::vector<double>> lines;
+
     };
 
     // Asserted rather than left to the one platform that noticed. A member
@@ -405,6 +429,8 @@ private:
     /// lineOf() asks once per line per fill. The span is good until the next
     /// call.
     [[nodiscard]] std::span<const HeldLevel> ladder() const;
+    /// The focus as the policy wants it: in the line's own positions.
+    [[nodiscard]] PlotFocus focusFor() const;
     /// The run to read next. See gui::wantedLevel.
     [[nodiscard]] std::optional<PlotWindow> detailWanted() const;
     /// Work out what to read next and arm it, or drop what is held when the
@@ -505,7 +531,19 @@ private:
     /// costs no allocation.
     mutable std::vector<HeldLevel> ladder_;
     /// Where the reader is zooming, when they are. See setZoomFocus.
-    PlotFocus focus_;
+    ///
+    /// Kept in the x the axis prints rather than as a position, because
+    /// everything that changes how a position becomes an x -- the axis moving,
+    /// a different start or step -- would otherwise leave this pointing
+    /// somewhere the reader never was.
+    double focusX_ = 0.0;
+    bool focusInward_ = true;
+    bool focusActive_ = false;
+    /// Whether a read is out. One at a time, and the reply arms the next: a
+    /// zoom no longer waits out the settle, so without this a wheel spun
+    /// through six octaves would queue six reads of runs the reader has already
+    /// left behind on a thread that can only run them one after another.
+    bool inFlight_ = false;
     /// What is to be read next, and what is in flight. Two rather than one: a
     /// reply that is no longer wanted is dropped by its ticket, and a run
     /// already being read is not asked for twice.
