@@ -3,6 +3,8 @@
 
 #include "DatasetPlot.hpp"
 
+#include "gui/PlotLevels.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -731,34 +733,49 @@ bool DatasetPlot::drawnPositions(double& first, double& last) const
     return true;
 }
 
+LevelView DatasetPlot::levelView() const
+{
+    LevelView view;
+    if (drawn_.empty() || static_cast<int>(drawn_.size()) > kWindowedSeries) {
+        // Past a few hundred strokes over one another the picture is a
+        // distribution rather than a line, and re-reading every one of them
+        // each time the reader zooms would spend the whole cost of the
+        // selection again to sharpen something nobody can follow. An unusable
+        // view is how that is said to the policy.
+        return view;
+    }
+    if (!visiblePositions(view.low, view.high)) {
+        return view;
+    }
+    view.length = static_cast<long long>(sourcePointCount());
+    view.paneBuckets = paneBuckets();
+    view.detailBuckets = detailBuckets();
+    view.prefetchOctaves = kPrefetchOctaves;
+    return view;
+}
+
+std::span<const HeldLevel> DatasetPlot::ladder() const
+{
+    // Refilled rather than rebuilt: clear() keeps the capacity, so this
+    // allocates once for the life of the object. The completeness test is the
+    // one the policy cannot make for itself -- a run read before a line was
+    // ticked back on is a run this object cannot draw from, however well its
+    // window covers the pane.
+    ladder_.clear();
+    ladder_.reserve(levels_.size());
+    for (const Detail& level : levels_) {
+        const bool whole =
+            !level.lines.empty() && std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
+                return level.lines.find(series) != level.lines.end();
+            });
+        ladder_.push_back(HeldLevel{level.window, whole});
+    }
+    return ladder_;
+}
+
 int DatasetPlot::drawnLevel() const
 {
-    double low = 0.0;
-    double high = 0.0;
-    if (levels_.empty() || !drawnPositions(low, high)) {
-        return -1;
-    }
-    // The finest run that covers the pane. They all hold about the same number
-    // of points, so a finer one is more detail on screen for the same cost --
-    // and the coarser ones are still here for the moment the reader zooms out
-    // past this one, which is the whole reason there is more than one.
-    int best = -1;
-    for (std::size_t i = 0; i < levels_.size(); ++i) {
-        const Detail& level = levels_[i];
-        if (level.lines.empty() || !level.window.covers(low, high)) {
-            continue;
-        }
-        const bool whole = std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
-            return level.lines.find(series) != level.lines.end();
-        });
-        if (!whole) {
-            continue;
-        }
-        if (best < 0 || level.window.bucket < levels_[static_cast<std::size_t>(best)].window.bucket) {
-            best = static_cast<int>(i);
-        }
-    }
-    return best;
+    return gui::drawnLevel(ladder(), levelView());
 }
 
 std::optional<PlotWindow> DatasetPlot::drawnWindow() const
@@ -778,84 +795,9 @@ int DatasetPlot::levelAt(const PlotWindow& window) const
     return -1;
 }
 
-bool DatasetPlot::levelServes(const PlotWindow& needed) const
-{
-    // drawnLevel() is the *finest* run that covers the pane, so if its bucket
-    // is too coarse no other one's is fine enough either.
-    const int at = drawnLevel();
-    return at >= 0 && levels_[static_cast<std::size_t>(at)].window.bucket <= needed.bucket;
-}
-
-bool DatasetPlot::served(double low, double high, long long bucket) const
-{
-    low = std::max(low, 0.0);
-    high = std::min(high, static_cast<double>(sourcePointCount()));
-    return std::any_of(levels_.begin(), levels_.end(), [&](const Detail& level) {
-        if (level.window.bucket > bucket || !level.window.covers(low, high)) {
-            return false;
-        }
-        return std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
-            return level.lines.find(series) != level.lines.end();
-        });
-    });
-}
-
 std::optional<PlotWindow> DatasetPlot::detailWanted() const
 {
-    const std::optional<PlotWindow> needed = detailFor(paneBuckets());
-    if (!needed.has_value()) {
-        return {};
-    }
-    if (!levelServes(*needed)) {
-        // What the pane is waiting for, an octave finer than it asked. First,
-        // because it is the only one the reader can see.
-        std::optional<PlotWindow> want = detailFor(detailBuckets());
-        if (!want.has_value()) {
-            // The finer run would reach past the end of the line, so there is
-            // no octave to take -- but the pane still wants a finer bucket than
-            // the whole-line summary has. Only lines between one and two panes'
-            // worth of buckets long land here.
-            want = needed;
-        }
-        return want;
-    }
-    // The pane is answered, so what is left is idle work: the octaves out that
-    // the reader has not asked for yet, nearest first.
-    //
-    // Measured from the *run* the pane is being drawn from rather than from the
-    // view, and that is not a detail. A run is twice the pane wide and steps by
-    // a quarter of itself, so panning about inside one leaves this arithmetic
-    // untouched -- which is what keeps "panning reads nothing" true of the
-    // prefetch as well as of the picture. Taken from the view, every pan would
-    // shift the octaves a little and eventually ask for one.
-    const int at = drawnLevel();
-    if (at < 0) {
-        return {};
-    }
-    const PlotWindow base = levels_[static_cast<std::size_t>(at)].window;
-    const double centre = static_cast<double>(base.first) + static_cast<double>(base.span) / 2.0;
-    const double half = static_cast<double>(base.span) / 2.0;
-    const auto length = static_cast<long long>(sourcePointCount());
-    for (int octave = 1; octave <= kPrefetchOctaves; ++octave) {
-        const auto reach = static_cast<double>(1 << octave);
-        const double low = centre - half * reach;
-        const double high = centre + half * reach;
-        const std::optional<PlotWindow> out = windowFor(low, high, length, paneBuckets());
-        if (!out.has_value()) {
-            // That far out the whole-line summary already covers it, and so
-            // does everything past it.
-            break;
-        }
-        // Asked about the range rather than about the window, because a run
-        // already in hand may answer for this octave without being the run this
-        // would have read: one the reader zoomed in from is finer and wider
-        // than what is being asked for here, and re-reading it would be a round
-        // trip spent on nothing.
-        if (!served(low, high, out->bucket)) {
-            return out;
-        }
-    }
-    return {};
+    return gui::wantedLevel(ladder(), levelView(), focus_);
 }
 
 void DatasetPlot::refreshDetail()
@@ -877,27 +819,10 @@ void DatasetPlot::refreshDetail()
 void DatasetPlot::trimLevels()
 {
     const int allowed = heldLevels();
-    if (static_cast<int>(levels_.size()) <= allowed) {
-        return;
-    }
-    const std::optional<PlotWindow> needed = detailFor(paneBuckets());
-    // Octaves away from the bucket the pane is asking for. The runs nearest the
-    // reader are the ones they are about to want; the ones furthest away are
-    // the ones the whole-line summary is closest to standing in for.
-    const auto distance = [&needed](const Detail& level) {
-        if (!needed.has_value()) {
-            return 0.0;
-        }
-        return std::abs(std::log2(static_cast<double>(level.window.bucket)) -
-                        std::log2(static_cast<double>(std::max<long long>(needed->bucket, 1))));
-    };
     while (static_cast<int>(levels_.size()) > allowed) {
-        std::size_t worst = 0;
-        for (std::size_t i = 1; i < levels_.size(); ++i) {
-            if (distance(levels_[i]) > distance(levels_[worst])) {
-                worst = i;
-            }
-        }
+        // Rebuilt each time round, because erasing one changes which of the
+        // rest is coldest.
+        const std::size_t worst = gui::coldestLevel(ladder(), levelView(), focus_);
         retire(levels_[worst].lines);
         levels_.erase(levels_.begin() + static_cast<long>(worst));
     }

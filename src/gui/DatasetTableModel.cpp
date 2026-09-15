@@ -3,6 +3,8 @@
 
 #include "DatasetTableModel.hpp"
 
+#include "gui/PlotLevels.hpp"
+
 #include "h5core/Error.hpp"
 
 #include <QStringList>
@@ -351,55 +353,11 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
         }
     };
 
-    // The extremes of `values[from, to)`, and where each of them occurred, or
-    // no answer at all when there is nothing finite in that run.
-    struct Extremes
-    {
-        double lowest = 0.0;
-        double highest = 0.0;
-        qsizetype lowAt = -1;
-        qsizetype highAt = -1;
-
-        [[nodiscard]] bool found() const { return lowAt >= 0; }
-        /// The two, in the order they occurred. A bucket of two elements *is*
-        /// its two elements, and emitting them smallest-first would turn every
-        /// descending pair in the line the other way up.
-        [[nodiscard]] double first() const { return lowAt <= highAt ? lowest : highest; }
-        [[nodiscard]] double second() const { return lowAt <= highAt ? highest : lowest; }
-    };
-
-    // A read length cut back to a whole number of buckets, so that no read ever
-    // stops inside one.
-    //
-    // Without it the walk is still correct -- a bucket a read stopped inside is
-    // left for the next one -- but the elements between the bucket's start and
-    // that stopping point are then read twice, and "an envelope reads every
-    // element exactly once" is a count tests/test_cost.cpp holds this to.
-    // A bucket wider than a whole read is the one case that cannot be cut back
-    // and is summarised from as much of itself as came back, which is what the
-    // one-read-per-bucket arrangement did to every bucket at this size.
-    const auto wholeBuckets = [](qint64 length, int stride) {
-        return length > stride ? (length / stride) * stride : length;
-    };
-
-    const auto extremesOf = [](const std::vector<double>& values, qsizetype from, qsizetype to) {
-        Extremes found;
-        for (qsizetype i = from; i < to; ++i) {
-            const double value = values[i];
-            if (!std::isfinite(value)) {
-                continue;
-            }
-            if (found.lowAt < 0 || value < found.lowest) {
-                found.lowest = value;
-                found.lowAt = i;
-            }
-            if (found.highAt < 0 || value > found.highest) {
-                found.highest = value;
-                found.highAt = i;
-            }
-        }
-        return found;
-    };
+    // The extremes of a bucket, and a read cut back to a whole number of them,
+    // are gui::extremesOf() and gui::wholeBuckets() -- see PlotLevels.hpp. They
+    // used to be a struct and two lambdas here, and CustomPlot::readLine had a
+    // second copy of the same arithmetic that agreed with this one only because
+    // a test compared the two element for element.
 
     if (envelopeColumns) {
         // Every element of the row, in reads of up to kReadRun -- and then as
@@ -459,7 +417,7 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         if (to - from < span && b > started) {
                             break; // the read stopped inside it; the next one covers it whole
                         }
-                        const Extremes found = extremesOf(window.values, from, to);
+                        const Extremes found = extremesOf(window.values.data(), from, to);
                         if (!found.found()) {
                             continue; // the whole bucket stays NaN, which is what it is
                         }
@@ -521,7 +479,7 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         if (to - from < span && b > started) {
                             break; // the read stopped inside it; the next one covers it whole
                         }
-                        const Extremes found = extremesOf(window.values, from, to);
+                        const Extremes found = extremesOf(window.values.data(), from, to);
                         if (!found.found()) {
                             continue; // the whole bucket stays NaN, which is what it is
                         }

@@ -9,6 +9,8 @@
 
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace gui {
 
@@ -59,6 +61,20 @@ public:
     /// Drop the open dataset and any computed result over it.
     void clearSelection();
 
+    /// A dataset held open for a reader that names several of them at once.
+    ///
+    /// `dataset()` above keeps exactly one, because the table, the image and
+    /// the plot all draw the *selected* dataset and keeping a second would only
+    /// be a handle nobody asked about. A custom plot tab is the case that broke
+    /// that: it draws slices of any number of paths at once, so it opened every
+    /// one of them per job and closed them again at the end of it, and a tab of
+    /// eight entries refreshed on every edit paid eight H5Dopen for it.
+    ///
+    /// Kept apart from `dataset_` rather than folded into it so that a custom
+    /// tab cannot evict what the selection is drawing, or be evicted by it.
+    /// Bounded at kHeldDatasets and emptied with the file.
+    [[nodiscard]] h5core::Dataset* held(const std::string& path);
+
     /// Install the pipeline's output as what the views read. Passing nullptr
     /// puts them back on the file.
     void setComputed(std::shared_ptr<const h5core::DataSource> computed);
@@ -73,6 +89,18 @@ private:
     std::string datasetPath_;
     std::unique_ptr<h5core::Dataset> dataset_;
     std::shared_ptr<const h5core::DataSource> computed_;
+
+    /// Datasets held open for `held()`, newest last.
+    ///
+    /// A vector rather than a map because it is searched by path a handful of
+    /// times per job over a handful of entries, and because "drop the oldest"
+    /// is what a map has no order to answer.
+    std::vector<std::pair<std::string, std::unique_ptr<h5core::Dataset>>> heldDatasets_;
+
+    /// How many of them. More than a crowded tab names and few enough that an
+    /// abandoned one is closed rather than kept for the life of the file; every
+    /// open handle is a chunk cache HDF5 is holding on its own account.
+    static constexpr std::size_t kHeldDatasets = 32;
 };
 
 } // namespace gui

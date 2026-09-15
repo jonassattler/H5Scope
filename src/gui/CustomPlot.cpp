@@ -4,6 +4,7 @@
 #include "CustomPlot.hpp"
 
 #include "H5Session.hpp"
+#include "PlotLevels.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
@@ -14,6 +15,7 @@
 #include <QPointF>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -23,6 +25,10 @@
 namespace gui {
 
 namespace {
+
+/// See CustomPlot::hyperslabs(). Relaxed because it is a count for a test to
+/// difference, never a thing another thread waits on.
+std::atomic<long long> gHyperslabs{0};
 
 /// What the job is asked for: one line per expression, the time base first
 /// when there is one.
@@ -57,13 +63,16 @@ struct Reply
     std::vector<std::pair<QString, PathFacts>> learned;
 };
 
-/// Read one line. On the HDF5 thread; `opened` is this job's own cache of open
-/// datasets, so several entries over one dataset open it once.
-[[nodiscard]] Answer readLine(h5core::File* file, const Ask& ask,
-                              std::map<QString, std::shared_ptr<h5core::Dataset>>& opened,
+/// Read one line. On the HDF5 thread.
+///
+/// The open datasets come from the session rather than from a map of this job's
+/// own, so a tab of eight entries edited eight times opens eight datasets and
+/// not sixty-four. See H5Session::held().
+[[nodiscard]] Answer readLine(H5Session& session, const Ask& ask,
                               std::map<QString, PathFacts>& facts)
 {
     Answer answer;
+    h5core::File* file = session.file();
 
     const QString& expression = ask.expression;
     const Expression parts = splitExpression(expression);
@@ -73,9 +82,8 @@ struct Reply
     }
 
     // The facts, once per path per job. lookupFacts opens the dataset to read
-    // them, and this then opens it again to read the values -- which is one
-    // extra H5Dopen per distinct path per refresh and not per line, and is
-    // what buys the session's one open dataset staying the selected one.
+    // them; the values are then read through the session's own handle, which
+    // outlives the job.
     auto known = facts.find(parts.path);
     if (known == facts.end()) {
         known = facts.emplace(parts.path, lookupFacts(file, parts.path)).first;
@@ -106,20 +114,14 @@ struct Reply
         answer.start = static_cast<double>(ask.window->first);
     }
 
-    auto held = opened.find(parts.path);
-    if (held == opened.end()) {
-        try {
-            held = opened
-                       .emplace(parts.path,
-                                std::make_shared<h5core::Dataset>(*file, parts.path.toStdString()))
-                       .first;
-        }
-        catch (const h5core::H5Error& error) {
-            answer.problem = QString::fromStdString(error.summary());
-            return answer;
-        }
+    h5core::Dataset* open = session.held(parts.path.toStdString());
+    if (open == nullptr) {
+        answer.problem = known->second.problem.isEmpty()
+                             ? QStringLiteral("cannot open %1").arg(parts.path)
+                             : known->second.problem;
+        return answer;
     }
-    h5core::Dataset& dataset = *held->second;
+    h5core::Dataset& dataset = *open;
 
     // How what is left is reduced to something a screen can show.
     //
@@ -135,10 +137,7 @@ struct Reply
     // materialised first. That was not a compromise, it was a second picture of
     // the same data: the Plot tab drew adc_10M as a band of +/-32000 with every
     // impulse in it, and a custom tab drew the same slice as an aliased sine of
-    // +/-13000 with none of them. Reading a bucket at a time costs the same
-    // round trips as the strided read it replaces -- one per drawn point either
-    // way -- and never holds more than one bucket, so there is nothing left to
-    // give up for.
+    // +/-13000 with none of them.
     const std::size_t along = lineDimension(indices, drop);
     const auto length = static_cast<long long>(indices[along].size());
     const long long buckets = std::max<long long>(1, ask.buckets);
@@ -148,6 +147,7 @@ struct Reply
 
     if (bucket <= 1) {
         // Short enough to draw sample for sample. One read of the lot.
+        gHyperslabs.fetch_add(1, std::memory_order_relaxed);
         const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
         if (!read.ok()) {
             answer.problem = read.error;
@@ -163,61 +163,64 @@ struct Reply
         return answer;
     }
 
-    // The envelope, a bucket at a time: the smallest and the largest of each,
-    // in the order they occur so the stroke keeps the direction the data has. A
-    // bucket with nothing drawable in it answers with a pair of NaN, which is a
-    // gap, which is what it is.
+    // The envelope, in reads of up to kReadRun elements -- not one read per
+    // bucket, which is what this did and what it cost.
+    //
+    // A bucket at a time was defended above as "the same round trips as the
+    // strided read it replaces, one per drawn point either way", and against a
+    // stride that was true. It is the wrong comparison. It is the arrangement
+    // DatasetTableModel abandoned for exactly this reason: a pane two thousand
+    // columns wide asked HDF5 for a bucket two thousand times per entry per
+    // refresh, and essentially all of it was per-call overhead rather than I/O
+    // -- twenty megabytes moved in 1.28 million reads, two seconds of a frozen
+    // window (DatasetTableModel.cpp, the same note over the same loop).
+    //
+    // So the round trips follow the *length of the line* and not the number of
+    // buckets it is folded into: read as many whole buckets as one hyperslab
+    // can reach, fold them out of the buffer, and go on. The values are
+    // identical -- gui::reduceBuckets is the arithmetic both plots now use --
+    // which is what lets test_customplot go on comparing the two element for
+    // element while the reads underneath change by three orders of magnitude.
+    //
+    // A bucket wider than a whole read is the one case that cannot be cut back;
+    // it is read whole, which is what every bucket used to get.
     const std::vector<hsize_t> line = std::move(indices[along]);
     const long long taken = (length + bucket - 1) / bucket;
     answer.step = static_cast<double>(bucket) / 2.0;
     answer.values.reserve(static_cast<std::size_t>(taken) * 2);
-    const auto nothing = std::numeric_limits<double>::quiet_NaN();
-    for (long long b = 0; b < taken; ++b) {
-        const long long first = b * bucket;
-        const long long last = std::min(first + bucket, length);
-        indices[along].assign(line.begin() + first, line.begin() + last);
 
+    long long done = 0;
+    while (done < length) {
+        const long long remaining = length - done;
+        long long run = wholeBuckets(std::min<long long>(kReadRun, remaining), bucket);
+        if (run < bucket) {
+            run = std::min(bucket, remaining);
+        }
+        indices[along].assign(line.begin() + static_cast<std::ptrdiff_t>(done),
+                              line.begin() + static_cast<std::ptrdiff_t>(done + run));
+
+        gHyperslabs.fetch_add(1, std::memory_order_relaxed);
         const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
         if (!read.ok()) {
             answer.problem = read.error;
             answer.values.clear();
             return answer;
         }
-        const postproc::Array& array = read.array;
-        const hsize_t count = array.size();
-
-        double lowest = 0.0;
-        double highest = 0.0;
-        hsize_t lowAt = 0;
-        hsize_t highAt = 0;
-        bool any = false;
-        for (hsize_t i = 0; i < count; ++i) {
-            const double value = array.at({i});
-            if (!std::isfinite(value)) {
-                continue;
-            }
-            if (!any || value < lowest) {
-                lowest = value;
-                lowAt = i;
-            }
-            if (!any || value > highest) {
-                highest = value;
-                highAt = i;
-            }
-            any = true;
-        }
-        if (!any) {
-            answer.values.push_back(nothing);
-            answer.values.push_back(nothing);
-            continue;
-        }
-        answer.values.push_back(lowAt <= highAt ? lowest : highest);
-        answer.values.push_back(lowAt <= highAt ? highest : lowest);
+        // Contiguous, because the fold walks it with a pointer. A read of a run
+        // of a line is already contiguous, so this is the buffer itself.
+        const std::vector<double> buffer = read.array.values();
+        reduceBuckets(buffer.data(), static_cast<long long>(buffer.size()), bucket, answer.values);
+        done += run;
     }
     return answer;
 }
 
 } // namespace
+
+long long CustomPlot::hyperslabs()
+{
+    return gHyperslabs.load(std::memory_order_relaxed);
+}
 
 CustomPlot::CustomPlot(QString name, DatasetLookup* lookup, QObject* parent)
     : QAbstractListModel(parent), name_(std::move(name)), lookup_(lookup)
@@ -846,65 +849,54 @@ bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) cons
     return true;
 }
 
-std::optional<PlotWindow> CustomPlot::closerFor(const Entry& entry, int buckets) const
+LevelView CustomPlot::levelView(const Entry& entry) const
 {
+    LevelView view;
     if (!entry.drawn || entry.sourceLength <= 0 || !entry.problem.isEmpty()) {
-        return {};
+        return view;
     }
     if (entry.step <= 1.0) {
         // Already drawn sample for sample. There is nothing a second read could
         // add, whatever the reader does with the wheel.
-        return {};
+        return view;
     }
-    double low = 0.0;
-    double high = 0.0;
-    if (!lineRange(entry, low, high)) {
-        return {};
+    if (!lineRange(entry, view.low, view.high)) {
+        return view;
     }
+    view.length = entry.sourceLength;
     // An envelope answers with two values for each bucket and a bucket is a
-    // column, so the count the caller hands in is already what it means.
-    return windowFor(low, high, entry.sourceLength, buckets);
+    // column, so these counts are already what they mean.
+    view.paneBuckets = bucketBudget();
+    view.detailBuckets = closerBuckets();
+    view.prefetchOctaves = kPrefetchOctaves;
+    return view;
+}
+
+std::span<const HeldLevel> CustomPlot::ladder(const Entry& entry) const
+{
+    // One run per entry rather than one for the whole drawn set, so the only
+    // question about a run is whether it came back -- see HeldLevel::complete,
+    // where the plot tab has the harder half of the same question.
+    ladder_.clear();
+    ladder_.reserve(entry.levels.size());
+    for (const Level& level : entry.levels) {
+        ladder_.push_back(HeldLevel{level.window, !level.values.empty()});
+    }
+    return ladder_;
+}
+
+std::optional<PlotWindow> CustomPlot::closerFor(const Entry& entry, int buckets) const
+{
+    const LevelView view = levelView(entry);
+    if (!view.usable()) {
+        return {};
+    }
+    return windowFor(view.low, view.high, view.length, buckets);
 }
 
 int CustomPlot::drawnLevel(const Entry& entry) const
 {
-    double low = 0.0;
-    double high = 0.0;
-    if (entry.levels.empty() || !lineRange(entry, low, high)) {
-        return -1;
-    }
-    // Against the line rather than against the view: a pane showing the end of
-    // a line shows some empty axis past it, and a run reaching the last element
-    // covers everything there is to draw out there.
-    low = std::max(low, 0.0);
-    high = std::min(high, static_cast<double>(entry.sourceLength));
-
-    // The finest run that covers the pane. They all hold about the same number
-    // of points, so a finer one is more detail on screen for the same cost --
-    // and the coarser ones are still here for the moment the reader zooms out
-    // past this one, which is the whole reason there is more than one.
-    int best = -1;
-    for (std::size_t i = 0; i < entry.levels.size(); ++i) {
-        const Level& level = entry.levels[i];
-        if (level.values.empty() || !level.window.covers(low, high)) {
-            continue;
-        }
-        if (best < 0 ||
-            level.window.bucket < entry.levels[static_cast<std::size_t>(best)].window.bucket) {
-            best = static_cast<int>(i);
-        }
-    }
-    return best;
-}
-
-bool CustomPlot::served(const Entry& entry, double low, double high, long long bucket) const
-{
-    low = std::max(low, 0.0);
-    high = std::min(high, static_cast<double>(entry.sourceLength));
-    return std::any_of(entry.levels.begin(), entry.levels.end(), [&](const Level& level) {
-        return !level.values.empty() && level.window.bucket <= bucket &&
-               level.window.covers(low, high);
-    });
+    return gui::drawnLevel(ladder(entry), levelView(entry));
 }
 
 int CustomPlot::heldLevels() const
@@ -921,26 +913,10 @@ int CustomPlot::heldLevels() const
 void CustomPlot::trimLevels(Entry& entry)
 {
     const int allowed = heldLevels();
-    if (static_cast<int>(entry.levels.size()) <= allowed) {
-        return;
-    }
-    const std::optional<PlotWindow> needed = closerFor(entry, bucketBudget());
-    // Octaves away from the bucket the pane is asking for: the runs nearest the
-    // reader are the ones they are about to want.
-    const auto distance = [&needed](const Level& level) {
-        if (!needed.has_value()) {
-            return 0.0;
-        }
-        return std::abs(std::log2(static_cast<double>(level.window.bucket)) -
-                        std::log2(static_cast<double>(std::max<long long>(needed->bucket, 1))));
-    };
     while (static_cast<int>(entry.levels.size()) > allowed) {
-        std::size_t worst = 0;
-        for (std::size_t i = 1; i < entry.levels.size(); ++i) {
-            if (distance(entry.levels[i]) > distance(entry.levels[worst])) {
-                worst = i;
-            }
-        }
+        // Rebuilt each time round, because erasing one changes which of the
+        // rest is coldest.
+        const std::size_t worst = gui::coldestLevel(ladder(entry), levelView(entry), focus_);
         retire(entry.levels[worst].values);
         entry.levels.erase(entry.levels.begin() + static_cast<long>(worst));
     }
@@ -962,54 +938,9 @@ std::vector<std::optional<PlotWindow>> CustomPlot::closerDrawing() const
     return drawing;
 }
 
-bool CustomPlot::closerSuffices(const Entry& entry, const PlotWindow& needed) const
-{
-    // The run in hand covers the pane and its bucket is no coarser than the one
-    // the pane needs, so reading again would spend a round trip to arrive at a
-    // picture the reader cannot tell from the one already drawn. See
-    // DatasetPlot::detailSuffices: this is where the prefetch octave is spent,
-    // and it is why a step in is a draw rather than a wait.
-    const int at = drawnLevel(entry);
-    return at >= 0 && entry.levels[static_cast<std::size_t>(at)].window.bucket <= needed.bucket;
-}
-
 std::optional<PlotWindow> CustomPlot::closerWanted(const Entry& entry) const
 {
-    const std::optional<PlotWindow> needed = closerFor(entry, bucketBudget());
-    if (!needed.has_value()) {
-        return {};
-    }
-    if (!closerSuffices(entry, *needed)) {
-        // What the pane is waiting for, an octave finer than it asked. First,
-        // because it is the only one the reader can see.
-        std::optional<PlotWindow> want = closerFor(entry, closerBuckets());
-        return want.has_value() ? want : needed;
-    }
-    // The pane is answered, so what is left is idle work: the octaves out.
-    // Measured from the run being drawn rather than from the view, so that
-    // panning about inside that run asks for nothing new -- see
-    // DatasetPlot::detailWanted, which makes the same argument at length.
-    const int at = drawnLevel(entry);
-    if (at < 0) {
-        return {};
-    }
-    const PlotWindow base = entry.levels[static_cast<std::size_t>(at)].window;
-    const double centre = static_cast<double>(base.first) + static_cast<double>(base.span) / 2.0;
-    const double half = static_cast<double>(base.span) / 2.0;
-    for (int octave = 1; octave <= kPrefetchOctaves; ++octave) {
-        const auto reach = static_cast<double>(1 << octave);
-        const double low = centre - half * reach;
-        const double high = centre + half * reach;
-        const std::optional<PlotWindow> out =
-            windowFor(low, high, entry.sourceLength, bucketBudget());
-        if (!out.has_value()) {
-            break;
-        }
-        if (!served(entry, low, high, out->bucket)) {
-            return out;
-        }
-    }
-    return {};
+    return gui::wantedLevel(ladder(entry), levelView(entry), focus_);
 }
 
 void CustomPlot::refreshCloser()
@@ -1082,11 +1013,9 @@ void CustomPlot::askForCloser()
         [asks](H5Session& session) {
             Reply reply;
             reply.lines.reserve(asks.size());
-            h5core::File* file = session.file();
-            std::map<QString, std::shared_ptr<h5core::Dataset>> opened;
             std::map<QString, PathFacts> facts;
             for (const Ask& ask : asks) {
-                reply.lines.push_back(readLine(file, ask, opened, facts));
+                reply.lines.push_back(readLine(session, ask, facts));
             }
             return reply;
         },
@@ -1444,11 +1373,9 @@ void CustomPlot::refresh()
         [asks](H5Session& session) {
             Reply reply;
             reply.lines.reserve(asks.size());
-            h5core::File* file = session.file();
-            std::map<QString, std::shared_ptr<h5core::Dataset>> opened;
             std::map<QString, PathFacts> facts;
             for (const Ask& ask : asks) {
-                reply.lines.push_back(readLine(file, ask, opened, facts));
+                reply.lines.push_back(readLine(session, ask, facts));
             }
             reply.learned.reserve(facts.size());
             for (auto& entry : facts) {

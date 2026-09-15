@@ -24,6 +24,7 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotItem.hpp"
+#include "gui/PlotLevels.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
@@ -559,6 +560,57 @@ TEST_CASE_METHOD(PlotFixture, "the same slice draws the same in both plots", "[c
     // and neither of these is relying on luck.
     CHECK(tabPlot->maximum() == Approx(9.0));
     CHECK(custom->maximum() == Approx(9.0));
+}
+
+TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not by the bucket",
+                 "[custom][cost]")
+{
+    // The other half of the test above, and the half that was missing.
+    //
+    // That one asserts the two plots agree about every value, and they always
+    // did. What they did not agree about was what it cost to find them out: the
+    // Plot tab read a line in hyperslabs of up to gui::kReadRun and folded the
+    // buckets out of the buffer, and a custom tab asked HDF5 for one bucket at
+    // a time. Same elements, same picture, a thousand times the round trips --
+    // which is invisible to a test that compares values and is the whole of
+    // what a reader feels on a dataset of any size.
+    //
+    // Counted rather than timed, for tests/test_cost.cpp's reason: a duration
+    // measures the machine, a count measures the program.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+
+    const long long before = gui::CustomPlot::hyperslabs();
+    add(plot, QStringLiteral("/trace[:]"));
+    const long long spent = gui::CustomPlot::hyperslabs() - before;
+
+    // Twenty thousand elements is one hyperslab of sixty-four thousand, however
+    // many buckets they are folded into. It used to be one per bucket, which at
+    // the default pane is a thousand of them.
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+    CHECK(spent == (20000 + gui::kReadRun - 1) / gui::kReadRun);
+    CHECK(spent == 1);
+
+    // And the fold is still a fold: the one-sample spike at 12345 survives it,
+    // which is what says the batching changed the reads and not the arithmetic.
+    CHECK(plot->thinned());
+    CHECK(plot->maximum() == Approx(9.0));
+
+    SECTION("and a closer look is read the same way")
+    {
+        const long long asked = gui::CustomPlot::hyperslabs();
+        plot->setVisibleRange(12000.0, 12800.0);
+        settleAll();
+        h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+        settleAll();
+        const long long closer = gui::CustomPlot::hyperslabs() - asked;
+
+        // A run of a few thousand elements is one hyperslab too -- and, more to
+        // the point, a bounded number of them rather than one per drawn point.
+        CHECK(closer >= 1);
+        CHECK(closer <= 8);
+    }
 }
 
 TEST_CASE_METHOD(PlotFixture, "a wider pane is read at a finer bucket", "[custom][plot]")

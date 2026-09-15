@@ -428,10 +428,8 @@ private:
     /// that asking is one read rather than a walk of a dataset larger than
     /// RAM. Stride sampling can miss a lone spike, and a fill clamps rather
     /// than misreports when it does.
-    /// Most values sampleValues() will pull in one read. It walks the columns
-    /// it thins away rather than seeking past them -- contiguous is cheap,
-    /// seeking is not -- and this is the ceiling on what that buffers.
-    static constexpr int kReadRun = 1 << 16;
+    // What one read of a line pulls is gui::kReadRun -- see PlotLevels.hpp. It
+    // moved there when CustomPlot started reading by it too.
 
 public:
     /// Six digits is printf's own default and about what a double is worth

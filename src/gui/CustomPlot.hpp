@@ -6,6 +6,7 @@
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
+#include "PlotLevels.hpp"
 
 #include <QAbstractListModel>
 #include <QPointer>
@@ -17,6 +18,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -384,17 +386,20 @@ private:
     /// and it is why Dataset mode has no closer look: that map is a lookup
     /// table which need not be monotonic and cannot be run backwards.
     [[nodiscard]] bool lineRange(const Entry& entry, double& first, double& last) const;
-    /// The finest run of `entry` that covers what is on screen, or -1. An entry
-    /// is drawn from one of its runs only while one covers, and from the
-    /// whole-line summary -- which covers everything by construction --
-    /// otherwise.
+    /// What the reader is looking at of `entry`, as the policy in
+    /// PlotLevels.hpp wants it. An unusable view -- an entry not drawn, one
+    /// that would not read, or one already drawn sample for sample -- is how
+    /// "read no closer look at all" is said.
+    [[nodiscard]] LevelView levelView(const Entry& entry) const;
+    /// The runs `entry` holds as the policy sees them, in its own order.
+    ///
+    /// Into a scratch vector this object keeps, so asking costs no allocation.
+    /// The span is good until the next call, for any entry.
+    [[nodiscard]] std::span<const HeldLevel> ladder(const Entry& entry) const;
+    /// The finest run of `entry` that covers what is on screen, or -1. See
+    /// gui::drawnLevel.
     [[nodiscard]] int drawnLevel(const Entry& entry) const;
     [[nodiscard]] bool closerCovers(const Entry& entry) const { return drawnLevel(entry) >= 0; }
-    /// Whether some run of `entry` covers `low`..`high` of its own elements at a
-    /// bucket no coarser than `bucket`. What the prefetch asks about an octave
-    /// it is thinking of reading; see DatasetPlot::served.
-    [[nodiscard]] bool served(const Entry& entry, double low, double high,
-                              long long bucket) const;
     /// The run to read next for `entry`: the one the pane is waiting for, or --
     /// when the pane is already answered -- the nearest octave out that nothing
     /// in hand covers. Nothing when there is nothing left worth reading.
@@ -476,9 +481,6 @@ private:
     /// ...and buckets a closer look is read into, which is an octave finer
     /// while the tab can afford to hold it. See the definition.
     [[nodiscard]] int closerBuckets() const;
-    /// Whether a run `entry` holds already answers `needed` -- it covers the
-    /// pane and its bucket is no coarser. Where the prefetch octave is spent.
-    [[nodiscard]] bool closerSuffices(const Entry& entry, const PlotWindow& needed) const;
     /// Whether align and stretch differ for this entry.
     [[nodiscard]] bool scalable(const Entry& entry) const;
 
@@ -486,6 +488,10 @@ private:
     DatasetLookup* lookup_ = nullptr;
 
     std::vector<Entry> entries_;
+    /// An entry's runs as the policy sees them. See ladder().
+    mutable std::vector<HeldLevel> ladder_;
+    /// Where the reader is zooming, when they are. See setZoomFocus.
+    PlotFocus focus_;
 
     XMode xMode_ = Index;
     QString xExpression_;
@@ -547,30 +553,17 @@ private:
     QTimer resize_;
 
 public:
-    /// Columns assumed until the surface has measured itself, and the most
-    /// points an entry is ever reduced to. The plot tab's numbers, for the plot
-    /// tab's reasons -- see DatasetPlot::kDefaultColumns and kMaxPoints.
-    ///
-    /// They have to be the same numbers. A reader who puts /plotting/adc_10M on
-    /// the Plot tab and the same slice in a custom tab is looking at one
-    /// dataset, and the two pictures of it differing in any way they can see is
-    /// a bug in whichever of them they are not looking at.
-    static constexpr int kDefaultColumns = 1024;
-    static constexpr int kMaxPoints = 16384;
-    static constexpr int kColumnQuantum = 64;
-    static constexpr int kMinPoints = 256;
-    /// How long the view has to hold still before a closer look is read. The
-    /// same tenth of a second the plot tab waits -- see
-    /// DatasetPlot::kSettleMilliseconds.
-    static constexpr int kSettleMilliseconds = 150;
-    /// ...and how long the pane has to hold still before it is re-read. The
-    /// same fifth of a second the plot tab waits -- see
-    /// DatasetPlot::kResizeMilliseconds.
-    static constexpr int kResizeMilliseconds = 200;
-    /// How far out a run is read before the reader has asked for it, and how
-    /// many resolutions are held at once. The plot tab's numbers, for the plot
-    /// tab's reasons -- see DatasetPlot::kPrefetchOctaves and kHeldLevels.
-    static constexpr int kPrefetchOctaves = 2;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kDefaultColumns = gui::kDefaultColumns;
+    static constexpr int kMaxPoints = gui::kMaxPoints;
+    static constexpr int kColumnQuantum = gui::kColumnQuantum;
+    static constexpr int kMinPoints = gui::kMinPoints;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kSettleMilliseconds = gui::kSettleMilliseconds;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
     static constexpr int kHeldLevels = 5;
     /// Doubles held for everything this tab draws. The plot tab's number, for
     /// the plot tab's reason -- see DatasetPlot::kPointBudget.
@@ -585,6 +578,24 @@ public:
     /// the same stance the legend's `all` takes beside it: state the cost,
     /// then do as you are told.
     static constexpr int kCrowdedLines = 64;
+
+    /// How many hyperslabs this class has read out of a line, ever.
+    ///
+    /// Instrumentation, on the same argument as H5Thread::crossings(): what a
+    /// read *moves* is bounded by how much of the line was asked for, and how
+    /// many reads it takes to move it is bounded by the code. This is the
+    /// number that regressed. A custom tab used to ask HDF5 for one bucket at a
+    /// time, so a pane two thousand columns wide cost two thousand reads per
+    /// entry to move the same elements one read of sixty-four thousand moves --
+    /// and nothing failed, it was merely slow, which is why there is a count
+    /// here now rather than a comment saying not to do it again.
+    ///
+    /// Monotonic and process-wide; a caller measures a span by taking the
+    /// difference across it. tests/test_cost.cpp is what asserts on it. It is
+    /// here rather than on a counting DataSource because a custom tab opens its
+    /// own datasets out of the file and never reads through the session's
+    /// source, which is what the rest of that suite counts through.
+    [[nodiscard]] static long long hyperslabs();
 };
 
 } // namespace gui
