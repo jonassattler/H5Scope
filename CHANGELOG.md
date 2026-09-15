@@ -25,6 +25,30 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.5.1
+
+**Fixes reported from use.** A custom tab drawn against a time series drew
+almost nothing: a time base long enough to be thinned was looked up by the
+position of the sample that wanted it rather than by its own share of the
+axis, so most of the line asked past the end of it and was dropped. Zooming a
+custom tab with a touchpad could leave the line drawn across part of the frame
+with empty axis either side, until another gesture put it right. And unticking
+a line in a legend recoloured the ones left behind.
+
+**Numbers are read the way you type them, not the way the locale does.** The
+manual range and index boxes validated against the system locale, so on a
+German desktop "0.2" was refused at the keystroke while "0,2" was accepted and
+then committed as zero. Both now take either separator, and an exponent.
+
+**Selecting a large dataset is roughly twice as fast**: `/plotting/adc_10M`
+went from about 550 ms on the GUI thread to 230 ms. None of that was the file
+— the shape of a slice was measured by writing out every index it names, which
+is eighty megabytes built and freed to answer `:` on a dimension of ten
+million. It is arithmetic now.
+
+Also fixed: a use-after-free in the plot's closer-look cache that could crash
+the Windows build when a second zoom level landed over the one being drawn.
+
 ## 0.5.0
 
 **The plot draws itself now.** Qt Graphs is gone from the tree, and both the
