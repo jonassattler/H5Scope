@@ -335,6 +335,77 @@ TestCase {
         compare(field.formatted(2.6), "3")
     }
 
+    /// ...and reads back every notation a reader might write it in.
+    ///
+    /// The bug this pins down: the boxes validated against DoubleValidator and
+    /// IntValidator, which ask the reader's *locale* what a number looks like.
+    /// On a German desktop that refused the "." key outright -- "0.2", "-3.5",
+    /// "0.0002" and "1.2e3" could not be typed into a manual range at all --
+    /// while "0,2" passed the validator and went to parseFloat, which reads up
+    /// to the comma and returns zero. Both notations are taken now and both
+    /// mean the same number, and the test runs under whatever locale the
+    /// machine is set to, because the point of the change is that the locale no
+    /// longer decides.
+    function test_a_number_box_takes_either_decimal_separator() {
+        const field = createTemporaryObject(realFieldComponent, testCase)
+        verify(field, "the field must instantiate")
+
+        const same = [["0.2", "0,2", 0.2],
+                      ["-3.5", "-3,5", -3.5],
+                      ["0.0002", "0,0002", 0.0002],
+                      ["1.2e3", "1,2e3", 1200],
+                      ["2.5e-7", "2,5e-7", 2.5e-7]]
+        for (let i = 0; i < same.length; ++i) {
+            const wanted = same[i][2]
+            for (const written of [same[i][0], same[i][1]]) {
+                field.text = written
+                verify(field.acceptableInput, "the box must accept " + written)
+                fuzzyCompare(field.number(written), wanted,
+                             Math.abs(wanted) * 1e-9 + 1e-12)
+            }
+        }
+
+        // A number with no fractional part is unchanged by any of it, and a
+        // leading separator is a number a reader really does type.
+        field.text = "12"
+        verify(field.acceptableInput)
+        compare(field.number("12"), 12)
+        for (const written of [".5", ",5"]) {
+            field.text = written
+            verify(field.acceptableInput, "the box must accept " + written)
+            compare(field.number(written), 0.5)
+        }
+
+        // Half-way through being typed into, a box holds something that is not
+        // a number yet. commit() asks for one, gets NaN and leaves the value
+        // alone -- which is why nothing here has to be refused at the keystroke.
+        verify(isNaN(field.number("")))
+        verify(isNaN(field.number("-")))
+        compare(field.number("1."), 1)
+        compare(field.number("1,"), 1)
+
+        // Two separators is not a number in either notation, and neither is a
+        // group separator, which is what the locale's own validator used to let
+        // through.
+        for (const refused of ["1.2.3", "1,2,3", "1.2,3", "1 234", "e5", "x"]) {
+            field.text = refused
+            verify(!field.acceptableInput, "the box must refuse " + refused)
+        }
+
+        // The whole-number box has the same defect and the same fix: on a
+        // locale whose group separator is a point, IntValidator accepted
+        // "1.234" and parseInt answered one.
+        const whole = createTemporaryObject(numberFieldComponent, testCase)
+        whole.from = 0
+        whole.to = 100000
+        whole.text = "1234"
+        verify(whole.acceptableInput)
+        for (const refused of ["1.234", "1,234", "12.5"]) {
+            whole.text = refused
+            verify(!whole.acceptableInput, "the index box must refuse " + refused)
+        }
+    }
+
     /// One press of an arrow moves a whole-number box by one, and a box of
     /// values by about five per cent of what it is holding.
     function test_a_number_box_steps_by_something_sensible() {

@@ -34,15 +34,42 @@ TextField {
     signal committed(real amount)
 
     // Not an IntValidator: that one is bounded by C's `int`, and an unsigned
-    // 32-bit dataset runs past it.
+    // 32-bit dataset runs past it -- and it is the reader's locale's idea of a
+    // whole number, which is the defect the note below is about.
     RegularExpressionValidator {
         id: wholeOnly
-        regularExpression: /^-?\d*$/
+        regularExpression: /^[-+]?\d*$/
     }
 
-    DoubleValidator {
+    // ...and not a DoubleValidator, for the same reason and a worse one.
+    //
+    // That one asks the reader's *locale* what a number looks like, and this
+    // box is then a different control depending on where the machine is set up.
+    // On a German desktop it refuses the "." key outright -- so "0.2", "-3.5"
+    // and "1.2e3" cannot be typed at all, and neither can any of the small
+    // numbers a black point or an axis stop is made of -- while it accepts
+    // "0,2" and hands it to parseFloat, which reads up to the comma and returns
+    // **zero**. A box that will not take one notation and silently zeroes the
+    // other is not a box a reader can put a number in, which is exactly what
+    // was reported of it.
+    //
+    // So the notation is this application's rather than the system's, and it is
+    // the union of the two a reader might type: either separator, and the
+    // exponent in both cases. `number()` below is the other half -- what the
+    // validator lets through, the parse has to understand.
+    //
+    // The cost is that "1,234" is one and a bit rather than a thousand. There
+    // is no reading of it that is right for everyone, and a decimal comma is
+    // what a European reader means by it far more often than a group separator
+    // is -- a group separator in a field this narrow being something nobody
+    // types on purpose.
+    // A digit has to turn up before an exponent may: without that, "e5" is a
+    // complete match of an empty mantissa and the box calls it acceptable. The
+    // half-typed states -- "", "-", "1.", "1e-" -- are still reachable, because
+    // a validator refuses a keystroke only where no number starts that way.
+    RegularExpressionValidator {
         id: anyReal
-        notation: DoubleValidator.ScientificNotation
+        regularExpression: /^[-+]?(?:\d+|\d*[.,]\d*)(?:[eE][-+]?\d*)?$/
     }
 
     text: control.formatted(control.value)
@@ -126,9 +153,20 @@ TextField {
         return text.indexOf(".") < 0 ? text : text.replace(/\.?0+$/, "")
     }
 
+    /// What is in the box, as a number, or NaN.
+    ///
+    /// The other half of the validator above: a decimal comma is a decimal
+    /// point here, because parseFloat only knows the one and stops at the
+    /// other -- "0,2" reads as 0 rather than as nothing, which is a wrong
+    /// answer and not a refused one. Written once so that the two places that
+    /// read the box cannot disagree about it.
+    function number(text) {
+        return parseFloat(String(text).trim().replace(",", "."))
+    }
+
     /// The number the box is showing, which is what a step moves from.
     function shown() {
-        const entered = parseFloat(control.text)
+        const entered = control.number(control.text)
         return isNaN(entered) ? control.value : entered
     }
 
@@ -151,7 +189,7 @@ TextField {
     }
 
     function commit() {
-        const entered = parseFloat(control.text)
+        const entered = control.number(control.text)
         if (!isNaN(entered))
             control.committed(control.integer ? Math.round(entered) : entered)
         // Typing broke the binding on `text`; restore it, because the value
