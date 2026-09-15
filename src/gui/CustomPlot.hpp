@@ -450,6 +450,10 @@ private:
     QString xExpression_;
     QString xProblem_;
     std::vector<double> xValues_;
+    /// Axis positions between one of those values and the next: the time base
+    /// is thinned like every other line, and this is by how much. See
+    /// PlotAxis::valueStep -- without it a thinned axis is read past its end.
+    double xValueStep_ = 1.0;
     int xSourceLength_ = 0;
     double xMinimum_ = 0.0;
     double xMaximum_ = 1.0;

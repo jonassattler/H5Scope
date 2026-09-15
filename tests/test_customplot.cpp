@@ -455,6 +455,45 @@ TEST_CASE_METHOD(PlotFixture, "align and stretch decide where a short line goes"
     }
 }
 
+TEST_CASE_METHOD(PlotFixture, "a time base is read at the same share of itself the line is",
+                 "[custom]")
+{
+    // The case every short fixture hides. /series/time is 64 elements, so it is
+    // never thinned and its values sit one per axis position -- which makes an
+    // axis lookup indexed by the axis position accidentally right. A time base
+    // the length of a real log is summarised like every other line, and then it
+    // holds a couple of thousand values for twenty thousand positions: reading
+    // it at the position is reading ten times past its end, which drew nine
+    // tenths of the line with no x at all and put the tenth that was left
+    // against times it was never taken at.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    plot->setXExpression(QStringLiteral("/trace_time[:]"));
+    plot->setXMode(gui::CustomPlot::Dataset);
+    settleAll();
+
+    REQUIRE(plot->xError().isEmpty());
+    REQUIRE(plot->xReady());
+    REQUIRE(plot->sourcePointCount() == 20000);
+
+    const gui::PlotLine held = plot->lineOf(0);
+    REQUIRE(held.count > 1000); // thinned, but nothing like sample for sample
+
+    const QList<QPointF> line = drawn(plot, 0);
+    // Every drawn point has an x. Nothing is dropped, because nothing asks the
+    // axis for a position it does not have.
+    CHECK(line.size() == held.count);
+    // And they run the way the time base does: /trace_time is i / 1000, so the
+    // line spans zero to twenty seconds and never doubles back.
+    CHECK(line.first().x() == Approx(0.0).margin(0.02));
+    CHECK(line.last().x() == Approx(20.0).margin(0.05));
+    bool ascending = true;
+    for (qsizetype i = 1; i < line.size(); ++i) {
+        ascending = ascending && line.at(i).x() >= line.at(i - 1).x();
+    }
+    CHECK(ascending);
+}
+
 TEST_CASE("a line longer than the plot draws is thinned by striding its indices", "[custom]")
 {
     // The function rather than a dataset, because the cap is 2048 points and

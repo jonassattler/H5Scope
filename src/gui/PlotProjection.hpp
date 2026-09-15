@@ -166,7 +166,8 @@ struct PlotAxis
     double start = 0.0;
     double step = 1.0;
 
-    /// ...unless there is a time base, and then x = values[round(position)].
+    /// ...unless there is a time base, and then
+    /// x = values[round(position / valueStep)].
     ///
     /// Borrowed on the same terms as PlotLine::values. A time base has a value
     /// at each of its own positions and nowhere in between, so a point that
@@ -174,6 +175,22 @@ struct PlotAxis
     /// an x, which is the same mistake as inventing a y.
     const double* values = nullptr;
     qsizetype count = 0;
+
+    /// Axis positions between one of those values and the next.
+    ///
+    /// A time base is a line like any other and is read like one: summarised to
+    /// about a pane's worth of points however many elements it has. So `values`
+    /// is indexed by *its own drawn point*, and a position is an index into the
+    /// elements it was summarised from -- the two are the same number only
+    /// while the axis is short enough not to be thinned, which is the case
+    /// every short fixture is and no real log is.
+    ///
+    /// Divided out rather than folded into PlotLine::positionStep, because the
+    /// line and its axis are thinned by their own strides and there is no
+    /// reason for the two to agree: a tab can draw a thousand-element entry
+    /// against a million-element time base, and each is summarised against the
+    /// same pane.
+    double valueStep = 1.0;
 
     [[nodiscard]] bool explicitX() const { return values != nullptr && count > 0; }
 };

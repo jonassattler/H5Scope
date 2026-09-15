@@ -1259,6 +1259,7 @@ PlotAxis CustomPlot::drawingAxis() const
     if (xMode_ == Dataset) {
         axis.values = xValues_.data();
         axis.count = static_cast<qsizetype>(xValues_.size());
+        axis.valueStep = xValueStep_;
     }
     return axis;
 }
@@ -1415,6 +1416,7 @@ void CustomPlot::refresh()
     if (asks.empty()) {
         xProblem_.clear();
         retire(xValues_);
+        xValueStep_ = 1.0;
         xSourceLength_ = 0;
         clearCloser();
         recount();
@@ -1461,6 +1463,11 @@ void CustomPlot::refresh()
                     xProblem_ = answer.problem;
                     retire(xValues_);
                     xValues_ = std::move(answer.values);
+                    // The time base's own thinning, which is what turns an
+                    // axis position back into one of these values. It is not
+                    // the entries' -- they are thinned against the same pane
+                    // and need not be the same length as it.
+                    xValueStep_ = answer.step;
                     xSourceLength_ = answer.sourceLength;
                 }
                 at = 1;
@@ -1468,6 +1475,7 @@ void CustomPlot::refresh()
             else {
                 xProblem_.clear();
                 retire(xValues_);
+                xValueStep_ = 1.0;
                 xSourceLength_ = 0;
             }
 

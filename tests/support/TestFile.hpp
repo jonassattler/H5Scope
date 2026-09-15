@@ -50,6 +50,8 @@ private:
 ///   /long_vec                1-D int32 [1000] (exceeds the view block size)
 ///   /trace                   1-D float64 [20000], a sine with a one-sample
 ///                            spike at 12345 (long enough for a closer look)
+///   /trace_time              1-D float64 [20000], value i / 1000 -- a time
+///                            base as long as /trace, so both are thinned
 ///   /empty                   1-D int32 [0]
 ///   /group                   group, attrs "title" and "version"
 ///   /group/nested            group
