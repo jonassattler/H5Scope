@@ -350,7 +350,8 @@ Rectangle {
                                 return Theme.accent
                             const series = legend.plot.drawnSeries
                             const at = series.indexOf(row.index)
-                            return legend.target.seriesColor(Math.max(at, 0),
+                            return legend.target.seriesColor(row.index,
+                                                             Math.max(at, 0),
                                                              series.length)
                         }
                     }

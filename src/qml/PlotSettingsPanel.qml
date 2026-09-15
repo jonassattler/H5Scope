@@ -259,8 +259,12 @@ SettingsPanel {
 
                     width: parent.width / 24
                     height: parent.height
-                    color: panel.target ? panel.target.seriesColor(index, 24)
-                                        : Theme.accent
+                    // The cell *is* the line here -- the strip is a picture of
+                    // the cycle and not of a plot -- so which line it is and
+                    // where it sits are the same number.
+                    color: panel.target
+                           ? panel.target.seriesColor(index, index, 24)
+                           : Theme.accent
                 }
             }
         }

@@ -94,6 +94,14 @@ int PlotItem::lineCount() const
     return static_cast<int>(lines_.size());
 }
 
+QColor PlotItem::seriesColor(int index) const
+{
+    if (index < 0 || index >= lineCount()) {
+        return {};
+    }
+    return lines_[static_cast<std::size_t>(index)].colour;
+}
+
 void PlotItem::setSeriesColor(int index, const QColor& colour)
 {
     if (index < 0 || index >= lineCount()) {
