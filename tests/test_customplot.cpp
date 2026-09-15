@@ -601,6 +601,128 @@ TEST_CASE_METHOD(PlotFixture, "a wider pane is read at a finer bucket", "[custom
     CHECK(custom->pointCount() == tabPlot->pointCount());
 }
 
+TEST_CASE_METHOD(PlotFixture, "a tab zoomed a notch at a time keeps the pane covered",
+                 "[custom]")
+{
+    // A touchpad is not a wheel with smaller notches; it is a wheel that sends a
+    // hundred of them, so the view crosses the boundary between one held run and
+    // the next one step at a time rather than an octave at a time.
+    //
+    // Asked of the *item* rather than of lineOf(), and that distinction is the
+    // whole of the test. lineOf() re-decides which run covers the pane every
+    // time it is called, so it is right by construction; what is on screen is
+    // whatever fill() last handed over, and fill() runs only when this object
+    // says something changed. A missed signal is invisible to a test that asks
+    // the model and plain to one that asks the renderer -- and it looks like a
+    // line drawn across part of the frame with nothing either side of it, which
+    // a further gesture then repairs.
+    //
+    // So this mirrors PlotSurface exactly: a refill on `changed`, and nothing
+    // else. Anything it misses, the reader sees.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+
+    constexpr double kLength = 20000.0;
+    constexpr double kPaneWidth = 844.0;
+
+    gui::PlotItem item;
+    item.setWidth(kPaneWidth);
+    item.setHeight(300.0);
+
+    bool dirty = true;
+    QObject::connect(plot, &gui::CustomPlot::changed, plot, [&dirty] { dirty = true; });
+    QObject::connect(plot, &gui::CustomPlot::xAxisChanged, plot, [&dirty] { dirty = true; });
+
+    double zoom = 1.0;
+    double pan = 0.0;
+    const auto low = [&] { return kLength / 2.0 + pan - kLength / zoom / 2.0; };
+    const auto high = [&] { return kLength / 2.0 + pan + kLength / zoom / 2.0; };
+    const auto spin = [&](double notches, double at) {
+        const double next = std::clamp(zoom * std::pow(1.25, notches), 1.0, kLength / 16.0);
+        const double span = kLength / zoom;
+        const double held = low() + at * span;
+        const double nextSpan = kLength / next;
+        const double centre = held - at * nextSpan + nextSpan / 2.0;
+        const double room = kLength * (1.0 - 1.0 / next) / 2.0;
+        zoom = next;
+        pan = std::clamp(centre - kLength / 2.0, -room, room);
+    };
+
+    const auto refill = [&] {
+        if (!dirty) {
+            return;
+        }
+        dirty = false;
+        plot->setVisibleRange(low(), high());
+        item.setXMin(low());
+        item.setXMax(high());
+        item.setYMin(plot->minimum() - 1.0);
+        item.setYMax(plot->maximum() + 1.0);
+        plot->fill(&item);
+    };
+
+    const auto push = [&] {
+        plot->setVisibleRange(low(), high());
+        item.setXMin(low());
+        item.setXMax(high());
+        refill();
+    };
+
+    /// Where what the item is holding begins and ends, read back through the
+    /// pointers it was actually handed.
+    const auto covers = [&](const char* when) {
+        const QVariantMap left = item.nearestSample(0.0, item.height() / 2.0);
+        const QVariantMap right = item.nearestSample(item.width(), item.height() / 2.0);
+        INFO(when << ": view " << low() << ".." << high() << " zoom " << zoom);
+        REQUIRE(left.value(QStringLiteral("valid")).toBool());
+        REQUIRE(right.value(QStringLiteral("valid")).toBool());
+        // One drawn point of slack at each edge: a point stands for the run of
+        // elements it summarises, and the stroke to the next one leaves the
+        // frame rather than stopping inside it.
+        const double slack = (high() - low()) / kPaneWidth * 4.0;
+        CHECK(left.value(QStringLiteral("x")).toDouble() <= std::max(low(), 0.0) + slack);
+        CHECK(right.value(QStringLiteral("x")).toDouble()
+              >= std::min(high(), kLength) - slack);
+    };
+
+    refill();
+    h5test::settleFor(400);
+    settleAll();
+    refill();
+    covers("before anything was touched");
+
+    // In, pausing often enough that the runs really are read and held -- the
+    // prefetch keeps several at once, and it is the step from one of them to
+    // the next that this is about.
+    for (int step = 0; step < 150; ++step) {
+        spin(1.0 / 12.0, 0.5);
+        push();
+        covers("mid-gesture, inwards");
+        if (step % 25 == 24) {
+            h5test::settleFor(300);
+            settleAll();
+            refill();
+            covers("paused, inwards");
+        }
+    }
+
+    // ...and back out a notch at a time, which is where the view walks off one
+    // held run and onto the next.
+    for (int step = 0; step < 150; ++step) {
+        spin(-1.0 / 12.0, 0.5);
+        push();
+        covers("mid-gesture, outwards");
+        if (step % 25 == 24) {
+            h5test::settleFor(300);
+            settleAll();
+            refill();
+            covers("paused, outwards");
+        }
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again", "[custom]")
 {
     // The same closer look the plot tab takes, resolved per entry: these lines

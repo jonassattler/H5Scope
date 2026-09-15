@@ -386,10 +386,33 @@ private:
     void trimLevels(Entry& entry);
     /// How many resolutions each entry may hold at once.
     [[nodiscard]] int heldLevels() const;
-    /// How many entries are being drawn from a closer look. Not interesting in
-    /// itself: it changes exactly when a different set of values has to reach
-    /// the renderer, which is when the surface has to be told to fill again.
-    [[nodiscard]] int closerDrawn() const;
+    /// Which run each drawn entry is being drawn from, in the order fill()
+    /// hands them over, and nothing for an entry drawn from its whole-line
+    /// summary.
+    ///
+    /// Not a count, and that is the whole of the distinction. This used to
+    /// answer "how many entries have a closer look", on the reasoning that the
+    /// number changes exactly when a different set of values has to reach the
+    /// renderer -- which is false, and the plot showed it. An entry holds
+    /// several runs at once (see Entry::levels), so zooming out steps from the
+    /// fine one to a coarser one already in hand: both are a closer look, the
+    /// count stays where it was, nothing was announced, and the renderer went
+    /// on drawing the *fine* run over a pane it no longer covered. What the
+    /// reader saw was the line drawn across part of the frame with nothing
+    /// either side of it, and a further gesture putting it right -- because
+    /// eventually some entry left the covered set altogether and the count
+    /// finally moved.
+    ///
+    /// It takes a touchpad to find, and that is not luck. A wheel notch is a
+    /// quarter of an octave and a flick of it usually leaves every held run at
+    /// once, which the count does notice; a trackpad sends a twelfth of a notch
+    /// at a time and walks the view off one run and onto the next, which is
+    /// exactly the step the count cannot see.
+    ///
+    /// The windows themselves, rather than the index of the level holding them:
+    /// trimLevels() erases from the middle of the vector, so an index means a
+    /// different run before and after.
+    [[nodiscard]] std::vector<std::optional<PlotWindow>> closerDrawing() const;
     /// Work out what the view wants of each entry, drop what nobody wants, and
     /// arm the read for the rest. Every path that can change the answer ends
     /// here.
