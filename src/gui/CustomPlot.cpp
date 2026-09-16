@@ -6,6 +6,7 @@
 #include "H5Session.hpp"
 #include "PlotBudget.hpp"
 #include "PlotLevels.hpp"
+#include "PlotPyramid.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
@@ -42,6 +43,13 @@ struct Ask
     /// Buckets to reduce the whole line to, which is the pane's own width in
     /// columns. Ignored when a window says what the bucket is.
     int buckets = CustomPlot::kDefaultColumns;
+    /// Doubles this line's pyramid may spend, or zero for no pyramid.
+    ///
+    /// Set on the whole-line read and never on a closer look: the point of the
+    /// pyramid is that after the whole-line read there are no closer looks to
+    /// make. See PlotPyramid.hpp, and DatasetPlot, which reads the same way for
+    /// the same reason.
+    long long budget = 0;
 };
 
 /// What it hands back, alongside the facts it learned on the way.
@@ -56,6 +64,8 @@ struct Answer
     /// the line was read as an envelope, because a bucket answers with two.
     double step = 1.0;
     int sourceLength = 0;
+    /// The line itself, kept at every resolution, when one was asked for.
+    LinePyramid pyramid;
 };
 
 struct Reply
@@ -145,6 +155,55 @@ struct Reply
     const long long bucket = ask.window.has_value()
                                  ? ask.window->bucket
                                  : std::max<long long>(1, (length + buckets - 1) / buckets);
+
+    if (ask.budget > 0 && !ask.window.has_value()) {
+        // The whole line, kept.
+        //
+        // One pass, at the finest bucket the budget affords, and every closer
+        // look afterwards is a fold of it in memory rather than another read --
+        // which is the arrangement DatasetPlot reads by and the reason the two
+        // tabs feel alike on a ten-million-element slice. See PlotPyramid.hpp.
+        //
+        // The walk is the envelope walk below, handing each hyperslab to the
+        // builder instead of folding it here. Whatever a read leaves that does
+        // not fill a whole bucket is the builder's to carry into the next one:
+        // a read stops where kReadRun and the index list let it and none of
+        // those boundaries has to fall on a bucket, and a bucket summarised
+        // from half of itself is simply wrong.
+        const long long base = baseBucketFor(length, ask.budget);
+        PyramidBuilder builder(length, base);
+
+        const std::vector<hsize_t> whole = std::move(indices[along]);
+        long long read = 0;
+        while (read < length) {
+            const long long run = std::min<long long>(kReadRun, length - read);
+            indices[along].assign(whole.begin() + static_cast<std::ptrdiff_t>(read),
+                                  whole.begin() + static_cast<std::ptrdiff_t>(read + run));
+            gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+            const postproc::ArrayResult got = postproc::read(dataset, indices, drop);
+            if (!got.ok()) {
+                answer.problem = got.error;
+                return answer;
+            }
+            // Contiguous, because the fold walks it with a pointer. A read of a
+            // run of a line is already contiguous, so this is the buffer itself.
+            const std::vector<double> buffer = got.array.values();
+            builder.add(buffer.data(), static_cast<long long>(buffer.size()));
+            read += run;
+        }
+        LinePyramid pyramid = builder.finish();
+
+        // ...and the whole-line summary out of it, which is exactly what the
+        // walk below would have answered with: coarsening an envelope is the
+        // same question as reading at that bucket. See PlotLevels.hpp.
+        long long stride = 1;
+        if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step)) {
+            answer.problem = QStringLiteral("could not summarise %1").arg(ask.expression);
+            return answer;
+        }
+        answer.pyramid = std::move(pyramid);
+        return answer;
+    }
 
     if (bucket <= 1) {
         // Short enough to draw sample for sample. One read of the lot.
@@ -976,6 +1035,39 @@ int CustomPlot::drawnLevel(const Entry& entry) const
     return gui::drawnLevel(ladder(entry), levelView(entry));
 }
 
+long long CustomPlot::pyramidBudget() const
+{
+    // The share this tab may hold, split between its entries. Twice, for the
+    // reason DatasetPlot::pyramidBudget gives: what is held has to leave room
+    // for the runs a bucket below the base still reads.
+    const int entries = std::max(seriesCount(), 1);
+    return PlotBudget::instance().share() / (2LL * entries);
+}
+
+bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
+{
+    if (entry.pyramid.empty() || window.bucket < entry.pyramid.baseBucket()) {
+        return false;
+    }
+    const auto at = std::find_if(entry.levels.begin(), entry.levels.end(),
+                                 [&window](const Level& level) { return level.window == window; });
+    if (at != entry.levels.end()) {
+        return false; // already held at this run
+    }
+    std::vector<double> folded;
+    if (!fillWindow(entry.pyramid, window, folded)) {
+        return false;
+    }
+    // What a read of this run would have reported: a pair per bucket half a
+    // bucket apart, or the elements themselves when the bucket is one.
+    const double step = window.bucket == 1 ? 1.0 : static_cast<double>(window.bucket) / 2.0;
+    // The same hazard DatasetPlot::takeDetail names: this push_back may
+    // reallocate `levels` while the renderer is reading a run already in it, so
+    // a Level is move-only-by-noexcept and the relocation cannot be a copy.
+    entry.levels.push_back(Level{window, step, std::move(folded)});
+    return true;
+}
+
 int CustomPlot::heldLevels() const
 {
     // Each run is about `bucketBudget()` buckets of two values, per entry, so
@@ -1025,6 +1117,35 @@ void CustomPlot::refreshCloser()
 {
     bool wanted = false;
     bool dropped = false;
+    bool filled = false;
+
+    // Everything the pyramids can answer, now, in this call.
+    //
+    // The same loop DatasetPlot::refreshDetail runs and for the same reason: a
+    // run at or above an entry's base bucket is a fold of a buffer in hand, so
+    // there is nothing to wait for and no reply to arm the next step with. The
+    // pane's own preferred run goes in first whether or not a coarser one in
+    // hand would have covered it -- see the note there; out of a held line the
+    // finer fold has nothing to weigh against it.
+    for (Entry& entry : entries_) {
+        if (const std::optional<PlotWindow> own = closerFor(entry, closerBuckets());
+            own.has_value() && fillCloser(entry, *own)) {
+            filled = true;
+        }
+        for (int step = 0; step <= heldLevels(); ++step) {
+            const std::optional<PlotWindow> next = closerWanted(entry);
+            if (!next.has_value() || !fillCloser(entry, *next)) {
+                break;
+            }
+            filled = true;
+            trimLevels(entry);
+        }
+        trimLevels(entry);
+    }
+    if (filled) {
+        announce();
+    }
+
     for (Entry& entry : entries_) {
         if (!closerFor(entry, bucketBudget()).has_value()) {
             if (!entry.levels.empty()) {
@@ -1083,7 +1204,7 @@ void CustomPlot::askForCloser()
             continue;
         }
         rows.push_back(static_cast<int>(i));
-        asks.push_back(Ask{entry.expression, want, closerBuckets()});
+        asks.push_back(Ask{entry.expression, want, closerBuckets(), 0});
     }
     if (asks.empty()) {
         return;
@@ -1437,13 +1558,20 @@ void CustomPlot::refresh()
     // without carrying a second list.
     const bool wantsX = xMode_ == Dataset && !xExpression_.trimmed().isEmpty();
 
+    // The entries are held at every resolution; the time base is not.
+    //
+    // A time base is read to turn an axis position into a printed x, one value
+    // per drawn point -- it is not a line anybody zooms into, and holding it at
+    // every resolution would be a second copy of a dataset for nothing.
+    const long long budget = pyramidBudget();
+
     std::vector<Ask> asks;
     asks.reserve(entries_.size() + 1);
     if (wantsX) {
-        asks.push_back(Ask{xExpression_, {}, bucketBudget()});
+        asks.push_back(Ask{xExpression_, {}, bucketBudget(), 0});
     }
     for (const Entry& entry : entries_) {
-        asks.push_back(Ask{entry.expression, {}, bucketBudget()});
+        asks.push_back(Ask{entry.expression, {}, bucketBudget(), budget});
     }
 
     if (asks.empty()) {
@@ -1522,6 +1650,10 @@ void CustomPlot::refresh()
                 entry.values = std::move(answer.values);
                 entry.step = answer.step;
                 entry.sourceLength = answer.sourceLength;
+                // The elements the summary above was folded out of. Every
+                // closer look at this entry from here on is a fold of these
+                // rather than a second reading of the file.
+                entry.pyramid = std::move(answer.pyramid);
             }
             // Whatever was being looked at closely was a run of the lines as
             // they were before this read. The expression may have been retyped

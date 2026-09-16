@@ -4,6 +4,7 @@
 #pragma once
 
 #include "H5Thread.hpp"
+#include "PlotPyramid.hpp"
 #include "TableLayout.hpp"
 #include "h5core/DataSource.hpp"
 
@@ -13,6 +14,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -133,11 +135,27 @@ public:
     /// a ten-million-element vector a copy of one is eighty megabytes; this
     /// used to take a reference and copy it twice on its way to TableAxes.
     void setLayout(TableLayout layout);
-    [[nodiscard]] const TableLayout& layout() const { return axes_.layout(); }
+    [[nodiscard]] const TableLayout& layout() const { return axes_->layout(); }
     /// The table the grid is showing, as geometry. A second reading of the same
     /// dataset -- the image with its colour dimension held at one channel --
     /// starts from this and pins what it needs.
-    [[nodiscard]] const TableAxes& axes() const { return axes_; }
+    [[nodiscard]] const TableAxes& axes() const { return *axes_; }
+
+    /// The same axes as something a job can hold while it runs.
+    ///
+    /// A TableAxes carries one index per element of every dimension, so a *copy*
+    /// of one is eighty megabytes on a ten-million-element vector and eight
+    /// hundred on a hundred-million one -- a memcpy on the GUI thread before the
+    /// read it is for has even been queued, which on a large dataset is a frame
+    /// of a third of a second in the middle of a gesture. A submitted job cannot
+    /// simply hold a reference, because the table may be rebuilt under it.
+    ///
+    /// So the axes are *owned* through a shared_ptr rather than copied into one.
+    /// rebuild() makes a new one and whatever a job is still holding goes on
+    /// describing the table that job was submitted about -- which is the only
+    /// table it could correctly read, and which its ticket is about to throw
+    /// away in any case.
+    [[nodiscard]] std::shared_ptr<const TableAxes> sharedAxes() const { return axes_; }
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override;
@@ -300,6 +318,41 @@ public:
     readSamples(const h5core::DataSource& source, const TableAxes& axes,
                 const std::vector<SampleRequest>& requests);
 
+    /// One line asked for as a whole, to be held at every resolution.
+    ///
+    /// The plot's other way of reading, and the one a large dataset lives on.
+    /// A SampleRequest above answers with a line thinned to a couple of
+    /// thousand points and throws the other ten million away; this answers with
+    /// a gui::LinePyramid, which is those same elements kept -- at the finest
+    /// bucket `budget` affords -- so that every closer look afterwards is a
+    /// fold in memory rather than another read. See PlotPyramid.hpp.
+    struct PyramidRequest
+    {
+        /// Which line. A table row when `alongRow`, a table column otherwise --
+        /// and the second is the case that matters, because defaultOnX keeps a
+        /// rank-1 dimension on the row axis, so every 1-D dataset in every file
+        /// is a line down the rows.
+        int series = 0;
+        bool alongRow = false;
+        /// Doubles this line's pyramid may spend. See gui::baseBucketFor: it
+        /// decides the base bucket, and the base bucket decides the only zooms
+        /// that still cost a read.
+        long long budget = 0;
+    };
+
+    /// A pyramid per request, in one crossing. Blocks, as sampleValues does.
+    ///
+    /// `refused` comes back with why, when the dataset has nothing numeric to
+    /// read at all -- the message the plot prints instead of drawing.
+    [[nodiscard]] std::vector<LinePyramid>
+    samplePyramids(const std::vector<PyramidRequest>& requests, QString& refused) const;
+
+    /// The same batch against a source the caller already has, with no waiting
+    /// of its own -- the static form, for the same reason readSamples has one.
+    [[nodiscard]] static std::vector<LinePyramid>
+    readPyramids(const h5core::DataSource& source, const TableAxes& axes,
+                 const std::vector<PyramidRequest>& requests);
+
     /// Last read error, empty when the dataset reads cleanly.
     [[nodiscard]] const QString& errorText() const { return errorText_; }
 
@@ -331,6 +384,10 @@ private:
                                                 const TableAxes& axes, int firstRow, int rowSpan,
                                                 int maxRows, int firstColumn, int columnSpan,
                                                 int maxColumns, bool envelope = false);
+    /// One line read whole into a pyramid, on the HDF5 thread.
+    [[nodiscard]] static LinePyramid pyramidFrom(const h5core::DataSource& source,
+                                                 const TableAxes& axes,
+                                                 const PyramidRequest& request);
     /// Whether there is anything to sample, and what to say when there is not.
     [[nodiscard]] bool sampleable(NumericGrid& grid) const;
     [[nodiscard]] QString labelFor(int row, int column, bool showX, bool showY) const;
@@ -342,7 +399,8 @@ private:
     bool present_ = false;
     h5core::DatasetInfo info_;
     QString sourcePath_;
-    TableAxes axes_;
+    /// Never null: see sharedAxes() for why it is a pointer.
+    std::shared_ptr<const TableAxes> axes_ = std::make_shared<const TableAxes>();
 
     /// Requests in flight, disowned whenever the source changes so a block
     /// read of the last dataset cannot be painted over this one.

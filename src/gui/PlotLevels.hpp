@@ -3,7 +3,8 @@
 
 #pragma once
 
-// How a line is folded into buckets, and which runs of it to hold.
+// How a line is folded into buckets, how a fold is folded again, and which
+// runs of it to hold.
 //
 // The arithmetic both plots reduce a line with, in one place because there were
 // two of it. DatasetTableModel::sampleFrom walked a read buffer and took the
@@ -17,6 +18,19 @@
 // Everything here is doubles and a vector. No Qt, no HDF5, no window -- so
 // tests/test_plotlevels.cpp asserts all of it with nothing open, which is the
 // arrangement PlotProjection.hpp already argues for.
+//
+// One property of an envelope is load-bearing enough to state on its own, and
+// coarsenEnvelope() below is built entirely out of it:
+//
+//   **An envelope can be coarsened exactly, and only coarsened.**
+//
+// The smallest and the largest of a run are the smallest and the largest of
+// the smallests and largests of its parts, so merging adjacent buckets loses
+// nothing at all. Splitting one does not work the other way: a bucket's two
+// extremes say nothing about which half of it they came from. That asymmetry
+// is the whole shape of gui::LinePyramid -- read at the finest bucket the
+// budget affords, once, and derive every coarser view from it in memory
+// rather than reading the file again.
 
 #include "gui/PlotProjection.hpp"
 
@@ -84,6 +98,36 @@ struct Extremes
 /// sample for sample.
 void reduceBuckets(const double* values, long long count, long long bucket,
                    std::vector<double>& out);
+
+/// The same fold, written straight into `out`.
+///
+/// Exactly `2 * ceil(count / bucket)` doubles, and the caller has made room for
+/// them. It is here because the pyramid folds into slices of a buffer it has
+/// already sized -- one level's worth at a time, on several threads at once --
+/// and appending to a vector per piece and copying it into place afterwards was
+/// a second pass over every element of the line at every level of the ladder.
+void reduceBucketsInto(const double* values, long long count, long long bucket, double* out);
+
+/// Merge every `factor` buckets of an existing envelope into one, appending
+/// `ceil(buckets / factor)` pairs to `out`.
+///
+/// `pairs` is a min/max envelope as reduceBuckets() writes one. The result
+/// is **exactly** what reduceBuckets() would have produced from the original
+/// elements at `factor` times the bucket -- not an approximation of it -- and
+/// that is the claim the whole cache rests on, so it is worth writing down why.
+///
+/// An extreme of a union is an extreme of the extremes, so the values are
+/// right. The *order* is right for a less obvious reason: every element of
+/// bucket k precedes every element of bucket k+1, and each pair is already in
+/// occurrence order, so the pair buffer is itself a sequence in occurrence
+/// order. Folding it with a bucket of `2 * factor` therefore asks exactly the
+/// question reduceBuckets() asks of the elements -- which is why this is one
+/// line rather than a second implementation to keep in step.
+void coarsenEnvelope(const double* pairs, long long buckets, long long factor,
+                     std::vector<double>& out);
+
+/// The same merge, written straight into `out`. See reduceBucketsInto.
+void coarsenEnvelopeInto(const double* pairs, long long buckets, long long factor, double* out);
 
 // ---------------------------------------------------------------------------
 // Which runs to hold, which to draw from, and which to read next

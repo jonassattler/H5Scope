@@ -598,8 +598,20 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not 
     CHECK(plot->thinned());
     CHECK(plot->maximum() == Approx(9.0));
 
-    SECTION("and a closer look is read the same way")
+    SECTION("and a closer look is not read at all")
     {
+        // The one pass above kept what it read, at the finest bucket the budget
+        // affords, so zooming in is a fold of a buffer already in hand. This
+        // used to be "a bounded number of hyperslabs rather than one per drawn
+        // point", which was the right bound while a closer look was a read; the
+        // bound now is none.
+        //
+        // The Plot tab does the same thing on the same code -- see
+        // tests/test_cost.cpp, "a zoom from the whole line to a single sample
+        // reads nothing" -- which is what keeps the two tabs one program.
+        const gui::PlotLine whole = plot->lineOf(0);
+        const double summaryStep = whole.positionStep;
+
         const long long asked = gui::CustomPlot::hyperslabs();
         plot->setVisibleRange(12000.0, 12800.0);
         settleAll();
@@ -607,10 +619,20 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not 
         settleAll();
         const long long closer = gui::CustomPlot::hyperslabs() - asked;
 
-        // A run of a few thousand elements is one hyperslab too -- and, more to
-        // the point, a bounded number of them rather than one per drawn point.
-        CHECK(closer >= 1);
-        CHECK(closer <= 8);
+        CHECK(closer == 0);
+
+        // ...and it resolved rather than stretching, which is the half a count
+        // of zero would otherwise be perfectly happy to lie about.
+        const gui::PlotLine near = plot->lineOf(0);
+        REQUIRE(near.values != nullptr);
+        CHECK(near.positionStep < summaryStep);
+        // The spike is still in it: the run covers 12000..12800 and 12345 is
+        // inside, so whatever the bucket, one of these values is the spike.
+        double highest = 0.0;
+        for (qsizetype i = 0; i < near.count; ++i) {
+            highest = std::max(highest, near.values[i]);
+        }
+        CHECK(highest == Approx(9.0));
     }
 }
 

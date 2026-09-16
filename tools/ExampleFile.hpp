@@ -72,4 +72,19 @@ struct ScaleSpec
 /// thousands of each.
 std::size_t writeScaleFile(const std::filesystem::path& path, const ScaleSpec& spec = {});
 
+/// Write one long ADC trace of `count` elements at `path`, and return its size.
+///
+/// The third file, and the one the plot is measured on rather than the one it
+/// is tested against. /plotting/adc_10M in example.h5 is the same synthesis at
+/// ten million, which is enough to be difficult and small enough to write on
+/// every test run; this is for the sizes that are not -- a hundred million is
+/// two hundred megabytes and a billion is two gigabytes, so neither is written
+/// by the suite, by CI, or by anything but somebody asking for it.
+///
+/// Same waveform, same noise, same one-sample impulses at indices no round
+/// stride lands on, scaled to the length. int16 because that is what an ADC
+/// writes. The dataset is named `/plotting/adc` whatever the count, so that
+/// tools/bench-zoom has one path to point at.
+std::size_t writeAdcFile(const std::filesystem::path& path, std::size_t count);
+
 } // namespace h5example

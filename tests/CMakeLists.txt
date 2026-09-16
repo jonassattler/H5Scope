@@ -59,8 +59,14 @@ catch_discover_tests(test_plotprojection)
 # constants copied between them under comments saying they had to match.
 # Nothing here opens a file or makes a window: the whole of it is doubles, a
 # vector of windows and a view.
+#
+# gui::PlotPyramid is asserted here too, for the same reason and with the same
+# nothing open -- it is the fold of PlotLevels held at every resolution at once.
+# It links test_main rather than Catch2's own because its build spreads a large
+# fold over QThreadPool, and the path that does is worth asserting rather than
+# only the one small enough to stay on the calling thread.
 add_executable(test_plotlevels test_plotlevels.cpp)
-target_link_libraries(test_plotlevels PRIVATE gui Catch2::Catch2WithMain)
+target_link_libraries(test_plotlevels PRIVATE gui test_main Catch2::Catch2)
 catch_discover_tests(test_plotlevels)
 
 # --- the custom plot tabs -------------------------------------------------
@@ -151,6 +157,7 @@ add_test(NAME benchmarks
           -DMAKE_EXAMPLE=$<TARGET_FILE:make-example-file>
           -DBENCH_TREE=$<TARGET_FILE:bench-tree>
           -DBENCH_DATA=$<TARGET_FILE:bench-data>
+          -DBENCH_ZOOM=$<TARGET_FILE:bench-zoom>
           -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
           -P ${CMAKE_SOURCE_DIR}/cmake/RunBenchmarks.cmake
 )

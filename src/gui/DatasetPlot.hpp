@@ -265,9 +265,6 @@ private:
     /// Sample every line in the drawn set that has not been sampled yet, and
     /// with it the extent and the point count they share.
     void ensure() const;
-    /// The rectangle of the table one line is: a row of it, or a column when
-    /// the lines run the other way.
-    [[nodiscard]] DatasetTableModel::SampleRequest requestFor(int series) const;
     /// Read every drawn line that is not already held, in one batch. Asking
     /// per line is a blocking round trip per line, which is what `all` on a
     /// table of thousands used to cost.
@@ -440,6 +437,21 @@ private:
     /// Ask for it. What the settle timer calls, and the one place a read is
     /// submitted rather than waited for.
     void askForDetail();
+    /// Fill `detail` for every drawn line out of the pyramids, if they can.
+    ///
+    /// What askForDetail() tries before it submits anything. A run at or above
+    /// a line's base bucket is a fold of a buffer already in hand -- a few
+    /// thousand doubles, microseconds -- so it is installed in the same call
+    /// rather than a round trip later, which is the whole of why twenty frames
+    /// of a zoom can be twenty frames rather than twenty reads.
+    ///
+    /// False when any drawn line cannot answer, which leaves the whole run to
+    /// the file: a run half in memory and half on disk would be two pictures.
+    [[nodiscard]] bool fillDetail(const PlotWindow& detail);
+    /// Build the pyramid for every drawn line that has none. Blocks.
+    void buildPyramids() const;
+    /// Doubles one line's pyramid may spend. See gui::baseBucketFor.
+    [[nodiscard]] long long pyramidBudget() const;
     /// Install an answer, if it is still the answer that was wanted.
     void takeDetail(const PlotWindow& detail, const std::vector<int>& series,
                     std::vector<DatasetTableModel::NumericGrid> grids);
@@ -468,6 +480,20 @@ private:
     /// Pruned to the drawn set on every sample, so what is held is what is on
     /// screen and a line that goes away stops costing memory.
     mutable std::map<int, std::vector<double>> lines_;
+
+    /// Each drawn line held whole, at every resolution it will be drawn at.
+    ///
+    /// The cache the closer look is served out of, and the reason a zoom stopped
+    /// costing a read. `lines_` above is derived from these -- it is the top of
+    /// each pyramid, folded to the pane's width -- and so is every run in
+    /// `levels_` whose bucket the pyramid can answer. See PlotPyramid.hpp.
+    ///
+    /// Keyed as `lines_` is and pruned with it. Not borrowed by the renderer:
+    /// what reaches PlotLine is always a vector in `lines_` or in a Detail, so
+    /// these can be replaced without the retire dance -- and must be, because a
+    /// pyramid is the one thing here large enough that keeping two would matter.
+    mutable std::map<int, LinePyramid> pyramids_;
+
     mutable int points_ = 0;
     /// Table positions between one drawn point and the next. A double because
     /// an envelope puts two points in each bucket, so they sit half a bucket

@@ -5,9 +5,10 @@
 
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
-#include "PlotItem.hpp"
 #include "PlotBudget.hpp"
+#include "PlotItem.hpp"
 #include "PlotLevels.hpp"
+#include "PlotPyramid.hpp"
 
 #include <QAbstractListModel>
 #include <QPointer>
@@ -350,6 +351,19 @@ private:
         /// hand, and there is always something correct on screen while a read
         /// is in flight. Empty when there is none, which is the usual case.
         std::vector<Level> levels;
+
+        /// The line itself, held at every resolution it will be drawn at.
+        ///
+        /// What the levels above are folded out of, and the reason a zoom in a
+        /// custom tab costs no read: the whole-line pass keeps the elements it
+        /// touched, at the finest bucket the budget affords, so every closer
+        /// look afterwards is arithmetic. DatasetPlot holds one of these per
+        /// drawn line for exactly the same reason -- see PlotPyramid.hpp, which
+        /// is the one copy of it.
+        ///
+        /// Not borrowed by the renderer: what reaches PlotLine is always
+        /// `values` above or a Level's, so this needs no retiring.
+        LinePyramid pyramid;
     };
 
     // Both of these live in a std::vector that is pushed to while the renderer
@@ -415,6 +429,14 @@ private:
     /// when the pane is already answered -- the nearest octave out that nothing
     /// in hand covers. Nothing when there is nothing left worth reading.
     [[nodiscard]] std::optional<PlotWindow> closerWanted(const Entry& entry) const;
+    /// Doubles one entry's pyramid may spend. See gui::baseBucketFor.
+    [[nodiscard]] long long pyramidBudget() const;
+    /// Fill `window` for `entry` out of its pyramid, if it can.
+    ///
+    /// What refreshCloser() tries before anything is submitted. False when the
+    /// entry has no pyramid, when the run is finer than its base bucket -- the
+    /// only zooms that still cost a read -- or when it is already held.
+    [[nodiscard]] bool fillCloser(Entry& entry, const PlotWindow& window);
     /// Drop the runs of `entry` furthest from the one the pane is on, down to
     /// heldLevels().
     void trimLevels(Entry& entry);

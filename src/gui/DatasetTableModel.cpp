@@ -57,7 +57,7 @@ void DatasetTableModel::rebuild(TableLayout layout)
 {
     // A null dataspace holds no elements at all, and the empty product over the
     // axes would otherwise make a one-cell table out of nothing.
-    axes_ = TableAxes(std::move(layout), !present_ || info_.isNull());
+    axes_ = std::make_shared<const TableAxes>(std::move(layout), !present_ || info_.isNull());
     blocks_.clear();
     asked_.clear();
     // A different table has a different extent, and a colour ramp stretched
@@ -70,7 +70,7 @@ int DatasetTableModel::rowCount(const QModelIndex& parent) const
     if (parent.isValid() || !present_ || !errorText_.isEmpty()) {
         return 0;
     }
-    return static_cast<int>(axes_.rows());
+    return static_cast<int>(axes_->rows());
 }
 
 int DatasetTableModel::columnCount(const QModelIndex& parent) const
@@ -78,7 +78,7 @@ int DatasetTableModel::columnCount(const QModelIndex& parent) const
     if (parent.isValid() || !present_ || !errorText_.isEmpty()) {
         return 0;
     }
-    return static_cast<int>(axes_.columns());
+    return static_cast<int>(axes_->columns());
 }
 
 DatasetTableModel::Block DatasetTableModel::readBlock(const h5core::DataSource& source,
@@ -175,9 +175,9 @@ void DatasetTableModel::ensureBlock(int row, int column) const
     Block block;
     block.rowOrigin = (row / kBlockRows) * kBlockRows;
     block.columnOrigin = (column / kBlockColumns) * kBlockColumns;
-    block.rows = static_cast<int>(std::min<qint64>(kBlockRows, axes_.rows() - block.rowOrigin));
+    block.rows = static_cast<int>(std::min<qint64>(kBlockRows, axes_->rows() - block.rowOrigin));
     block.columns =
-        static_cast<int>(std::min<qint64>(kBlockColumns, axes_.columns() - block.columnOrigin));
+        static_cast<int>(std::min<qint64>(kBlockColumns, axes_->columns() - block.columnOrigin));
     if (block.rows <= 0 || block.columns <= 0) {
         return;
     }
@@ -206,7 +206,7 @@ void DatasetTableModel::ensureBlock(int row, int column) const
             if (source == nullptr) {
                 return read;
             }
-            read.block = readBlock(*source, axes, block, read.error);
+            read.block = readBlock(*source, *axes, block, read.error);
             return read;
         },
         [self, origin](Read read) {
@@ -268,7 +268,7 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleValues(int firstRow, int
                                                                int maxRows, int firstColumn,
                                                                int columnSpan, int maxColumns) const
 {
-    return sampleValues(axes_, firstRow, rowSpan, maxRows, firstColumn, columnSpan, maxColumns);
+    return sampleValues(*axes_, firstRow, rowSpan, maxRows, firstColumn, columnSpan, maxColumns);
 }
 
 DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataSource& source,
@@ -617,8 +617,127 @@ DatasetTableModel::sampleValues(const std::vector<SampleRequest>& requests) cons
     return H5Thread::instance().invoke([&](H5Session& session) {
         const h5core::DataSource* source = session.source();
         return source == nullptr ? std::vector<NumericGrid>(requests.size())
-                                 : readSamples(*source, axes_, requests);
+                                 : readSamples(*source, *axes_, requests);
     });
+}
+
+std::vector<LinePyramid>
+DatasetTableModel::samplePyramids(const std::vector<PyramidRequest>& requests,
+                                  QString& refused) const
+{
+    std::vector<LinePyramid> built;
+    if (requests.empty()) {
+        return built;
+    }
+    NumericGrid refusal;
+    if (!sampleable(refusal)) {
+        // Why, and not merely that it will not read. A dataset of text has
+        // nothing to plot, and the plot says so in the pane rather than drawing
+        // an empty frame -- which it can only do if the reason crosses back.
+        refused = refusal.error;
+        built.assign(requests.size(), LinePyramid{});
+        return built;
+    }
+    // By reference for the reason sampleValues gives: a copy of the axes is one
+    // index per element of every dimension, which on a ten-million-element
+    // vector is eighty megabytes of memcpy before a byte has been read.
+    return H5Thread::instance().invoke([&](H5Session& session) {
+        const h5core::DataSource* source = session.source();
+        return source == nullptr ? std::vector<LinePyramid>(requests.size())
+                                 : readPyramids(*source, *axes_, requests);
+    });
+}
+
+std::vector<LinePyramid>
+DatasetTableModel::readPyramids(const h5core::DataSource& source, const TableAxes& axes,
+                                const std::vector<PyramidRequest>& requests)
+{
+    std::vector<LinePyramid> built;
+    built.reserve(requests.size());
+    for (const PyramidRequest& request : requests) {
+        built.push_back(pyramidFrom(source, axes, request));
+    }
+    return built;
+}
+
+LinePyramid DatasetTableModel::pyramidFrom(const h5core::DataSource& source, const TableAxes& axes,
+                                           const PyramidRequest& request)
+{
+    // On the HDF5 thread. One line, read from end to end exactly once, and kept
+    // rather than thinned away.
+    //
+    // This is the same walk sampleFrom's envelope takes -- hyperslabs of up to
+    // kReadRun elements, so the round trips follow the *length* of the line and
+    // not the resolution asked of it -- and it differs in one thing: what comes
+    // out is the elements at the finest bucket the budget affords instead of
+    // two thousand points. Everything the reader zooms to afterwards is folded
+    // out of that, in memory, which is the whole of why a zoom stopped costing
+    // a read.
+    LinePyramid pyramid;
+    const long long length = request.alongRow ? axes.columns() : axes.rows();
+    if (length <= 0) {
+        return pyramid;
+    }
+    // The dimension that turns fastest along the line, when there is one.
+    //
+    // There need not be. defaultOnX keeps a rank-1 dimension on the row axis,
+    // so a vector read the other way round is a thousand lines of one element
+    // and the axis those lines run along names no dimension at all. Each of
+    // them is then a single cell, read as one -- which is what the consecutive
+    // path of sampleFrom does with the same table.
+    const std::vector<std::size_t>& along = request.alongRow ? axes.xDims() : axes.yDims();
+    const bool spans = !along.empty();
+    const std::size_t fastest = spans ? along.back() : 0;
+
+    const long long base = baseBucketFor(length, request.budget);
+    PyramidBuilder builder(length, base);
+
+    try {
+        long long done = 0;
+        while (done < length) {
+            const long long remaining = length - done;
+            const auto limit = static_cast<int>(std::min<long long>(kReadRun, remaining));
+            const int run = !spans             ? 1
+                            : request.alongRow ? axes.runLength(done, std::max(limit, 1))
+                                               : axes.rowRunLength(done, std::max(limit, 1));
+            const int take = std::max(run, 1);
+
+            std::vector<hsize_t> offset = request.alongRow ? axes.coordinates(request.series, done)
+                                                           : axes.coordinates(done, request.series);
+            std::vector<hsize_t> count(axes.rank(), 1);
+            if (spans) {
+                count[fastest] = static_cast<hsize_t>(take);
+            }
+
+            const h5core::NumericWindow window = source.readNumericWindow(offset, count);
+            const auto seen = static_cast<long long>(window.values.size());
+            if (seen <= 0) {
+                // A read that yielded nothing must not stall the walk. The
+                // elements it would have covered are a gap, which is what they
+                // are -- and a gap is a pair of NaN rather than a bucket that
+                // is not there, because dropping it would slide every later one
+                // left and draw the line across the hole.
+                const std::vector<double> nothing(static_cast<std::size_t>(take),
+                                                  std::numeric_limits<double>::quiet_NaN());
+                builder.add(nothing.data(), take);
+                done += take;
+                continue;
+            }
+            builder.add(window.values.data(), seen);
+            done += seen;
+        }
+    }
+    catch (const h5core::H5Error&) {
+        // Whatever was read stands and the line stops there, which draws a
+        // partial line rather than none at all. The reason is already on its way
+        // to the reader through the paths that report it.
+        pyramid = builder.finish();
+        pyramid.length = builder.taken();
+        return pyramid;
+    }
+
+    pyramid = builder.finish();
+    return pyramid;
 }
 
 std::vector<DatasetTableModel::NumericGrid>
@@ -651,7 +770,7 @@ QVariant DatasetTableModel::data(const QModelIndex& index, int role) const
     }
     const int row = index.row();
     const int column = index.column();
-    if (row < 0 || column < 0 || row >= axes_.rows() || column >= axes_.columns()) {
+    if (row < 0 || column < 0 || row >= axes_->rows() || column >= axes_->columns()) {
         return {};
     }
     // A number the delegate can always rely on. Every other exit below is a
@@ -793,7 +912,7 @@ int DatasetTableModel::widestCell(int firstRow, int rows, int firstColumn, int c
 
 QVariantMap DatasetTableModel::elementAt(int row, int column) const
 {
-    if (!present_ || row < 0 || column < 0 || row >= axes_.rows() || column >= axes_.columns()) {
+    if (!present_ || row < 0 || column < 0 || row >= axes_->rows() || column >= axes_->columns()) {
         return {};
     }
 
@@ -815,7 +934,7 @@ QVariantMap DatasetTableModel::elementAt(int row, int column) const
             return result;
         }
         try {
-            result.value = source->readElement(axes_.coordinates(row, column));
+            result.value = source->readElement(axes_->coordinates(row, column));
         }
         catch (const h5core::H5Error& error) {
             result.error = QString::fromStdString(error.summary());
@@ -847,24 +966,24 @@ QVariantMap DatasetTableModel::elementAt(int row, int column) const
 
 QString DatasetTableModel::labelFor(int row, int column, bool showX, bool showY) const
 {
-    const std::size_t rank = axes_.rank();
+    const std::size_t rank = axes_->rank();
     if (rank == 0 || !present_) {
         return {};
     }
 
-    const std::vector<hsize_t> coords = axes_.coordinates(row, column);
+    const std::vector<hsize_t> coords = axes_->coordinates(row, column);
 
     // Rank 1 has nothing to disambiguate, so it reads as a plain index -- and
     // the axis that carries no dimension has no index to print at all.
     if (rank == 1) {
-        const bool shown = axes_.layout().onX[0] ? showX : showY;
+        const bool shown = axes_->layout().onX[0] ? showX : showY;
         return shown ? QString::number(coords[0]) : QString{};
     }
 
     QStringList parts;
     parts.reserve(static_cast<qsizetype>(rank));
     for (std::size_t d = 0; d < rank; ++d) {
-        const bool shown = axes_.layout().onX[d] ? showX : showY;
+        const bool shown = axes_->layout().onX[d] ? showX : showY;
         parts << (shown ? QString::number(coords[d]) : QStringLiteral("_"));
     }
     // Brackets, not parentheses: the slice line above the grid already writes
@@ -875,7 +994,7 @@ QString DatasetTableModel::labelFor(int row, int column, bool showX, bool showY)
 
 QString DatasetTableModel::rowLabel(int row) const
 {
-    if (row < 0 || row >= axes_.rows()) {
+    if (row < 0 || row >= axes_->rows()) {
         return {};
     }
     return labelFor(row, 0, false, true);
@@ -883,7 +1002,7 @@ QString DatasetTableModel::rowLabel(int row) const
 
 QString DatasetTableModel::columnLabel(int column) const
 {
-    if (column < 0 || column >= axes_.columns()) {
+    if (column < 0 || column >= axes_->columns()) {
         return {};
     }
     return labelFor(0, column, true, false);
@@ -891,7 +1010,7 @@ QString DatasetTableModel::columnLabel(int column) const
 
 QString DatasetTableModel::cellLabel(int row, int column) const
 {
-    if (row < 0 || row >= axes_.rows() || column < 0 || column >= axes_.columns()) {
+    if (row < 0 || row >= axes_->rows() || column < 0 || column >= axes_->columns()) {
         return {};
     }
     return labelFor(row, column, true, true);
@@ -936,18 +1055,18 @@ namespace {
 
 QString DatasetTableModel::lineExpression(int line, bool fromRows) const
 {
-    const std::size_t rank = axes_.rank();
+    const std::size_t rank = axes_->rank();
     if (!present_ || rank == 0 || sourcePath_.isEmpty()) {
         return {};
     }
 
-    const std::vector<std::size_t>& along = fromRows ? axes_.xDims() : axes_.yDims();
+    const std::vector<std::size_t>& along = fromRows ? axes_->xDims() : axes_->yDims();
 
     // More than one dimension with something to run along, and the line is the
     // product of them rather than a slice of any one. See the header.
     int running = 0;
     for (const std::size_t d : along) {
-        if (axes_.layout().indices[d].size() > 1) {
+        if (axes_->layout().indices[d].size() > 1) {
             ++running;
         }
     }
@@ -956,7 +1075,7 @@ QString DatasetTableModel::lineExpression(int line, bool fromRows) const
     }
 
     const std::vector<hsize_t> coords =
-        fromRows ? axes_.coordinates(line, 0) : axes_.coordinates(0, line);
+        fromRows ? axes_->coordinates(line, 0) : axes_->coordinates(0, line);
     if (coords.size() != rank) {
         return {};
     }
@@ -967,7 +1086,7 @@ QString DatasetTableModel::lineExpression(int line, bool fromRows) const
     for (std::size_t d = 0; d < rank; ++d) {
         const bool runs = std::find(along.begin(), along.end(), d) != along.end();
         if (runs) {
-            parts << writeSelection(axes_.layout().indices[d], d < shape.size() ? shape[d] : 0);
+            parts << writeSelection(axes_->layout().indices[d], d < shape.size() ? shape[d] : 0);
         }
         else {
             parts << QString::number(coords[d]);

@@ -58,10 +58,10 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, and the plot renderer (`PlotItem` + `PlotProjection`) with the cache policy under it (`PlotLevels` + `PlotBudget`). QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, and the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`). QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
-| `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `make-screenshots`, the CI scripts and the two design checks. |
+| `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
 | `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
@@ -107,6 +107,24 @@ custom tab came to read one hyperslab per bucket for a release while the Plot
 tab read one per sixty-four thousand elements. It is Qt-free for
 `PlotProjection`'s reason, and `tests/test_plotlevels.cpp` asserts it with no
 file, no thread and no window.
+
+`gui::PlotPyramid` is what those runs are folded *out of*, and it is why they
+cost nothing. One property of an envelope carries the whole design:
+
+> **An envelope can be coarsened exactly, and only coarsened.** The smallest and
+> the largest of a run are the smallest and the largest of the smallests and
+> largests of its parts, so merging adjacent buckets loses nothing at all.
+> Splitting one does not work the other way.
+
+So the pass that reads a line for the whole-line summary — which already touches
+every element and then throws all but two thousand of them away — keeps them
+instead, at the finest bucket `gui::PlotBudget` affords, with every coarser
+level derived above it in steps of four. After that pass every run at every
+resolution is a fold of a few thousand doubles out of a buffer already in hand:
+`O(pane columns)` per frame whether the line is ten million elements or a
+billion, and no file at all. `PyramidBuilder` is the streaming form both plots
+read through, because a hundred-million-element line is not a buffer anyone
+hands over whole.
 
 Two rules hold across that boundary. **A tick is drawn where the curve was
 drawn, or it is a lie** — `PlotFrame.yFraction()` and `PlotItem::yFraction()`
@@ -199,24 +217,35 @@ each of them say so on every platform rather than on the one that noticed.
    rather than up, because the renderer summarises again in powers of two if it
    is handed more than `kSamplesPerColumn` points per column.
 
-   **A closer look re-reads, and several are held at once.** The whole-line
-   summary is of the *whole* line, so zooming in used to stretch it rather than
-   resolve it. The plot reads the run on screen again at a finer bucket once the
-   view has stopped moving — `gui::windowFor` decides the run,
+   **A closer look is folded, not read.** The whole-line summary is of the
+   *whole* line, so zooming in would stretch it rather than resolve it. The plot
+   draws the run on screen at a finer bucket — `gui::windowFor` decides the run,
    `DatasetPlot::setVisibleRange` and `CustomPlot::setVisibleRange` ask for it —
    and keeps the whole-line summary beside it, so the y axis stays the line's
    true extent.
 
-   The two directions of a zoom are not the same shape, and that is why there
-   are two mechanisms. Going **in** is free: a run costs its *span*, so it is
-   read an octave finer than the pane needs (`detailBuckets`, `closerBuckets`)
-   and the step down lands on detail that came with it. Going **out** cannot be
-   free that way — the next view is wider than the run in hand and no resolution
-   inside it helps — so runs are read *ahead* of the reader, `kPrefetchOctaves`
-   of them, each four times as wide as the one below it. Those reads happen
-   while the reader is looking rather than while they are waiting. Runs are
-   never thrown away when the view leaves them either, up to `kHeldLevels` and
-   whatever the budget affords, so retracing a zoom costs nothing at all.
+   Until 0.5.2 that run came back from the file, a round trip and a settle
+   later, one at a time. It now comes out of `gui::LinePyramid`: the line is
+   held whole from the one pass that read it, so `DatasetPlot::fillDetail` and
+   `CustomPlot::fillCloser` answer **in the same call that asked**, and the
+   whole ladder the policy wants — the run on screen, the octaves in towards
+   the pointer, the octaves out — is folded before the frame that asked for it
+   is drawn. `refreshDetail` loops rather than returning, because there is no
+   reply to arm the next step with.
+
+   The pane gets its *own* preferred bucket on every frame, even when a coarser
+   run in hand would have covered it. Settling for that run was right while the
+   alternative was a round trip and it cost up to an octave — about one drawn
+   station per column where the pane asked for two; out of a held line the finer
+   fold has nothing to weigh against.
+
+   `H5Thread::submit` is still the path below the pyramid's base bucket, which
+   is the only zoom a line too large to hold at bucket one still reads for. Those
+   are the cheapest reads there are: below the base, a run's span is at most a
+   paneful of base buckets, which is a single hyperslab however large the
+   dataset. `kPrefetchOctaves` and `kFocusOctavesIn` still shape what is asked
+   for, and runs are still never thrown away when the view leaves them, up to
+   `kHeldLevels` and whatever the budget affords.
 
    **A zoom says where it is going, and is read that way, at once.** The
    surface has always known where the pointer was — a wheel event carries it,
@@ -238,14 +267,32 @@ each of them say so on every platform rather than on the one that noticed.
    every frame of the drag. Clearing the focus (`clearZoomFocus`, from `panBy`
    and `resetView`) is what puts it back.
 
-   What `test_cost` holds it to: the **renderer** never reads, a gesture with
-   no focus never reads and one with a focus reads a handful of times rather
-   than once a notch, the pane's own read is one crossing, panning inside a run
-   reads nothing — the prefetch is measured from the *run* rather than from the
-   view, which is what keeps that true — and stepping in or out is a draw in the
-   same frame, never a fall back to the whole-line summary. A change that made
-   any of those read would not look like a bug, it would look like the plot had
-   become slow.
+   A job a gesture submits must not copy the table it reads. `TableAxes` carries
+   one index per element of every dimension, so a copy of one is eighty
+   megabytes on a ten-million-element vector and eight hundred on a
+   hundred-million one — a memcpy on the GUI thread before the read has even
+   been queued, which measured as a single 280 ms frame in the middle of a zoom
+   on `bench-zoom`. The axes are therefore *owned* through a `shared_ptr`
+   (`DatasetTableModel::sharedAxes`) rather than copied into one, and a job
+   still holding the old one is reading the table it was submitted about.
+
+   What `test_cost` holds it to: the **renderer** never reads, the whole line is
+   read once in hyperslabs bounded by `kReadRun`, and after that **a zoom reads
+   nothing at all** — not a gesture, not a pan inside a run, not a resize, not
+   retracing the way back out. The case that says it is *"a zoom from the whole
+   line to a single sample reads nothing"*: twenty frames from the whole of a
+   ten-million-element line down to one sample per column, each checked against
+   the elements themselves, with zero crossings and zero reads across all of
+   them. A change that made any of those read would not look like a bug, it
+   would look like the plot had become slow again.
+
+   The values are checked as hard as the counts, and deliberately: a cache that
+   is fast and subtly wrong counts exactly like one that works. `test_plotlevels`
+   asserts a coarsened envelope equals a read at that bucket value for value,
+   and `test_cost` asserts every drawn sample of every frame equals the element
+   it claims to summarise. `tools/bench-zoom` is the milliseconds beside those
+   counts — it prints per-frame min/median/p99 against a 5 ms budget, and how
+   many frames still held the one-sample impulse the pointer was put on.
 
    **What is drawn and what is held are two budgets.** `kDrawBudget` bounds
    what the renderer walks — every drawn line is projected on every frame, so
@@ -257,6 +304,16 @@ each of them say so on every platform rather than on the one that noticed.
    constant is how a generous number becomes an unbounded one. They were one
    number until 0.5.2, which is why that number had to be sixteen megabytes and
    why five held runs was all a hundred-million-element dataset ever got.
+
+   What the held budget buys is the pyramid's **base bucket**
+   (`gui::baseBucketFor`), and that is the one number a reader can feel. A
+   pyramid costs its base and a third again, so a line the budget can hold at
+   bucket one is a line where no zoom reads anything ever; one it cannot is held
+   at bucket two, four, sixteen, and the octaves below that base are the only
+   ones that still go to the file. On a 16 GB machine at **medium** that is
+   bucket one up to about a hundred million elements and bucket sixteen at a
+   billion — so a billion-element trace still zooms free for the first ten
+   octaves and costs one hyperslab for the rest.
 
    **Nothing is freed under a renderer that is reading it, and nothing blanks
    the pane to avoid that.** The borrow contract has two halves.

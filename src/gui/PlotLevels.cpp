@@ -37,14 +37,13 @@ long long wholeBuckets(long long length, long long bucket)
     return length > bucket ? (length / bucket) * bucket : length;
 }
 
-void reduceBuckets(const double* values, long long count, long long bucket, std::vector<double>& out)
+void reduceBucketsInto(const double* values, long long count, long long bucket, double* out)
 {
-    if (values == nullptr || count <= 0) {
+    if (values == nullptr || out == nullptr || count <= 0) {
         return;
     }
     const long long width = std::max<long long>(bucket, 1);
     const long long taken = (count + width - 1) / width;
-    out.reserve(out.size() + static_cast<std::size_t>(taken) * 2);
 
     const auto nothing = std::numeric_limits<double>::quiet_NaN();
     for (long long b = 0; b < taken; ++b) {
@@ -55,13 +54,46 @@ void reduceBuckets(const double* values, long long count, long long bucket, std:
             // Nothing drawable in the whole bucket. A pair of NaN is a gap, and
             // a gap is what that is -- dropping the bucket instead would slide
             // every later one left and draw the line across the hole.
-            out.push_back(nothing);
-            out.push_back(nothing);
+            out[b * 2] = nothing;
+            out[b * 2 + 1] = nothing;
             continue;
         }
-        out.push_back(found.first());
-        out.push_back(found.second());
+        out[b * 2] = found.first();
+        out[b * 2 + 1] = found.second();
     }
+}
+
+void reduceBuckets(const double* values, long long count, long long bucket,
+                   std::vector<double>& out)
+{
+    if (values == nullptr || count <= 0) {
+        return;
+    }
+    const long long width = std::max<long long>(bucket, 1);
+    const long long taken = (count + width - 1) / width;
+    const std::size_t was = out.size();
+    out.resize(was + static_cast<std::size_t>(taken) * 2);
+    reduceBucketsInto(values, count, width, out.data() + was);
+}
+
+void coarsenEnvelopeInto(const double* pairs, long long buckets, long long factor, double* out)
+{
+    if (pairs == nullptr || out == nullptr || buckets <= 0) {
+        return;
+    }
+    // See the header: the pair buffer is already a sequence in occurrence
+    // order, so folding it by twice the factor is the same question
+    // reduceBuckets() asks of the elements themselves.
+    reduceBucketsInto(pairs, buckets * 2, std::max<long long>(factor, 1) * 2, out);
+}
+
+void coarsenEnvelope(const double* pairs, long long buckets, long long factor,
+                     std::vector<double>& out)
+{
+    if (pairs == nullptr || buckets <= 0) {
+        return;
+    }
+    reduceBuckets(pairs, buckets * 2, std::max<long long>(factor, 1) * 2, out);
 }
 
 namespace {

@@ -18,7 +18,7 @@
 # Windows, where the paths have backslashes in them and there is no shell worth
 # assuming.
 
-foreach(required MAKE_EXAMPLE BENCH_TREE BENCH_DATA WORK_DIR)
+foreach(required MAKE_EXAMPLE BENCH_TREE BENCH_DATA BENCH_ZOOM WORK_DIR)
   if(NOT DEFINED ${required})
     message(FATAL_ERROR "RunBenchmarks.cmake: ${required} was not set")
   endif()
@@ -53,17 +53,28 @@ endfunction()
 # wide group, a level of groups holding many members each, and real bytes
 # between the object headers. Every count is a tenth of what a person would
 # run this on, because what is being checked is that it runs at all.
-run_step("make-example-file --scale"
-  "${MAKE_EXAMPLE}" "${scale_dir}" --runs 1 --flat 128 --sessions 4)
+# ...and, in the same run because the generator writes the base files either
+# way, one short trace for bench-zoom. Two million samples is four megabytes and
+# a couple of seconds; what is being checked is that the tool runs, not that the
+# line is long.
+run_step("make-example-file --scale --adc"
+  "${MAKE_EXAMPLE}" "${scale_dir}" --runs 1 --flat 128 --sessions 4 --adc 2000000)
 
 set(scale_file "${scale_dir}/example_scale.h5")
 if(NOT EXISTS "${scale_file}")
   message(FATAL_ERROR "the generator wrote no ${scale_file}")
 endif()
 
+set(adc_file "${scale_dir}/example_adc_2000000.h5")
+if(NOT EXISTS "${adc_file}")
+  message(FATAL_ERROR "the generator wrote no ${adc_file}")
+endif()
+
 # --warm on both: the point is that they run, and evicting the page cache would
 # only make a smoke test slower and noisier.
 run_step("bench-tree" "${BENCH_TREE}" "${scale_file}" --depth 2 --warm)
 run_step("bench-data" "${BENCH_DATA}" "${scale_file}" --warm)
+run_step("bench-zoom" "${BENCH_ZOOM}" "${adc_file}"
+         --dataset /plotting/adc --at 999983 --warm)
 
 file(REMOVE_RECURSE "${scale_dir}")
