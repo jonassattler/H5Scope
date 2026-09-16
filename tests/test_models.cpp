@@ -47,6 +47,30 @@ using Catch::Matchers::ContainsSubstring;
 
 namespace {
 
+/// The indented rows of the Information tab's datatype panel: the compound
+/// opened out until nothing is left but base types.
+///
+/// Read through infoPanels() rather than off the model, because that is the
+/// property QML binds -- so this is the tree a reader actually sees, depths and
+/// all.
+QVariantList typeTree(const gui::AppController& controller)
+{
+    QVariantList tree;
+    for (const QVariant& panel : controller.infoPanels()) {
+        const QVariantMap fields = panel.toMap();
+        if (fields.value(QStringLiteral("title")).toString()
+            != QStringLiteral("datatype")) {
+            continue;
+        }
+        for (const QVariant& row : fields.value(QStringLiteral("rows")).toList()) {
+            if (row.toMap().value(QStringLiteral("depth")).toInt() > 0) {
+                tree.append(row);
+            }
+        }
+    }
+    return tree;
+}
+
 /// Give `item` a pane and a window, so that it will answer questions about
 /// what it is drawing.
 void frameOver(gui::PlotItem& item, double xMin, double xMax, double yMin, double yMax)
@@ -763,6 +787,43 @@ TEST_CASE_METHOD(ControllerFixture, "the info model describes the selection", "[
     {
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/group")));
         REQUIRE(info()->valueFor(QStringLiteral("Children")) == QStringLiteral("1"));
+    }
+
+    SECTION("a compound is opened out until nothing is left but base types")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        // The comma-joined Members row stays -- it is the one-line answer --
+        // and the tree is the other entry, under a row that says what it is.
+        CHECK(info()->valueFor(QStringLiteral("Members"))
+              == QStringLiteral("id, value"));
+        const QVariantList tree = typeTree(controller);
+        REQUIRE(tree.size() == 2);
+        CHECK(tree[0].toMap().value("label").toString() == QStringLiteral("id"));
+        CHECK(tree[0].toMap().value("value").toString() == QStringLiteral("int32"));
+        CHECK(tree[0].toMap().value("depth").toInt() == 1);
+        CHECK(tree[1].toMap().value("label").toString() == QStringLiteral("value"));
+        CHECK(tree[1].toMap().value("value").toString() == QStringLiteral("float64"));
+    }
+
+    SECTION("an enum says what its numbers mean")
+    {
+        // A nested enum has no Members row of its own, so the tree is the only
+        // place its symbols can be printed. It gets one here too, for one
+        // renderer rather than two.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/enum")));
+        const QVariantList tree = typeTree(controller);
+        REQUIRE(tree.size() == 1);
+        CHECK(tree[0].toMap().value("label").toString() == QStringLiteral("values"));
+        CHECK(tree[0].toMap().value("value").toString()
+              == QStringLiteral("RED, GREEN, BLUE"));
+    }
+
+    SECTION("a type with no parts gets no tree at all")
+    {
+        // float64 resolves to float64, which the Type row above has said. A
+        // panel that repeated it under a heading would be saying it twice.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/matrix")));
+        CHECK(typeTree(controller).isEmpty());
     }
 }
 

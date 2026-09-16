@@ -847,6 +847,36 @@ TestCase {
         verify(AppController.infoModel.rowCount() >= 8)
     }
 
+    /// The datatype panel opens a compound out until nothing is left but base
+    /// types. What says which member a row belongs to is the indent, so the
+    /// indent is what this asserts -- the depth reaching the view rather than
+    /// merely reaching the model.
+    function test_a_compound_datatype_is_drawn_as_an_indented_tree() {
+        verify(select("/compound"))
+        const view = createTemporaryObject(infoComponent, testCase, viewSize)
+        waitForRendering(view)
+
+        let members = null
+        let member = null
+        for (const item of selectableTexts(view)) {
+            if (item.text === "Members")
+                members = item
+            if (item.text === "id")
+                member = item
+        }
+        verify(members, "the one-line list of names stays where it was")
+        verify(member, "and the tree names each member on a row of its own")
+        verify(member.x > members.x,
+               "a tree row is drawn further in than the rows above it")
+
+        // And no heading at all where there is nothing to open out: float64
+        // resolves to float64, which the Type row above has already said.
+        verify(select("/matrix"))
+        waitForRendering(view)
+        for (const item of selectableTexts(view))
+            verify(item.text !== "Resolves to", "a plain type gets no tree")
+    }
+
     /// A viewer shows facts about a file that a reader has some other program
     /// to paste them into. A Text is a picture of a string: it can be read and
     /// not taken, which for a path or a filter name is the difference between

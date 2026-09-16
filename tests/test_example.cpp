@@ -171,6 +171,34 @@ QString infoRow(const gui::AppController& controller, const QString& label)
     return {};
 }
 
+/// The indented rows of the datatype panel: the type opened out until nothing
+/// is left but base types, each as "depth label value".
+///
+/// Flattened to strings on purpose. What this has to state is an order and a
+/// nesting, and a list of sentences states both at once -- where three parallel
+/// vectors would state them in a form nobody reads at a glance.
+QStringList typeTree(const gui::AppController& controller)
+{
+    QStringList tree;
+    for (const QVariant& panel : controller.infoPanels()) {
+        const QVariantMap fields = panel.toMap();
+        if (fields.value("title").toString() != QStringLiteral("datatype")) {
+            continue;
+        }
+        for (const QVariant& row : fields.value("rows").toList()) {
+            const QVariantMap cells = row.toMap();
+            const int depth = cells.value("depth").toInt();
+            if (depth > 0) {
+                tree << QStringLiteral("%1 %2 %3")
+                            .arg(depth)
+                            .arg(cells.value("label").toString(),
+                                 cells.value("value").toString());
+            }
+        }
+    }
+    return tree;
+}
+
 std::string attributeValue(const h5test::Reader& file, const std::string& path,
                            const std::string& name)
 {
@@ -746,6 +774,70 @@ TEST_CASE("a compound's type resolves all the way down", "[example][types]")
         REQUIRE(tags.info().type.cls == h5core::TypeClass::VarLen);
         REQUIRE(tags.info().type.base != nullptr);
         CHECK(tags.info().type.base->cls == h5core::TypeClass::Integer);
+    }
+}
+
+TEST_CASE("the datatype panel draws a compound as a tree", "[example][info]")
+{
+    // The same type the case above walks, as the reader meets it: the tree is
+    // that walk, printed. Asserted through infoPanels() because that is the
+    // property QML binds.
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+    REQUIRE(h5test::selectAndSettle(controller,
+                                    QStringLiteral("/types/compound/nested")));
+
+    // The one-line answer stays where it was; the tree is the other entry.
+    CHECK(infoRow(controller, QStringLiteral("Members"))
+          == QStringLiteral("station, timestamp, position, samples, quality, weight"));
+
+    const QStringList tree = typeTree(controller);
+    REQUIRE(tree.size() == 10);
+
+    SECTION("the members come in file order, one row each")
+    {
+        CHECK(tree[0] == QStringLiteral("1 station string (16 bytes)"));
+        CHECK(tree[1] == QStringLiteral("1 timestamp int64"));
+        CHECK(tree[9] == QStringLiteral("1 weight float32"));
+    }
+
+    SECTION("a member that is a compound carries its own members below it")
+    {
+        CHECK(tree[2] == QStringLiteral("1 position compound {x, y, z}"));
+        CHECK(tree[3] == QStringLiteral("2 x float64"));
+        CHECK(tree[4] == QStringLiteral("2 y float64"));
+        CHECK(tree[5] == QStringLiteral("2 z float64"));
+    }
+
+    SECTION("an array is one row: it has already said what it holds")
+    {
+        // "array[4] of float64" resolves to float64 in the saying of it, so an
+        // "element" row under it would be a level of indentation naming nothing.
+        CHECK(tree[6] == QStringLiteral("1 samples array[4] of float64"));
+        CHECK(tree[7].startsWith(QStringLiteral("1 quality")));
+    }
+
+    SECTION("an enum says what its numbers mean, which nothing else would")
+    {
+        CHECK(tree[7] == QStringLiteral("1 quality enum (3 values)"));
+        CHECK(tree[8] == QStringLiteral("2 values BAD, SUSPECT, GOOD"));
+    }
+
+    SECTION("a vlen resolves through to what it holds one of")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/plotting/events")));
+        const QStringList events = typeTree(controller);
+        REQUIRE(events.size() >= 2);
+        CHECK(events.back() == QStringLiteral("1 tags vlen of int32"));
+        CHECK(events.contains(QStringLiteral("2 x float64")));
+    }
+
+    SECTION("a type with no parts gets no tree at all")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/ramp")));
+        CHECK(typeTree(controller).isEmpty());
     }
 }
 

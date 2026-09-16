@@ -69,6 +69,64 @@ QString joinStrings(const std::vector<std::string>& values)
     return parts.join(QStringLiteral(", "));
 }
 
+/// Whether a type is made of parts a tree could draw out.
+///
+/// An enum counts. Its symbols are the only thing that says what its numbers
+/// mean, and a nested one has no Members row of its own to print them in.
+bool resolvesFurther(const h5core::TypeInfo& type)
+{
+    if (!type.members.empty()) {
+        return true;
+    }
+    if (type.cls == h5core::TypeClass::Enum && !type.memberNames.empty()) {
+        return true;
+    }
+    return type.base != nullptr && resolvesFurther(*type.base);
+}
+
+/// The rows under one node of the datatype tree, drawn `depth` steps in.
+///
+/// An array or a vlen contributes no row of its own: `array[2] of compound
+/// {x, y}` has already said it is a list, and an "element" row between the list
+/// and the members of what it holds would be a level of indentation naming
+/// nothing.
+void addTypeChildren(ObjectInfoModel::Content& content,
+                     const h5core::TypeInfo& type, int depth)
+{
+    if (!type.members.empty()) {
+        for (const h5core::TypeMember& member : type.members) {
+            content.addNested(QString::fromStdString(member.name),
+                              QString::fromStdString(member.type.description),
+                              depth);
+            addTypeChildren(content, member.type, depth + 1);
+        }
+        return;
+    }
+    if (type.cls == h5core::TypeClass::Enum && !type.memberNames.empty()) {
+        content.addNested(QStringLiteral("values"), joinStrings(type.memberNames),
+                          depth);
+        return;
+    }
+    if (type.base != nullptr) {
+        addTypeChildren(content, *type.base, depth);
+    }
+}
+
+/// The datatype opened out until nothing is left but base types, under the row
+/// that names it.
+///
+/// Nothing at all for a type with no parts: a dataset of float64 resolves to
+/// float64, and the Type row above has already said so. The recursion is finite
+/// because describeType caps how deep it looks in the first place.
+void addTypeTree(ObjectInfoModel::Content& content, const h5core::TypeInfo& type)
+{
+    if (!resolvesFurther(type)) {
+        return;
+    }
+    content.add(QStringLiteral("Resolves to"), {});
+    addTypeChildren(content, type, 1);
+}
+
 /// How a dataset's extent reads in one phrase. A null dataspace has no shape
 /// and no elements, which is a different statement from a scalar's "no shape,
 /// one element", and the two must not print the same.
@@ -106,6 +164,7 @@ QHash<int, QByteArray> ObjectInfoModel::roleNames() const
         {ValueRole, "value"},
         {IsWarningRole, "isWarning"},
         {SectionRole, "section"},
+        {DepthRole, "depth"},
     };
 }
 
@@ -126,6 +185,8 @@ QVariant ObjectInfoModel::data(const QModelIndex& index, int role) const
         return row.warning;
     case SectionRole:
         return row.section;
+    case DepthRole:
+        return row.depth;
     default:
         return {};
     }
@@ -156,6 +217,7 @@ QVariantList ObjectInfoModel::sections() const
                 {QStringLiteral("label"), row.label},
                 {QStringLiteral("value"), row.value},
                 {QStringLiteral("isWarning"), row.warning},
+                {QStringLiteral("depth"), row.depth},
             });
         }
         if (rows.isEmpty()) {
@@ -184,7 +246,14 @@ void ObjectInfoModel::Content::beginSection(QString name, QString meta, bool acc
 
 void ObjectInfoModel::Content::add(QString label, QString value, bool warning)
 {
-    rows.push_back(Row{std::move(label), std::move(value), warning, currentSection});
+    rows.push_back(
+        Row{std::move(label), std::move(value), warning, currentSection, 0});
+}
+
+void ObjectInfoModel::Content::addNested(QString label, QString value, int depth)
+{
+    rows.push_back(
+        Row{std::move(label), std::move(value), false, currentSection, depth});
 }
 
 void ObjectInfoModel::showContent(Content content)
@@ -263,6 +332,7 @@ ObjectInfoModel::Content ObjectInfoModel::gather(h5core::File& file, const QStri
             if (!type.memberNames.empty()) {
                 content.add(QStringLiteral("Members"), joinStrings(type.memberNames));
             }
+            addTypeTree(content, type);
         }
 
         const int attributeCount =
@@ -295,6 +365,7 @@ ObjectInfoModel::Content ObjectInfoModel::gather(h5core::File& file, const QStri
             if (!info.type.memberNames.empty()) {
                 content.add(QStringLiteral("Members"), joinStrings(info.type.memberNames));
             }
+            addTypeTree(content, info.type);
 
             // What the file says it is a picture of, and what that made the
             // Data Viewer open on. Only a dataset carrying CLASS="IMAGE" has
