@@ -8,6 +8,14 @@
 #include <algorithm>
 
 #if defined(Q_OS_WIN)
+// NOMINMAX before the header, or the two std::max calls below stop compiling.
+// windows.h defines `max` and `min` as function-like macros, so `std::max(a, b)`
+// expands to `std::(a) > (b) ? ...` and MSVC reports it as C2589, "illegal token
+// on right side of '::'", pointing at a line that has nothing wrong with it.
+// WIN32_LEAN_AND_MEAN for the same reason src/main.cpp has it: this file wants
+// one function out of the SDK and none of the sockets, RPC or OLE.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <unistd.h>
