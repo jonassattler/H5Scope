@@ -56,13 +56,13 @@ ctest --preset release
 
 | Path | What it is |
 |---|---|
-| `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. |
+| `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
 | `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, and the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`). QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
-| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
+| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_member`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
 QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
@@ -152,6 +152,67 @@ a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
 on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, both
 retired stores hold bare `std::vector<double>`, and `static_assert`s next to
 each of them say so on every platform rather than on the one that noticed.
+
+## Compound data: `.member` indexing
+
+A compound used to be a terminus — `isNumeric` is Integer|Float only, and the
+only compound-aware code above `h5core` read one cell and opened it out in
+`CompoundPane`. A reader with a ten-million-row event table could look at struct
+number four and nothing else.
+
+`.member` is what unlocks it, and the whole of it rests on one rule:
+
+> **A subscript written after `.b` binds to the axes `b` itself contributes, and
+> to nothing else.** So `array[i1,i2,i3].b[i4]` and
+> `(array[:,:,:].b)[i1,i2,i3,i4]` are the same selection — element for element
+> and shape for shape — and under the other reading, where `[:]` after `.b`
+> would address the whole result, they are not.
+
+That identity is not preserved by hand; it *is* the implementation. The member
+projection happens first and produces one derived shape, `dataset ++ memberDims`,
+and after that there is one ordinary slice over the whole of it. The short
+spelling is resolved by handing its subscripts back to be written onto that same
+slice line (`MemberChain::folded`), so a member subscript is never a second kind
+of subscript and the two spellings have nothing to drift between.
+
+Four pieces:
+
+- **`h5core::TypeInfo::members`** — a recursive member tree beside the flat
+  `memberNames`, which stays as it was (the Information panel prints it, and an
+  enum's symbols live in it). A chain cannot be followed through names alone.
+- **`h5core::FieldDataset`** — the third `DataSource`, after `Dataset` and
+  `postproc::ComputedDataset`. The table, the plot, the image and the pipeline
+  are handed one instead of a `Dataset` and none of them has a branch for which
+  it got. **It reads the member and not the struct:** the memory type is a
+  compound holding just the named member (`H5Tcreate` + one `H5Tinsert`, nested
+  per link), so HDF5 extracts that field during the transfer. The member's own
+  axes are then selected *in memory*, because HDF5 cannot hyperslab inside an
+  `H5T_ARRAY` member — bounded by the member's extent, which is small by nature.
+- **`postproc::MemberPath`** — the grammar, beside the subscript grammar for the
+  reason already written over that one. Resolving is arithmetic over a
+  `TypeInfo`, so it costs no read and answers on every keystroke.
+- **The two entry points.** The slice bar grows a second box after the closing
+  bracket, shown only for a compound; `sliceText` keeps its exact meaning, which
+  is what leaves the pipeline's slice row alone. A custom tab types the whole
+  line at once, and there a chain is recognised **only after a `]`** — a link
+  name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a dataset
+  and not member 3 of `run`. Every expression without a `].` in it parses
+  exactly as it always did, which is why saved views migrate for free.
+
+**The vlen rule.** A vlen's length differs in every record and every view here
+is a rectangle, so it contributes no axis: `.tags` keeps the dataset's shape and
+reads as the list (not numeric, so it does not plot), `.tags[3]` keeps the shape
+and reads as what the list holds (so it does), and `.tags[0:2]` is refused.
+A record whose list is too short has no value there — an empty cell, and a NaN
+in a line, which is where a stroke ends. Nothing in that needs to know how long
+any record's list is, so nothing reads the whole dataset to draw the start of it.
+
+`/plotting/events` in the example file is a hundred thousand records with one of
+every member class in the same struct. `/series/pairs` in the test fixture is
+`/series/a` and `/series/b` again as structs, which is what lets
+`test_customplot` assert that a member and a dataset of its own cost the same —
+**read for read**, not only value for value. A member read that fell back to a
+round trip per element would draw exactly the right picture.
 
 ## Invariants worth knowing before editing
 
