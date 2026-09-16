@@ -200,6 +200,31 @@ void writeFixture(const std::string& path)
         }
         writeDataset(series, "half", H5T_NATIVE_DOUBLE, {32}, half.data());
 
+        // The same two lines again, as one table of structs.
+        //
+        // `pairs.a` is `a` and `pairs.b` is `b`, element for element, on
+        // purpose: a member of a compound and a dataset of its own are the same
+        // line read two ways, and a suite that has both can say so -- in the
+        // values *and* in the number of hyperslabs it took to get them. That
+        // second half is the one nothing else would notice: a member read that
+        // fell back to one round trip per element would draw exactly the right
+        // picture.
+        struct Pair
+        {
+            double a;
+            double b;
+        };
+        std::array<Pair, 64> pairs{};
+        for (std::size_t i = 0; i < pairs.size(); ++i) {
+            pairs[i] = Pair{a[i], b[i]};
+        }
+        const hid_t pairType = mustId(H5Tcreate(H5T_COMPOUND, sizeof(Pair)),
+                                      "create pair compound");
+        must(H5Tinsert(pairType, "a", HOFFSET(Pair, a), H5T_NATIVE_DOUBLE), "pair a");
+        must(H5Tinsert(pairType, "b", HOFFSET(Pair, b), H5T_NATIVE_DOUBLE), "pair b");
+        writeDataset(series, "pairs", pairType, {64}, pairs.data());
+        H5Tclose(pairType);
+
         H5Gclose(series);
     }
 

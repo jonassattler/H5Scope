@@ -38,6 +38,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -841,6 +842,119 @@ TEST_CASE("a member of a compound reads as a dataset of its own",
         REQUIRE(element.fields.size() == 3);
         CHECK(element.fields[0].name == "x");
         CHECK(element.json == R"({"x": 2, "y": 4, "z": 6})");
+    }
+}
+
+TEST_CASE("every kind of member of a compound is reachable", "[example][member]")
+{
+    // /plotting/events is a hundred thousand records holding one of each:
+    //   time float64, energy float32, station string, position compound,
+    //   samples array[4], quality enum, tags vlen int32
+    // with tags[i] holding i % 4 entries, so every fourth list is empty.
+    const auto file = openExample();
+    const h5test::Dataset events(file, "/plotting/events");
+    const h5core::TypeInfo& type = events.info().type;
+    REQUIRE(events.info().shape == std::vector<hsize_t>{100000});
+    REQUIRE(type.members.size() == 7);
+
+    SECTION("a float member is a line of a hundred thousand numbers")
+    {
+        const h5test::Field energy(file, "/plotting/events",
+                                   h5test::chainOf(type, {"energy"}));
+        CHECK(energy.info().shape == std::vector<hsize_t>{100000});
+        CHECK(energy.info().isNumeric());
+        // The spikes are at i % 10000 == 7, and they are what an envelope has
+        // to keep: 500 against a swell that never leaves 10..90.
+        const auto around = energy.readNumericWindow({0}, {10});
+        CHECK(around.values[7] == 500.0);
+        CHECK(around.values[6] < 100.0);
+    }
+
+    SECTION("a chain through a compound member")
+    {
+        const h5test::Field x(file, "/plotting/events",
+                              h5test::chainOf(type, {"position", "x"}));
+        const auto values = x.readNumericWindow({0}, {5});
+        REQUIRE(values.values == std::vector<double>{0.0, 1.0, 2.0, 3.0, 4.0});
+    }
+
+    SECTION("an array member appends its axis at this scale too")
+    {
+        const h5test::Field samples(file, "/plotting/events",
+                                    h5test::chainOf(type, {"samples"}));
+        REQUIRE(samples.info().shape == std::vector<hsize_t>{100000, 4});
+        const auto block = samples.readNumericWindow({50000, 0}, {2, 4});
+        REQUIRE(block.values
+                == std::vector<double>{50000.0, 50000.25, 50000.5, 50000.75, 50001.0,
+                                       50001.25, 50001.5, 50001.75});
+    }
+
+    SECTION("a ragged member read whole is the list each record holds")
+    {
+        const h5test::Field tags(file, "/plotting/events",
+                                 h5test::chainOf(type, {"tags"}));
+        // No axis appended: a vlen's length differs in every record, so there
+        // is no dimension it could be.
+        CHECK(tags.info().shape == std::vector<hsize_t>{100000});
+        CHECK(tags.info().type.cls == h5core::TypeClass::VarLen);
+        CHECK_FALSE(tags.info().isNumeric());
+
+        const auto cells = tags.readWindow({0}, {4});
+        REQUIRE(cells.cells.size() == 4);
+        // i % 4 entries, holding i * 10 + t.
+        CHECK(cells.cells[0] == "[]");
+        CHECK_THAT(cells.cells[3], ContainsSubstring("30"));
+        CHECK_THAT(cells.cells[3], ContainsSubstring("32"));
+    }
+
+    SECTION("one index of a ragged member is a number, and a gap where there is none")
+    {
+        const h5test::Field first(file, "/plotting/events",
+                                  h5test::chainOf(type, {"tags"}, 0));
+        // Still the dataset's own shape, and now a number -- so it plots.
+        CHECK(first.info().shape == std::vector<hsize_t>{100000});
+        CHECK(first.info().type.cls == h5core::TypeClass::Integer);
+        CHECK(first.info().isNumeric());
+
+        const auto values = first.readNumericWindow({0}, {5});
+        REQUIRE(values.values.size() == 5);
+        // Record 0 has an empty list: no value there, which is a NaN, which is
+        // where a stroke ends rather than a number a line is drawn through.
+        CHECK(std::isnan(values.values[0]));
+        CHECK(values.values[1] == 10.0);
+        CHECK(values.values[2] == 20.0);
+        CHECK(values.values[3] == 30.0);
+        CHECK(std::isnan(values.values[4]));
+
+        // And as text, a record with nothing there prints nothing rather than
+        // a number it does not have.
+        const auto cells = first.readWindow({0}, {2});
+        CHECK(cells.cells[0].empty());
+        CHECK(cells.cells[1] == "10");
+    }
+
+    SECTION("an index past every list is every record having none")
+    {
+        const h5test::Field third(file, "/plotting/events",
+                                  h5test::chainOf(type, {"tags"}, 2));
+        const auto values = third.readNumericWindow({0}, {4});
+        // Only records with three entries have a third one: i % 4 == 3.
+        CHECK(std::isnan(values.values[0]));
+        CHECK(std::isnan(values.values[2]));
+        CHECK(values.values[3] == 32.0);
+    }
+
+    SECTION("a string member and an enum member read as what they are")
+    {
+        const h5test::Field station(file, "/plotting/events",
+                                    h5test::chainOf(type, {"station"}));
+        CHECK(station.readWindow({0}, {2}).cells
+              == std::vector<std::string>{"S-000", "S-001"});
+
+        const h5test::Field quality(file, "/plotting/events",
+                                    h5test::chainOf(type, {"quality"}));
+        CHECK(quality.readWindow({0}, {3}).cells
+              == std::vector<std::string>{"BAD", "SUSPECT", "GOOD"});
     }
 }
 

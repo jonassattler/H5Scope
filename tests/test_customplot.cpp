@@ -277,6 +277,47 @@ TEST_CASE_METHOD(PlotFixture, "a custom tab draws a member of a compound",
     }
 }
 
+TEST_CASE_METHOD(PlotFixture,
+                 "a member costs what the same line costs as a dataset of its own",
+                 "[custom][member][cost]")
+{
+    // /series/pairs holds /series/a and /series/b again, as one table of
+    // structs, element for element. So these are one line read two ways, and
+    // the two readings had better agree about both things: what the values are,
+    // and what it took to get them.
+    //
+    // The second is the one nothing else would notice. A member read that had
+    // fallen back to one round trip per element -- or to reading the whole
+    // struct and keeping a field -- would draw exactly the right picture, which
+    // is how a custom tab went a release asking HDF5 for one bucket at a time.
+    // A tab each, because adding an entry re-reads the ones already in the tab
+    // -- so two entries side by side would be counting one of them twice.
+    gui::CustomPlot* plain = tab();
+    const long long beforePlain = gui::CustomPlot::hyperslabs();
+    add(plain, QStringLiteral("/series/a[:]"));
+    const long long plainReads = gui::CustomPlot::hyperslabs() - beforePlain;
+
+    gui::CustomPlot* member = set()->plotAt(set()->addPlot());
+    settleAll();
+    REQUIRE(member != nullptr);
+    const long long beforeMember = gui::CustomPlot::hyperslabs();
+    add(member, QStringLiteral("/series/pairs[:].a"));
+    const long long memberReads = gui::CustomPlot::hyperslabs() - beforeMember;
+
+    REQUIRE(errorOf(plain, 0).isEmpty());
+    REQUIRE(errorOf(member, 0).isEmpty());
+
+    // Read for read.
+    CHECK(plainReads > 0);
+    CHECK(memberReads == plainReads);
+
+    // And value for value: pairs.a *is* a, so the two tabs draw one line.
+    CHECK(member->minimum() == plain->minimum());
+    CHECK(member->maximum() == plain->maximum());
+    CHECK(member->pointCount() == plain->pointCount());
+    CHECK(member->sourcePointCount() == 64);
+}
+
 TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when it does not",
                  "[custom]")
 {

@@ -40,6 +40,8 @@ private:
 ///   /series/b                1-D float64 [64], value 100 - i
 ///   /series/time             1-D float64 [64], value i / 2 -- a time base
 ///   /series/half             1-D float64 [32], value 2 * i -- half as long
+///   /series/pairs            1-D compound {a, b} [64] -- /series/a and
+///                            /series/b again, as one table of structs
 ///   /str_fixed               1-D fixed string [3]
 ///   /str_vlen                1-D variable string [3]
 ///   /str_scalar              scalar variable string, multi-line and long
