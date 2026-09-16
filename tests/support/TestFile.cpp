@@ -18,6 +18,23 @@
 namespace h5test {
 namespace {
 
+/// The line every assertion about reading, thinning and zooming is written
+/// against: a sine with one one-sample spike in it.
+///
+/// Written out once because two datasets are made of it -- `/trace` and the `v`
+/// member of `/series/trace_pairs` -- and those two being *the same numbers* is
+/// the whole point of having both. A second loop here would be a second line
+/// the day either was touched.
+std::vector<double> traceValues()
+{
+    std::vector<double> data(20000);
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        data[i] = std::sin(static_cast<double>(i) / 300.0);
+    }
+    data[12345] = 9.0;
+    return data;
+}
+
 std::filesystem::path makeUniqueDirectory(const std::string& stem)
 {
     static std::atomic<unsigned> counter{0};
@@ -200,30 +217,36 @@ void writeFixture(const std::string& path)
         }
         writeDataset(series, "half", H5T_NATIVE_DOUBLE, {32}, half.data());
 
-        // The same two lines again, as one table of structs.
+        // /trace again, as one member of a table of structs.
         //
-        // `pairs.a` is `a` and `pairs.b` is `b`, element for element, on
-        // purpose: a member of a compound and a dataset of its own are the same
-        // line read two ways, and a suite that has both can say so -- in the
-        // values *and* in the number of hyperslabs it took to get them. That
-        // second half is the one nothing else would notice: a member read that
-        // fell back to one round trip per element would draw exactly the right
-        // picture.
-        struct Pair
+        // `trace_pairs.v` is `/trace` element for element, on purpose: a member
+        // of a compound and a dataset of its own are one line read two ways, and
+        // a suite that has both can say so -- in the values, and in the number
+        // of hyperslabs it took to get them, and in what a zoom into it costs.
+        // That second half is the one nothing else would notice: a member read
+        // that fell back to a round trip per element would draw exactly the
+        // right picture.
+        //
+        // Inside /series rather than beside /trace at the root, because the
+        // root's listing is what several tests walk to see what a tree row says
+        // about a dataset, and a group nobody has expanded costs them nothing.
+        struct Sample
         {
-            double a;
-            double b;
+            double v;
+            double other;
         };
-        std::array<Pair, 64> pairs{};
-        for (std::size_t i = 0; i < pairs.size(); ++i) {
-            pairs[i] = Pair{a[i], b[i]};
+        const std::vector<double> trace = traceValues();
+        std::vector<Sample> samples(trace.size());
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            samples[i] = Sample{trace[i], -trace[i]};
         }
-        const hid_t pairType = mustId(H5Tcreate(H5T_COMPOUND, sizeof(Pair)),
-                                      "create pair compound");
-        must(H5Tinsert(pairType, "a", HOFFSET(Pair, a), H5T_NATIVE_DOUBLE), "pair a");
-        must(H5Tinsert(pairType, "b", HOFFSET(Pair, b), H5T_NATIVE_DOUBLE), "pair b");
-        writeDataset(series, "pairs", pairType, {64}, pairs.data());
-        H5Tclose(pairType);
+        const hid_t sampleType = mustId(H5Tcreate(H5T_COMPOUND, sizeof(Sample)),
+                                        "create sample compound");
+        must(H5Tinsert(sampleType, "v", HOFFSET(Sample, v), H5T_NATIVE_DOUBLE), "sample v");
+        must(H5Tinsert(sampleType, "other", HOFFSET(Sample, other), H5T_NATIVE_DOUBLE),
+             "sample other");
+        writeDataset(series, "trace_pairs", sampleType, {trace.size()}, samples.data());
+        H5Tclose(sampleType);
 
         H5Gclose(series);
     }
@@ -339,12 +362,8 @@ void writeFixture(const std::string& path)
     // a stride loses, and at the closest look it is the file's own value rather
     // than a bucket's extreme.
     {
-        std::vector<double> data(20000);
-        for (std::size_t i = 0; i < data.size(); ++i) {
-            data[i] = std::sin(static_cast<double>(i) / 300.0);
-        }
-        data[12345] = 9.0;
-        writeDataset(file, "trace", H5T_NATIVE_DOUBLE, {20000}, data.data());
+        const std::vector<double> data = traceValues();
+        writeDataset(file, "trace", H5T_NATIVE_DOUBLE, {data.size()}, data.data());
     }
 
     // --- a time base as long as that line ---------------------------------

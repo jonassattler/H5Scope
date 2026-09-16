@@ -281,41 +281,92 @@ TEST_CASE_METHOD(PlotFixture,
                  "a member costs what the same line costs as a dataset of its own",
                  "[custom][member][cost]")
 {
-    // /series/pairs holds /series/a and /series/b again, as one table of
-    // structs, element for element. So these are one line read two ways, and
-    // the two readings had better agree about both things: what the values are,
-    // and what it took to get them.
+    // /series/trace_pairs.v holds /trace again, element for element. So these
+    // are one line read two ways, and the two readings had better agree about
+    // both things: what the values are, and what it took to get them.
     //
     // The second is the one nothing else would notice. A member read that had
     // fallen back to one round trip per element -- or to reading the whole
-    // struct and keeping a field -- would draw exactly the right picture, which
-    // is how a custom tab went a release asking HDF5 for one bucket at a time.
-    // A tab each, because adding an entry re-reads the ones already in the tab
-    // -- so two entries side by side would be counting one of them twice.
+    // struct and keeping a field of it -- would draw exactly the right picture,
+    // which is how a custom tab once went a release asking HDF5 for one bucket
+    // at a time with nothing anywhere that minded.
+    //
+    // A tab each, because adding an entry re-reads the ones already in the tab,
+    // so two entries side by side would count one of them twice.
     gui::CustomPlot* plain = tab();
     const long long beforePlain = gui::CustomPlot::hyperslabs();
-    add(plain, QStringLiteral("/series/a[:]"));
+    add(plain, QStringLiteral("/trace[:]"));
     const long long plainReads = gui::CustomPlot::hyperslabs() - beforePlain;
 
     gui::CustomPlot* member = set()->plotAt(set()->addPlot());
     settleAll();
     REQUIRE(member != nullptr);
     const long long beforeMember = gui::CustomPlot::hyperslabs();
-    add(member, QStringLiteral("/series/pairs[:].a"));
+    add(member, QStringLiteral("/series/trace_pairs[:].v"));
     const long long memberReads = gui::CustomPlot::hyperslabs() - beforeMember;
 
     REQUIRE(errorOf(plain, 0).isEmpty());
     REQUIRE(errorOf(member, 0).isEmpty());
 
     // Read for read.
-    CHECK(plainReads > 0);
+    CHECK(plainReads == 1);
     CHECK(memberReads == plainReads);
 
-    // And value for value: pairs.a *is* a, so the two tabs draw one line.
+    // And value for value, down to the one-sample spike an envelope has to keep.
     CHECK(member->minimum() == plain->minimum());
     CHECK(member->maximum() == plain->maximum());
+    CHECK(member->maximum() == Approx(9.0));
     CHECK(member->pointCount() == plain->pointCount());
-    CHECK(member->sourcePointCount() == 64);
+    CHECK(member->sourcePointCount() == 20000);
+}
+
+TEST_CASE_METHOD(PlotFixture, "a zoom into a member reads nothing either",
+                 "[custom][member][cost]")
+{
+    // /series/trace_pairs.v is /trace, element for element, at the length every
+    // assertion about reading and zooming is written against. What this checks
+    // is that a pyramid built out of a *member* read behaves like one built out
+    // of a dataset read -- which it should, the pyramid sitting above
+    // DataSource and having no idea which it was handed, but "should" is not
+    // the same as checked, and this is the invariant that would be expensive to
+    // lose.
+    gui::CustomPlot* plot = tab();
+
+    const long long before = gui::CustomPlot::hyperslabs();
+    add(plot, QStringLiteral("/series/trace_pairs[:].v"));
+    const long long spent = gui::CustomPlot::hyperslabs() - before;
+
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+    // The same bound the dataset gets: the round trips follow the length of the
+    // line, not the number of buckets it is folded into.
+    CHECK(spent == (20000 + gui::kReadRun - 1) / gui::kReadRun);
+    CHECK(spent == 1);
+    // The one-sample spike survived the fold, so the reads changed and the
+    // arithmetic did not.
+    CHECK(plot->thinned());
+    CHECK(plot->maximum() == Approx(9.0));
+
+    const gui::PlotLine whole = plot->lineOf(0);
+    const double summaryStep = whole.positionStep;
+
+    const long long asked = gui::CustomPlot::hyperslabs();
+    plot->setVisibleRange(12000.0, 12800.0);
+    settleAll();
+    h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+    settleAll();
+    CHECK(gui::CustomPlot::hyperslabs() - asked == 0);
+
+    // ...and it resolved rather than stretching, which is the half a count of
+    // zero would otherwise be perfectly happy to lie about.
+    const gui::PlotLine near = plot->lineOf(0);
+    REQUIRE(near.values != nullptr);
+    CHECK(near.positionStep < summaryStep);
+    double highest = 0.0;
+    for (qsizetype i = 0; i < near.count; ++i) {
+        highest = std::max(highest, near.values[i]);
+    }
+    CHECK(highest == Approx(9.0));
 }
 
 TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when it does not",
