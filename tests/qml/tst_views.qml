@@ -1179,6 +1179,81 @@ TestCase {
         AppController.applyMember("")
     }
 
+    /// The members of a compound are in the file and nowhere the reader can
+    /// see them. Offering them here is what makes the box writable at all --
+    /// `.position.x` is otherwise something you have to already know.
+    function test_the_member_box_offers_what_could_go_in_it() {
+        verify(select("/compound")) // {id: int32, value: float64}
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ""
+        box.textEdited()
+        waitForRendering(win.contentItem)
+
+        // An empty box asks for everything that could go there. No file is
+        // touched for it: a chain resolves against the datatype already
+        // described, which is why this answers on the keystroke.
+        compare(AppController.memberCompletions("").length, 2)
+        const list = findChild(win, "sliceMemberCompletion")
+        verify(list, "the box must have its list")
+        verify(list.visible, "and it is up while the box is being written in")
+        // Drawn, not merely flagged: a popup whose content was never built
+        // would have exactly this `visible` and nothing on screen.
+        const rows = findChild(win, "completionList")
+        verify(rows, "the list must have built its rows")
+        compare(rows.count, 2)
+
+        // The two share only the dot, so Tab writes that and leaves the
+        // choosing to the reader -- a shell's behaviour, which is the one a
+        // reader already has.
+        keyClick(Qt.Key_Tab)
+        compare(box.text, ".")
+
+        box.text = ".v"
+        box.textEdited()
+        keyClick(Qt.Key_Tab)
+        compare(box.text, ".value")
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".value")
+        compare(AppController.datasetIsNumeric, true)
+
+        AppController.applyMember("")
+    }
+
+    /// Escape means the list while the list is up, and the box after that.
+    /// Two meanings for one key, in the order the reader put the things there.
+    function test_escape_dismisses_the_list_before_it_reverts_the_box() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        const list = findChild(win, "sliceMemberCompletion")
+        box.forceActiveFocus()
+        box.text = ".v"
+        box.textEdited()
+        waitForRendering(win.contentItem)
+        verify(list.visible)
+
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        verify(!list.visible, "the list goes")
+        compare(box.text, ".v", "and what was typed stays")
+
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        compare(box.text, "", "the second one puts back what the table shows")
+    }
+
     /// A chain that does not read is left in the box, in amber, with the
     /// reason -- the slice box's contract, because it is the same contract.
     function test_a_member_that_does_not_read_says_so_and_changes_nothing() {

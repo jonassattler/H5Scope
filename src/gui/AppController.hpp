@@ -255,10 +255,32 @@ public:
     /// arithmetic over the datatype already described, so it answers on every
     /// keystroke without opening anything.
     Q_INVOKABLE QString memberError(const QString& text) const;
-    /// Every member chain the selection offers, in file order and depth first.
-    /// What the pipeline's Select row is chosen from, and arithmetic over the
-    /// datatype already described -- so it costs no read.
-    [[nodiscard]] Q_INVOKABLE QStringList memberChoices() const;
+
+    // --- what could be written next --------------------------------------
+    //
+    // Two grammars are typed by hand in this application: a whole line naming
+    // a dataset, a subscript and a member (the custom plots' entry boxes), and
+    // a member chain on its own (the box after the slice bar's bracket). Each
+    // gets its own list, and both answer in whole strings -- what the box
+    // would hold if the candidate were taken -- because splicing a fragment
+    // back into a line three grammars deep is work for the thing that knows
+    // the grammar rather than for the box.
+    //
+    // **Nothing here reads more than the reader has already asked to see.**
+    // The tree is lazy by design; what a completion of a path can offer is
+    // what is listed, and a group that is not listed is *asked for* rather
+    // than walked -- the list arrives a moment later and `completionsChanged`
+    // says so. A completer that walked the file to answer a keystroke would
+    // undo the one property that lets this program open a file of a million
+    // objects.
+
+    /// What could be written next on a line naming a dataset. Whole lines.
+    [[nodiscard]] Q_INVOKABLE QStringList completions(const QString& text);
+    /// The same for a member chain on its own, against the selection's type.
+    [[nodiscard]] Q_INVOKABLE QStringList memberCompletions(const QString& text) const;
+    /// What Tab writes: the longest head every candidate shares, which is as
+    /// far as a reader can be taken without choosing for them.
+    [[nodiscard]] Q_INVOKABLE QString commonCompletion(const QStringList& options) const;
 
 private:
     /// What the data views draw: the dataset, or the dataset seen through the
@@ -269,6 +291,14 @@ private:
     /// *and* the projection, and those two come from different facts.
     [[nodiscard]] PostprocessModel::Subject
     pipelineSubject(const h5core::DatasetInfo& info) const;
+    /// The candidates for a path being typed, from what the tree has already
+    /// listed. Asks for the listing it needs when it has not been made.
+    [[nodiscard]] QStringList pathCompletions(const QString& head,
+                                              const QString& fragment);
+    /// The datatype a completion of a member chain resolves against: the
+    /// selection's own, or whatever the custom plots' cache knows about that
+    /// path. Null when neither knows it.
+    [[nodiscard]] const h5core::TypeInfo* typeOf(const QString& path) const;
 
 public:
     // --- settings a view keeps for the dataset they were made on ---------
@@ -321,6 +351,9 @@ signals:
     /// dataset its settings belonged to.
     void selectionAboutToChange();
     void selectionChanged();
+    /// A listing or a datatype that a completion was waiting on has arrived.
+    /// Whatever is showing a list of candidates asks again on this.
+    void completionsChanged();
     void errorTextChanged();
     void filterTextChanged();
     /// The table's selection of indices or its axis assignment changed.

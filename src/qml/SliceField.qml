@@ -244,6 +244,10 @@ Rectangle {
 
         property string error: ""
         property string memberError: ""
+        /// What could be written next in the member box, and whether the
+        /// reader has waved it away for this moment.
+        property var memberOptions: []
+        property bool memberDismissed: false
     }
 
     /// The path at its full length, whatever the label is drawing.
@@ -263,6 +267,15 @@ Rectangle {
         member.text = AppController.memberText
         internal.error = ""
         internal.memberError = ""
+        internal.memberOptions = []
+    }
+
+    /// The chains that could go in the member box, given what is in it.
+    /// Arithmetic over the datatype already described, so this costs no read
+    /// and can run on every keystroke.
+    function refreshMemberOptions() {
+        internal.memberOptions =
+            member.activeFocus ? AppController.memberCompletions(member.text) : []
     }
 
     /// Apply what has been typed. A line that does not read is left where it
@@ -479,14 +492,73 @@ Rectangle {
                 // described -- which costs no read -- and nothing is applied
                 // until the reader commits, so a half-typed chain never
                 // becomes a selection.
-                onTextEdited: internal.memberError =
-                    AppController.memberError(member.text)
+                onTextEdited: {
+                    internal.memberError = AppController.memberError(member.text)
+                    internal.memberDismissed = false
+                    field.refreshMemberOptions()
+                }
                 onAccepted: field.commitMember()
-                onActiveFocusChanged: if (!member.activeFocus) field.commitMember()
+                onActiveFocusChanged: {
+                    if (member.activeFocus) {
+                        // Offered on the way in rather than on the first
+                        // keystroke: an empty box over a compound is exactly
+                        // the moment a reader does not know what to write, and
+                        // the list is the only place the names appear.
+                        internal.memberDismissed = false
+                        field.refreshMemberOptions()
+                        return
+                    }
+                    internal.memberOptions = []
+                    field.commitMember()
+                }
 
                 Keys.onEscapePressed: {
+                    // The list first, as in the custom plots' entry box: while
+                    // it is up, dismissing it is what Escape means.
+                    if (memberCompletion.visible) {
+                        internal.memberDismissed = true
+                        return
+                    }
                     field.revert()
                     member.focus = false
+                }
+
+                // The members are in the file and nowhere the reader can see
+                // them, which is the whole case for completing this box: a
+                // nested compound's `.position.x` is otherwise something you
+                // have to already know.
+                Keys.onTabPressed: (event) => {
+                    internal.memberDismissed = false
+                    field.refreshMemberOptions()
+                    event.accepted = memberCompletion.take()
+                }
+                Keys.onUpPressed: (event) => {
+                    event.accepted = memberCompletion.visible
+                    if (event.accepted)
+                        memberCompletion.move(-1)
+                }
+                Keys.onDownPressed: (event) => {
+                    event.accepted = memberCompletion.visible
+                    if (event.accepted)
+                        memberCompletion.move(1)
+                }
+
+                CompletionPopup {
+                    id: memberCompletion
+
+                    objectName: "sliceMemberCompletion"
+
+                    options: internal.memberOptions
+                    written: member.text
+                    visible: internal.memberOptions.length > 0
+                             && member.activeFocus && !internal.memberDismissed
+
+                    onTaken: (option) => {
+                        member.text = option
+                        member.cursorPosition = option.length
+                        internal.memberError = AppController.memberError(option)
+                        field.refreshMemberOptions()
+                    }
                 }
             }
         }

@@ -12,6 +12,7 @@
 #include "gui/PlotProjection.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/Completion.hpp"
 #include "gui/ObjectInfoModel.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/DatasetStringListModel.hpp"
@@ -761,6 +762,195 @@ TEST_CASE_METHOD(ControllerFixture, "the slice is kept per dataset too", "[setti
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/cube")));
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/hypercube")));
         CHECK(controller.sliceText() == QStringLiteral(":, :, ::2, :"));
+    }
+}
+
+/// The completions for `text`, once everything they were waiting on has come.
+///
+/// A completer answers from what has already been read and *asks* for what has
+/// not, so the first answer about a group nobody has opened is empty by design
+/// and the one after it may still be growing as each row learns what it is.
+/// This is the loop a box does for itself by re-asking on completionsChanged;
+/// a test has to write it out.
+QStringList settledCompletions(gui::AppController& controller, const QString& text)
+{
+    QSignalSpy changed(&controller, &gui::AppController::completionsChanged);
+    QStringList offered = controller.completions(text);
+    for (int round = 0; round < 40; ++round) {
+        if (!changed.wait(1000)) {
+            break; // nothing more is on its way
+        }
+        offered = controller.completions(text);
+    }
+    return offered;
+}
+
+TEST_CASE("a typed line says which of its three grammars is being written",
+          "[completion]")
+{
+    // The grammar and only the grammar: nothing here opens a file, so every
+    // rule about where a path stops and a chain starts can be stated flat.
+    using Part = gui::CompletionRequest::Part;
+
+    SECTION("a path, until the first bracket")
+    {
+        const auto plain = gui::completionRequest(QStringLiteral("/plot"));
+        CHECK(plain.part == Part::Path);
+        CHECK(plain.head == QStringLiteral("/"));
+        CHECK(plain.fragment == QStringLiteral("plot"));
+
+        const auto deeper = gui::completionRequest(QStringLiteral("/plotting/ev"));
+        CHECK(deeper.head == QStringLiteral("/plotting/"));
+        CHECK(deeper.fragment == QStringLiteral("ev"));
+
+        // A separator just typed asks for everything in that group.
+        const auto opened = gui::completionRequest(QStringLiteral("/plotting/"));
+        CHECK(opened.head == QStringLiteral("/plotting/"));
+        CHECK(opened.fragment.isEmpty());
+    }
+
+    SECTION("a '.' before any bracket is part of the path, not a member")
+    {
+        // A link name holds a '.' as freely as it holds a '['. `/data/run.3`
+        // is a dataset being typed, and reading it as member 3 of `run` would
+        // mean asking the file about a path nobody has named.
+        const auto dotted = gui::completionRequest(QStringLiteral("/data/run.3"));
+        CHECK(dotted.part == Part::Path);
+        CHECK(dotted.fragment == QStringLiteral("run.3"));
+    }
+
+    SECTION("a subscript still open offers nothing, and says so as a part")
+    {
+        const auto inside = gui::completionRequest(QStringLiteral("/a/b[0:"));
+        CHECK(inside.part == Part::Subscript);
+        // Every integer, every range and every combination of them is not a
+        // list. What a reader wants help with there is written for them when
+        // the path is completed instead.
+        CHECK(inside.fragment.isEmpty());
+    }
+
+    SECTION("a subscript closed is where a member chain could start")
+    {
+        const auto closed = gui::completionRequest(QStringLiteral("/a/b[:, 0]"));
+        CHECK(closed.part == Part::Member);
+        CHECK(closed.head == QStringLiteral("/a/b[:, 0]"));
+        CHECK(closed.fragment.isEmpty());
+        CHECK(closed.path == QStringLiteral("/a/b"));
+
+        const auto started = gui::completionRequest(QStringLiteral("/a/b[:].pos"));
+        CHECK(started.part == Part::Member);
+        CHECK(started.head == QStringLiteral("/a/b[:]"));
+        CHECK(started.fragment == QStringLiteral(".pos"));
+        CHECK(started.path == QStringLiteral("/a/b"));
+    }
+}
+
+TEST_CASE("what Tab writes is as far as it can go without choosing",
+          "[completion]")
+{
+    SECTION("the whole subscript is one term per dimension")
+    {
+        CHECK(gui::wholeSubscript(0).isEmpty()); // a scalar has none
+        CHECK(gui::wholeSubscript(1) == QStringLiteral("[:]"));
+        CHECK(gui::wholeSubscript(3) == QStringLiteral("[:, :, :]"));
+    }
+
+    SECTION("one candidate completes to itself")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/plotting/")})
+              == QStringLiteral("/plotting/"));
+    }
+
+    SECTION("several complete to the head they share")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/plotting/"), QStringLiteral("/plots/")})
+              == QStringLiteral("/plot"));
+    }
+
+    SECTION("nothing shared, and nothing to write")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/a"), QStringLiteral("/b")})
+              == QStringLiteral("/"));
+        CHECK(gui::commonHead({}).isEmpty());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "the completer offers what has been read",
+                 "[controller][completion]")
+{
+    SECTION("the children of the group being typed into")
+    {
+        const QStringList offered = settledCompletions(controller, QStringLiteral("/com"));
+        REQUIRE(offered.size() == 2);
+        // A dataset comes with the subscript that selects the whole of it.
+        CHECK(offered.contains(QStringLiteral("/compound[:]")));
+        CHECK(offered.contains(QStringLiteral("/compressed[:, :]")));
+    }
+
+    SECTION("a group comes with the separator, so one Tab and keep typing")
+    {
+        const QStringList offered = settledCompletions(controller, QStringLiteral("/gro"));
+        CHECK(offered == QStringList{QStringLiteral("/group/")});
+    }
+
+    SECTION("a group nobody has expanded is asked for, not walked")
+    {
+        // The tree is lazy because a file can hold a million objects, and a
+        // completer that listed its way down to answer a keystroke would spend
+        // exactly what that laziness saves. So the first ask comes back empty
+        // and the listing arrives behind it.
+        CHECK(controller.completions(QStringLiteral("/group/nes")).isEmpty());
+        CHECK(settledCompletions(controller, QStringLiteral("/group/nes"))
+              == QStringList{QStringLiteral("/group/nested/")});
+    }
+
+    SECTION("a compound's members, once the subscript is closed")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        CHECK(controller.completions(QStringLiteral("/compound[:]"))
+              == QStringList{QStringLiteral("/compound[:].id"),
+                             QStringLiteral("/compound[:].value")});
+        CHECK(controller.completions(QStringLiteral("/compound[:].v"))
+              == QStringList{QStringLiteral("/compound[:].value")});
+    }
+
+    SECTION("a dataset with no members offers none")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/matrix")));
+        CHECK(controller.completions(QStringLiteral("/matrix[:, :]")).isEmpty());
+    }
+
+    SECTION("the member box completes a chain on its own")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        CHECK(controller.memberCompletions(QString{})
+              == QStringList{QStringLiteral(".id"), QStringLiteral(".value")});
+        CHECK(controller.memberCompletions(QStringLiteral(".v"))
+              == QStringList{QStringLiteral(".value")});
+        CHECK(controller.memberCompletions(QStringLiteral(".z")).isEmpty());
+    }
+
+    SECTION("a question with no answer is asked once, and then not again")
+    {
+        // The signal a completion asks with is the signal every box re-asks
+        // on, so a path that can be looked up and still yields no datatype --
+        // a group, a broken link -- is one step from an unbounded loop with
+        // the window locked inside it. `DatasetLookup::resolve` runs its
+        // continuation *there and then* when there is nothing to ask, which is
+        // what makes it a loop rather than a slow poll.
+        CHECK(settledCompletions(controller, QStringLiteral("/group[:].x")).isEmpty());
+
+        QSignalSpy asked(&controller, &gui::AppController::completionsChanged);
+        for (int again = 0; again < 5; ++again) {
+            CHECK(controller.completions(QStringLiteral("/group[:].x")).isEmpty());
+        }
+        CHECK(asked.count() == 0);
+    }
+
+    SECTION("nothing is offered while nothing is open")
+    {
+        controller.closeFile();
+        CHECK(controller.completions(QStringLiteral("/com")).isEmpty());
     }
 }
 

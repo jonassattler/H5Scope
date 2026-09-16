@@ -4,6 +4,7 @@
 #include "AppController.hpp"
 
 #include "AttributeTableModel.hpp"
+#include "Completion.hpp"
 #include "DatasetImage.hpp"
 #include "DatasetPlot.hpp"
 #include "DatasetStringListModel.hpp"
@@ -141,6 +142,16 @@ AppController::AppController(QObject* parent)
         applyDataSource();
         emit postprocessChanged();
     });
+
+    // A group that has just been listed is a set of completions that did not
+    // exist a moment ago, and a row that has just learned whether it is a group
+    // or a dataset is a completion that has just learned what to write after
+    // it. The tree is lazy in both, so this is how a box asking "what could go
+    // here" hears that the answer has changed under it.
+    connect(treeModel_, &H5TreeModel::rowsInserted, this,
+            &AppController::completionsChanged);
+    connect(treeModel_, &H5TreeModel::dataChanged, this,
+            &AppController::completionsChanged);
 
     // Lazy population can fail mid-expand; surface it without the model
     // needing to know how the UI reports things.
@@ -525,12 +536,169 @@ PostprocessModel::Subject AppController::pipelineSubject(
     return subject;
 }
 
-QStringList AppController::memberChoices() const
+const h5core::TypeInfo* AppController::typeOf(const QString& path) const
+{
+    // The selection first, because that is the one datatype this controller
+    // described itself and the one a member box is nearly always about.
+    if (hasDataset_ && path == currentPath_) {
+        return &originInfo_.type;
+    }
+    if (const PathFacts* facts = customPlots_->lookup()->facts(path);
+        facts != nullptr && facts->isDataset) {
+        return &facts->type;
+    }
+    return nullptr;
+}
+
+QStringList AppController::pathCompletions(const QString& head, const QString& fragment)
+{
+    // The group whose children could go here. `head` ends in the separator, so
+    // taking it off leaves the group -- and taking everything off leaves the
+    // root, which is its own parent.
+    QString group = head;
+    if (group.endsWith(QLatin1Char('/')) && group.size() > 1) {
+        group.chop(1);
+    }
+    if (group.isEmpty()) {
+        group = QStringLiteral("/");
+    }
+
+    // Asked for rather than walked, whichever way it is missing: the tree is
+    // lazy because a file can hold a million objects, and a completer that
+    // listed its way down to answer a keystroke would spend exactly what that
+    // laziness saves. The listing arrives a moment later and
+    // `completionsChanged` is what tells the box to ask again.
+    const QModelIndex at = treeModel_->indexForPath(group);
+    if (!at.isValid() && group != QStringLiteral("/")) {
+        // Not reached at all: a group several levels into a file nobody has
+        // expanded. revealPath walks down one listing per round trip.
+        treeModel_->revealPath(group);
+        return {};
+    }
+    // Asking how many children it has is what asks for them. Population is
+    // driven from rowCount() in this model and deliberately so -- see its
+    // header -- so there is no other way to say "list this" for a group
+    // already in hand.
+    const int children = treeModel_->rowCount(at);
+    if (!treeModel_->isPopulated(at)) {
+        return {};
+    }
+
+    QStringList out;
+    QStringList unknown;
+    for (int row = 0; row < children; ++row) {
+        const QModelIndex child = treeModel_->index(row, 0, at);
+        const QString name = child.data(H5TreeModel::NameRole).toString();
+        if (!name.startsWith(fragment)) {
+            continue;
+        }
+        const QString path = head + name;
+        if (!child.data(H5TreeModel::IsResolvedRole).toBool()) {
+            // The name is in the link table; what it names comes out of the
+            // object header, which is a second read. Asking for the role above
+            // is what asks for it. Offered bare until it lands, because the
+            // name is a true answer and "/group" turning into "/group/" a
+            // moment later is a better list than no list.
+            static_cast<void>(child.data(H5TreeModel::IsGroupRole));
+            out.append(path);
+            continue;
+        }
+        if (child.data(H5TreeModel::IsGroupRole).toBool()) {
+            // A group is a step on the way rather than a destination, so the
+            // separator comes with it: one Tab, then keep typing.
+            out.append(path + QLatin1Char('/'));
+            continue;
+        }
+        if (!child.data(H5TreeModel::IsDatasetRole).toBool()) {
+            continue;
+        }
+        // ...and a dataset comes with the subscript that selects the whole of
+        // it, which is the half of this a reader would otherwise have to count
+        // dimensions for. The rank is the custom plots' own cache, which is
+        // where every fact about a path this controller did not select lives;
+        // a path it has never resolved is completed bare and asked about, and
+        // the subscript appears on the next keystroke.
+        const PathFacts* facts = customPlots_->lookup()->facts(path);
+        if (facts == nullptr) {
+            unknown.append(path);
+            out.append(path);
+            continue;
+        }
+        out.append(path + wholeSubscript(facts->shape.size()));
+    }
+
+    // Only ever the paths nothing knows anything about, for the reason spelled
+    // out over the member branch below: a resolve with nothing to ask runs its
+    // continuation there and then, and this one's continuation is what makes
+    // every box ask again.
+    if (!unknown.isEmpty()) {
+        customPlots_->lookup()->resolve(unknown,
+                                        [this] { emit completionsChanged(); });
+    }
+    return out;
+}
+
+QStringList AppController::completions(const QString& text)
+{
+    if (!fileOpen_) {
+        return {};
+    }
+    const CompletionRequest request = completionRequest(text);
+    switch (request.part) {
+    case CompletionRequest::Part::Subscript:
+        return {};
+    case CompletionRequest::Part::Path:
+        return pathCompletions(request.head, request.fragment);
+    case CompletionRequest::Part::Member:
+        break;
+    }
+
+    const h5core::TypeInfo* type = typeOf(request.path);
+    if (type == nullptr) {
+        // The path is not one this controller or the plots' cache knows. Ask,
+        // and answer on the next keystroke rather than guessing at a datatype.
+        //
+        // Only when it is genuinely unknown. `resolve` runs its continuation
+        // *synchronously* when there is nothing to ask -- callers use it as
+        // "make sure, then go" -- and the continuation here is the signal that
+        // makes every box re-ask, so calling it for a path already known and
+        // still not a dataset (a group, a broken link) is an unbounded loop
+        // with the window locked inside it. `knows` is the difference between
+        // asking once and asking forever.
+        if (!customPlots_->lookup()->knows(request.path)) {
+            customPlots_->lookup()->resolve({request.path},
+                                            [this] { emit completionsChanged(); });
+        }
+        return {};
+    }
+
+    QStringList out;
+    for (const QString& chain : postproc::memberChains(*type)) {
+        if (chain.startsWith(request.fragment)) {
+            out.append(request.head + chain);
+        }
+    }
+    return out;
+}
+
+QStringList AppController::memberCompletions(const QString& text) const
 {
     if (!datasetTabVisible_ || !hasDataset_) {
         return {};
     }
-    return postproc::memberChains(originInfo_.type);
+    const QString fragment = text.trimmed();
+    QStringList out;
+    for (const QString& chain : postproc::memberChains(originInfo_.type)) {
+        if (chain.startsWith(fragment)) {
+            out.append(chain);
+        }
+    }
+    return out;
+}
+
+QString AppController::commonCompletion(const QStringList& options) const
+{
+    return commonHead(options);
 }
 
 QString AppController::memberError(const QString& text) const

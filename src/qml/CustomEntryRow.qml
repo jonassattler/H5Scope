@@ -73,9 +73,31 @@ Rectangle {
     // broken one without reading all of them.
     border.color: row.troubled ? Theme.warning : Theme.border
 
+    /// What could be written next, for the box below. Refreshed on every
+    /// keystroke and again whenever the file answers something the completer
+    /// was waiting on -- the tree is lazy, so a group nobody has opened is
+    /// asked for rather than walked and the list arrives a moment later.
+    property var options: []
+    /// Whether the reader has pressed Escape over the list. Cleared by the next
+    /// keystroke, so dismissing it is for this moment rather than for the
+    /// session.
+    property bool dismissed: false
+
+    function refreshOptions() {
+        row.options = box.activeFocus ? AppController.completions(box.text) : []
+    }
+
+    Connections {
+        target: AppController
+        function onCompletionsChanged() { row.refreshOptions() }
+    }
+
     function commit() {
         if (!row.plot || row.rowIndex < 0)
             return
+        // A commit is the end of an edit, so the list of what could have been
+        // written next goes with it. The next keystroke brings it back.
+        row.options = []
         const wanted = box.text.trim()
         if (wanted === row.expression) {
             row.problem = ""
@@ -151,13 +173,74 @@ Rectangle {
                 onTextEdited: {
                     row.problem = row.plot
                         ? row.plot.entryError(row.rowIndex, box.text) : ""
+                    row.dismissed = false
+                    row.refreshOptions()
                 }
                 onAccepted: row.commit()
-                onActiveFocusChanged: if (!box.activeFocus) row.commit()
+                onActiveFocusChanged: {
+                    if (box.activeFocus) {
+                        // Offered on the way in: an empty box is exactly the
+                        // moment a reader does not know what a file holds, and
+                        // the root's own children are a fair answer to that.
+                        row.dismissed = false
+                        row.refreshOptions()
+                        return
+                    }
+                    row.options = []
+                    row.commit()
+                }
                 Keys.onEscapePressed: {
+                    // The list first: it is the thing that just appeared, and
+                    // dismissing it is what Escape means while it is up.
+                    if (completion.visible) {
+                        row.dismissed = true
+                        return
+                    }
                     box.text = row.expression
                     row.problem = ""
                     box.focus = false
+                }
+                // Tab writes as much as every candidate shares and only then
+                // chooses. Letting it through when there is nothing to write
+                // is what keeps Tab moving between the boxes, which is what it
+                // does everywhere else in this window.
+                Keys.onTabPressed: (event) => {
+                    row.dismissed = false
+                    row.refreshOptions()
+                    event.accepted = completion.take()
+                }
+                Keys.onUpPressed: (event) => {
+                    event.accepted = completion.visible
+                    if (event.accepted)
+                        completion.move(-1)
+                }
+                Keys.onDownPressed: (event) => {
+                    event.accepted = completion.visible
+                    if (event.accepted)
+                        completion.move(1)
+                }
+
+                CompletionPopup {
+                    id: completion
+
+                    objectName: "entryCompletion"
+
+                    options: row.options
+                    written: box.text
+                    // Nothing to choose from is nothing to draw. Bound rather
+                    // than opened and closed by hand, so a list that empties
+                    // as the reader types past the last match goes away on its
+                    // own.
+                    visible: row.options.length > 0 && box.activeFocus
+                             && !row.dismissed
+
+                    onTaken: (option) => {
+                        box.text = option
+                        box.cursorPosition = option.length
+                        row.problem = row.plot
+                            ? row.plot.entryError(row.rowIndex, option) : ""
+                        row.refreshOptions()
+                    }
                 }
             }
 
