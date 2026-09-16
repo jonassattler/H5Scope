@@ -318,3 +318,76 @@ TEST_CASE("a chain that does not apply says what the type does have",
         CHECK_THAT(chain.error.toStdString(), ContainsSubstring("this dataset"));
     }
 }
+
+TEST_CASE("a type lists the chains it offers", "[member][chains]")
+{
+    // What the pipeline's select row is chosen from, and what a completer will
+    // offer. Arithmetic over the type, so it costs no read -- which is the
+    // whole reason it can be built the moment a dataset is selected.
+    const QStringList chains = postproc::memberChains(eventType());
+
+    SECTION("in file order, depth first")
+    {
+        CHECK(chains
+              == QStringList{".time", ".station", ".position", ".position.x",
+                             ".position.y", ".position.z", ".samples", ".tags"});
+    }
+
+    SECTION("an intermediate compound is offered as well as its members")
+    {
+        // Selecting `.position` is a selection like any other -- the table
+        // shows three numbers per row -- and a reader looking for `x` finds it
+        // under the name the file gave it rather than having to know it is
+        // there.
+        CHECK(chains.contains(QStringLiteral(".position")));
+        CHECK(chains.contains(QStringLiteral(".position.x")));
+    }
+
+    SECTION("an array is a leaf: its dimensions are axes, not names")
+    {
+        // `.samples[2]` is the same selection as `.samples` with a 2 on the
+        // slice line, so the list holds the name and the line holds the
+        // subscript. Nothing here ends in a bracket.
+        for (const QString& chain : chains) {
+            INFO(chain.toStdString());
+            CHECK_FALSE(chain.contains(QLatin1Char('[')));
+        }
+    }
+
+    SECTION("a chain stops at a vlen, because a chain cannot go through one")
+    {
+        const TypeInfo ragged = compound({
+            TypeMember{"lists",
+                       vlenOf(compound({TypeMember{"a", kDouble, 0}})), 0},
+        });
+        CHECK(postproc::memberChains(ragged) == QStringList{".lists"});
+    }
+
+    SECTION("a dataset of an array of structs is entered, as resolving enters it")
+    {
+        // The same unwrapping resolveMemberChain does. If the two disagreed the
+        // list would offer a chain the resolver then refused, which is worse
+        // than offering nothing.
+        const TypeInfo grid =
+            arrayOf(compound({TypeMember{"a", kDouble, 0}}), {2, 3});
+        CHECK(postproc::memberChains(grid) == QStringList{".a"});
+        CHECK(postproc::resolveMemberChain(".a", grid).valid());
+    }
+
+    SECTION("nothing to select from is an empty list, not a refusal")
+    {
+        CHECK(postproc::memberChains(kDouble).isEmpty());
+    }
+
+    SECTION("a compound of thousands stops rather than filling a dropdown")
+    {
+        std::vector<TypeMember> many;
+        for (int i = 0; i < 500; ++i) {
+            many.push_back(TypeMember{"m" + std::to_string(i), kDouble,
+                                      static_cast<std::size_t>(i) * 8});
+        }
+        const TypeInfo wide = compound(std::move(many));
+        CHECK(postproc::memberChains(wide).size() == postproc::kMaxMemberChains);
+        CHECK(postproc::memberChains(wide, 3).size() == 3);
+    }
+}

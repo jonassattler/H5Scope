@@ -21,6 +21,7 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PostprocessModel.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "h5core/Attribute.hpp"
@@ -1225,6 +1226,86 @@ TEST_CASE("the viewer draws a member of a compound", "[example][member]")
                                         QStringLiteral("/types/compound/nested")));
         CHECK(controller.memberText() == QStringLiteral(".weight"));
         CHECK(controller.datasetIsNumeric());
+    }
+}
+
+TEST_CASE("the pipeline's select row runs over a real compound",
+          "[example][member][postproc]")
+{
+    // /plotting/events is a hundred thousand structs with one of every member
+    // class in it, which is what makes this worth stating here rather than in
+    // test_models: the shape column tells a story only a real member can tell.
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/events")));
+
+    gui::PostprocessModel* pipeline = controller.postprocessModel();
+    REQUIRE(pipeline != nullptr);
+    const auto rowOf = [pipeline](int row, int role) {
+        return pipeline->data(pipeline->index(row, 0), role);
+    };
+
+    SECTION("the list offers every chain, nested ones under their own names")
+    {
+        const QStringList choices =
+            rowOf(1, gui::PostprocessModel::ChoicesRole).toStringList();
+        CHECK(choices.startsWith(QStringLiteral(".time")));
+        CHECK(choices.contains(QStringLiteral(".position")));
+        CHECK(choices.contains(QStringLiteral(".position.x")));
+        CHECK(choices.contains(QStringLiteral(".samples")));
+        CHECK(choices.contains(QStringLiteral(".tags")));
+        // An array's dimensions are axes rather than names, so nothing goes
+        // under `.samples`; and a chain cannot go on through a vlen.
+        CHECK_FALSE(choices.contains(QStringLiteral(".samples.0")));
+        CHECK(choices.size() == 10);
+    }
+
+    SECTION("the shape column states what naming a member did")
+    {
+        // The input row is the dataset's own shape and the select row is what
+        // the slice below it sees. Reading the two together is the whole point
+        // of the column, and on a member that appends an axis they differ.
+        CHECK(rowOf(0, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+        CHECK(rowOf(1, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+
+        pipeline->setArgument(1, QStringLiteral(".samples"));
+        CHECK(rowOf(0, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+        CHECK(rowOf(1, gui::PostprocessModel::ShapeRole).toString()
+              == QString::fromUtf8("100000 \u00d7 4"));
+    }
+
+    SECTION("a ragged member indexed is still what is selected")
+    {
+        // `.tags[0]` is a selection the list of names cannot hold, because the
+        // subscripts live on the slice line. It goes in front of the list
+        // rather than leaving the box showing something nobody chose.
+        REQUIRE(controller.applyMember(QStringLiteral(".tags[0]")).isEmpty());
+        const QString current =
+            rowOf(1, gui::PostprocessModel::ArgumentRole).toString();
+        CHECK(current == QStringLiteral(".tags[0]"));
+        CHECK(rowOf(1, gui::PostprocessModel::ChoicesRole).toStringList().front()
+              == current);
+    }
+
+    SECTION("an operation runs on the member, and the output says so")
+    {
+        pipeline->setArgument(1, QStringLiteral(".samples"));
+        REQUIRE(controller.applySlice(QStringLiteral("0:10, :")).isEmpty());
+        pipeline->setEnabled(true);
+        REQUIRE(pipeline->active());
+
+        pipeline->addStep(QStringLiteral("max"));
+        pipeline->setArgument(3, QStringLiteral("1"));
+        CHECK(pipeline->error().isEmpty());
+        CHECK(rowOf(3, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("10"));
+        CHECK(rowOf(pipeline->rowCount() - 1,
+                    gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("10"));
     }
 }
 

@@ -112,4 +112,29 @@ struct MemberChain {
 /// `path()` puts after the dataset's own name.
 [[nodiscard]] QString writeMemberChain(const std::vector<MemberStep>& chain);
 
+/// How many chains a type is opened out into before the listing stops.
+///
+/// A compound of a thousand members is a shape real files have, and a list of a
+/// thousand entries is not a way to choose anything. The cap is the same
+/// argument the Information tab's member listing makes.
+inline constexpr int kMaxMemberChains = 200;
+
+/// Every chain a type offers, in file order, depth first.
+///
+/// `.position` and `.position.x` are both in it: selecting an intermediate
+/// compound is a selection like any other, and a reader looking for `x` should
+/// find it under the name the file gave it rather than having to know it is
+/// there. What is *not* in it is a subscript -- `.samples` with a `2` on the
+/// slice line is the same selection as `.samples[2]`, and the line is where
+/// every subscript in this program lives.
+///
+/// A chain stops at a vlen, because a chain cannot go on through one; and a
+/// chain never enters an array's elements, because an array's dimensions are
+/// axes rather than names.
+///
+/// Arithmetic over a `TypeInfo`, so it costs no read -- which is what lets the
+/// list be built for a dropdown on selection and, later, offered per keystroke.
+[[nodiscard]] QStringList memberChains(const h5core::TypeInfo& type,
+                                       int limit = kMaxMemberChains);
+
 } // namespace postproc

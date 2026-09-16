@@ -3,6 +3,7 @@
 
 #include "PostprocessModel.hpp"
 
+#include "AppController.hpp"
 #include "TableSetupModel.hpp"
 
 #include <algorithm>
@@ -16,6 +17,16 @@ void PostprocessModel::setSliceSource(TableSetupModel* slice)
     slice_ = slice;
 }
 
+void PostprocessModel::setMemberSource(AppController* controller)
+{
+    member_ = controller;
+}
+
+bool PostprocessModel::hasMember() const
+{
+    return member_ != nullptr && !memberChoices_.isEmpty();
+}
+
 QString PostprocessModel::sliceText() const
 {
     return slice_ != nullptr ? slice_->sliceText() : QString{};
@@ -23,7 +34,8 @@ QString PostprocessModel::sliceText() const
 
 bool PostprocessModel::isStep(int row) const
 {
-    return row >= 2 && stepIndex(row) < static_cast<int>(steps_.size());
+    return row > sliceRow() && stepIndex(row) >= 0
+           && stepIndex(row) < static_cast<int>(steps_.size());
 }
 
 void PostprocessModel::setChosenOperation(int index)
@@ -65,17 +77,17 @@ std::size_t PostprocessModel::upTo() const { return upTo_; }
 
 int PostprocessModel::activeRow() const
 {
-    // Row 1 is the slice and runs one step; row 1+k is the kth operation and
-    // runs k+1. So the row number and the step count are the same number,
-    // which is the whole reason the rows are laid out in this order.
-    return static_cast<int>(upTo_);
+    // The slice row runs one step and the kth operation below it runs k+1, so
+    // the row and the step count differ by exactly where the slice row is.
+    // They were the same number while the slice was always row 1.
+    return sliceRow() + static_cast<int>(upTo_) - 1;
 }
 
 void PostprocessModel::setActiveRow(int row)
 {
     const auto last = static_cast<int>(steps_.size()) + 1;
-    const std::size_t wanted =
-        static_cast<std::size_t>(std::clamp(row, 1, std::max(1, last)));
+    const std::size_t wanted = static_cast<std::size_t>(
+        std::clamp(stageOf(row) + 1, 1, std::max(1, last)));
     if (wanted == upTo_) {
         return;
     }
@@ -92,8 +104,7 @@ void PostprocessModel::setEnabled(bool enabled)
     refresh();
 }
 
-void PostprocessModel::setDataset(const QString& path,
-                                  const std::vector<hsize_t>& shape, bool numeric)
+void PostprocessModel::setDataset(const Subject& subject)
 {
     // A dataset nobody has been at opens on the defaults, which for a pipeline
     // means no pipeline: a Max over axis 0 says nothing about the next dataset,
@@ -106,13 +117,24 @@ void PostprocessModel::setDataset(const QString& path,
     // is before the restore; without this that run would be the previous
     // dataset's chain over the new dataset's elements, computed in full and
     // then thrown away.
+    //
+    // A *different* dataset, though. Naming a member of the one already open
+    // comes back through here too, because the shape below the member changed;
+    // clearing on that would mean the Select row in this very panel turned the
+    // panel off every time it was used. A step the new shape cannot take stops
+    // the walk and says why, which is the panel working rather than failing.
+    const bool moved = subject.path != path_;
     beginResetModel();
-    steps_.clear();
-    enabled_ = false;
-    upTo_ = 1;
-    path_ = path;
-    shape_ = shape;
-    numeric_ = numeric;
+    if (moved) {
+        steps_.clear();
+        enabled_ = false;
+        upTo_ = 1;
+    }
+    path_ = subject.path;
+    shape_ = subject.shape;
+    numeric_ = subject.numeric;
+    originShape_ = subject.originShape;
+    memberChoices_ = subject.memberChoices;
     endResetModel();
     refresh();
 }
@@ -144,9 +166,9 @@ int PostprocessModel::rowCount(const QModelIndex& parent) const
     if (parent.isValid()) {
         return 0;
     }
-    // The input, the slice, one per operation, the row that adds another, and
-    // the output.
-    return static_cast<int>(steps_.size()) + 4;
+    // The input, the member on a compound, the slice, one per operation, the
+    // row that adds another, and the output.
+    return static_cast<int>(steps_.size()) + 4 + (hasMember() ? 1 : 0);
 }
 
 QVariant PostprocessModel::data(const QModelIndex& index, int role) const
@@ -158,11 +180,12 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
     const bool output = row == rowCount() - 1;
     const int step = stepIndex(row); // < 0 for the input and the slice
 
-    const Kind kind = row == 0            ? Input
-                      : row == 1          ? Slice
-                      : output            ? Output
-                      : row == adderRow() ? Adder
-                                          : Operation;
+    const Kind kind = row == 0                       ? Input
+                      : (hasMember() && row == 1)    ? Member
+                      : row == sliceRow()            ? Slice
+                      : output                       ? Output
+                      : row == adderRow()            ? Adder
+                                                     : Operation;
 
     switch (role) {
     case KindRole:
@@ -171,6 +194,8 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         switch (kind) {
         case Input:
             return path_.isEmpty() ? tr("no dataset") : path_;
+        case Member:
+            return tr("select");
         case Slice:
             return tr("slice");
         case Adder:
@@ -183,6 +208,9 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         }
         return {};
     case ArgumentRole:
+        if (kind == Member) {
+            return member_->memberText();
+        }
         if (kind == Slice) {
             return sliceText();
         }
@@ -191,6 +219,9 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         }
         return QString{};
     case ArgumentLabelRole:
+        if (kind == Member) {
+            return tr("member");
+        }
         if (kind == Slice) {
             return tr("subscripts");
         }
@@ -200,6 +231,11 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         }
         return QString{};
     case PlaceholderRole:
+        if (kind == Member) {
+            // What the empty choice reads as. A compound with no member named
+            // is the whole struct, which is a selection and not an absence.
+            return tr("the whole struct");
+        }
         if (kind == Operation) {
             return postproc::operationInfo(steps_[static_cast<std::size_t>(step)].kind)
                 .placeholder;
@@ -207,6 +243,12 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         return QString{};
     case ShapeRole: {
         if (kind == Input) {
+            // The dataset's own shape, so that the member row below states what
+            // naming a member did to it. They are the same number on a dataset
+            // with no member named, which is the honest answer there.
+            return postproc::describeShape(hasMember() ? originShape_ : shape_);
+        }
+        if (kind == Member) {
             return postproc::describeShape(shape_);
         }
         if (kind == Output) {
@@ -220,17 +262,22 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         // A row that did not run has no shape to state. Saying nothing is the
         // point: a stale shape beside a greyed row would be a claim about
         // data that was never computed.
-        const auto stage = static_cast<std::size_t>(row - 1);
+        const auto stage = static_cast<std::size_t>(stageOf(row));
         if (stage < trace_.ran && stage < trace_.stages.size()) {
             return postproc::describeShape(trace_.stages[stage].shape);
         }
         return QString{};
     }
     case ErrorRole: {
+        if (kind == Member) {
+            // Whatever is wrong with the chain itself, which the controller
+            // answers without opening anything.
+            return member_->memberError(member_->memberText());
+        }
         if (kind == Input || kind == Output || kind == Adder) {
             return QString{};
         }
-        const auto stage = static_cast<std::size_t>(row - 1);
+        const auto stage = static_cast<std::size_t>(stageOf(row));
         if (stage < trace_.stages.size()) {
             return trace_.stages[stage].error;
         }
@@ -240,10 +287,30 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         return kind == Operation;
     case MovableRole:
         return kind == Operation;
+    case ChoicesRole: {
+        // Every chain the datatype offers. Built once when the dataset was
+        // selected rather than per read: it is arithmetic over a TypeInfo and
+        // costs no file, but it is also what a combo box binds as its model,
+        // and a list rebuilt on every read resets that box under the reader.
+        if (kind != Member) {
+            return QStringList{};
+        }
+        QStringList choices = memberChoices_;
+        // A chain that indexes a ragged member -- `.tags[0]` -- is a selection
+        // like any other and is not in the list, because the list holds names
+        // and the subscripts live on the slice line. It is still what is
+        // selected, so it goes in front rather than leaving the box showing
+        // something the reader did not choose.
+        const QString current = member_->memberText();
+        if (!current.isEmpty() && !choices.contains(current)) {
+            choices.prepend(current);
+        }
+        return choices;
+    }
     case ComputedRole: {
         // The output is never greyed: it is the end of whatever is actually
         // being computed, which is exactly what clicking a row changes.
-        if (output || kind == Input || kind == Adder) {
+        if (output || kind == Input || kind == Member || kind == Adder) {
             return true;
         }
         // Read off what actually ran rather than off the clicked row, because
@@ -252,7 +319,7 @@ QVariant PostprocessModel::data(const QModelIndex& index, int role) const
         // refused. The row that refused stays lit even though it did not run,
         // because it is the one carrying the reason -- but only when there is
         // one, or a truncated pipeline would light a row past its end.
-        const auto stage = static_cast<std::size_t>(row - 1);
+        const auto stage = static_cast<std::size_t>(stageOf(row));
         return stage < trace_.ran || (!trace_.ok() && stage == trace_.ran);
     }
     default:
@@ -273,6 +340,9 @@ QHash<int, QByteArray> PostprocessModel::roleNames() const
         {RemovableRole, "removable"},
         {MovableRole, "movable"},
         {ComputedRole, "computed"},
+        // Not "choices": the row already has a property of that name, handed
+        // down by the panel, holding the operations the add row offers.
+        {ChoicesRole, "memberChoices"},
     };
 }
 
@@ -358,7 +428,7 @@ void PostprocessModel::moveStep(int from, int to)
     // Clamped into the operations: the slice above them and the output below
     // are the ends of the chain, and nothing is dropped past either.
     const int last = stepRow(static_cast<int>(steps_.size()) - 1);
-    const int target = std::clamp(to, 2, last);
+    const int target = std::clamp(to, stepRow(0), last);
     if (target == from) {
         return;
     }
@@ -375,7 +445,16 @@ void PostprocessModel::moveStep(int from, int to)
 
 void PostprocessModel::setArgument(int row, const QString& argument)
 {
-    if (row == 1) {
+    if (hasMember() && row == 1) {
+        // The member row is the box in the slice bar, so this writes through
+        // to the controller and comes back as a layout change. The controller
+        // folds any subscript onto the slice line, which is the row below this
+        // one -- so the two rows of this panel state the two halves of the
+        // identity the whole notation rests on.
+        static_cast<void>(member_->applyMember(argument));
+        return;
+    }
+    if (row == sliceRow()) {
         // The slice row is the slice above the table, so this writes through
         // to it and comes back as a layout change rather than being kept here.
         if (slice_ != nullptr) {
@@ -396,7 +475,10 @@ void PostprocessModel::setArgument(int row, const QString& argument)
 
 QString PostprocessModel::argumentError(int row, const QString& argument) const
 {
-    if (row == 1) {
+    if (hasMember() && row == 1) {
+        return member_->memberError(argument);
+    }
+    if (row == sliceRow()) {
         return slice_ != nullptr ? slice_->sliceError(argument) : QString{};
     }
     if (!isStep(row)) {
@@ -405,7 +487,7 @@ QString PostprocessModel::argumentError(int row, const QString& argument) const
     // Checked against the shape this row is actually handed, which is the
     // shape the row above it leaves. A step whose input never resolved has
     // nothing to check against and says nothing rather than guessing.
-    const auto stage = static_cast<std::size_t>(row - 2);
+    const auto stage = static_cast<std::size_t>(stageOf(row) - 1);
     if (stage >= trace_.ran || stage >= trace_.stages.size()) {
         return {};
     }

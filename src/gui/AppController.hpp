@@ -255,11 +255,20 @@ public:
     /// arithmetic over the datatype already described, so it answers on every
     /// keystroke without opening anything.
     Q_INVOKABLE QString memberError(const QString& text) const;
+    /// Every member chain the selection offers, in file order and depth first.
+    /// What the pipeline's Select row is chosen from, and arithmetic over the
+    /// datatype already described -- so it costs no read.
+    [[nodiscard]] Q_INVOKABLE QStringList memberChoices() const;
 
 private:
     /// What the data views draw: the dataset, or the dataset seen through the
     /// member chain. `originInfo_` is what the file said; this is the result.
     [[nodiscard]] h5core::DatasetInfo projectedInfo() const;
+    /// What the postprocessing panel is running on, given what the views are
+    /// drawing. Built in one place because the panel's rows state the dataset
+    /// *and* the projection, and those two come from different facts.
+    [[nodiscard]] PostprocessModel::Subject
+    pipelineSubject(const h5core::DatasetInfo& info) const;
 
 public:
     // --- settings a view keeps for the dataset they were made on ---------

@@ -118,6 +118,10 @@ AppController::AppController(QObject* parent)
     // The pipeline's second row is the slice above the table rather than a
     // copy of it, so it is given the model that owns that slice.
     postprocessModel_->setSliceSource(tableSetupModel_);
+    // And where its Select row's chain lives, which is here. The row is not a
+    // copy of the box in the slice bar any more than the slice row is a copy of
+    // the slice: it is it.
+    postprocessModel_->setMemberSource(this);
 
     // The panel is the authority on what the table shows; the table model
     // only ever hears about it through here.
@@ -505,6 +509,30 @@ h5core::DatasetInfo AppController::projectedInfo() const
     return info;
 }
 
+PostprocessModel::Subject AppController::pipelineSubject(
+    const h5core::DatasetInfo& info) const
+{
+    PostprocessModel::Subject subject;
+    subject.path = currentPath_;
+    subject.shape = info.shape;
+    subject.numeric = info.isNumeric() && info.readable();
+    subject.originShape = originInfo_.shape;
+    // The same condition that puts the member box in the bar on screen, so the
+    // two surfaces for naming a member appear and disappear together.
+    if (originInfo_.type.cls == h5core::TypeClass::Compound && info.readable()) {
+        subject.memberChoices = postproc::memberChains(originInfo_.type);
+    }
+    return subject;
+}
+
+QStringList AppController::memberChoices() const
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return {};
+    }
+    return postproc::memberChains(originInfo_.type);
+}
+
 QString AppController::memberError(const QString& text) const
 {
     if (!datasetTabVisible_ || !hasDataset_) {
@@ -525,6 +553,16 @@ QString AppController::applyMember(const QString& text)
     if (!chain.valid()) {
         return chain.error;
     }
+
+    // Everything below announces itself with selectionChanged, because that is
+    // the signal the properties it moves are notified by -- and every
+    // DatasetMemory in the UI reads that signal as "put back what is filed for
+    // the dataset now current". Without the half of the pair that files it
+    // first, naming a member reverted the plot's range, the image's colour axis
+    // and the pipeline's own switch to whatever they were when the reader last
+    // *left* this dataset. The dataset is not changing here, so filing and
+    // restoring under the same name is the identity it should be.
+    emit selectionAboutToChange();
 
     // What the leading dimensions -- the dataset's own -- are already showing.
     // The chain only ever changes the axes after them, so a reader who has set
@@ -550,8 +588,7 @@ QString AppController::applyMember(const QString& text)
     datasetIsFloat_ = info.type.cls == h5core::TypeClass::Float && info.readable();
     datasetElementCount_ = static_cast<qint64>(info.elementCount());
 
-    postprocessModel_->setDataset(currentPath_, info.shape,
-                                  info.isNumeric() && info.readable());
+    postprocessModel_->setDataset(pipelineSubject(info));
     tableSetupModel_->setShape(info.shape, info.image);
 
     // The subscripts the chain carried belong on the slice line: `.samples[2]`
@@ -1027,8 +1064,7 @@ void AppController::applySelection(SelectionFacts facts)
         datasetInfo_ = info;
         // Before the layout, so the panel's reset lands on a pipeline that
         // already knows the shape it is starting from.
-        postprocessModel_->setDataset(currentPath_, shape,
-                                      info.isNumeric() && info.readable());
+        postprocessModel_->setDataset(pipelineSubject(info));
         tableSetupModel_->setShape(shape, image);
         // ...and then whatever slice was last written for this dataset. A line
         // that no longer reads -- which nothing in one session should produce,
@@ -1039,12 +1075,12 @@ void AppController::applySelection(SelectionFacts facts)
         }
     } else if (facts.isDataset) {
         datasetModel_->setSource(false, {}, {});
-        postprocessModel_->setDataset({}, {}, false);
+        postprocessModel_->setDataset({});
         tableSetupModel_->setShape({});
         datasetMessage_ = facts.datasetMessage;
     } else {
         datasetModel_->setSource(false, {}, {});
-        postprocessModel_->setDataset({}, {}, false);
+        postprocessModel_->setDataset({});
         tableSetupModel_->setShape({});
     }
 

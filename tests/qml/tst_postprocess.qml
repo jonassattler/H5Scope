@@ -204,6 +204,24 @@ TestCase {
         compare(pipeline.data(pipeline.index(2, 0), PostprocessModel.ShapeRole), "")
     }
 
+    /// The first *visible* item named `name` under `item`, or null.
+    ///
+    /// findChild() takes the first match whatever its state, and every row of
+    /// this panel instantiates one of each control and shows the ones its kind
+    /// calls for -- so the first match is nearly always a hidden one belonging
+    /// to the input row.
+    function findShown(item, name) {
+        for (let i = 0; i < item.children.length; ++i) {
+            const child = item.children[i]
+            if (child.objectName === name && child.visible)
+                return child
+            const deeper = findShown(child, name)
+            if (deeper)
+                return deeper
+        }
+        return null
+    }
+
     /// Every visible remove button under `item`, appended to `out`.
     function findAllRemoves(item, out) {
         for (let i = 0; i < item.children.length; ++i) {
@@ -545,5 +563,99 @@ TestCase {
 
         const chooser = findChild(win.contentItem, "addOperation")
         verify(!chooser.enabled, "there is no operation to add that could run")
+    }
+
+    /// A compound is not a dataset with nothing to work on. It is one with a
+    /// question still open -- which member -- and the row that answers it is a
+    /// row of this chain, above the slice, because after any arithmetic there
+    /// is no compound left to select from.
+    function test_a_compound_is_selected_from_a_list_and_then_sliced() {
+        verify(select("/compound"))
+        const win = openPanel()
+
+        compare(pipeline.rowCount(), 5, "the select row is one of the chain's")
+        compare(pipeline.data(pipeline.index(1, 0), PostprocessModel.KindRole),
+                PostprocessModel.Member)
+
+        const list = findChild(win.contentItem, "pipelineRows")
+        compare(list.count, 5)
+
+        // The chain stays live for it. It used to grey outright on anything
+        // not numeric, which would have greyed the one control that makes it
+        // numeric.
+        pipeline.enabled = true
+        waitForRendering(win.contentItem)
+        verify(list.enabled, "the chain a compound is selected in must be live")
+
+        const chooser = findShown(win.contentItem, "stepMember")
+        verify(chooser, "the select row must draw its list")
+        // "the whole struct", then the chains. A compound read as a compound
+        // is a selection and not an absence.
+        compare(chooser.count, 3)
+        compare(chooser.currentIndex, 0)
+
+        chooser.activated(2)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".value",
+                "the row is the box in the bar, not a copy of it")
+        verify(AppController.datasetIsNumeric)
+        verify(AppController.postprocessActive,
+               "and naming a member is what lets the panel run")
+        // Re-found: naming a member resets the model, so the row that was
+        // drawing the list a moment ago is not the row drawing it now.
+        compare(findShown(win.contentItem, "stepMember").currentIndex, 2,
+                "and the box says what was chosen")
+
+        // Back to the whole struct, which is an entry like any other.
+        findShown(win.contentItem, "stepMember").activated(0)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, "")
+        verify(!AppController.datasetIsNumeric)
+    }
+
+    /// Naming a member is not selecting a dataset, and every setting the
+    /// reader made about this one has to survive it.
+    ///
+    /// The properties it moves are notified by selectionChanged, and every
+    /// DatasetMemory in the UI reads that signal as "put back what is filed
+    /// under the dataset now current" -- so without the half of the pair that
+    /// files the current state first, choosing a member reverted the plot's
+    /// range, the image's colour axis and this panel's own switch to whatever
+    /// they were when the reader last left the dataset. This is the panel
+    /// standing in for all of them: it is the one whose state is visible from
+    /// here, and the signal pair is shared.
+    function test_naming_a_member_keeps_what_was_set_on_the_dataset() {
+        verify(select("/compound"))
+        const win = openPanel()
+
+        pipeline.enabled = true
+        pipeline.addStep("abs")
+        waitForRendering(win.contentItem)
+        compare(pipeline.rowCount(), 6)
+
+        findShown(win.contentItem, "stepMember").activated(1)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".id")
+        verify(pipeline.enabled, "the switch the reader set stays set")
+        compare(pipeline.rowCount(), 6, "and the step they added stays added")
+
+        // A different dataset still forgets, which is the rule this one is an
+        // exception to rather than a repeal of.
+        verify(select("/cube"))
+        waitForRendering(win.contentItem)
+        verify(!pipeline.enabled)
+        compare(pipeline.rowCount(), 4)
+    }
+
+    /// Only a compound has a member to select, so only a compound has the row.
+    function test_nothing_else_grows_a_select_row() {
+        verify(select("/cube"))
+        const win = openPanel()
+
+        compare(pipeline.rowCount(), 4)
+        compare(pipeline.data(pipeline.index(1, 0), PostprocessModel.KindRole),
+                PostprocessModel.Slice)
+        verify(!findShown(win.contentItem, "stepMember"),
+               "there is nothing to select from in a dataset of int32")
     }
 }

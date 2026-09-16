@@ -127,7 +127,12 @@ Rectangle {
         anchors.rightMargin: Theme.gapM
         visible: AppController.datasetTabVisible && !AppController.datasetIsNumeric
         height: visible ? implicitHeight : 0
-        text: qsTr("this dataset holds no numbers to work on")
+        // A compound is not a dataset with nothing to work on, it is one with
+        // a question still open: which member. The chain below stays live for
+        // it, because the row that answers that question is in the chain.
+        text: AppController.datasetIsCompound
+              ? qsTr("name a member below to work on its numbers")
+              : qsTr("this dataset holds no numbers to work on")
         font: Theme.caption
         color: Theme.textDisabled
         wrapMode: Text.WordWrap
@@ -152,7 +157,8 @@ Rectangle {
         // above it, rather than offering an add button for operations that
         // could not run.
         enabled: (panel.pipeline ? panel.pipeline.enabled : false)
-                 && AppController.datasetIsNumeric
+                 && (AppController.datasetIsNumeric
+                     || AppController.datasetIsCompound)
         opacity: steps.enabled ? 1.0 : 0.4
         boundsBehavior: Flickable.StopAtBounds
 
@@ -176,6 +182,7 @@ Rectangle {
             required property bool removable
             required property bool movable
             required property bool computed
+            required property var memberChoices
 
             width: steps.width
             height: line.implicitHeight
@@ -200,6 +207,7 @@ Rectangle {
                 removable: slot.removable
                 movable: slot.movable
                 computed: slot.computed
+                memberChoices: slot.memberChoices
                 current: panel.pipeline !== null
                          && panel.pipeline.activeRow === slot.index
                          && slot.kind !== PostprocessModel.Output

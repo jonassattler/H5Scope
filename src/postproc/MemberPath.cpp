@@ -185,6 +185,47 @@ QString sliceLineFor(const QString& subscript, const QStringList& folded,
     return line.join(QStringLiteral(", "));
 }
 
+namespace {
+
+/// The chains under one node, appended to `out` under `prefix`.
+///
+/// Stops at the cap rather than at a depth: a type is finite and describeType
+/// already bounded how deep it was looked at, so what has to be bounded here is
+/// the width -- a compound of a thousand members, which is a real shape.
+void appendChains(const h5core::TypeInfo& type, const QString& prefix,
+                  QStringList& out, int limit)
+{
+    // An array of compounds is entered: its dimensions become axes and the
+    // members of what it holds are still members. This is the same unwrapping
+    // resolveMemberChain does, and it has to be, or the list would offer a
+    // chain the resolver then refused.
+    const h5core::TypeInfo* level = &type;
+    while (level->cls == h5core::TypeClass::Array && level->base != nullptr) {
+        level = level->base.get();
+    }
+    if (level->cls != h5core::TypeClass::Compound) {
+        return;
+    }
+    for (const h5core::TypeMember& member : level->members) {
+        if (out.size() >= limit) {
+            return;
+        }
+        const QString chain = prefix + QLatin1Char('.')
+                              + QString::fromStdString(member.name);
+        out.append(chain);
+        appendChains(member.type, chain, out, limit);
+    }
+}
+
+} // namespace
+
+QStringList memberChains(const h5core::TypeInfo& type, int limit)
+{
+    QStringList out;
+    appendChains(type, QString{}, out, std::max(limit, 0));
+    return out;
+}
+
 QString writeMemberChain(const std::vector<MemberStep>& chain)
 {
     QString out;

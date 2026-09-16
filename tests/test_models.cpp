@@ -3080,6 +3080,134 @@ TEST_CASE_METHOD(ControllerFixture, "the pipeline opens as the two ends and noth
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture,
+                 "a compound gets a row for the member the chain runs on",
+                 "[controller][postproc][member]")
+{
+    // /compound is {id: int32, value: float64}. Nothing below the select row
+    // can run until one of those is named, which is the whole reason the row
+    // is above the slice rather than among the operations: after a transpose
+    // there is no compound left to select from.
+    REQUIRE(h5test::selectAndSettle(controller, "/compound"));
+
+    REQUIRE(post()->rowCount() == 5);
+    REQUIRE(step(0, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Input);
+    REQUIRE(step(1, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Member);
+    REQUIRE(step(2, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Slice);
+    REQUIRE(step(3, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Adder);
+    REQUIRE(step(4, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Output);
+
+    SECTION("and offers every chain the datatype has, and no subscripts")
+    {
+        CHECK(step(1, gui::PostprocessModel::LabelRole).toString()
+              == QStringLiteral("select"));
+        CHECK(step(1, gui::PostprocessModel::ArgumentLabelRole).toString()
+              == QStringLiteral("member"));
+        CHECK(step(1, gui::PostprocessModel::ChoicesRole).toStringList()
+              == QStringList{QStringLiteral(".id"), QStringLiteral(".value")});
+        // Nothing is named to begin with, and that is a selection: the whole
+        // struct is what the table was already showing.
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString().isEmpty());
+    }
+
+    SECTION("it is the box in the slice bar, and not a copy of it")
+    {
+        // The same contract the slice row keeps with the slice above the
+        // table. Writing in either place has to reach the other, or the panel
+        // and the bar could state different members of the same dataset.
+        post()->setArgument(1, QStringLiteral(".value"));
+        CHECK(controller.memberText() == QStringLiteral(".value"));
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral(".value"));
+
+        REQUIRE(controller.applyMember(QStringLiteral(".id")).isEmpty());
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral(".id"));
+    }
+
+    SECTION("a chain that does not read says so beside the row")
+    {
+        CHECK_THAT(post()->argumentError(1, QStringLiteral(".nope")).toStdString(),
+                   ContainsSubstring("has no member"));
+        CHECK(post()->argumentError(1, QStringLiteral(".value")).isEmpty());
+    }
+
+    SECTION("naming a member is what lets the rest of the panel run at all")
+    {
+        // The gate used to be the dataset's own class, so a compound greyed
+        // the panel outright -- and a Select runs before there are numbers.
+        post()->setEnabled(true);
+        CHECK_FALSE(post()->active());
+
+        post()->setArgument(1, QStringLiteral(".value"));
+        CHECK(post()->active());
+        CHECK(controller.datasetIsNumeric());
+    }
+
+    SECTION("choosing a member does not throw the pipeline away")
+    {
+        // It comes back through setDataset, because the shape below it
+        // changed. Clearing on that would mean this row turned its own panel
+        // off every time it was used.
+        post()->setArgument(1, QStringLiteral(".value"));
+        post()->setEnabled(true);
+        post()->addStep(QStringLiteral("abs"));
+        REQUIRE(post()->rowCount() == 6);
+
+        post()->setArgument(1, QStringLiteral(".id"));
+        CHECK(post()->enabled());
+        CHECK(post()->rowCount() == 6);
+        CHECK(step(3, gui::PostprocessModel::KindRole).toInt()
+              == gui::PostprocessModel::Operation);
+
+        // ...and a different dataset still does.
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        CHECK_FALSE(post()->enabled());
+        CHECK(post()->rowCount() == 4);
+    }
+
+    SECTION("everything below the member row is numbered from it")
+    {
+        // The slice row is row 2 here and row 1 everywhere else, and every
+        // piece of arithmetic in the model has to have moved with it.
+        post()->setArgument(1, QStringLiteral(".value"));
+        post()->setEnabled(true);
+        post()->addStep(QStringLiteral("max"));
+        REQUIRE(post()->rowCount() == 6);
+
+        // Clicking a row computes up to it, and the row it lights is the one
+        // that was clicked.
+        post()->setActiveRow(2);
+        CHECK(post()->activeRow() == 2);
+        CHECK(post()->upTo() == 1);
+        post()->setActiveRow(3);
+        CHECK(post()->activeRow() == 3);
+        CHECK(post()->upTo() == 2);
+
+        // The argument of row 3 is the operation's, not the slice's.
+        post()->setArgument(3, QStringLiteral("0"));
+        CHECK(step(3, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral("0"));
+        CHECK(step(2, gui::PostprocessModel::ArgumentRole).toString()
+              == controller.sliceText());
+        CHECK(shapeOf(3) == QStringLiteral("scalar"));
+    }
+
+    SECTION("a dataset with no members has no such row")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        CHECK(post()->rowCount() == 4);
+        CHECK(step(1, gui::PostprocessModel::KindRole).toInt()
+              == gui::PostprocessModel::Slice);
+        CHECK(step(1, gui::PostprocessModel::ChoicesRole).toStringList().isEmpty());
+    }
+}
+
 TEST_CASE_METHOD(ControllerFixture, "an operation changes the shape the views draw",
                  "[controller][postproc]")
 {
