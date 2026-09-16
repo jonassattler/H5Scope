@@ -15,6 +15,7 @@
 #include "h5core/File.hpp"
 
 #include <QAbstractItemModel>
+#include <QBasicTimer>
 #include <QHash>
 #include <QObject>
 #include <QStringList>
@@ -34,6 +35,7 @@ class AttributeTableModel;
 class DatasetStringListModel;
 class DatasetTableModel;
 class H5TreeModel;
+class NameIndex;
 class ObjectInfoModel;
 class TableSetupModel;
 class TreeFilterProxyModel;
@@ -410,8 +412,16 @@ signals:
     /// Non-fatal problems worth surfacing transiently in the UI.
     void statusMessage(const QString& message);
 
+protected:
+    /// Only the reveal settle; see kRevealMilliseconds.
+    void timerEvent(QTimerEvent* event) override;
+
 private:
     void refreshSelection();
+    /// Open the tree to what the filter found, wherever in the file that is --
+    /// including branches nobody has expanded, which is one listing per level
+    /// and is why this is settled rather than run per keystroke.
+    void revealMatches();
     /// Announce that the selection is leaving `currentPath_`, and write down
     /// the one setting this object keeps itself -- the slice.
     void leaveSelection();
@@ -466,6 +476,16 @@ private:
 
     H5TreeModel* treeModel_ = nullptr;
     TreeFilterProxyModel* filteredTreeModel_ = nullptr;
+    /// Every name in the open file, so the filter box answers out of RAM. Walked
+    /// in the background from the moment the file opens -- see NameIndex for why
+    /// the one thing about a file that is read whole is its names.
+    NameIndex* nameIndex_ = nullptr;
+    /// How long the filter box is left alone before the tree is opened to what
+    /// it found. A search is typed a character at a time and every prefix of it
+    /// has its own results; opening to each of them in turn is a listing per
+    /// level per keystroke, of branches the next keystroke throws away.
+    static constexpr int kRevealMilliseconds = 200;
+    QBasicTimer revealSettle_;
     DatasetTableModel* datasetModel_ = nullptr;
     DatasetStringListModel* datasetStringModel_ = nullptr;
     AttributeTableModel* attributeModel_ = nullptr;

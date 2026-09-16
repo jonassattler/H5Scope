@@ -81,16 +81,20 @@ Popup {
     /// a list sized from its own rows would therefore settle at the width of an
     /// ellipsis -- the latch SliceField carries the same note about. Metrics
     /// cannot elide.
+    ///
+    /// FontMetrics and its `advanceWidth(text)` *function*, rather than a
+    /// TextMetrics whose `text` is assigned in the loop: assigning a property
+    /// that the same binding then reads is a binding loop, and QML says so on
+    /// every keystroke that changes the list.
     readonly property real widestOption: {
         let widest = 0
         for (let i = 0; i < popup.options.length; ++i) {
-            metrics.text = popup.options[i]
-            widest = Math.max(widest, metrics.advanceWidth)
+            widest = Math.max(widest, metrics.advanceWidth(popup.options[i]))
         }
         return Math.ceil(widest)
     }
 
-    TextMetrics {
+    FontMetrics {
         id: metrics
 
         font: Theme.monoSmall

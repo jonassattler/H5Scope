@@ -58,7 +58,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), and `Completion` — which of the three grammars on a typed line the caret is in. QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
@@ -261,6 +261,85 @@ group that is not listed is *asked for* rather than walked, the answer arrives a
 moment later, and `completionsChanged` is what tells the box to ask again. A
 completer that listed its way down to answer a keystroke would spend exactly
 what that laziness saves.
+
+**Searching is the one exception, and `gui::NameIndex` is where it is made.**
+
+> **The tree stays lazy and the search does not.** A name is the one thing about
+> a file a reader may want to search the whole of without having looked at any
+> of it, and it is small: three hundred thousand paths is eighteen megabytes.
+> So every name is read once per file, in the background, and after that a
+> keystroke is a linear pass over contiguous memory.
+
+That laziness used to reach the filter, and it was wrong in both directions. It
+matched what the reader had expanded, so a search over a file nobody had walked
+found *nothing at all* and the only way to make it find something was to open
+the tree by hand, which reads. And it was slow where it did work, because the
+match happened per node of every subtree on every keystroke, with two QString
+conversions and two PCRE2 matches apiece: three hundred thousand objects
+measured at 160–330 ms a character.
+
+Four things hold it up, and each is a failure it was built out of:
+
+- **The walk is cut into jobs** (`kGroupsPerPass`). `H5Thread`'s queue is
+  strictly ordered and there is one of it, so a single pass over a large file
+  would put every listing the reader clicks for behind a second of indexing.
+  Each pass lists a bounded number of groups and re-arms at the *back* of the
+  queue. It uses `children(path, Resolve::Objects)`, because the kind is what
+  says whether there is anything below a name and asking for it during the
+  listing is one object-header read per name rather than two — measured at 1.0 s
+  against 2.2 s over three hundred thousand objects, which is `H5Lvisit`'s own
+  speed out of an interface that can be stopped and resumed.
+- **It answers before it is finished, and says when it cannot say.** Marks are
+  computed for whatever has arrived. A group the walk has not reached, one it
+  declined to descend into, and everything past `kMaxNames` come back `Unknown`,
+  and `TreeFilterProxyModel` then falls back to the recursive walk over what the
+  model has read — which is exactly what it did before. So the filter is never
+  wrong: it is complete where the index is and lazy where it is not. A group is
+  only ever `No` once the whole walk is in, because a listed group still has
+  unlisted groups under it.
+- **A loop is an ancestor repeating itself, not a name seen twice.**
+  `/aliases/alias_0000` and `/runs/run_0000` can be one object under two names;
+  the tree shows the contents of both and so must this, or the second gets an
+  `Opaque` where an answer was available. Only an identity already on the path
+  from the root stops the walk.
+- **`gui::matchesWildcard` is written out by hand.** PCRE2 is about a
+  microsecond a call and there are two calls per name, which is a third of a
+  second per character at three hundred thousand objects. A back-tracking glob
+  is two orders of magnitude cheaper on the patterns people write, because
+  almost every one of them fails on the first character. `test_models` holds it
+  against `QRegularExpression::fromWildcard` over a table of patterns and names,
+  so the parity is asserted rather than claimed. The same applies to the case
+  fold under it: `QChar::toCaseFolded` is an out-of-line call into QtCore, and
+  doing ASCII inline first is what takes a keystroke from 23 ns a character to
+  under two.
+
+Two costs live above the index rather than in it, and both are about the *view*
+rather than about the search:
+
+- **A search starts from a closed tree.** Every row on screen when the filter
+  changes has to be taken out of the view one run of adjacent losers at a time,
+  and QQuickTreeView pays for each of those over the whole of its flattened row
+  list. A reader who had opened a group of sixty-five thousand members and then
+  typed `item*7` waited twenty-two seconds for one keystroke. `ObjectTree.qml`
+  collapses when a search begins — what was open is already written down, and
+  already put back when the box is cleared — and the same keystroke is then a
+  few milliseconds. What is left is `QSortFilterProxyModel`'s own list surgery,
+  which is `QList::remove` per interval and so quadratic in the width of a
+  group; it is a second at sixty-five thousand members and unmeasurable at
+  eight thousand. `invalidate()` would replace all of it with one
+  `layoutChanged` — and does, in about fifty milliseconds — but it throws the
+  mappings away under every `QModelIndex` already handed out, which
+  `QQmlTreeModelToTableModel` answers with "Invalid index" warnings and an
+  intermittent use-after-free. Do not reach for it.
+- **Opening the tree to the results is bounded** (`kRevealLimit`). A result in a
+  branch nobody has expanded is still a result, and `H5TreeModel::revealPath`
+  will list the way down to it — but a search that matched more rows than a pane
+  could show is not a result to be opened, it is a search to be narrowed, so
+  past the bound nothing is opened at all rather than the first two hundred of
+  a quarter of a million. It is also settled (`kRevealMilliseconds`) rather than
+  run per keystroke, because `temperature` typed a character at a time would
+  otherwise list the file's way down to the results of eleven prefixes, ten of
+  them abandoned by the next character.
 
 **The vlen rule.** A vlen's length differs in every record and every view here
 is a rectangle, so it contributes no axis: `.tags` keeps the dataset's shape and

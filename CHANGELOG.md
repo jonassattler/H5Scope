@@ -71,6 +71,21 @@ plots against: the range on screen is turned back into a range of elements, and
 the axis is now held whole and folded finer with the lines it carries. Zooming
 a time series costs what zooming an index costs, which is nothing.
 
+**The filter box searches the whole file, and answers out of memory.** It used
+to match what you had expanded, which made a search over a file nobody had
+walked find nothing and made one over a file somebody *had* walked cost a
+recursive pass over the tree with two regular-expression matches per row —
+three hundred thousand objects measured at 160–330 ms a keystroke, and a
+wildcard over a group of sixty-five thousand members took twenty-two seconds.
+Every name is now read once, in the background, into one block of memory, and a
+keystroke is a linear pass over it: 5 ms for a run of characters and 30 ms for
+the worst wildcard, at three hundred thousand objects. What it finds is
+complete — a name eight levels down in a branch you have never opened is found,
+the branches holding it stay on screen, and the tree opens itself to the results
+when there are few enough to be results. The box says how many there are. The
+tree is still lazy: nothing is listed to answer a keystroke that nothing is
+being shown for.
+
 **The Information tab opens a compound out**, under the row that names its type:
 a tree indented until nothing is left but base types, with an enum's symbols
 where they were previously unprintable. And the JSON beside a compound cell is

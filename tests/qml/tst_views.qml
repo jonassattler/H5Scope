@@ -4370,6 +4370,50 @@ TestCase {
         clearFilter()
     }
 
+    function test_a_name_in_a_branch_nobody_opened_is_still_found() {
+        // No treeWithGroupRead() here, deliberately: nothing below the root has
+        // been listed. The filter used to match what the reader had expanded,
+        // so a search for a name three levels down found nothing at all until
+        // they had walked to it by hand. It is answered out of the name index
+        // now, and the branch on the way is opened for them.
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+        win.tree.collapseAll()
+        waitForRendering(win.tree)
+
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => model.indexForPath("/group/nested/leaf").valid, 5000,
+                  "the search must reach a name nobody had expanded the way to")
+        tryVerify(() => view.rowAtIndex(model.indexForPath("/group/nested/leaf")) >= 0,
+                  5000, "...and the tree must be opened to it")
+        compare(model.matchCount, 1, "one name in the file is called leaf")
+
+        clearFilter()
+    }
+
+    function test_the_box_says_how_much_of_the_file_it_found() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        const filter = typeIntoFilter(win, "str_")
+        tryVerify(() => filter.hint !== "", 5000,
+                  "the box must report what the filter took")
+        // str_fixed, str_vlen, str_scalar, str_grid -- counted over the file
+        // rather than over what happens to be on screen.
+        compare(AppController.filteredTreeModel.matchCount, 4)
+        compare(filter.hint, "4 matches")
+
+        clearFilter()
+        compare(filter.hint, "", "an empty box reports nothing")
+    }
+
     function test_a_matched_group_is_not_poured_out() {
         const win = treeWithGroupRead()
         const view = findChild(win.tree, "objectTreeView")

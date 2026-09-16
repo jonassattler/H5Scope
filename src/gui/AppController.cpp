@@ -10,6 +10,7 @@
 #include "DatasetStringListModel.hpp"
 #include "DatasetTableModel.hpp"
 #include "H5TreeModel.hpp"
+#include "NameIndex.hpp"
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
 #include "PlotBudget.hpp"
@@ -120,6 +121,7 @@ AppController::AppController(QObject* parent)
       // whatever order they are written here.
       treeModel_(new H5TreeModel(this)),
       filteredTreeModel_(new TreeFilterProxyModel(this)),
+      nameIndex_(new NameIndex(this)),
       datasetModel_(new DatasetTableModel(this)),
       attributeModel_(new AttributeTableModel(this)),
       infoModel_(new ObjectInfoModel(this)),
@@ -127,6 +129,15 @@ AppController::AppController(QObject* parent)
       postprocessModel_(new PostprocessModel(this))
 {
     filteredTreeModel_->setSourceModel(treeModel_);
+    filteredTreeModel_->setNameIndex(nameIndex_);
+    // A result in a branch the walk had not reached when the filter was typed
+    // is still a result. The index says so as soon as it gets there, and this
+    // is what opens the tree to it.
+    connect(nameIndex_, &NameIndex::grew, this, [this] {
+        if (nameIndex_->complete() && !filterText().isEmpty()) {
+            revealMatches();
+        }
+    });
     datasetStringModel_ = new DatasetStringListModel(datasetModel_, this);
 
     // What was opened last time. Read once, here, rather than on every binding
@@ -446,6 +457,33 @@ void AppController::setFilterText(const QString& text)
     }
     filteredTreeModel_->setFilterText(text);
     emit filterTextChanged();
+    // The tree opens itself to the results, and opening a branch nobody has
+    // expanded is a listing per level. Settled rather than done per keystroke:
+    // a reader typing `temperature` would otherwise have the file listed its
+    // way down to the results of `t`, `te`, `tem` and nine more prefixes, every
+    // one of them abandoned by the next character.
+    revealSettle_.start(kRevealMilliseconds, this);
+}
+
+void AppController::timerEvent(QTimerEvent* event)
+{
+    if (event->timerId() != revealSettle_.timerId()) {
+        QObject::timerEvent(event);
+        return;
+    }
+    revealSettle_.stop();
+    revealMatches();
+}
+
+void AppController::revealMatches()
+{
+    // Bounded by TreeFilterProxyModel::kRevealLimit, which answers with nothing
+    // at all rather than with a prefix of the results -- see the note there.
+    // So this is at most a couple of hundred walks of a handful of levels, and
+    // every level already listed costs nothing at all.
+    for (const QString& path : filteredTreeModel_->revealPaths()) {
+        treeModel_->revealPath(path);
+    }
 }
 
 QVariantMap AppController::rememberedSettings(const QString& group) const
@@ -1110,6 +1148,7 @@ bool AppController::openFile(const QString& path)
     filePath_.clear();
     currentPath_.clear();
     treeModel_->close();
+    nameIndex_->close();
     setErrorText(QString{});
     emit fileChanged();
     refreshSelection();
@@ -1164,6 +1203,11 @@ bool AppController::openFile(const QString& path)
             // something to offer the reader again from a menu.
             remember(path);
             treeModel_->open();
+            // Behind the tree rather than in front of it. The queue is ordered
+            // and there is one HDF5 thread, so the index walks in bounded
+            // passes that re-arm at the back of it: every listing the reader
+            // asks for is served before the next of them.
+            nameIndex_->open();
             emit fileChanged();
 
             currentPath_ = opened.firstChild.isEmpty() ? QStringLiteral("/")
@@ -1199,6 +1243,7 @@ void AppController::closeFile()
     currentPath_.clear();
     setErrorText(QString{});
     treeModel_->close();
+    nameIndex_->close();
     // The close itself is a job like any other: H5Fclose is an HDF5 call and
     // belongs on the thread that owns the library, and the session is where the
     // file has been all along.

@@ -19,7 +19,9 @@
 //             this is per *visible* row, so a number here that scales with the
 //             file is a bug rather than a cost.
 //   viewport  the same, restricted to one screenful -- what a scroll costs
-//   filter    a keystroke in the filter box, over the loaded tree
+//   index     reading every name in the file into memory, which is what the
+//             filter box is answered out of
+//   filter    a keystroke in the filter box, over every name in the file
 //   path      resolving an absolute path to an index, as the address bar does
 //
 // Run against the scale file:
@@ -30,6 +32,7 @@
 
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/NameIndex.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
@@ -294,15 +297,34 @@ int main(int argc, char** argv)
                         widePath.toUtf8().constData(), members);
         }
 
+        // What the filter box costs, in two numbers rather than one, because
+        // they have separate causes and only the second is paid per keystroke:
+        //
+        //   index    reading every name in the file into memory, once, in the
+        //            background. The filter is answered out of this, so the
+        //            row below is what a *character* costs and this is what
+        //            opening the file costs on its behalf.
+        //   filter   one keystroke: the pass over every name, plus the proxy
+        //            re-deciding every row it has a mapping for.
+        gui::NameIndex names;
+        bench::phase(rows, "index", [&] {
+            names.open();
+            h5.drain();
+        }, 0, "");
+        rows.back().units = names.count();
+        rows.back().unitName = names.truncated() ? "names, truncated" : "names indexed";
+
         gui::TreeFilterProxyModel proxy;
         proxy.setSourceModel(&model);
+        proxy.setNameIndex(&names);
         long long shown = 0;
         bench::phase(rows, "filter", [&] {
             proxy.setFilterText(filterText);
             shown = proxy.rowCount({});
-        }, rendered, "rows tested");
-        std::printf("filter \"%s\": %lld top-level rows survive\n",
-                    filterText.toUtf8().constData(), shown);
+        }, static_cast<long long>(names.count()), "names tested");
+        std::printf("filter \"%s\": %lld top-level rows survive, %d names in the file "
+                    "match\n",
+                    filterText.toUtf8().constData(), shown, proxy.matchCount());
         proxy.setFilterText(QString{});
 
         const QString target =
