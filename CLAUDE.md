@@ -208,7 +208,13 @@ in a line, which is where a stroke ends. Nothing in that needs to know how long
 any record's list is, so nothing reads the whole dataset to draw the start of it.
 
 `/plotting/events` in the example file is a hundred thousand records with one of
-every member class in the same struct. `/series/pairs` in the test fixture is
+every member class in the same struct, and `/types/compound/tracks` is the one
+composition it does not have: an array member whose elements are themselves
+structs. `.trail` appends an axis of three and `.trail.x` is that axis with a
+name after it — rank 2 out of a rank-1 dataset — which is where "an array member
+appends an axis" and "a chain goes on through a compound" have to hold at once.
+It is also the only element in the file whose JSON has to open a list out over
+lines. `/series/pairs` in the test fixture is
 `/series/a` and `/series/b` again as structs, which is what lets
 `test_customplot` assert that a member and a dataset of its own cost the same —
 **read for read**, not only value for value. A member read that fell back to a

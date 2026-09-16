@@ -24,7 +24,24 @@ inline h5core::MemberSelection chainOf(const h5core::TypeInfo& type,
                                        std::optional<hsize_t> vlenIndex = std::nullopt)
 {
     h5core::MemberSelection selection;
-    const h5core::TypeInfo* level = &type;
+
+    // An array member's dimensions are axes of the result, and what it holds
+    // is what a member is then looked up in -- the same unwrapping the reader
+    // does. It has to happen *between* the links as well as after the last of
+    // them: `.trail.x` goes through an array of structs, and a version that
+    // only unwrapped at the end could not find `x` at all.
+    const auto unwrap = [&selection](const h5core::TypeInfo* from) {
+        while (from->cls == h5core::TypeClass::Array && from->base != nullptr) {
+            selection.dims.insert(selection.dims.end(), from->arrayDims.begin(),
+                                  from->arrayDims.end());
+            from = from->base.get();
+        }
+        return from;
+    };
+
+    // A dataset whose own type is an array of compounds: those dimensions are
+    // the result's too.
+    const h5core::TypeInfo* level = unwrap(&type);
     for (const std::string& name : names) {
         const auto it = std::find_if(
             level->members.begin(), level->members.end(),
@@ -35,18 +52,9 @@ inline h5core::MemberSelection chainOf(const h5core::TypeInfo& type,
         selection.links.push_back(h5core::MemberLink{
             static_cast<unsigned>(it - level->members.begin()), name, std::nullopt});
         selection.text += "." + name;
-        level = &it->type;
+        level = unwrap(&it->type);
     }
-
-    // An array member's dimensions are axes of the result, and what it holds is
-    // what one element of the result is -- the same unwrapping the reader does.
     selection.type = *level;
-    while (selection.type.cls == h5core::TypeClass::Array
-           && selection.type.base != nullptr) {
-        selection.dims.insert(selection.dims.end(), selection.type.arrayDims.begin(),
-                              selection.type.arrayDims.end());
-        selection.type = *selection.type.base;
-    }
 
     // An index into a vlen is the one subscript that stays on the chain, so it
     // is set after the unwrapping rather than folded into a dimension.

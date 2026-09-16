@@ -24,6 +24,8 @@
 #include "gui/PostprocessModel.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
+#include "postproc/MemberPath.hpp"
+
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
@@ -775,6 +777,91 @@ TEST_CASE("a compound's type resolves all the way down", "[example][types]")
         REQUIRE(tags.info().type.cls == h5core::TypeClass::VarLen);
         REQUIRE(tags.info().type.base != nullptr);
         CHECK(tags.info().type.base->cls == h5core::TypeClass::Integer);
+    }
+}
+
+TEST_CASE("an array of structs is a member like any other", "[example][member]")
+{
+    // /types/compound/tracks is the one composition the rest of the file does
+    // not have: an array member whose elements are themselves compounds. It is
+    // where "an array member appends an axis" and "a chain goes on through a
+    // compound" have to hold at once.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/tracks");
+    const h5core::TypeInfo& type = whole.info().type;
+    REQUIRE(whole.info().shape == std::vector<hsize_t>{4});
+
+    SECTION("the axis it appends is the array's, and the chain goes on past it")
+    {
+        const h5test::Field x(file, "/types/compound/tracks",
+                              h5test::chainOf(type, {"trail", "x"}));
+        // Rank 2 out of a rank-1 dataset: the dataset's own axis, then the
+        // three the array contributed.
+        CHECK(x.info().shape == std::vector<hsize_t>{4, 3});
+        CHECK(x.info().type.cls == h5core::TypeClass::Float);
+        CHECK(x.info().isNumeric());
+
+        // Track i, point p, was written {i + p, 2i + p, 3i + p}.
+        const auto values = x.readNumericWindow({0, 0}, {4, 3});
+        REQUIRE(values.values.size() == 12);
+        for (hsize_t i = 0; i < 4; ++i) {
+            for (hsize_t p = 0; p < 3; ++p) {
+                INFO("track " << i << ", point " << p);
+                CHECK(values.values[i * 3 + p]
+                      == static_cast<double>(i) + static_cast<double>(p));
+            }
+        }
+    }
+
+    SECTION("the whole array member keeps its own axis and stays a compound")
+    {
+        const h5test::Field trail(file, "/types/compound/tracks",
+                                  h5test::chainOf(type, {"trail"}));
+        CHECK(trail.info().shape == std::vector<hsize_t>{4, 3});
+        CHECK(trail.info().type.cls == h5core::TypeClass::Compound);
+        // Three numbers per cell, so the grid prints the struct and the
+        // compound pane opens it out -- exactly as the dataset itself does.
+        CHECK_FALSE(trail.info().isNumeric());
+    }
+
+    SECTION("it is offered as a chain, under the name the file gave it")
+    {
+        const QStringList chains = postproc::memberChains(type);
+        CHECK(chains
+              == QStringList{QStringLiteral(".name"), QStringLiteral(".trail"),
+                             QStringLiteral(".trail.x"), QStringLiteral(".trail.y"),
+                             QStringLiteral(".trail.z"), QStringLiteral(".hops")});
+        // And what is offered is what resolves, which is the only reason the
+        // list is worth having.
+        for (const QString& chain : chains) {
+            INFO(chain.toStdString());
+            CHECK(postproc::resolveMemberChain(chain, type).valid());
+        }
+    }
+
+    SECTION("and its JSON opens the list out, because the list holds structs")
+    {
+        const h5core::ElementValue element = whole.readElement({1});
+        CHECK_THAT(element.json, ContainsSubstring(R"("name": "T-01")"));
+        CHECK_THAT(element.json,
+                   ContainsSubstring("\"trail\": [\n    {\n      \"x\": 1,"));
+        CHECK_THAT(element.json, ContainsSubstring(R"("hops": 10)"));
+    }
+
+    SECTION("the datatype panel draws the array's members under it")
+    {
+        gui::AppController controller;
+        REQUIRE(h5test::openFileAndSettle(controller,
+                                          QString::fromStdString(example().path())));
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/tracks")));
+        const QStringList tree = typeTree(controller);
+        REQUIRE(tree.size() == 6);
+        CHECK(tree[0].startsWith(QStringLiteral("1 name string")));
+        CHECK(tree[1] == QStringLiteral("1 trail array[3] of compound {x, y, z}"));
+        CHECK(tree[2] == QStringLiteral("2 x float64"));
+        CHECK(tree[4] == QStringLiteral("2 z float64"));
+        CHECK(tree[5] == QStringLiteral("1 hops int32"));
     }
 }
 

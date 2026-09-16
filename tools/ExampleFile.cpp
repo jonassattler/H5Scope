@@ -232,6 +232,20 @@ struct Reading
     float weight;
 };
 
+/// A member that is an *array of structs*, which nothing else in this file has.
+///
+/// It is the shape that says an array member and a nested compound compose:
+/// `.trail` appends an axis of three and `.trail.x` is that axis with a number
+/// on it, rank 2 out of a rank-1 dataset. It is also the one element in this
+/// file whose JSON has to open a list out over lines rather than keep it on
+/// one, which is the half of that rule nothing else would notice losing.
+struct Track
+{
+    char name[8];
+    Point trail[3];    ///< an array of a compound
+    std::int32_t hops;
+};
+
 struct Simple
 {
     std::int32_t id;
@@ -297,6 +311,21 @@ Id readingType()
     must(H5Tinsert(type, "samples", HOFFSET(Reading, samples), samples), "samples");
     must(H5Tinsert(type, "quality", HOFFSET(Reading, quality), quality), "quality");
     must(H5Tinsert(type, "weight", HOFFSET(Reading, weight), H5T_NATIVE_FLOAT), "weight");
+    return type;
+}
+
+Id trackType()
+{
+    const Id name = fixedString(8);
+    const Id point = pointType();
+    const hsize_t trailDims[] = {3};
+    const Id trail(H5Tarray_create2(point, 1, trailDims), &H5Tclose,
+                   "track trail array type");
+
+    Id type(H5Tcreate(H5T_COMPOUND, sizeof(Track)), &H5Tclose, "create track compound");
+    must(H5Tinsert(type, "name", HOFFSET(Track, name), name), "name");
+    must(H5Tinsert(type, "trail", HOFFSET(Track, trail), trail), "trail");
+    must(H5Tinsert(type, "hops", HOFFSET(Track, hops), H5T_NATIVE_INT32), "hops");
     return type;
 }
 
@@ -675,6 +704,31 @@ void writeTypes(hid_t file)
                              "reopen nested");
             stringAttribute(dataset, "note",
                             "Members: fixed string, int64, nested compound, array, enum, float");
+        }
+
+        // An array of structs as a member, which is the one composition the
+        // rest of this file does not have: `.trail` appends an axis of three
+        // and `.trail.x` is that axis with a number on it.
+        {
+            const Id tracks = trackType();
+            std::vector<Track> made(4);
+            for (std::size_t i = 0; i < made.size(); ++i) {
+                std::snprintf(made[i].name, sizeof(made[i].name), "T-%02u",
+                              static_cast<unsigned>(i) % 100U);
+                for (int p = 0; p < 3; ++p) {
+                    const auto step = static_cast<double>(p);
+                    made[i].trail[p] = {static_cast<double>(i) + step,
+                                        static_cast<double>(i) * 2.0 + step,
+                                        static_cast<double>(i) * 3.0 + step};
+                }
+                made[i].hops = static_cast<std::int32_t>(i) * 10;
+            }
+            writeDataset(compounds, "tracks", tracks, {made.size()}, made.data());
+            const Id dataset(H5Dopen2(compounds, "tracks", H5P_DEFAULT), &H5Dclose,
+                             "reopen tracks");
+            stringAttribute(dataset, "note",
+                            "trail is an array of three structs: try [:].trail.x, "
+                            "which is 4 x 3");
         }
 
         // A table shape rather than a list: rank 2 of records.
