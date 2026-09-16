@@ -11,6 +11,7 @@
 add_library(postproc STATIC
   Array.cpp
   Subscripts.cpp
+  MemberPath.cpp
   Operations.cpp
   Pipeline.cpp
   ComputedDataset.cpp

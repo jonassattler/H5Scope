@@ -12,6 +12,7 @@
 #include "gui/PlotProjection.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/Completion.hpp"
 #include "gui/ObjectInfoModel.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/DatasetStringListModel.hpp"
@@ -46,6 +47,30 @@
 using Catch::Matchers::ContainsSubstring;
 
 namespace {
+
+/// The indented rows of the Information tab's datatype panel: the compound
+/// opened out until nothing is left but base types.
+///
+/// Read through infoPanels() rather than off the model, because that is the
+/// property QML binds -- so this is the tree a reader actually sees, depths and
+/// all.
+QVariantList typeTree(const gui::AppController& controller)
+{
+    QVariantList tree;
+    for (const QVariant& panel : controller.infoPanels()) {
+        const QVariantMap fields = panel.toMap();
+        if (fields.value(QStringLiteral("title")).toString()
+            != QStringLiteral("datatype")) {
+            continue;
+        }
+        for (const QVariant& row : fields.value(QStringLiteral("rows")).toList()) {
+            if (row.toMap().value(QStringLiteral("depth")).toInt() > 0) {
+                tree.append(row);
+            }
+        }
+    }
+    return tree;
+}
 
 /// Give `item` a pane and a window, so that it will answer questions about
 /// what it is drawing.
@@ -740,6 +765,195 @@ TEST_CASE_METHOD(ControllerFixture, "the slice is kept per dataset too", "[setti
     }
 }
 
+/// The completions for `text`, once everything they were waiting on has come.
+///
+/// A completer answers from what has already been read and *asks* for what has
+/// not, so the first answer about a group nobody has opened is empty by design
+/// and the one after it may still be growing as each row learns what it is.
+/// This is the loop a box does for itself by re-asking on completionsChanged;
+/// a test has to write it out.
+QStringList settledCompletions(gui::AppController& controller, const QString& text)
+{
+    QSignalSpy changed(&controller, &gui::AppController::completionsChanged);
+    QStringList offered = controller.completions(text);
+    for (int round = 0; round < 40; ++round) {
+        if (!changed.wait(1000)) {
+            break; // nothing more is on its way
+        }
+        offered = controller.completions(text);
+    }
+    return offered;
+}
+
+TEST_CASE("a typed line says which of its three grammars is being written",
+          "[completion]")
+{
+    // The grammar and only the grammar: nothing here opens a file, so every
+    // rule about where a path stops and a chain starts can be stated flat.
+    using Part = gui::CompletionRequest::Part;
+
+    SECTION("a path, until the first bracket")
+    {
+        const auto plain = gui::completionRequest(QStringLiteral("/plot"));
+        CHECK(plain.part == Part::Path);
+        CHECK(plain.head == QStringLiteral("/"));
+        CHECK(plain.fragment == QStringLiteral("plot"));
+
+        const auto deeper = gui::completionRequest(QStringLiteral("/plotting/ev"));
+        CHECK(deeper.head == QStringLiteral("/plotting/"));
+        CHECK(deeper.fragment == QStringLiteral("ev"));
+
+        // A separator just typed asks for everything in that group.
+        const auto opened = gui::completionRequest(QStringLiteral("/plotting/"));
+        CHECK(opened.head == QStringLiteral("/plotting/"));
+        CHECK(opened.fragment.isEmpty());
+    }
+
+    SECTION("a '.' before any bracket is part of the path, not a member")
+    {
+        // A link name holds a '.' as freely as it holds a '['. `/data/run.3`
+        // is a dataset being typed, and reading it as member 3 of `run` would
+        // mean asking the file about a path nobody has named.
+        const auto dotted = gui::completionRequest(QStringLiteral("/data/run.3"));
+        CHECK(dotted.part == Part::Path);
+        CHECK(dotted.fragment == QStringLiteral("run.3"));
+    }
+
+    SECTION("a subscript still open offers nothing, and says so as a part")
+    {
+        const auto inside = gui::completionRequest(QStringLiteral("/a/b[0:"));
+        CHECK(inside.part == Part::Subscript);
+        // Every integer, every range and every combination of them is not a
+        // list. What a reader wants help with there is written for them when
+        // the path is completed instead.
+        CHECK(inside.fragment.isEmpty());
+    }
+
+    SECTION("a subscript closed is where a member chain could start")
+    {
+        const auto closed = gui::completionRequest(QStringLiteral("/a/b[:, 0]"));
+        CHECK(closed.part == Part::Member);
+        CHECK(closed.head == QStringLiteral("/a/b[:, 0]"));
+        CHECK(closed.fragment.isEmpty());
+        CHECK(closed.path == QStringLiteral("/a/b"));
+
+        const auto started = gui::completionRequest(QStringLiteral("/a/b[:].pos"));
+        CHECK(started.part == Part::Member);
+        CHECK(started.head == QStringLiteral("/a/b[:]"));
+        CHECK(started.fragment == QStringLiteral(".pos"));
+        CHECK(started.path == QStringLiteral("/a/b"));
+    }
+}
+
+TEST_CASE("what Tab writes is as far as it can go without choosing",
+          "[completion]")
+{
+    SECTION("the whole subscript is one term per dimension")
+    {
+        CHECK(gui::wholeSubscript(0).isEmpty()); // a scalar has none
+        CHECK(gui::wholeSubscript(1) == QStringLiteral("[:]"));
+        CHECK(gui::wholeSubscript(3) == QStringLiteral("[:, :, :]"));
+    }
+
+    SECTION("one candidate completes to itself")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/plotting/")})
+              == QStringLiteral("/plotting/"));
+    }
+
+    SECTION("several complete to the head they share")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/plotting/"), QStringLiteral("/plots/")})
+              == QStringLiteral("/plot"));
+    }
+
+    SECTION("nothing shared, and nothing to write")
+    {
+        CHECK(gui::commonHead({QStringLiteral("/a"), QStringLiteral("/b")})
+              == QStringLiteral("/"));
+        CHECK(gui::commonHead({}).isEmpty());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "the completer offers what has been read",
+                 "[controller][completion]")
+{
+    SECTION("the children of the group being typed into")
+    {
+        const QStringList offered = settledCompletions(controller, QStringLiteral("/com"));
+        REQUIRE(offered.size() == 2);
+        // A dataset comes with the subscript that selects the whole of it.
+        CHECK(offered.contains(QStringLiteral("/compound[:]")));
+        CHECK(offered.contains(QStringLiteral("/compressed[:, :]")));
+    }
+
+    SECTION("a group comes with the separator, so one Tab and keep typing")
+    {
+        const QStringList offered = settledCompletions(controller, QStringLiteral("/gro"));
+        CHECK(offered == QStringList{QStringLiteral("/group/")});
+    }
+
+    SECTION("a group nobody has expanded is asked for, not walked")
+    {
+        // The tree is lazy because a file can hold a million objects, and a
+        // completer that listed its way down to answer a keystroke would spend
+        // exactly what that laziness saves. So the first ask comes back empty
+        // and the listing arrives behind it.
+        CHECK(controller.completions(QStringLiteral("/group/nes")).isEmpty());
+        CHECK(settledCompletions(controller, QStringLiteral("/group/nes"))
+              == QStringList{QStringLiteral("/group/nested/")});
+    }
+
+    SECTION("a compound's members, once the subscript is closed")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        CHECK(controller.completions(QStringLiteral("/compound[:]"))
+              == QStringList{QStringLiteral("/compound[:].id"),
+                             QStringLiteral("/compound[:].value")});
+        CHECK(controller.completions(QStringLiteral("/compound[:].v"))
+              == QStringList{QStringLiteral("/compound[:].value")});
+    }
+
+    SECTION("a dataset with no members offers none")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/matrix")));
+        CHECK(controller.completions(QStringLiteral("/matrix[:, :]")).isEmpty());
+    }
+
+    SECTION("the member box completes a chain on its own")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        CHECK(controller.memberCompletions(QString{})
+              == QStringList{QStringLiteral(".id"), QStringLiteral(".value")});
+        CHECK(controller.memberCompletions(QStringLiteral(".v"))
+              == QStringList{QStringLiteral(".value")});
+        CHECK(controller.memberCompletions(QStringLiteral(".z")).isEmpty());
+    }
+
+    SECTION("a question with no answer is asked once, and then not again")
+    {
+        // The signal a completion asks with is the signal every box re-asks
+        // on, so a path that can be looked up and still yields no datatype --
+        // a group, a broken link -- is one step from an unbounded loop with
+        // the window locked inside it. `DatasetLookup::resolve` runs its
+        // continuation *there and then* when there is nothing to ask, which is
+        // what makes it a loop rather than a slow poll.
+        CHECK(settledCompletions(controller, QStringLiteral("/group[:].x")).isEmpty());
+
+        QSignalSpy asked(&controller, &gui::AppController::completionsChanged);
+        for (int again = 0; again < 5; ++again) {
+            CHECK(controller.completions(QStringLiteral("/group[:].x")).isEmpty());
+        }
+        CHECK(asked.count() == 0);
+    }
+
+    SECTION("nothing is offered while nothing is open")
+    {
+        controller.closeFile();
+        CHECK(controller.completions(QStringLiteral("/com")).isEmpty());
+    }
+}
+
 TEST_CASE_METHOD(ControllerFixture, "the info model describes the selection", "[info]")
 {
     SECTION("a dataset reports type and shape")
@@ -763,6 +977,43 @@ TEST_CASE_METHOD(ControllerFixture, "the info model describes the selection", "[
     {
         REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/group")));
         REQUIRE(info()->valueFor(QStringLiteral("Children")) == QStringLiteral("1"));
+    }
+
+    SECTION("a compound is opened out until nothing is left but base types")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/compound")));
+        // The comma-joined Members row stays -- it is the one-line answer --
+        // and the tree is the other entry, under a row that says what it is.
+        CHECK(info()->valueFor(QStringLiteral("Members"))
+              == QStringLiteral("id, value"));
+        const QVariantList tree = typeTree(controller);
+        REQUIRE(tree.size() == 2);
+        CHECK(tree[0].toMap().value("label").toString() == QStringLiteral("id"));
+        CHECK(tree[0].toMap().value("value").toString() == QStringLiteral("int32"));
+        CHECK(tree[0].toMap().value("depth").toInt() == 1);
+        CHECK(tree[1].toMap().value("label").toString() == QStringLiteral("value"));
+        CHECK(tree[1].toMap().value("value").toString() == QStringLiteral("float64"));
+    }
+
+    SECTION("an enum says what its numbers mean")
+    {
+        // A nested enum has no Members row of its own, so the tree is the only
+        // place its symbols can be printed. It gets one here too, for one
+        // renderer rather than two.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/enum")));
+        const QVariantList tree = typeTree(controller);
+        REQUIRE(tree.size() == 1);
+        CHECK(tree[0].toMap().value("label").toString() == QStringLiteral("values"));
+        CHECK(tree[0].toMap().value("value").toString()
+              == QStringLiteral("RED, GREEN, BLUE"));
+    }
+
+    SECTION("a type with no parts gets no tree at all")
+    {
+        // float64 resolves to float64, which the Type row above has said. A
+        // panel that repeated it under a heading would be saying it twice.
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/matrix")));
+        CHECK(typeTree(controller).isEmpty());
     }
 }
 
@@ -3016,6 +3267,134 @@ TEST_CASE_METHOD(ControllerFixture, "the pipeline opens as the two ends and noth
         REQUIRE_FALSE(controller.postprocessActive());
         post()->setEnabled(true);
         REQUIRE(controller.postprocessActive());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture,
+                 "a compound gets a row for the member the chain runs on",
+                 "[controller][postproc][member]")
+{
+    // /compound is {id: int32, value: float64}. Nothing below the select row
+    // can run until one of those is named, which is the whole reason the row
+    // is above the slice rather than among the operations: after a transpose
+    // there is no compound left to select from.
+    REQUIRE(h5test::selectAndSettle(controller, "/compound"));
+
+    REQUIRE(post()->rowCount() == 5);
+    REQUIRE(step(0, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Input);
+    REQUIRE(step(1, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Member);
+    REQUIRE(step(2, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Slice);
+    REQUIRE(step(3, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Adder);
+    REQUIRE(step(4, gui::PostprocessModel::KindRole).toInt()
+            == gui::PostprocessModel::Output);
+
+    SECTION("and offers every chain the datatype has, and no subscripts")
+    {
+        CHECK(step(1, gui::PostprocessModel::LabelRole).toString()
+              == QStringLiteral("select"));
+        CHECK(step(1, gui::PostprocessModel::ArgumentLabelRole).toString()
+              == QStringLiteral("member"));
+        CHECK(step(1, gui::PostprocessModel::ChoicesRole).toStringList()
+              == QStringList{QStringLiteral(".id"), QStringLiteral(".value")});
+        // Nothing is named to begin with, and that is a selection: the whole
+        // struct is what the table was already showing.
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString().isEmpty());
+    }
+
+    SECTION("it is the box in the slice bar, and not a copy of it")
+    {
+        // The same contract the slice row keeps with the slice above the
+        // table. Writing in either place has to reach the other, or the panel
+        // and the bar could state different members of the same dataset.
+        post()->setArgument(1, QStringLiteral(".value"));
+        CHECK(controller.memberText() == QStringLiteral(".value"));
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral(".value"));
+
+        REQUIRE(controller.applyMember(QStringLiteral(".id")).isEmpty());
+        CHECK(step(1, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral(".id"));
+    }
+
+    SECTION("a chain that does not read says so beside the row")
+    {
+        CHECK_THAT(post()->argumentError(1, QStringLiteral(".nope")).toStdString(),
+                   ContainsSubstring("has no member"));
+        CHECK(post()->argumentError(1, QStringLiteral(".value")).isEmpty());
+    }
+
+    SECTION("naming a member is what lets the rest of the panel run at all")
+    {
+        // The gate used to be the dataset's own class, so a compound greyed
+        // the panel outright -- and a Select runs before there are numbers.
+        post()->setEnabled(true);
+        CHECK_FALSE(post()->active());
+
+        post()->setArgument(1, QStringLiteral(".value"));
+        CHECK(post()->active());
+        CHECK(controller.datasetIsNumeric());
+    }
+
+    SECTION("choosing a member does not throw the pipeline away")
+    {
+        // It comes back through setDataset, because the shape below it
+        // changed. Clearing on that would mean this row turned its own panel
+        // off every time it was used.
+        post()->setArgument(1, QStringLiteral(".value"));
+        post()->setEnabled(true);
+        post()->addStep(QStringLiteral("abs"));
+        REQUIRE(post()->rowCount() == 6);
+
+        post()->setArgument(1, QStringLiteral(".id"));
+        CHECK(post()->enabled());
+        CHECK(post()->rowCount() == 6);
+        CHECK(step(3, gui::PostprocessModel::KindRole).toInt()
+              == gui::PostprocessModel::Operation);
+
+        // ...and a different dataset still does.
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        CHECK_FALSE(post()->enabled());
+        CHECK(post()->rowCount() == 4);
+    }
+
+    SECTION("everything below the member row is numbered from it")
+    {
+        // The slice row is row 2 here and row 1 everywhere else, and every
+        // piece of arithmetic in the model has to have moved with it.
+        post()->setArgument(1, QStringLiteral(".value"));
+        post()->setEnabled(true);
+        post()->addStep(QStringLiteral("max"));
+        REQUIRE(post()->rowCount() == 6);
+
+        // Clicking a row computes up to it, and the row it lights is the one
+        // that was clicked.
+        post()->setActiveRow(2);
+        CHECK(post()->activeRow() == 2);
+        CHECK(post()->upTo() == 1);
+        post()->setActiveRow(3);
+        CHECK(post()->activeRow() == 3);
+        CHECK(post()->upTo() == 2);
+
+        // The argument of row 3 is the operation's, not the slice's.
+        post()->setArgument(3, QStringLiteral("0"));
+        CHECK(step(3, gui::PostprocessModel::ArgumentRole).toString()
+              == QStringLiteral("0"));
+        CHECK(step(2, gui::PostprocessModel::ArgumentRole).toString()
+              == controller.sliceText());
+        CHECK(shapeOf(3) == QStringLiteral("scalar"));
+    }
+
+    SECTION("a dataset with no members has no such row")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+        CHECK(post()->rowCount() == 4);
+        CHECK(step(1, gui::PostprocessModel::KindRole).toInt()
+              == gui::PostprocessModel::Slice);
+        CHECK(step(1, gui::PostprocessModel::ChoicesRole).toStringList().isEmpty());
     }
 }
 

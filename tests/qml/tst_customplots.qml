@@ -308,6 +308,14 @@ TestCase {
         compare(view.rail, "")
     }
 
+    /// Put `text` in a box the way typing it would: the handler that checks it
+    /// and asks what could come next runs off textEdited, which a plain
+    /// assignment does not emit.
+    function typeInto(box, text) {
+        box.text = text
+        box.textEdited()
+    }
+
     function test_a_line_written_into_the_data_panel_is_drawn() {
         const win = openWindow()
         win.addCustomTab()
@@ -335,6 +343,91 @@ TestCase {
         compare(plot.pointCount, 64)
         verify(plot.hasData, "the line must have been read")
         compare(findAllOf(view, "entryNote").filter((n) => n.visible).length, 0)
+    }
+
+    /// The names in a file are in the file and nowhere the reader can see
+    /// them. Completion is what makes this box writable without the tree open
+    /// beside it and a dimension count done by hand.
+    function test_the_entry_box_completes_a_path_and_writes_its_subscript() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "entryBox")[0]
+        box.forceActiveFocus()
+
+        // The tree is lazy, so a group is asked for rather than walked and the
+        // answer arrives a moment later. These waits are what the box does for
+        // itself by re-asking on completionsChanged.
+        typeInto(box, "/ser")
+        tryVerify(() => AppController.completions("/ser").length === 1, 10000,
+                  "the root's listing must arrive")
+
+        // One match, and a group, so it completes with the separator: one Tab
+        // and keep typing.
+        keyClick(Qt.Key_Tab)
+        compare(box.text, "/series/")
+
+        typeInto(box, "/series/ha")
+        tryVerify(() => AppController.completions("/series/ha")[0]
+                        === "/series/half[:]", 10000,
+                  "the group's listing and the dataset's rank must arrive")
+
+        keyClick(Qt.Key_Tab)
+        // A dataset completes with the subscript that selects the whole of it,
+        // of the right rank. That is the half a reader would otherwise have to
+        // count dimensions for.
+        compare(box.text, "/series/half[:]")
+
+        keyClick(Qt.Key_Return)
+        settleReads()
+        waitForRendering(win.contentItem)
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.sourceSeriesCount, 1)
+        verify(plot.hasData, "and what Tab wrote is a line that reads")
+    }
+
+    /// The other half of the same box: once the subscript is closed, what can
+    /// follow it is the datatype's members.
+    function test_the_entry_box_completes_a_member_after_the_bracket() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "entryBox")[0]
+        box.forceActiveFocus()
+
+        typeInto(box, "/series/trace_pairs[:]")
+        tryVerify(() => AppController.completions("/series/trace_pairs[:]").length === 2,
+                  10000, "the datatype must arrive")
+
+        // Two members, so Tab writes the head they share and leaves the
+        // choosing to the reader.
+        keyClick(Qt.Key_Tab)
+        compare(box.text, "/series/trace_pairs[:].")
+
+        typeInto(box, "/series/trace_pairs[:].o")
+        keyClick(Qt.Key_Tab)
+        compare(box.text, "/series/trace_pairs[:].other")
+
+        keyClick(Qt.Key_Return)
+        settleReads()
+        waitForRendering(win.contentItem)
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.sourceSeriesCount, 1)
+        verify(plot.hasData, "a member named by Tab is a line like any other")
     }
 
     function test_a_line_that_will_not_read_says_why_under_its_box() {

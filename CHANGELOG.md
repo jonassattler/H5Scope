@@ -25,6 +25,45 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.0
+
+**Compound datasets are addressable.** A table of structs used to be a
+terminus: the viewer could show you struct number four and nothing else, so a
+ten-million-row event table was a grid of `{time, energy, …}` cells and no way
+in. Naming a member with `.` opens it — `.energy` is a line the Plot tab draws,
+`.position.x` is another, `.samples` adds an axis the table can lay out — and it
+reaches the table, the plot, the image, the custom tabs and the postprocessing
+pipeline alike, because all of them read through one interface and none of them
+learned what a compound is.
+
+A subscript written after a member binds to the axes that member contributes, so
+`array[i, j].b[k]` and `(array[:, :].b)[i, j, k]` are the same selection, element
+for element and shape for shape. It is spelled in three places: a box after the
+slice bar's closing bracket, a whole line in a custom tab
+(`/events[0:1000].energy`), and a **Select** row at the head of the
+postprocessing panel. Saved views migrate untouched — every expression without a
+`].` in it parses exactly as it always did.
+
+A member is read as a member and not as a struct: the transfer asks HDF5 for
+that field alone, so `.energy` over a hundred thousand records moves four bytes
+a record rather than ninety-six, and a member line costs the same reads as a
+dataset of its own — including the zoom, which still reads nothing at all.
+Variable-length members are indexable but not sliceable: `.tags[3]` is a line
+with a gap wherever a record's list was too short, and a range of one is refused
+with a sentence saying what to write instead.
+
+**The two text fields that are typed into now say what could come next.** A
+custom tab's entry and the member box offer what matches as you type — groups
+and datasets, then the datatype's members — and Tab writes as much as every
+candidate shares, completing a dataset with the subscript that selects the whole
+of it at the right rank. Nothing is read to answer a keystroke that you had not
+already asked to see.
+
+**The Information tab opens a compound out**, under the row that names its type:
+a tree indented until nothing is left but base types, with an enum's symbols
+where they were previously unprintable. And the JSON beside a compound cell is
+written to be read — a struct over lines, a list of numbers on one.
+
 ## 0.5.2
 
 **A zoom costs nothing.** The plot holds each line whole — at the finest

@@ -29,6 +29,7 @@ public:
         ValueRole,
         IsWarningRole,
         SectionRole,
+        DepthRole,
     };
     Q_ENUM(Roles)
 
@@ -39,6 +40,10 @@ public:
         QString value;
         bool warning = false;
         QString section;
+        /// How far in the row is drawn. 0 for every ordinary label/value row;
+        /// deeper for the rows of a tree inside a panel, which is what the
+        /// datatype panel draws a compound's members as.
+        int depth = 0;
     };
 
     /// One panel: its rows are every Row carrying the matching section name.
@@ -68,6 +73,8 @@ public:
         void beginSection(QString name, QString meta = {}, bool accent = false,
                           QString emptyText = {});
         void add(QString label, QString value, bool warning = false);
+        /// The same row, drawn `depth` steps in. For a tree inside a panel.
+        void addNested(QString label, QString value, int depth);
     };
 
     /// Describe the object at `path`. Reads HDF5, so it runs on the thread that

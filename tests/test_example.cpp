@@ -17,17 +17,22 @@
 #include "gui/AppController.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
+#include "gui/DatasetLookup.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PostprocessModel.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
+#include "postproc/MemberPath.hpp"
+
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
+#include "support/MemberChain.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -36,6 +41,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -166,6 +172,34 @@ QString infoRow(const gui::AppController& controller, const QString& label)
         }
     }
     return {};
+}
+
+/// The indented rows of the datatype panel: the type opened out until nothing
+/// is left but base types, each as "depth label value".
+///
+/// Flattened to strings on purpose. What this has to state is an order and a
+/// nesting, and a list of sentences states both at once -- where three parallel
+/// vectors would state them in a form nobody reads at a glance.
+QStringList typeTree(const gui::AppController& controller)
+{
+    QStringList tree;
+    for (const QVariant& panel : controller.infoPanels()) {
+        const QVariantMap fields = panel.toMap();
+        if (fields.value("title").toString() != QStringLiteral("datatype")) {
+            continue;
+        }
+        for (const QVariant& row : fields.value("rows").toList()) {
+            const QVariantMap cells = row.toMap();
+            const int depth = cells.value("depth").toInt();
+            if (depth > 0) {
+                tree << QStringLiteral("%1 %2 %3")
+                            .arg(depth)
+                            .arg(cells.value("label").toString(),
+                                 cells.value("value").toString());
+            }
+        }
+    }
+    return tree;
 }
 
 std::string attributeValue(const h5test::Reader& file, const std::string& path,
@@ -676,6 +710,692 @@ TEST_CASE("only the colours the reader kept are painted", "[example][images]")
     }
 }
 
+TEST_CASE("a compound's type resolves all the way down", "[example][types]")
+{
+    // The nested compound is the one type in the file that reaches every class
+    // a member chain can land on: a fixed string, an integer, a compound, an
+    // array, an enum and a float. Following it here is what says the tree is a
+    // tree rather than one level with names on it.
+    const auto file = openExample();
+    const h5test::Dataset ds(file, "/types/compound/nested");
+    const h5core::TypeInfo& type = ds.info().type;
+
+    REQUIRE(type.cls == h5core::TypeClass::Compound);
+    REQUIRE(type.members.size() == 6);
+
+    const auto memberNamed = [&type](const std::string& name) {
+        const auto it = std::find_if(
+            type.members.begin(), type.members.end(),
+            [&name](const h5core::TypeMember& m) { return m.name == name; });
+        REQUIRE(it != type.members.end());
+        return *it;
+    };
+
+    SECTION("a member that is a compound carries its own members")
+    {
+        const h5core::TypeMember position = memberNamed("position");
+        REQUIRE(position.type.cls == h5core::TypeClass::Compound);
+        REQUIRE(position.type.members.size() == 3);
+        CHECK(position.type.members[0].name == "x");
+        CHECK(position.type.members[2].name == "z");
+        CHECK(position.type.members[1].type.cls == h5core::TypeClass::Float);
+        // Offsets are within the member, not within the element that holds it.
+        CHECK(position.type.members[0].offset == 0);
+    }
+
+    SECTION("a member that is an array carries its dimensions as numbers")
+    {
+        // The description has said "array[4] of float64" all along. What is new
+        // is the 4 as a number, which is the axis `.samples` appends.
+        const h5core::TypeMember samples = memberNamed("samples");
+        REQUIRE(samples.type.cls == h5core::TypeClass::Array);
+        REQUIRE(samples.type.arrayDims == std::vector<hsize_t>{4});
+        REQUIRE(samples.type.base != nullptr);
+        CHECK(samples.type.base->cls == h5core::TypeClass::Float);
+        CHECK(samples.type.base->description == "float64");
+    }
+
+    SECTION("a member that is an enum keeps its symbols and gains no members")
+    {
+        const h5core::TypeMember quality = memberNamed("quality");
+        REQUIRE(quality.type.cls == h5core::TypeClass::Enum);
+        CHECK(quality.type.memberNames.size() == 3);
+        CHECK(quality.type.members.empty());
+    }
+
+    SECTION("a member that is a string says which kind")
+    {
+        const h5core::TypeMember station = memberNamed("station");
+        REQUIRE(station.type.cls == h5core::TypeClass::String);
+        CHECK_FALSE(station.type.isVariableLength);
+        CHECK(station.type.size == 16);
+    }
+
+    SECTION("a vlen carries what it holds one of")
+    {
+        const h5test::Dataset tags(file, "/types/vlen_int32");
+        REQUIRE(tags.info().type.cls == h5core::TypeClass::VarLen);
+        REQUIRE(tags.info().type.base != nullptr);
+        CHECK(tags.info().type.base->cls == h5core::TypeClass::Integer);
+    }
+}
+
+TEST_CASE("an array of structs is a member like any other", "[example][member]")
+{
+    // /types/compound/tracks is the one composition the rest of the file does
+    // not have: an array member whose elements are themselves compounds. It is
+    // where "an array member appends an axis" and "a chain goes on through a
+    // compound" have to hold at once.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/tracks");
+    const h5core::TypeInfo& type = whole.info().type;
+    REQUIRE(whole.info().shape == std::vector<hsize_t>{4});
+
+    SECTION("the axis it appends is the array's, and the chain goes on past it")
+    {
+        const h5test::Field x(file, "/types/compound/tracks",
+                              h5test::chainOf(type, {"trail", "x"}));
+        // Rank 2 out of a rank-1 dataset: the dataset's own axis, then the
+        // three the array contributed.
+        CHECK(x.info().shape == std::vector<hsize_t>{4, 3});
+        CHECK(x.info().type.cls == h5core::TypeClass::Float);
+        CHECK(x.info().isNumeric());
+
+        // Track i, point p, was written {i + p, 2i + p, 3i + p}.
+        const auto values = x.readNumericWindow({0, 0}, {4, 3});
+        REQUIRE(values.values.size() == 12);
+        for (hsize_t i = 0; i < 4; ++i) {
+            for (hsize_t p = 0; p < 3; ++p) {
+                INFO("track " << i << ", point " << p);
+                CHECK(values.values[i * 3 + p]
+                      == static_cast<double>(i) + static_cast<double>(p));
+            }
+        }
+    }
+
+    SECTION("the whole array member keeps its own axis and stays a compound")
+    {
+        const h5test::Field trail(file, "/types/compound/tracks",
+                                  h5test::chainOf(type, {"trail"}));
+        CHECK(trail.info().shape == std::vector<hsize_t>{4, 3});
+        CHECK(trail.info().type.cls == h5core::TypeClass::Compound);
+        // Three numbers per cell, so the grid prints the struct and the
+        // compound pane opens it out -- exactly as the dataset itself does.
+        CHECK_FALSE(trail.info().isNumeric());
+    }
+
+    SECTION("it is offered as a chain, under the name the file gave it")
+    {
+        const QStringList chains = postproc::memberChains(type);
+        CHECK(chains
+              == QStringList{QStringLiteral(".name"), QStringLiteral(".trail"),
+                             QStringLiteral(".trail.x"), QStringLiteral(".trail.y"),
+                             QStringLiteral(".trail.z"), QStringLiteral(".hops")});
+        // And what is offered is what resolves, which is the only reason the
+        // list is worth having.
+        for (const QString& chain : chains) {
+            INFO(chain.toStdString());
+            CHECK(postproc::resolveMemberChain(chain, type).valid());
+        }
+    }
+
+    SECTION("and its JSON opens the list out, because the list holds structs")
+    {
+        const h5core::ElementValue element = whole.readElement({1});
+        CHECK_THAT(element.json, ContainsSubstring(R"("name": "T-01")"));
+        CHECK_THAT(element.json,
+                   ContainsSubstring("\"trail\": [\n    {\n      \"x\": 1,"));
+        CHECK_THAT(element.json, ContainsSubstring(R"("hops": 10)"));
+    }
+
+    SECTION("the datatype panel draws the array's members under it")
+    {
+        gui::AppController controller;
+        REQUIRE(h5test::openFileAndSettle(controller,
+                                          QString::fromStdString(example().path())));
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/tracks")));
+        const QStringList tree = typeTree(controller);
+        REQUIRE(tree.size() == 6);
+        CHECK(tree[0].startsWith(QStringLiteral("1 name string")));
+        CHECK(tree[1] == QStringLiteral("1 trail array[3] of compound {x, y, z}"));
+        CHECK(tree[2] == QStringLiteral("2 x float64"));
+        CHECK(tree[4] == QStringLiteral("2 z float64"));
+        CHECK(tree[5] == QStringLiteral("1 hops int32"));
+    }
+}
+
+TEST_CASE("the datatype panel draws a compound as a tree", "[example][info]")
+{
+    // The same type the case above walks, as the reader meets it: the tree is
+    // that walk, printed. Asserted through infoPanels() because that is the
+    // property QML binds.
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+    REQUIRE(h5test::selectAndSettle(controller,
+                                    QStringLiteral("/types/compound/nested")));
+
+    // The one-line answer stays where it was; the tree is the other entry.
+    CHECK(infoRow(controller, QStringLiteral("Members"))
+          == QStringLiteral("station, timestamp, position, samples, quality, weight"));
+
+    const QStringList tree = typeTree(controller);
+    REQUIRE(tree.size() == 10);
+
+    SECTION("the members come in file order, one row each")
+    {
+        CHECK(tree[0] == QStringLiteral("1 station string (16 bytes)"));
+        CHECK(tree[1] == QStringLiteral("1 timestamp int64"));
+        CHECK(tree[9] == QStringLiteral("1 weight float32"));
+    }
+
+    SECTION("a member that is a compound carries its own members below it")
+    {
+        CHECK(tree[2] == QStringLiteral("1 position compound {x, y, z}"));
+        CHECK(tree[3] == QStringLiteral("2 x float64"));
+        CHECK(tree[4] == QStringLiteral("2 y float64"));
+        CHECK(tree[5] == QStringLiteral("2 z float64"));
+    }
+
+    SECTION("an array is one row: it has already said what it holds")
+    {
+        // "array[4] of float64" resolves to float64 in the saying of it, so an
+        // "element" row under it would be a level of indentation naming nothing.
+        CHECK(tree[6] == QStringLiteral("1 samples array[4] of float64"));
+        CHECK(tree[7].startsWith(QStringLiteral("1 quality")));
+    }
+
+    SECTION("an enum says what its numbers mean, which nothing else would")
+    {
+        CHECK(tree[7] == QStringLiteral("1 quality enum (3 values)"));
+        CHECK(tree[8] == QStringLiteral("2 values BAD, SUSPECT, GOOD"));
+    }
+
+    SECTION("a vlen resolves through to what it holds one of")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/plotting/events")));
+        const QStringList events = typeTree(controller);
+        REQUIRE(events.size() >= 2);
+        CHECK(events.back() == QStringLiteral("1 tags vlen of int32"));
+        CHECK(events.contains(QStringLiteral("2 x float64")));
+    }
+
+    SECTION("a type with no parts gets no tree at all")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/ramp")));
+        CHECK(typeTree(controller).isEmpty());
+    }
+}
+
+TEST_CASE("a member of a compound reads as a dataset of its own",
+          "[example][member]")
+{
+    // /types/compound/nested holds six readings, i = 0..5, with
+    //   position = {i, 2i, 3i}   samples[s] = i + s/4   weight = i/2
+    // which is enough arithmetic to tell a member that was read from one that
+    // was guessed at.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/nested");
+    const h5core::TypeInfo& type = whole.info().type;
+
+    SECTION("a scalar member keeps the shape and changes the type")
+    {
+        const h5test::Field weight(file, "/types/compound/nested",
+                                   h5test::chainOf(type, {"weight"}));
+        CHECK(weight.info().shape == std::vector<hsize_t>{6});
+        CHECK(weight.info().type.cls == h5core::TypeClass::Float);
+        CHECK(weight.info().isNumeric());
+
+        const auto values = weight.readNumericWindow({0}, {6});
+        REQUIRE(values.values
+                == std::vector<double>{0.0, 0.5, 1.0, 1.5, 2.0, 2.5});
+    }
+
+    SECTION("a chain goes through a compound member to what it holds")
+    {
+        const h5test::Field y(file, "/types/compound/nested",
+                              h5test::chainOf(type, {"position", "y"}));
+        CHECK(y.info().shape == std::vector<hsize_t>{6});
+        const auto values = y.readNumericWindow({0}, {6});
+        REQUIRE(values.values == std::vector<double>{0.0, 2.0, 4.0, 6.0, 8.0, 10.0});
+    }
+
+    SECTION("an array member appends its dimension to the shape")
+    {
+        // This is the case the whole design turns on: .samples is not one value
+        // per record, it is four, and those four are an axis of the result like
+        // any other -- which is what lets the table lay them out and the slice
+        // line address them.
+        const h5test::Field samples(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"samples"}));
+        REQUIRE(samples.info().shape == std::vector<hsize_t>{6, 4});
+        CHECK(samples.info().type.cls == h5core::TypeClass::Float);
+
+        const auto values = samples.readNumericWindow({0, 0}, {6, 4});
+        REQUIRE(values.values.size() == 24);
+        for (hsize_t i = 0; i < 6; ++i) {
+            for (hsize_t s = 0; s < 4; ++s) {
+                const double expected =
+                    static_cast<double>(i) + static_cast<double>(s) / 4.0;
+                CHECK(values.values[i * 4 + s] == expected);
+            }
+        }
+    }
+
+    SECTION("a hyperslab of an array member cuts both halves of the shape")
+    {
+        const h5test::Field samples(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"samples"}));
+        // Records 2 and 3, samples 1 and 2 of each.
+        const auto block = samples.readNumericWindow({2, 1}, {2, 2});
+        CHECK(block.count == std::vector<hsize_t>{2, 2});
+        REQUIRE(block.values == std::vector<double>{2.25, 2.5, 3.25, 3.5});
+    }
+
+    SECTION("a string member is text, and says so rather than plotting")
+    {
+        const h5test::Field station(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"station"}));
+        CHECK(station.info().type.cls == h5core::TypeClass::String);
+        CHECK_FALSE(station.info().isNumeric());
+        const auto cells = station.readWindow({0}, {3});
+        REQUIRE(cells.cells == std::vector<std::string>{"ST-000", "ST-001", "ST-002"});
+    }
+
+    SECTION("an enum member reads as its symbol, as it does in the grid")
+    {
+        const h5test::Field quality(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"quality"}));
+        const auto cells = quality.readWindow({0}, {4});
+        REQUIRE(cells.cells
+                == std::vector<std::string>{"BAD", "SUSPECT", "GOOD", "BAD"});
+    }
+
+    SECTION("a member that is itself a compound still opens out")
+    {
+        const h5test::Field position(file, "/types/compound/nested",
+                                     h5test::chainOf(type, {"position"}));
+        CHECK(position.info().type.cls == h5core::TypeClass::Compound);
+        const h5core::ElementValue element = position.readElement({2});
+        REQUIRE(element.fields.size() == 3);
+        CHECK(element.fields[0].name == "x");
+        CHECK(element.json == "{\n  \"x\": 2,\n  \"y\": 4,\n  \"z\": 6\n}");
+    }
+}
+
+TEST_CASE("every kind of member of a compound is reachable", "[example][member]")
+{
+    // /plotting/events is a hundred thousand records holding one of each:
+    //   time float64, energy float32, station string, position compound,
+    //   samples array[4], quality enum, tags vlen int32
+    // with tags[i] holding i % 4 entries, so every fourth list is empty.
+    const auto file = openExample();
+    const h5test::Dataset events(file, "/plotting/events");
+    const h5core::TypeInfo& type = events.info().type;
+    REQUIRE(events.info().shape == std::vector<hsize_t>{100000});
+    REQUIRE(type.members.size() == 7);
+
+    SECTION("a float member is a line of a hundred thousand numbers")
+    {
+        const h5test::Field energy(file, "/plotting/events",
+                                   h5test::chainOf(type, {"energy"}));
+        CHECK(energy.info().shape == std::vector<hsize_t>{100000});
+        CHECK(energy.info().isNumeric());
+        // The spikes are at i % 10000 == 7, and they are what an envelope has
+        // to keep: 500 against a swell that never leaves 10..90.
+        const auto around = energy.readNumericWindow({0}, {10});
+        CHECK(around.values[7] == 500.0);
+        CHECK(around.values[6] < 100.0);
+    }
+
+    SECTION("a chain through a compound member")
+    {
+        const h5test::Field x(file, "/plotting/events",
+                              h5test::chainOf(type, {"position", "x"}));
+        const auto values = x.readNumericWindow({0}, {5});
+        REQUIRE(values.values == std::vector<double>{0.0, 1.0, 2.0, 3.0, 4.0});
+    }
+
+    SECTION("an array member appends its axis at this scale too")
+    {
+        const h5test::Field samples(file, "/plotting/events",
+                                    h5test::chainOf(type, {"samples"}));
+        REQUIRE(samples.info().shape == std::vector<hsize_t>{100000, 4});
+        const auto block = samples.readNumericWindow({50000, 0}, {2, 4});
+        REQUIRE(block.values
+                == std::vector<double>{50000.0, 50000.25, 50000.5, 50000.75, 50001.0,
+                                       50001.25, 50001.5, 50001.75});
+    }
+
+    SECTION("a ragged member read whole is the list each record holds")
+    {
+        const h5test::Field tags(file, "/plotting/events",
+                                 h5test::chainOf(type, {"tags"}));
+        // No axis appended: a vlen's length differs in every record, so there
+        // is no dimension it could be.
+        CHECK(tags.info().shape == std::vector<hsize_t>{100000});
+        CHECK(tags.info().type.cls == h5core::TypeClass::VarLen);
+        CHECK_FALSE(tags.info().isNumeric());
+
+        const auto cells = tags.readWindow({0}, {4});
+        REQUIRE(cells.cells.size() == 4);
+        // i % 4 entries, holding i * 10 + t.
+        CHECK(cells.cells[0] == "[]");
+        CHECK_THAT(cells.cells[3], ContainsSubstring("30"));
+        CHECK_THAT(cells.cells[3], ContainsSubstring("32"));
+    }
+
+    SECTION("one index of a ragged member is a number, and a gap where there is none")
+    {
+        const h5test::Field first(file, "/plotting/events",
+                                  h5test::chainOf(type, {"tags"}, 0));
+        // Still the dataset's own shape, and now a number -- so it plots.
+        CHECK(first.info().shape == std::vector<hsize_t>{100000});
+        CHECK(first.info().type.cls == h5core::TypeClass::Integer);
+        CHECK(first.info().isNumeric());
+
+        const auto values = first.readNumericWindow({0}, {5});
+        REQUIRE(values.values.size() == 5);
+        // Record 0 has an empty list: no value there, which is a NaN, which is
+        // where a stroke ends rather than a number a line is drawn through.
+        CHECK(std::isnan(values.values[0]));
+        CHECK(values.values[1] == 10.0);
+        CHECK(values.values[2] == 20.0);
+        CHECK(values.values[3] == 30.0);
+        CHECK(std::isnan(values.values[4]));
+
+        // And as text, a record with nothing there prints nothing rather than
+        // a number it does not have.
+        const auto cells = first.readWindow({0}, {2});
+        CHECK(cells.cells[0].empty());
+        CHECK(cells.cells[1] == "10");
+    }
+
+    SECTION("an index past every list is every record having none")
+    {
+        const h5test::Field third(file, "/plotting/events",
+                                  h5test::chainOf(type, {"tags"}, 2));
+        const auto values = third.readNumericWindow({0}, {4});
+        // Only records with three entries have a third one: i % 4 == 3.
+        CHECK(std::isnan(values.values[0]));
+        CHECK(std::isnan(values.values[2]));
+        CHECK(values.values[3] == 32.0);
+    }
+
+    SECTION("a string member and an enum member read as what they are")
+    {
+        const h5test::Field station(file, "/plotting/events",
+                                    h5test::chainOf(type, {"station"}));
+        CHECK(station.readWindow({0}, {2}).cells
+              == std::vector<std::string>{"S-000", "S-001"});
+
+        const h5test::Field quality(file, "/plotting/events",
+                                    h5test::chainOf(type, {"quality"}));
+        CHECK(quality.readWindow({0}, {3}).cells
+              == std::vector<std::string>{"BAD", "SUSPECT", "GOOD"});
+    }
+}
+
+TEST_CASE("a member selection is the same selection written shorter",
+          "[example][member]")
+{
+    // The identity the whole notation rests on:
+    //
+    //     array[i1,i2,i3].b[i4]  ==  (array[:,:,:].b)[i1,i2,i3,i4]
+    //
+    // It holds because the subscript after `.b` binds to the axes `b` itself
+    // contributes, and nothing else. This asserts the right-hand side against
+    // the elements themselves, which is what a reader writing the left-hand
+    // side is promised.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/nested");
+    const h5test::Field samples(file, "/types/compound/nested",
+                                h5test::chainOf(whole.info().type, {"samples"}));
+
+    // (nested.samples)[3, 2] -- record 3, sample 2.
+    const auto one = samples.readNumericWindow({3, 2}, {1, 1});
+    REQUIRE(one.values.size() == 1);
+    CHECK(one.values[0] == 3.5);
+
+    // Which is exactly what nested[3].samples[2] names, read the long way: the
+    // whole struct, opened out, its samples field, its third entry.
+    const h5core::ElementValue record = whole.readElement({3});
+    REQUIRE(record.fields.size() == 6);
+    const auto field = std::find_if(
+        record.fields.begin(), record.fields.end(),
+        [](const h5core::FieldValue& f) { return f.name == "samples"; });
+    REQUIRE(field != record.fields.end());
+    CHECK_THAT(field->value, ContainsSubstring("3.5"));
+
+    // And the axes are in the order the identity says: the dataset's first,
+    // the member's after, so one slice addresses both halves.
+    REQUIRE(samples.info().shape
+            == std::vector<hsize_t>{whole.info().shape[0], 4});
+}
+
+TEST_CASE("the viewer draws a member of a compound", "[example][member]")
+{
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+
+    SECTION("picking a member turns a struct into numbers")
+    {
+        // /types/compound/table_4x5 is rank 2 of {id: int32, value: float64},
+        // value = i/8 in row-major order. Before a member is picked there is
+        // nothing here any plot can draw.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/table_4x5")));
+        REQUIRE(controller.datasetIsCompound());
+        REQUIRE_FALSE(controller.datasetIsNumeric());
+
+        REQUIRE(controller.applyMember(QStringLiteral(".value")).isEmpty());
+
+        // The dataset is still a compound -- that is what keeps the member box
+        // on screen -- but what is being drawn is a float, and the plot and the
+        // image exist for it now.
+        CHECK(controller.datasetIsCompound());
+        CHECK(controller.datasetIsNumeric());
+        CHECK(controller.datasetIsFloat());
+        CHECK(controller.datasetRank() == 2);
+        CHECK(controller.memberText() == QStringLiteral(".value"));
+
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        CHECK(table->numeric());
+        // Row 1, column 2 is element 7 of the flat order: 7/8. Read through the
+        // member, so the cell is the number and not the struct it sits in.
+        CHECK(h5test::settledData(controller.datasetModel(),
+                                  controller.datasetModel()->index(1, 2),
+                                  Qt::DisplayRole)
+                  .toString()
+              == QStringLiteral("0.875"));
+    }
+
+    SECTION("an array member appends an axis the table can lay out")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.datasetRank() == 1);
+
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+        // Six records of four samples: the member's axis is a dimension of the
+        // table like any other, which is the whole point of appending it.
+        CHECK(controller.datasetRank() == 2);
+        CHECK(controller.datasetElementCount() == 24);
+        CHECK(controller.sliceText() == QStringLiteral(":, :"));
+    }
+
+    SECTION("a subscript on the member is folded onto the slice line")
+    {
+        // The identity, as the two boxes show it: what was typed on the chain
+        // ends up on the slice, and the chain prints back bare. The member's
+        // axes are ordinary dimensions and this is where they are addressed.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".samples[2]")).isEmpty());
+
+        CHECK(controller.memberText() == QStringLiteral(".samples"));
+        CHECK(controller.sliceText() == QStringLiteral(":, 2"));
+    }
+
+    SECTION("a chain keeps the slice the reader had already set up")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applySlice(QStringLiteral("1:4")).isEmpty());
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+        // The chain only ever changes the axes after the dataset's own, so the
+        // leading subscript is the one that was there.
+        CHECK(controller.sliceText() == QStringLiteral("1:4, :"));
+    }
+
+    SECTION("a chain that does not read changes nothing and says why")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        const QString before = controller.sliceText();
+        const QString reason = controller.applyMember(QStringLiteral(".enrgy"));
+        CHECK_THAT(reason.toStdString(), ContainsSubstring("no member 'enrgy'"));
+        CHECK(controller.memberText().isEmpty());
+        CHECK(controller.sliceText() == before);
+        // Checked without applying, the way the bar reports a slice as it is
+        // typed, and for the same reason: nothing is read to find out.
+        CHECK_FALSE(controller.memberError(QStringLiteral(".enrgy")).isEmpty());
+        CHECK(controller.memberError(QStringLiteral(".weight")).isEmpty());
+    }
+
+    SECTION("the line a plot draws pastes back as an expression")
+    {
+        // The hand-off to a custom tab. What the legend offers has to be a line
+        // someone can paste into an entry box, so the subscript's two halves go
+        // on either side of the chain: the dataset's own axes before the member
+        // is named, the axes it appends after.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        // Six records down the rows, four samples across: one row is one
+        // record's four samples.
+        const QString line = table->lineExpression(3, true);
+        CHECK(line == QStringLiteral("/types/compound/nested[3].samples[:]"));
+
+        // And it reads back as the same selection it was written from.
+        const gui::Expression parts = gui::splitExpression(line);
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/types/compound/nested"));
+        CHECK(parts.member == QStringLiteral(".samples[:]"));
+    }
+
+    SECTION("with no member the expression is what it always was")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/matrix")));
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        CHECK_THAT(table->lineExpression(0, true).toStdString(),
+                   ContainsSubstring("/data/matrix["));
+        CHECK_THAT(table->lineExpression(0, true).toStdString(),
+                   !ContainsSubstring("."));
+    }
+
+    SECTION("coming back to a dataset comes back to the member")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".weight")).isEmpty());
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/matrix")));
+        CHECK(controller.memberText().isEmpty());
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        CHECK(controller.memberText() == QStringLiteral(".weight"));
+        CHECK(controller.datasetIsNumeric());
+    }
+}
+
+TEST_CASE("the pipeline's select row runs over a real compound",
+          "[example][member][postproc]")
+{
+    // /plotting/events is a hundred thousand structs with one of every member
+    // class in it, which is what makes this worth stating here rather than in
+    // test_models: the shape column tells a story only a real member can tell.
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/plotting/events")));
+
+    gui::PostprocessModel* pipeline = controller.postprocessModel();
+    REQUIRE(pipeline != nullptr);
+    const auto rowOf = [pipeline](int row, int role) {
+        return pipeline->data(pipeline->index(row, 0), role);
+    };
+
+    SECTION("the list offers every chain, nested ones under their own names")
+    {
+        const QStringList choices =
+            rowOf(1, gui::PostprocessModel::ChoicesRole).toStringList();
+        CHECK(choices.startsWith(QStringLiteral(".time")));
+        CHECK(choices.contains(QStringLiteral(".position")));
+        CHECK(choices.contains(QStringLiteral(".position.x")));
+        CHECK(choices.contains(QStringLiteral(".samples")));
+        CHECK(choices.contains(QStringLiteral(".tags")));
+        // An array's dimensions are axes rather than names, so nothing goes
+        // under `.samples`; and a chain cannot go on through a vlen.
+        CHECK_FALSE(choices.contains(QStringLiteral(".samples.0")));
+        CHECK(choices.size() == 10);
+    }
+
+    SECTION("the shape column states what naming a member did")
+    {
+        // The input row is the dataset's own shape and the select row is what
+        // the slice below it sees. Reading the two together is the whole point
+        // of the column, and on a member that appends an axis they differ.
+        CHECK(rowOf(0, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+        CHECK(rowOf(1, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+
+        pipeline->setArgument(1, QStringLiteral(".samples"));
+        CHECK(rowOf(0, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("100000"));
+        CHECK(rowOf(1, gui::PostprocessModel::ShapeRole).toString()
+              == QString::fromUtf8("100000 \u00d7 4"));
+    }
+
+    SECTION("a ragged member indexed is still what is selected")
+    {
+        // `.tags[0]` is a selection the list of names cannot hold, because the
+        // subscripts live on the slice line. It goes in front of the list
+        // rather than leaving the box showing something nobody chose.
+        REQUIRE(controller.applyMember(QStringLiteral(".tags[0]")).isEmpty());
+        const QString current =
+            rowOf(1, gui::PostprocessModel::ArgumentRole).toString();
+        CHECK(current == QStringLiteral(".tags[0]"));
+        CHECK(rowOf(1, gui::PostprocessModel::ChoicesRole).toStringList().front()
+              == current);
+    }
+
+    SECTION("an operation runs on the member, and the output says so")
+    {
+        pipeline->setArgument(1, QStringLiteral(".samples"));
+        REQUIRE(controller.applySlice(QStringLiteral("0:10, :")).isEmpty());
+        pipeline->setEnabled(true);
+        REQUIRE(pipeline->active());
+
+        pipeline->addStep(QStringLiteral("max"));
+        pipeline->setArgument(3, QStringLiteral("1"));
+        CHECK(pipeline->error().isEmpty());
+        CHECK(rowOf(3, gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("10"));
+        CHECK(rowOf(pipeline->rowCount() - 1,
+                    gui::PostprocessModel::ShapeRole).toString()
+              == QStringLiteral("10"));
+    }
+}
+
 TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
 {
     const auto file = openExample();
@@ -697,7 +1417,12 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         CHECK(element.fields[4].value == "BAD");
 
         CHECK_THAT(element.json, ContainsSubstring(R"("station": "ST-000")"));
-        CHECK_THAT(element.json, ContainsSubstring(R"("position": {"x": 0, "y": 0, "z": 0})"));
+        // The nested struct opens out under its own name, one member per line
+        // and indented under it.
+        CHECK_THAT(element.json,
+                   ContainsSubstring("\"position\": {\n    \"x\": 0,"));
+        // The array of four does not: four numbers on four lines is a worse
+        // reading of four numbers than four numbers on one.
         CHECK_THAT(element.json, ContainsSubstring(R"("samples": [0, 0.25, 0.5, 0.75])"));
         CHECK_THAT(element.json, ContainsSubstring(R"("quality": "BAD")"));
     }
@@ -729,7 +1454,7 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         const QVariantMap element = table->elementAt(1, 2);
         CHECK(element.value(QStringLiteral("label")).toString() == QStringLiteral("[1,2]"));
         CHECK(element.value(QStringLiteral("json")).toString() ==
-              QStringLiteral(R"({"id": 7, "value": 0.875})"));
+              QStringLiteral("{\n  \"id\": 7,\n  \"value\": 0.875\n}"));
         CHECK(element.value(QStringLiteral("fields")).toList().size() == 2);
 
         // A cell that is not there is not an error, it is nothing.

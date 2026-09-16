@@ -56,13 +56,13 @@ ctest --preset release
 
 | Path | What it is |
 |---|---|
-| `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. |
+| `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, and the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`). QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), and `Completion` — which of the three grammars on a typed line the caret is in. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
-| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
+| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_member`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
 QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
@@ -152,6 +152,138 @@ a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
 on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, both
 retired stores hold bare `std::vector<double>`, and `static_assert`s next to
 each of them say so on every platform rather than on the one that noticed.
+
+## Compound data: `.member` indexing
+
+A compound used to be a terminus — `isNumeric` is Integer|Float only, and the
+only compound-aware code above `h5core` read one cell and opened it out in
+`CompoundPane`. A reader with a ten-million-row event table could look at struct
+number four and nothing else.
+
+`.member` is what unlocks it, and the whole of it rests on one rule:
+
+> **A subscript written after `.b` binds to the axes `b` itself contributes, and
+> to nothing else.** So `array[i1,i2,i3].b[i4]` and
+> `(array[:,:,:].b)[i1,i2,i3,i4]` are the same selection — element for element
+> and shape for shape — and under the other reading, where `[:]` after `.b`
+> would address the whole result, they are not.
+
+That identity is not preserved by hand; it *is* the implementation. The member
+projection happens first and produces one derived shape, `dataset ++ memberDims`,
+and after that there is one ordinary slice over the whole of it. The short
+spelling is resolved by handing its subscripts back to be written onto that same
+slice line (`MemberChain::folded`), so a member subscript is never a second kind
+of subscript and the two spellings have nothing to drift between.
+
+Four pieces:
+
+- **`h5core::TypeInfo::members`** — a recursive member tree beside the flat
+  `memberNames`, which stays as it was (the Information panel prints it, and an
+  enum's symbols live in it). A chain cannot be followed through names alone.
+- **`h5core::FieldDataset`** — the third `DataSource`, after `Dataset` and
+  `postproc::ComputedDataset`. The table, the plot, the image and the pipeline
+  are handed one instead of a `Dataset` and none of them has a branch for which
+  it got. **It reads the member and not the struct:** the memory type is a
+  compound holding just the named member (`H5Tcreate` + one `H5Tinsert`, nested
+  per link), so HDF5 extracts that field during the transfer. The member's own
+  axes are then selected *in memory*, because HDF5 cannot hyperslab inside an
+  `H5T_ARRAY` member — bounded by the member's extent, which is small by nature.
+- **`postproc::MemberPath`** — the grammar, beside the subscript grammar for the
+  reason already written over that one. Resolving is arithmetic over a
+  `TypeInfo`, so it costs no read and answers on every keystroke.
+- **The three entry points.** The slice bar grows a second box after the closing
+  bracket, shown only for a compound; `sliceText` keeps its exact meaning, which
+  is what leaves the pipeline's slice row alone. A custom tab types the whole
+  line at once, and there a chain is recognised **only after a `]`** — a link
+  name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a dataset
+  and not member 3 of `run`. Every expression without a `].` in it parses
+  exactly as it always did, which is why saved views migrate for free.
+  The postprocessing panel grows a **Select** row, and it is the same
+  relationship the slice row has to the slice bar: not a copy of the member box,
+  *it is it*. It sits above the slice and is furniture rather than an added
+  operation, because after a transpose or a reduction there is no compound left
+  to select from — an operation legal in exactly one position is not an
+  operation, it is a property of the input. Its list is
+  `postproc::memberChains`, which is what the completer offers too.
+
+Three consequences worth keeping in mind when editing around it:
+
+- **Every row number in `PostprocessModel` is relative.** The Select row moves
+  the slice off row 1, so `sliceRow()`, `stepRow()`, `stepIndex()` and
+  `stageOf()` are the only places a row is turned into anything — a constant
+  that is right in four of those places and wrong in a fifth is how this breaks.
+- **`setDataset` clears the pipeline only for a *different* dataset.** Naming a
+  member comes back through it, because the shape below the member changed, and
+  clearing on that would have the Select row turn its own panel off every time
+  it was used. A step the new shape cannot take stops the walk and says so,
+  which is the panel working.
+- **`applyMember` emits `selectionAboutToChange` as well as
+  `selectionChanged`.** Every `DatasetMemory` in the UI reads the second as "put
+  back what is filed for the dataset now current", so without the first, naming
+  a member reverted the plot's range, the image's colour axis and the pipeline's
+  switch to whatever they were when the reader last *left* that dataset. The
+  dataset is not changing, so filing and restoring under one name is the
+  identity it should be.
+
+**Completion** (`gui::Completion`, `src/qml/CompletionPopup.qml`). Two boxes in
+this application are typed into rather than chosen from — a custom plot's entry
+and the member box — and the names in both come out of the file and nowhere the
+reader can see them. `completionRequest` says which of the three grammars on a
+line the caret is in; a path offers the children of the group being typed into,
+a closed subscript offers the datatype's chains, and an open subscript offers
+nothing, because what may be written there is every integer and every range and
+that is not a list. A path completes **with the subscript that selects the whole
+of the dataset**, of the right rank, which is the half a reader would otherwise
+count dimensions for. Tab behaves as a shell's does: it writes as much as every
+candidate shares and only then chooses.
+
+One hazard, and it is the sort that locks a window rather than merely misbehaves:
+**`DatasetLookup::resolve` runs its continuation synchronously when there is
+nothing to ask** — callers use it as "make sure, then go" — and the continuation
+here is the signal that makes every box ask again. Asking about a path the cache
+already knows and still cannot give a datatype for (a group, a broken link) is
+therefore an unbounded loop with nothing between the turns of it. Every call into
+`resolve` from the completer is guarded by `knows()` for that reason, and
+`test_models` asserts that a question with no answer is asked once.
+
+The constraint under all of it: **nothing reads more than the reader has already
+asked to see.** The tree is lazy because a file can hold a million objects, so a
+group that is not listed is *asked for* rather than walked, the answer arrives a
+moment later, and `completionsChanged` is what tells the box to ask again. A
+completer that listed its way down to answer a keystroke would spend exactly
+what that laziness saves.
+
+**The vlen rule.** A vlen's length differs in every record and every view here
+is a rectangle, so it contributes no axis: `.tags` keeps the dataset's shape and
+reads as the list (not numeric, so it does not plot), `.tags[3]` keeps the shape
+and reads as what the list holds (so it does), and `.tags[0:2]` is refused.
+A record whose list is too short has no value there — an empty cell, and a NaN
+in a line, which is where a stroke ends. Nothing in that needs to know how long
+any record's list is, so nothing reads the whole dataset to draw the start of it.
+
+The Information tab opens a compound out too: the datatype panel carries a
+**"Resolves to"** tree under its one-line member list, indented until nothing is
+left but base types. An array or a vlen contributes no row of its own — `array[4]
+of float64` has resolved itself in the saying of it — and an enum gets a row
+listing its symbols, because a nested one has no Members row to print them in.
+The indent comes out of the label column rather than pushing the value column
+along with it, so the values stay a column however deep the name beside them is.
+`h5core::toJson` opens one out as well, and by the same instinct: a struct always
+breaks across lines, a list does so only when it holds structs or lists of its
+own, so `"samples": [0, 0.25, 0.5, 0.75]` stays where its name is.
+
+`/plotting/events` in the example file is a hundred thousand records with one of
+every member class in the same struct, and `/types/compound/tracks` is the one
+composition it does not have: an array member whose elements are themselves
+structs. `.trail` appends an axis of three and `.trail.x` is that axis with a
+name after it — rank 2 out of a rank-1 dataset — which is where "an array member
+appends an axis" and "a chain goes on through a compound" have to hold at once.
+It is also the only element in the file whose JSON has to open a list out over
+lines. `/series/pairs` in the test fixture is
+`/series/a` and `/series/b` again as structs, which is what lets
+`test_customplot` assert that a member and a dataset of its own cost the same —
+**read for read**, not only value for value. A member read that fell back to a
+round trip per element would draw exactly the right picture.
 
 ## Invariants worth knowing before editing
 

@@ -24,6 +24,7 @@ qt_add_library(gui STATIC
   TableSetupModel.cpp
   PostprocessModel.cpp
   DatasetLookup.cpp
+  Completion.cpp
   CustomPlot.cpp
   CustomPlotSet.cpp
   FileSystem.cpp

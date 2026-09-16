@@ -40,6 +40,9 @@ private:
 ///   /series/b                1-D float64 [64], value 100 - i
 ///   /series/time             1-D float64 [64], value i / 2 -- a time base
 ///   /series/half             1-D float64 [32], value 2 * i -- half as long
+///   /series/trace_pairs      1-D compound {v, other} [20000] -- /trace again,
+///                            as one table of structs, so a member and a
+///                            dataset of its own are one line read two ways
 ///   /str_fixed               1-D fixed string [3]
 ///   /str_vlen                1-D variable string [3]
 ///   /str_scalar              scalar variable string, multi-line and long

@@ -41,6 +41,17 @@ Item {
     /// The operations the add row offers, handed down so the list is built
     /// once by the panel rather than on every read of every row.
     property var choices: []
+    /// The member chains the select row offers, from the model. Its own
+    /// property rather than `choices` above, which is the operations list.
+    property var memberChoices: []
+
+    /// What the select row's dropdown shows, which is the chains with "the
+    /// whole struct" in front of them -- a compound read as a compound is a
+    /// selection and not an absence, so it is an entry rather than a blank.
+    /// Index 0 is that entry and index i is chain i-1; the model guarantees
+    /// whatever is selected is in the list, including a `.tags[0]` the list of
+    /// names would not otherwise hold.
+    readonly property var memberOptions: [row.placeholder].concat(row.memberChoices)
     /// The width of the column the argument's name stands in, measured once by
     /// the panel over every name any row can put there. Handed down rather
     /// than worked out here so that every row agrees, which is the only way
@@ -324,6 +335,35 @@ Item {
                 color: Theme.textSecondary
             }
 
+            // The one argument in this panel that is chosen rather than
+            // typed. Its whole set of legal values is known before the reader
+            // touches anything -- a datatype has the members it has -- and on
+            // a compound nobody has opened before, a list is the difference
+            // between a feature and a feature somebody has to be told about.
+            //
+            // The slice that goes with it is the row below this one. That is
+            // not a simplification: `.samples[2]` and `.samples` with a `2` on
+            // the slice line are the same selection, so the two rows state the
+            // two halves of it and the reader can see both at once.
+            AppComboBox {
+                id: memberBox
+
+                objectName: "stepMember"
+
+                Layout.preferredWidth: Theme.s13
+                Layout.alignment: Qt.AlignVCenter
+                visible: row.kind === PostprocessModel.Member
+                model: row.memberOptions
+                selectedIndex: Math.max(
+                    0, row.memberChoices.indexOf(row.argument) + 1)
+                onActivated: (index) => {
+                    if (row.pipeline)
+                        row.pipeline.setArgument(
+                            row.rowIndex,
+                            index === 0 ? "" : row.memberChoices[index - 1])
+                }
+            }
+
             FilterInput {
                 id: box
 
@@ -340,6 +380,7 @@ Item {
                 Layout.alignment: Qt.AlignVCenter
                 implicitHeight: Theme.smallControlHeight
                 visible: row.argumentLabel !== ""
+                         && row.kind !== PostprocessModel.Member
                 placeholderText: row.placeholder
                 invalid: internal.problem !== ""
                 pending: row.pending

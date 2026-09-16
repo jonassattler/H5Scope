@@ -39,6 +39,7 @@ qt_add_qml_module(appqml
     ImageSurface.qml
     ViewFooter.qml
     SliceField.qml
+    CompletionPopup.qml
     ViewMessage.qml
     SettingsPanel.qml
     SettingRow.qml

@@ -159,6 +159,14 @@ Rectangle {
                 readonly property bool last:
                     infoRow.index === panel.modelData.rows.length - 1
 
+                /// How far in the label is drawn. Non-zero only in the datatype
+                /// panel, where a compound is opened out until nothing is left
+                /// but base types, and the indent is the whole of what says
+                /// which member a row belongs to.
+                readonly property int depth:
+                    infoRow.modelData.depth === undefined
+                        ? 0 : infoRow.modelData.depth
+
                 width: panel.bodyWidth
                 // Snapped, for the rule at the foot of it.
                 //
@@ -187,10 +195,18 @@ Rectangle {
                     id: key
 
                     anchors.left: parent.left
+                    // The indent comes out of the label column rather than
+                    // pushing the value column along with it: the values are a
+                    // column and stay one, whatever depth the name beside them
+                    // is at. A tree that moved both would be unreadable by the
+                    // third level.
+                    anchors.leftMargin: infoRow.depth * Theme.gapL
                     anchors.top: parent.top
                     anchors.topMargin: Theme.gapS
-                    width: Math.min(Theme.infoLabelWidth,
-                                    infoRow.width * 0.45)
+                    width: Math.max(Theme.gapL,
+                                    Math.min(Theme.infoLabelWidth,
+                                             infoRow.width * 0.45)
+                                    - infoRow.depth * Theme.gapL)
                     text: infoRow.modelData.label
                     font: Theme.micro
                     color: Theme.textSecondary

@@ -4,6 +4,7 @@
 #include "AppController.hpp"
 
 #include "AttributeTableModel.hpp"
+#include "Completion.hpp"
 #include "DatasetImage.hpp"
 #include "DatasetPlot.hpp"
 #include "DatasetStringListModel.hpp"
@@ -20,6 +21,7 @@
 #include "h5core/Attribute.hpp"
 #include "h5scope/Version.hpp"
 #include "postproc/ComputedDataset.hpp"
+#include "postproc/MemberPath.hpp"
 #include "postproc/Pipeline.hpp"
 
 #include <QCoreApplication>
@@ -117,6 +119,10 @@ AppController::AppController(QObject* parent)
     // The pipeline's second row is the slice above the table rather than a
     // copy of it, so it is given the model that owns that slice.
     postprocessModel_->setSliceSource(tableSetupModel_);
+    // And where its Select row's chain lives, which is here. The row is not a
+    // copy of the box in the slice bar any more than the slice row is a copy of
+    // the slice: it is it.
+    postprocessModel_->setMemberSource(this);
 
     // The panel is the authority on what the table shows; the table model
     // only ever hears about it through here.
@@ -136,6 +142,16 @@ AppController::AppController(QObject* parent)
         applyDataSource();
         emit postprocessChanged();
     });
+
+    // A group that has just been listed is a set of completions that did not
+    // exist a moment ago, and a row that has just learned whether it is a group
+    // or a dataset is a completion that has just learned what to write after
+    // it. The tree is lazy in both, so this is how a box asking "what could go
+    // here" hears that the answer has changed under it.
+    connect(treeModel_, &H5TreeModel::rowsInserted, this,
+            &AppController::completionsChanged);
+    connect(treeModel_, &H5TreeModel::dataChanged, this,
+            &AppController::completionsChanged);
 
     // Lazy population can fail mid-expand; surface it without the model
     // needing to know how the UI reports things.
@@ -195,6 +211,11 @@ void AppController::applyDataSource()
     const QString path = currentPath_;
     const bool pipeline = postprocessModel_->active();
     TableLayout layout = tableSetupModel_->layout();
+    // What the views are drawing is named for what it is: "/events.samples"
+    // rather than "/events", because a reader looking at a column of floats
+    // should be told which column.
+    const QString shown = path + memberText_;
+    const h5core::MemberSelection member = memberSelection_;
 
     if (!pipeline) {
         // The common case, and it reads nothing. What the table is being told
@@ -202,7 +223,8 @@ void AppController::applyDataSource()
         // just resolved; the cells themselves are fetched per block, when the
         // grid asks. Doing it here rather than a round trip later is what keeps
         // rearranging a table immediate.
-        datasetModel_->setSource(true, datasetInfo_, path);
+        datasetModel_->setSource(true, datasetInfo_, shown, memberText_,
+                                 static_cast<int>(originInfo_.shape.size()));
         // Moved rather than copied. A layout names every index it selects, so
         // on a ten-million-element vector it is eighty megabytes, and this
         // branch is the last reader of it.
@@ -212,12 +234,19 @@ void AppController::applyDataSource()
             datasetMessage_ = message;
             emit selectionChanged();
         }
-        // The pipeline's last output, dropped on the thread that owns it.
-        // Nothing waits for this: the table has already been put back on the
-        // file, and a source it is no longer reading can go when it goes.
+        // The pipeline's last output, dropped on the thread that owns it, and
+        // the member the selection is now read through, set on the same
+        // crossing. Nothing waits for either: the table has already been put
+        // back on the file, and a source it is no longer reading can go when it
+        // goes. The member has to be set before the next read rather than
+        // before this call returns, and every read is a later job.
         H5Thread::instance().submitVoid(
             sourceRequests_,
-            [](H5Session& session) { session.setComputed(nullptr); }, [] {});
+            [member](H5Session& session) {
+                session.setComputed(nullptr);
+                session.setMember(member);
+            },
+            [] {});
         return;
     }
 
@@ -234,8 +263,11 @@ void AppController::applyDataSource()
 
     H5Thread::instance().submit(
         sourceRequests_,
-        [path, steps, upTo, computedSuffix](H5Session& session) {
+        [path, steps, upTo, computedSuffix, member](H5Session& session) {
             Source source;
+            // Before the dataset is asked for: the pipeline runs on what the
+            // views draw, which with a chain set is the member.
+            session.setMember(member);
             h5core::Dataset* dataset = session.dataset(path.toStdString());
             if (dataset == nullptr) {
                 session.setComputed(nullptr);
@@ -463,6 +495,292 @@ QString AppController::applySlice(const QString& text)
     return tableSetupModel_->applySlice(text);
 }
 
+h5core::DatasetInfo AppController::projectedInfo() const
+{
+    // What the data views draw. With no chain it is the dataset; with one it is
+    // the dataset's shape followed by the axes the chain appends, holding what
+    // the chain lands on -- which is the same derivation h5core::FieldDataset
+    // makes when it opens, stated here so the panels know the shape before
+    // anything has been read.
+    if (memberSelection_.empty()) {
+        return originInfo_;
+    }
+    h5core::DatasetInfo info = originInfo_;
+    info.type = memberSelection_.type;
+    info.shape.insert(info.shape.end(), memberSelection_.dims.begin(),
+                      memberSelection_.dims.end());
+    info.maxShape = info.shape;
+    info.chunk.clear();
+    // A member projection has just made whatever the Image spec said about
+    // these dimensions untrue, for ComputedDataset's reason.
+    info.image.reset();
+    if (info.space == h5core::Dataspace::Scalar && !memberSelection_.dims.empty()) {
+        info.space = h5core::Dataspace::Simple;
+    }
+    return info;
+}
+
+PostprocessModel::Subject AppController::pipelineSubject(
+    const h5core::DatasetInfo& info) const
+{
+    PostprocessModel::Subject subject;
+    subject.path = currentPath_;
+    subject.shape = info.shape;
+    subject.numeric = info.isNumeric() && info.readable();
+    subject.originShape = originInfo_.shape;
+    // The same condition that puts the member box in the bar on screen, so the
+    // two surfaces for naming a member appear and disappear together.
+    if (originInfo_.type.cls == h5core::TypeClass::Compound && info.readable()) {
+        subject.memberChoices = postproc::memberChains(originInfo_.type);
+    }
+    return subject;
+}
+
+const h5core::TypeInfo* AppController::typeOf(const QString& path) const
+{
+    // The selection first, because that is the one datatype this controller
+    // described itself and the one a member box is nearly always about.
+    if (hasDataset_ && path == currentPath_) {
+        return &originInfo_.type;
+    }
+    if (const PathFacts* facts = customPlots_->lookup()->facts(path);
+        facts != nullptr && facts->isDataset) {
+        return &facts->type;
+    }
+    return nullptr;
+}
+
+QStringList AppController::pathCompletions(const QString& head, const QString& fragment)
+{
+    // The group whose children could go here. `head` ends in the separator, so
+    // taking it off leaves the group -- and taking everything off leaves the
+    // root, which is its own parent.
+    QString group = head;
+    if (group.endsWith(QLatin1Char('/')) && group.size() > 1) {
+        group.chop(1);
+    }
+    if (group.isEmpty()) {
+        group = QStringLiteral("/");
+    }
+
+    // Asked for rather than walked, whichever way it is missing: the tree is
+    // lazy because a file can hold a million objects, and a completer that
+    // listed its way down to answer a keystroke would spend exactly what that
+    // laziness saves. The listing arrives a moment later and
+    // `completionsChanged` is what tells the box to ask again.
+    const QModelIndex at = treeModel_->indexForPath(group);
+    if (!at.isValid() && group != QStringLiteral("/")) {
+        // Not reached at all: a group several levels into a file nobody has
+        // expanded. revealPath walks down one listing per round trip.
+        treeModel_->revealPath(group);
+        return {};
+    }
+    // Asking how many children it has is what asks for them. Population is
+    // driven from rowCount() in this model and deliberately so -- see its
+    // header -- so there is no other way to say "list this" for a group
+    // already in hand.
+    const int children = treeModel_->rowCount(at);
+    if (!treeModel_->isPopulated(at)) {
+        return {};
+    }
+
+    QStringList out;
+    QStringList unknown;
+    for (int row = 0; row < children; ++row) {
+        const QModelIndex child = treeModel_->index(row, 0, at);
+        const QString name = child.data(H5TreeModel::NameRole).toString();
+        if (!name.startsWith(fragment)) {
+            continue;
+        }
+        const QString path = head + name;
+        if (!child.data(H5TreeModel::IsResolvedRole).toBool()) {
+            // The name is in the link table; what it names comes out of the
+            // object header, which is a second read. Asking for the role above
+            // is what asks for it. Offered bare until it lands, because the
+            // name is a true answer and "/group" turning into "/group/" a
+            // moment later is a better list than no list.
+            static_cast<void>(child.data(H5TreeModel::IsGroupRole));
+            out.append(path);
+            continue;
+        }
+        if (child.data(H5TreeModel::IsGroupRole).toBool()) {
+            // A group is a step on the way rather than a destination, so the
+            // separator comes with it: one Tab, then keep typing.
+            out.append(path + QLatin1Char('/'));
+            continue;
+        }
+        if (!child.data(H5TreeModel::IsDatasetRole).toBool()) {
+            continue;
+        }
+        // ...and a dataset comes with the subscript that selects the whole of
+        // it, which is the half of this a reader would otherwise have to count
+        // dimensions for. The rank is the custom plots' own cache, which is
+        // where every fact about a path this controller did not select lives;
+        // a path it has never resolved is completed bare and asked about, and
+        // the subscript appears on the next keystroke.
+        const PathFacts* facts = customPlots_->lookup()->facts(path);
+        if (facts == nullptr) {
+            unknown.append(path);
+            out.append(path);
+            continue;
+        }
+        out.append(path + wholeSubscript(facts->shape.size()));
+    }
+
+    // Only ever the paths nothing knows anything about, for the reason spelled
+    // out over the member branch below: a resolve with nothing to ask runs its
+    // continuation there and then, and this one's continuation is what makes
+    // every box ask again.
+    if (!unknown.isEmpty()) {
+        customPlots_->lookup()->resolve(unknown,
+                                        [this] { emit completionsChanged(); });
+    }
+    return out;
+}
+
+QStringList AppController::completions(const QString& text)
+{
+    if (!fileOpen_) {
+        return {};
+    }
+    const CompletionRequest request = completionRequest(text);
+    switch (request.part) {
+    case CompletionRequest::Part::Subscript:
+        return {};
+    case CompletionRequest::Part::Path:
+        return pathCompletions(request.head, request.fragment);
+    case CompletionRequest::Part::Member:
+        break;
+    }
+
+    const h5core::TypeInfo* type = typeOf(request.path);
+    if (type == nullptr) {
+        // The path is not one this controller or the plots' cache knows. Ask,
+        // and answer on the next keystroke rather than guessing at a datatype.
+        //
+        // Only when it is genuinely unknown. `resolve` runs its continuation
+        // *synchronously* when there is nothing to ask -- callers use it as
+        // "make sure, then go" -- and the continuation here is the signal that
+        // makes every box re-ask, so calling it for a path already known and
+        // still not a dataset (a group, a broken link) is an unbounded loop
+        // with the window locked inside it. `knows` is the difference between
+        // asking once and asking forever.
+        if (!customPlots_->lookup()->knows(request.path)) {
+            customPlots_->lookup()->resolve({request.path},
+                                            [this] { emit completionsChanged(); });
+        }
+        return {};
+    }
+
+    QStringList out;
+    for (const QString& chain : postproc::memberChains(*type)) {
+        if (chain.startsWith(request.fragment)) {
+            out.append(request.head + chain);
+        }
+    }
+    return out;
+}
+
+QStringList AppController::memberCompletions(const QString& text) const
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return {};
+    }
+    const QString fragment = text.trimmed();
+    QStringList out;
+    for (const QString& chain : postproc::memberChains(originInfo_.type)) {
+        if (chain.startsWith(fragment)) {
+            out.append(chain);
+        }
+    }
+    return out;
+}
+
+QString AppController::commonCompletion(const QStringList& options) const
+{
+    return commonHead(options);
+}
+
+QString AppController::memberError(const QString& text) const
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return tr("no dataset is selected");
+    }
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(text, originInfo_.type);
+    return chain.error;
+}
+
+QString AppController::applyMember(const QString& text)
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return tr("no dataset is selected");
+    }
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(text, originInfo_.type);
+    if (!chain.valid()) {
+        return chain.error;
+    }
+
+    // Everything below announces itself with selectionChanged, because that is
+    // the signal the properties it moves are notified by -- and every
+    // DatasetMemory in the UI reads that signal as "put back what is filed for
+    // the dataset now current". Without the half of the pair that files it
+    // first, naming a member reverted the plot's range, the image's colour axis
+    // and the pipeline's own switch to whatever they were when the reader last
+    // *left* this dataset. The dataset is not changing here, so filing and
+    // restoring under the same name is the identity it should be.
+    emit selectionAboutToChange();
+
+    // What the leading dimensions -- the dataset's own -- are already showing.
+    // The chain only ever changes the axes after them, so a reader who has set
+    // up a slice and then picks a member keeps the slice they set up.
+    const QStringList kept = tableSetupModel_->summaries();
+    const auto originRank = static_cast<qsizetype>(originInfo_.shape.size());
+
+    memberSelection_ = chain.selection;
+    // The canonical chain, which the resolver already wrote: the members with
+    // their subscripts taken off, because those are about to go on the slice.
+    memberText_ = QString::fromStdString(memberSelection_.text);
+    if (memberText_.isEmpty()) {
+        members_.remove(currentPath_);
+    } else {
+        members_.insert(currentPath_, memberText_);
+    }
+
+    const h5core::DatasetInfo info = projectedInfo();
+    datasetInfo_ = info;
+    datasetRank_ = static_cast<int>(info.rank());
+    datasetIsString_ = info.type.cls == h5core::TypeClass::String;
+    datasetIsNumeric_ = info.isNumeric() && info.readable();
+    datasetIsFloat_ = info.type.cls == h5core::TypeClass::Float && info.readable();
+    datasetElementCount_ = static_cast<qint64>(info.elementCount());
+
+    postprocessModel_->setDataset(pipelineSubject(info));
+    tableSetupModel_->setShape(info.shape, info.image);
+
+    // The subscripts the chain carried belong on the slice line: `.samples[2]`
+    // and a `2` on the axis `.samples` appended are the same selection, and the
+    // line is where every other subscript in this program lives. This is the
+    // one place a box rewrites what was typed, and what it rewrites it into is
+    // sitting next to it.
+    QStringList line;
+    for (qsizetype d = 0; d < originRank; ++d) {
+        line.append(d < kept.size() ? kept[d] : QStringLiteral(":"));
+    }
+    for (const QString& folded : chain.folded) {
+        line.append(folded.isEmpty() ? QStringLiteral(":") : folded);
+    }
+    if (!line.isEmpty()) {
+        static_cast<void>(tableSetupModel_->applySlice(line.join(QStringLiteral(", "))));
+    }
+
+    emit selectionChanged();
+    emit tableLayoutChanged();
+    applyDataSource();
+    return {};
+}
+
 QString AppController::sliceError(const QString& text) const
 {
     if (!datasetTabVisible_) {
@@ -609,6 +927,10 @@ bool AppController::openFile(const QString& path)
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    // With the slices, and for their reason: two files can hold a `/data` that
+    // have nothing to do with each other, and a member chain says even more
+    // about which one than a slice does -- it names a datatype.
+    members_.clear();
     customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
@@ -693,6 +1015,10 @@ void AppController::closeFile()
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    // With the slices, and for their reason: two files can hold a `/data` that
+    // have nothing to do with each other, and a member chain says even more
+    // about which one than a slice does -- it names a datatype.
+    members_.clear();
     customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
@@ -846,6 +1172,9 @@ void AppController::applySelection(SelectionFacts facts)
     datasetMessage_.clear();
     hasDataset_ = false;
     datasetInfo_ = {};
+    originInfo_ = {};
+    memberText_.clear();
+    memberSelection_ = {};
 
     if (!facts.described) {
         if (!facts.message.isEmpty()) {
@@ -862,12 +1191,31 @@ void AppController::applySelection(SelectionFacts facts)
     metadataTabVisible_ = facts.hasAttributes;
 
     if (facts.isDataset && facts.datasetOpened) {
-        const h5core::DatasetInfo& info = facts.info;
+        originInfo_ = facts.info;
+        // Whatever member this dataset was last read through, before anything
+        // is described: every fact below is a fact about what is being drawn,
+        // and with a chain set that is the member and not the struct.
+        memberText_.clear();
+        memberSelection_ = {};
+        if (const auto held = members_.constFind(currentPath_);
+            held != members_.constEnd()) {
+            const postproc::MemberChain chain =
+                postproc::resolveMemberChain(*held, originInfo_.type);
+            if (chain.valid() && !chain.empty()) {
+                memberText_ = *held;
+                memberSelection_ = chain.selection;
+            }
+        }
+        const h5core::DatasetInfo info = projectedInfo();
+
         datasetRank_ = static_cast<int>(info.rank());
         datasetIsString_ = info.type.cls == h5core::TypeClass::String;
         datasetIsNumeric_ = info.isNumeric() && info.readable();
+        // The *dataset's* class, not the projection's: this is what puts the
+        // member box on screen, and a reader who has chained down to a float
+        // still needs the box they typed it into.
         datasetIsCompound_ =
-            info.type.cls == h5core::TypeClass::Compound && info.readable();
+            originInfo_.type.cls == h5core::TypeClass::Compound && info.readable();
         datasetIsFloat_ = info.type.cls == h5core::TypeClass::Float && info.readable();
         datasetElementCount_ = static_cast<qint64>(info.elementCount());
         const std::vector<hsize_t> shape = info.shape;
@@ -884,8 +1232,7 @@ void AppController::applySelection(SelectionFacts facts)
         datasetInfo_ = info;
         // Before the layout, so the panel's reset lands on a pipeline that
         // already knows the shape it is starting from.
-        postprocessModel_->setDataset(currentPath_, shape,
-                                      info.isNumeric() && info.readable());
+        postprocessModel_->setDataset(pipelineSubject(info));
         tableSetupModel_->setShape(shape, image);
         // ...and then whatever slice was last written for this dataset. A line
         // that no longer reads -- which nothing in one session should produce,
@@ -896,12 +1243,12 @@ void AppController::applySelection(SelectionFacts facts)
         }
     } else if (facts.isDataset) {
         datasetModel_->setSource(false, {}, {});
-        postprocessModel_->setDataset({}, {}, false);
+        postprocessModel_->setDataset({});
         tableSetupModel_->setShape({});
         datasetMessage_ = facts.datasetMessage;
     } else {
         datasetModel_->setSource(false, {}, {});
-        postprocessModel_->setDataset({}, {}, false);
+        postprocessModel_->setDataset({});
         tableSetupModel_->setShape({});
     }
 

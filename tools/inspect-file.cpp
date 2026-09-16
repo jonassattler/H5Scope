@@ -124,8 +124,15 @@ void printPanels(const gui::AppController& controller)
               << map.value("meta").toString() << "\n";
         for (const QVariant& row : map.value("rows").toList()) {
             const QVariantMap fields = row.toMap();
-            out() << "      " << fields.value("label").toString().leftJustified(16)
-                  << " : " << fields.value("value").toString()
+            // Indented by the same depth the Information tab indents by, so
+            // that a compound opened out reads here as a tree too. Out of the
+            // label's own column rather than in front of it, which is the rule
+            // the panel keeps: the values stay a column.
+            const int depth = fields.value("depth").toInt();
+            const QString label = QString(depth * 2, QLatin1Char(' '))
+                                  + fields.value("label").toString();
+            out() << "      " << label.leftJustified(16) << " : "
+                  << fields.value("value").toString()
                   << (fields.value("isWarning").toBool() ? "   <warning>" : "") << "\n";
         }
     }

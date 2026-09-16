@@ -5,9 +5,14 @@
 
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/DataType.hpp"
 #include "h5core/Error.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
+#include "h5core/Handle.hpp"
 #include "h5core/Types.hpp"
+
+#include "support/MemberChain.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -280,6 +285,48 @@ TEST_CASE_METHOD(Fixture, "dataset metadata", "[h5core][dataset]")
         REQUIRE(ds.info().type.memberNames == std::vector<std::string>{"id", "value"});
     }
 
+    SECTION("a compound's members carry their own types")
+    {
+        const h5core::Dataset ds(file, "/compound");
+        const auto& members = ds.info().type.members;
+        REQUIRE(members.size() == 2);
+
+        CHECK(members[0].name == "id");
+        CHECK(members[0].type.cls == h5core::TypeClass::Integer);
+        CHECK(members[0].type.description == "int32");
+
+        CHECK(members[1].name == "value");
+        CHECK(members[1].type.cls == h5core::TypeClass::Float);
+        CHECK(members[1].type.description == "float64");
+
+        // The offsets are what a read of one member on its own is built out
+        // of, so they have to be the file's and not this test's arithmetic.
+        CHECK(members[0].offset < members[1].offset);
+        CHECK(members[1].offset + members[1].type.size <= ds.info().type.size);
+    }
+
+    SECTION("the flat member names stay what they were")
+    {
+        // memberNames carries an enum's symbols as well as a compound's member
+        // names, and the Information panel prints it. The member tree is beside
+        // it rather than in place of it, and this is the assertion that says so.
+        const h5core::Dataset ds(file, "/compound");
+        REQUIRE(ds.info().type.memberNames == std::vector<std::string>{"id", "value"});
+        REQUIRE(ds.info().type.memberNames.size() == ds.info().type.members.size());
+
+        const h5core::Dataset colours(file, "/enum");
+        CHECK(colours.info().type.memberNames.size() == 3);
+        CHECK(colours.info().type.members.empty());
+    }
+
+    SECTION("a type that holds no other type names none")
+    {
+        const h5core::Dataset ds(file, "/matrix");
+        CHECK(ds.info().type.members.empty());
+        CHECK(ds.info().type.arrayDims.empty());
+        CHECK(ds.info().type.base == nullptr);
+    }
+
     SECTION("enum symbols are exposed")
     {
         const h5core::Dataset ds(file, "/enum");
@@ -302,6 +349,82 @@ TEST_CASE_METHOD(Fixture, "dataset metadata", "[h5core][dataset]")
     SECTION("opening a group as a dataset throws")
     {
         REQUIRE_THROWS_AS(h5core::Dataset(file, "/group"), h5core::H5Error);
+    }
+}
+
+TEST_CASE_METHOD(Fixture, "a member reads as a dataset of its own",
+                 "[h5core][member]")
+{
+    const h5core::File file(temp.path());
+    const h5core::Dataset whole(file, "/compound");
+
+    SECTION("it reports the member's type and the dataset's shape")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+
+        CHECK(value.info().shape == whole.info().shape);
+        CHECK(value.info().type.cls == h5core::TypeClass::Float);
+        CHECK(value.info().isNumeric());
+        CHECK(value.path() == "/compound.value");
+    }
+
+    SECTION("it reads that member's values and no others")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const auto numbers = value.readNumericWindow({0}, {2});
+        REQUIRE(numbers.values == std::vector<double>{1.5, 2.5});
+
+        const h5core::FieldDataset id(file, "/compound",
+                                      h5test::chainOf(whole.info().type, {"id"}));
+        CHECK(id.info().type.cls == h5core::TypeClass::Integer);
+        const auto ids = id.readNumericWindow({0}, {2});
+        REQUIRE(ids.values == std::vector<double>{7.0, 9.0});
+        // As text it prints like the integer it is, not like a double.
+        CHECK(id.readWindow({0}, {2}).cells == std::vector<std::string>{"7", "9"});
+    }
+
+    SECTION("a hyperslab of a member is still a hyperslab")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const auto second = value.readNumericWindow({1}, {1});
+        CHECK(second.count == std::vector<hsize_t>{1});
+        REQUIRE(second.values == std::vector<double>{2.5});
+
+        // Clamped to the bounds, exactly as the dataset's own read is.
+        const auto over = value.readNumericWindow({0}, {99});
+        CHECK(over.count == std::vector<hsize_t>{2});
+    }
+
+    SECTION("one element of a member is one value, not a struct")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const h5core::ElementValue element = value.readElement({1});
+        CHECK(element.text == "2.5");
+        CHECK(element.json == "2.5");
+        // The whole dataset's element is the struct; this one is a number, so
+        // there is nothing left to open out.
+        CHECK(element.fields.empty());
+    }
+
+    SECTION("a chain that does not apply is refused, not guessed at")
+    {
+        h5core::MemberSelection wrong;
+        wrong.links.push_back(h5core::MemberLink{0, "nonesuch", std::nullopt});
+        wrong.text = ".nonesuch";
+        REQUIRE_THROWS_AS(h5core::FieldDataset(file, "/compound", wrong),
+                          h5core::H5Error);
+
+        // The index is right and the name is not: the one way a stale chain
+        // could read the wrong field and never say so.
+        h5core::MemberSelection renamed;
+        renamed.links.push_back(h5core::MemberLink{0, "value", std::nullopt});
+        renamed.text = ".value";
+        REQUIRE_THROWS_AS(h5core::FieldDataset(file, "/compound", renamed),
+                          h5core::H5Error);
     }
 }
 
@@ -407,8 +530,10 @@ TEST_CASE_METHOD(Fixture, "reading data", "[h5core][dataset]")
         CHECK(element.fields[1].type == "float64");
         CHECK(element.fields[1].value == "2.5");
 
-        // Numbers stay numbers and names are quoted, so this parses.
-        CHECK(element.json == R"({"id": 9, "value": 2.5})");
+        // Numbers stay numbers and names are quoted, so this parses -- and it
+        // is written out over lines, because the pane it lands in is showing
+        // one element to somebody reading it.
+        CHECK(element.json == "{\n  \"id\": 9,\n  \"value\": 2.5\n}");
         // The same element as the grid prints it, so the two cannot disagree.
         CHECK(element.text == ds.readAll().cells[1]);
     }
@@ -464,6 +589,88 @@ TEST_CASE_METHOD(Fixture, "reading data", "[h5core][dataset]")
     {
         const h5core::Dataset ds(file, "/compressed"); // 10,000 elements
         REQUIRE_THROWS_AS(ds.readAll(100), h5core::H5Error);
+    }
+}
+
+TEST_CASE("JSON is written to be read, and not only to be parsed", "[h5core][json]")
+{
+    // No file at all: toJson takes a datatype and a buffer. A type built here
+    // is also the only way to state the rule about a list of structs, because
+    // nothing in the fixtures or the example file has one.
+    struct Point {
+        double x;
+        double y;
+    };
+    struct Holder {
+        Point trail[2];
+        std::int32_t count;
+    };
+
+    h5core::Handle point(H5Tcreate(H5T_COMPOUND, sizeof(Point)), &H5Tclose);
+    REQUIRE(point.valid());
+    H5Tinsert(point.get(), "x", HOFFSET(Point, x), H5T_NATIVE_DOUBLE);
+    H5Tinsert(point.get(), "y", HOFFSET(Point, y), H5T_NATIVE_DOUBLE);
+
+    const hsize_t two = 2;
+    h5core::Handle trail(H5Tarray_create2(point.get(), 1, &two), &H5Tclose);
+    REQUIRE(trail.valid());
+
+    h5core::Handle holder(H5Tcreate(H5T_COMPOUND, sizeof(Holder)), &H5Tclose);
+    REQUIRE(holder.valid());
+    H5Tinsert(holder.get(), "trail", HOFFSET(Holder, trail), trail.get());
+    H5Tinsert(holder.get(), "count", HOFFSET(Holder, count), H5T_NATIVE_INT32);
+
+    const Holder value{{{1.0, 2.0}, {3.0, 4.0}}, 7};
+
+    SECTION("a scalar is one line, whatever it is a member of")
+    {
+        CHECK(h5core::toJson(H5T_NATIVE_DOUBLE, &value.trail[0].x) == "1");
+        CHECK(h5core::toJson(H5T_NATIVE_INT32, &value.count) == "7");
+    }
+
+    SECTION("a struct opens out, one member to a line")
+    {
+        CHECK(h5core::toJson(point.get(), &value.trail[0])
+              == "{\n  \"x\": 1,\n  \"y\": 2\n}");
+    }
+
+    SECTION("a list of structs opens out too, indented under its own name")
+    {
+        // Each element on its own line, and each element's members indented
+        // under that -- so the whole of it reads as a shape rather than as one
+        // very long line the pane has to wrap.
+        CHECK(h5core::toJson(holder.get(), &value)
+              == "{\n"
+                 "  \"trail\": [\n"
+                 "    {\n      \"x\": 1,\n      \"y\": 2\n    },\n"
+                 "    {\n      \"x\": 3,\n      \"y\": 4\n    }\n"
+                 "  ],\n"
+                 "  \"count\": 7\n"
+                 "}");
+    }
+
+    SECTION("a list of numbers stays on the line its name is on")
+    {
+        // The other half of the same rule. Four samples on four lines is a
+        // worse reading of four samples than four samples on one, and an array
+        // member of a hundred would be a hundred lines of nothing.
+        const hsize_t four = 4;
+        h5core::Handle samples(H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, &four),
+                               &H5Tclose);
+        REQUIRE(samples.valid());
+        const double values[4] = {0.0, 0.25, 0.5, 0.75};
+        CHECK(h5core::toJson(samples.get(), values) == "[0, 0.25, 0.5, 0.75]");
+    }
+
+    SECTION("nothing in it is nothing to open out")
+    {
+        // An empty list is two characters, not two lines with a blank between
+        // them -- and an empty list is what every fourth record of the example
+        // file's `tags` holds, so this is the common case rather than an edge.
+        h5core::Handle list(H5Tvlen_create(H5T_NATIVE_INT32), &H5Tclose);
+        REQUIRE(list.valid());
+        const hvl_t none{0, nullptr};
+        CHECK(h5core::toJson(list.get(), &none) == "[]");
     }
 }
 

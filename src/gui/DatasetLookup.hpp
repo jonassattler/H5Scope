@@ -5,6 +5,8 @@
 
 #include "H5Thread.hpp"
 
+#include "h5core/Types.hpp"
+
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -32,6 +34,9 @@ struct Expression {
     /// The body, with the outer brackets taken off. Empty means the whole of
     /// the dataset, which is what a bare path selects.
     QString subscript;
+    /// The member chain after the subscript: ".energy", ".position.x", with
+    /// its own subscripts still on it. Empty for a dataset read whole.
+    QString member;
     QString error; ///< empty when the line reads
 
     [[nodiscard]] bool valid() const { return error.isEmpty(); }
@@ -46,6 +51,13 @@ struct Expression {
 /// indexing, `[0:4,5,7:10]`. Depth is what tells those apart, and it is the
 /// same counter `postproc::splitSubscripts` uses on the half after the split.
 ///
+/// A member chain may follow the subscript -- `/events[0:100].energy` -- and is
+/// recognised only after the closing bracket. A link name holds a '.' as freely
+/// as it holds a '[': `/data/run.3` is a dataset and not member 3 of `run`, and
+/// telling those apart would mean asking the file on every keystroke about a
+/// path nobody has selected. After a ']' there is nothing else a '.' can be.
+/// A line with no `].` in it therefore parses exactly as it always did.
+///
 /// An unbalanced bracket is reported in the words the subscript parser already
 /// uses for it, so a reader does not learn two vocabularies for one mistake.
 [[nodiscard]] Expression splitExpression(const QString& text);
@@ -54,8 +66,18 @@ struct Expression {
 struct PathFacts {
     bool isDataset = false;
     /// Whether it can be drawn at all: a readable, numeric, non-null dataset.
+    ///
+    /// A compound is `usable` too, and is the one kind that is not drawable as
+    /// it stands: it is what a member chain is *for*, and refusing it here
+    /// would refuse `/events[:].energy` before the chain that makes it a line
+    /// had been looked at. What is drawable is settled once the chain has been
+    /// resolved against `type` -- see `expressionProblem`.
     bool usable = false;
     std::vector<hsize_t> shape;
+    /// The datatype, which is what a member chain resolves against. Carried
+    /// here because this is the one place that opens the dataset, and asking
+    /// again per keystroke is the thing this whole cache exists to avoid.
+    h5core::TypeInfo type;
     /// Why it cannot be used, when it cannot. Empty when `usable`.
     QString problem;
 };
@@ -126,6 +148,16 @@ private:
 /// opens each of them anyway and hands the answer straight to the cache, so
 /// nothing is ever asked twice.
 [[nodiscard]] PathFacts lookupFacts(h5core::File* file, const QString& path);
+
+/// Why what a chain lands on cannot be drawn as a line, or empty when it can.
+///
+/// One sentence in one place, because two surfaces say it: the box that checks
+/// an entry as it is typed, and the entry row itself once the read has come
+/// back. A compound with no member named is the case worth the words -- the
+/// answer is not "this cannot be plotted" but "name one of these", and the
+/// names are in the file and nowhere the reader can see.
+[[nodiscard]] QString undrawableReason(const h5core::TypeInfo& landed,
+                                       const h5core::TypeInfo& type, bool chained);
 
 /// Why `text` cannot be drawn as one line, or empty when it can be -- judged
 /// from what `lookup` already knows and nothing else. See the note above.

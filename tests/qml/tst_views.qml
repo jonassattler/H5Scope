@@ -847,6 +847,36 @@ TestCase {
         verify(AppController.infoModel.rowCount() >= 8)
     }
 
+    /// The datatype panel opens a compound out until nothing is left but base
+    /// types. What says which member a row belongs to is the indent, so the
+    /// indent is what this asserts -- the depth reaching the view rather than
+    /// merely reaching the model.
+    function test_a_compound_datatype_is_drawn_as_an_indented_tree() {
+        verify(select("/compound"))
+        const view = createTemporaryObject(infoComponent, testCase, viewSize)
+        waitForRendering(view)
+
+        let members = null
+        let member = null
+        for (const item of selectableTexts(view)) {
+            if (item.text === "Members")
+                members = item
+            if (item.text === "id")
+                member = item
+        }
+        verify(members, "the one-line list of names stays where it was")
+        verify(member, "and the tree names each member on a row of its own")
+        verify(member.x > members.x,
+               "a tree row is drawn further in than the rows above it")
+
+        // And no heading at all where there is nothing to open out: float64
+        // resolves to float64, which the Type row above has already said.
+        verify(select("/matrix"))
+        waitForRendering(view)
+        for (const item of selectableTexts(view))
+            verify(item.text !== "Resolves to", "a plain type gets no tree")
+    }
+
     /// A viewer shows facts about a file that a reader has some other program
     /// to paste them into. A Text is a picture of a string: it can be read and
     /// not taken, which for a path or a filter name is the difference between
@@ -1062,6 +1092,197 @@ TestCase {
                 TableSetupModel.Range)
         compare(setup.data(setup.index(3, 0), TableSetupModel.ModeRole),
                 TableSetupModel.All)
+    }
+
+    /// The member box: the compound half of the slice line.
+    ///
+    /// It is drawn only for a compound, which is also how a reader finds out
+    /// the notation exists -- nothing in the bar mentions members until there
+    /// is one to name.
+    function test_the_member_box_is_there_for_a_compound_and_not_otherwise() {
+        verify(select("/matrix"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        verify(box, "the member box is built whether or not it is drawn")
+        const well = box.parent
+        compare(well.visible, false, "a matrix of numbers has no members")
+
+        verify(select("/compound"))
+        waitForRendering(win.contentItem)
+        compare(well.visible, true, "a compound does")
+        compare(box.text, "", "and it opens empty")
+
+        // The hint stands in for what is not there, so the box is findable.
+        const hint = findChild(win.contentItem, "sliceMemberHint")
+        verify(hint)
+        compare(hint.visible, true)
+        compare(hint.text, ".member")
+        verify(well.width > 0, "an empty member box is still a box")
+    }
+
+    /// Naming a member is what turns a grid of structs into a column of
+    /// numbers, and the plot and the image exist for it afterwards.
+    function test_naming_a_member_draws_it() {
+        verify(select("/compound")) // {id: int32, value: float64} x 2
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        compare(AppController.datasetIsCompound, true)
+        compare(AppController.datasetIsNumeric, false)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ".value"
+        box.textEdited()
+        // Typing checks and does not apply, as the slice box does.
+        compare(AppController.datasetIsNumeric, false)
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(AppController.memberText, ".value")
+        compare(AppController.datasetIsNumeric, true)
+        // Still a compound, so the box the reader typed into is still there.
+        compare(AppController.datasetIsCompound, true)
+        compare(box.parent.visible, true)
+
+        // Put it back: a chain is remembered per dataset, which is the point of
+        // it, so a test that leaves one leaves it for every test after.
+        AppController.applyMember("")
+    }
+
+    /// A subscript written on the chain moves to the slice line beside it.
+    /// They are the same selection, and the line is where every other
+    /// subscript in this program lives.
+    function test_a_member_subscript_moves_to_the_slice_line() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const member = findChild(win.contentItem, "sliceMemberInput")
+        const slice = findChild(win.contentItem, "sliceInput")
+        member.forceActiveFocus()
+        member.text = ".value"
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(member.text, ".value")
+        compare(slice.text, AppController.sliceText)
+
+        AppController.applyMember("")
+    }
+
+    /// The members of a compound are in the file and nowhere the reader can
+    /// see them. Offering them here is what makes the box writable at all --
+    /// `.position.x` is otherwise something you have to already know.
+    function test_the_member_box_offers_what_could_go_in_it() {
+        verify(select("/compound")) // {id: int32, value: float64}
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ""
+        box.textEdited()
+        waitForRendering(win.contentItem)
+
+        // An empty box asks for everything that could go there. No file is
+        // touched for it: a chain resolves against the datatype already
+        // described, which is why this answers on the keystroke.
+        compare(AppController.memberCompletions("").length, 2)
+        const list = findChild(win, "sliceMemberCompletion")
+        verify(list, "the box must have its list")
+        verify(list.visible, "and it is up while the box is being written in")
+        // Drawn, not merely flagged: a popup whose content was never built
+        // would have exactly this `visible` and nothing on screen.
+        const rows = findChild(win, "completionList")
+        verify(rows, "the list must have built its rows")
+        compare(rows.count, 2)
+
+        // The two share only the dot, so Tab writes that and leaves the
+        // choosing to the reader -- a shell's behaviour, which is the one a
+        // reader already has.
+        keyClick(Qt.Key_Tab)
+        compare(box.text, ".")
+
+        box.text = ".v"
+        box.textEdited()
+        keyClick(Qt.Key_Tab)
+        compare(box.text, ".value")
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".value")
+        compare(AppController.datasetIsNumeric, true)
+
+        AppController.applyMember("")
+    }
+
+    /// Escape means the list while the list is up, and the box after that.
+    /// Two meanings for one key, in the order the reader put the things there.
+    function test_escape_dismisses_the_list_before_it_reverts_the_box() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        const list = findChild(win, "sliceMemberCompletion")
+        box.forceActiveFocus()
+        box.text = ".v"
+        box.textEdited()
+        waitForRendering(win.contentItem)
+        verify(list.visible)
+
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        verify(!list.visible, "the list goes")
+        compare(box.text, ".v", "and what was typed stays")
+
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        compare(box.text, "", "the second one puts back what the table shows")
+    }
+
+    /// A chain that does not read is left in the box, in amber, with the
+    /// reason -- the slice box's contract, because it is the same contract.
+    function test_a_member_that_does_not_read_says_so_and_changes_nothing() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ".nonesuch"
+        box.textEdited()
+        const note = findChild(win.contentItem, "sliceNote")
+        verify(note)
+        verify(note.text.indexOf("nonesuch") >= 0,
+               "the note names the member that is not there: " + note.text)
+        // And the list of the ones that are, which is the useful half.
+        verify(note.text.indexOf("value") >= 0, note.text)
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, "", "nothing was applied")
+        compare(box.text, ".nonesuch", "and what was typed is still there")
+
+        // Escape puts back what the table is showing.
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        compare(box.text, "")
     }
 
     /// The well holds the line *and* the room to grow it, the whole well is one
@@ -1517,7 +1738,7 @@ TestCase {
         compare(first.fields.length, 2)
         compare(first.fields[0].name, "id")
         compare(first.fields[0].value, "7")
-        compare(first.json, '{"id": 7, "value": 1.5}')
+        compare(first.json, '{\n  "id": 7,\n  "value": 1.5\n}')
 
         // The plot and the image are unavailable for it, as for any dataset
         // whose cells hold no number.

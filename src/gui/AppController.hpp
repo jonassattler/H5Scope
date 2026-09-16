@@ -10,6 +10,7 @@
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 
 #include <QAbstractItemModel>
@@ -162,6 +163,15 @@ private:
     /// makes exactly this editable, so that what can be typed is always a
     /// complete slice of the object already named beside it.
     Q_PROPERTY(QString sliceText READ sliceText NOTIFY tableLayoutChanged)
+    /// The member chain the selection is read through: `.position.x`, or empty
+    /// for the dataset itself.
+    ///
+    /// Its own box after the closing bracket rather than part of `sliceText`,
+    /// because the two say different things and one of them is only a question
+    /// for a compound. Keeping them apart is also what leaves the pipeline's
+    /// slice row alone: that row *is* the slice line, and it had better go on
+    /// being exactly it.
+    Q_PROPERTY(QString memberText READ memberText NOTIFY tableLayoutChanged)
     /// Files opened before, newest first. Each entry is
     /// `{ path, name, folder, missing }` -- `missing` when the file is no
     /// longer where it was, which is worth showing rather than hiding, because
@@ -230,6 +240,67 @@ public:
     /// can. Checks without applying, so the bar can report a line as it is
     /// typed.
     Q_INVOKABLE QString sliceError(const QString& text) const;
+    [[nodiscard]] QString memberText() const { return memberText_; }
+    /// Apply an edited member chain. Returns the reason it could not be read,
+    /// or an empty string once the views are showing that member.
+    ///
+    /// A subscript written on the chain is *folded onto the slice line*, and
+    /// the box prints back the bare chain: `.samples[2]` becomes `.samples`
+    /// with a `2` in the slice beside it. They are the same selection -- that
+    /// is the identity the whole notation rests on -- and the canonical half is
+    /// the one where the member's axes are ordinary dimensions the reader can
+    /// slice, lay out and put on an axis like any others.
+    Q_INVOKABLE QString applyMember(const QString& text);
+    /// Why an edited member chain cannot be read, or empty when it can. Pure
+    /// arithmetic over the datatype already described, so it answers on every
+    /// keystroke without opening anything.
+    Q_INVOKABLE QString memberError(const QString& text) const;
+
+    // --- what could be written next --------------------------------------
+    //
+    // Two grammars are typed by hand in this application: a whole line naming
+    // a dataset, a subscript and a member (the custom plots' entry boxes), and
+    // a member chain on its own (the box after the slice bar's bracket). Each
+    // gets its own list, and both answer in whole strings -- what the box
+    // would hold if the candidate were taken -- because splicing a fragment
+    // back into a line three grammars deep is work for the thing that knows
+    // the grammar rather than for the box.
+    //
+    // **Nothing here reads more than the reader has already asked to see.**
+    // The tree is lazy by design; what a completion of a path can offer is
+    // what is listed, and a group that is not listed is *asked for* rather
+    // than walked -- the list arrives a moment later and `completionsChanged`
+    // says so. A completer that walked the file to answer a keystroke would
+    // undo the one property that lets this program open a file of a million
+    // objects.
+
+    /// What could be written next on a line naming a dataset. Whole lines.
+    [[nodiscard]] Q_INVOKABLE QStringList completions(const QString& text);
+    /// The same for a member chain on its own, against the selection's type.
+    [[nodiscard]] Q_INVOKABLE QStringList memberCompletions(const QString& text) const;
+    /// What Tab writes: the longest head every candidate shares, which is as
+    /// far as a reader can be taken without choosing for them.
+    [[nodiscard]] Q_INVOKABLE QString commonCompletion(const QStringList& options) const;
+
+private:
+    /// What the data views draw: the dataset, or the dataset seen through the
+    /// member chain. `originInfo_` is what the file said; this is the result.
+    [[nodiscard]] h5core::DatasetInfo projectedInfo() const;
+    /// What the postprocessing panel is running on, given what the views are
+    /// drawing. Built in one place because the panel's rows state the dataset
+    /// *and* the projection, and those two come from different facts.
+    [[nodiscard]] PostprocessModel::Subject
+    pipelineSubject(const h5core::DatasetInfo& info) const;
+    /// The candidates for a path being typed, from what the tree has already
+    /// listed. Asks for the listing it needs when it has not been made.
+    [[nodiscard]] QStringList pathCompletions(const QString& head,
+                                              const QString& fragment);
+    /// The datatype a completion of a member chain resolves against: the
+    /// selection's own, or whatever the custom plots' cache knows about that
+    /// path. Null when neither knows it.
+    [[nodiscard]] const h5core::TypeInfo* typeOf(const QString& path) const;
+
+public:
     // --- settings a view keeps for the dataset they were made on ---------
     /// What `group` last held for the dataset now selected, or an empty map.
     ///
@@ -280,6 +351,9 @@ signals:
     /// dataset its settings belonged to.
     void selectionAboutToChange();
     void selectionChanged();
+    /// A listing or a datatype that a completion was waiting on has arrived.
+    /// Whatever is showing a list of candidates asks again on this.
+    void completionsChanged();
     void errorTextChanged();
     void filterTextChanged();
     /// The table's selection of indices or its axis assignment changed.
@@ -330,6 +404,16 @@ private:
     bool datasetIsString_ = false;
     bool datasetIsNumeric_ = false;
     bool datasetIsCompound_ = false;
+    /// What the file says the selection is, before any member chain. The
+    /// chain resolves against this, and `datasetInfo_` below is the result:
+    /// what the data views are actually drawing.
+    h5core::DatasetInfo originInfo_;
+    QString memberText_;
+    h5core::MemberSelection memberSelection_;
+    /// What each dataset's member chain was when it was last left, so that
+    /// coming back to one comes back to the member. Beside `slices_`, and for
+    /// the same reason.
+    QHash<QString, QString> members_;
     bool datasetIsFloat_ = false;
     int datasetRank_ = 0;
     qint64 datasetElementCount_ = 0;

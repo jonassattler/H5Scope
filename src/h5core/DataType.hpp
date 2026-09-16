@@ -40,8 +40,15 @@ std::string formatElement(hid_t type, const void* data);
 /// `NaN` and the infinities come out as "nan", "inf" and "-inf", which is
 /// lossless where `null` would not be.
 ///
+/// Written over several lines, indented, because the pane it lands in shows one
+/// element and the reader is reading it rather than parsing it. A struct always
+/// opens out; a list does so only when it holds structs or lists of its own, so
+/// `"samples": [0, 0.25, 0.5, 0.75]` stays on the line its name is on. `depth`
+/// is how far the value is already indented -- callers pass 0 and the recursion
+/// counts up.
+///
 /// The same `data` contract as formatElement.
-[[nodiscard]] std::string toJson(hid_t type, const void* data);
+[[nodiscard]] std::string toJson(hid_t type, const void* data, int depth = 0);
 
 /// Scope guard reclaiming variable-length data allocated by H5Dread/H5Aread.
 ///

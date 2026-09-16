@@ -60,10 +60,17 @@ public:
     /// Throws if the element count exceeds `maxElements`.
     [[nodiscard]] DataWindow readAll(hsize_t maxElements = 1u << 20u) const;
 
-private:
+protected:
     /// The clamped hyperslab and the memory dataspace matching it. Both read
     /// paths need exactly this and nothing about it depends on the element
     /// type, so neither of them spells it out.
+    ///
+    /// Protected rather than private because `FieldDataset` is a third read
+    /// path over the same bytes and needs exactly the same selection of them:
+    /// a member chain changes the datatype a read asks for and the shape it
+    /// reports, and changes nothing whatever about which elements of the file
+    /// are being addressed. Two copies of this clamping would be two clampings
+    /// the first time either was touched.
     struct Selection {
         Handle fileSpace;
         Handle memorySpace;

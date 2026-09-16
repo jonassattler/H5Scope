@@ -28,6 +28,13 @@ target_link_libraries(test_postprocess PRIVATE postproc Catch2::Catch2WithMain
                                               Qt6::Core)
 catch_discover_tests(test_postprocess)
 
+# --- the member chain grammar: the same layer, and no file either. A chain
+# --- resolves against a TypeInfo, which is plain data, so every rule in it can
+# --- be stated against a datatype the suite builds by hand.
+add_executable(test_member test_member.cpp)
+target_link_libraries(test_member PRIVATE postproc Catch2::Catch2WithMain Qt6::Core)
+catch_discover_tests(test_member)
+
 # --- the HDF5 thread: the rule that HDF5 is touched from one thread only ---
 # Its own binary, and deliberately so. This suite asserts what is true before
 # any file is open and what is true of a process where nothing has claimed the

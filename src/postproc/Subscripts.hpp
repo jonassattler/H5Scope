@@ -136,6 +136,13 @@ struct SubscriptCount {
                                    const std::vector<hsize_t>& shape,
                                    std::vector<SubscriptCount>& chosen, QString& error);
 
+/// Split a slice line into its subscripts, on the commas that are not inside a
+/// bracket. Exposed because a member expression has to put terms *after* the
+/// ones the reader wrote, and counting the commas is not the same as splitting
+/// on them: `[0,2,4]` is one subscript holding two of them.
+[[nodiscard]] bool splitSubscripts(const QString& text, QStringList& out,
+                                   QString& error);
+
 /// A subscript as the slice line has to print it: bracketed when it is a list
 /// of several terms, bare when it is one.
 ///

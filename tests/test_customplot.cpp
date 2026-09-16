@@ -166,6 +166,209 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets to
     }
 }
 
+TEST_CASE("an expression may name a member after its subscript", "[custom][member]")
+{
+    // Pure text. The rule is that a chain is recognised only after a closing
+    // bracket, because a link name holds a '.' as freely as it holds a '[' and
+    // telling `/data/run.3` from member 3 of `run` would mean asking the file.
+
+    SECTION("a chain after the subscript is taken off the path")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/events[0:100].energy"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/events"));
+        CHECK(parts.subscript == QStringLiteral("0:100"));
+        CHECK(parts.member == QStringLiteral(".energy"));
+    }
+
+    SECTION("the chain keeps its own subscripts")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/events[3, :].samples[2]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/events"));
+        CHECK(parts.subscript == QStringLiteral("3, :"));
+        CHECK(parts.member == QStringLiteral(".samples[2]"));
+    }
+
+    SECTION("a dotted link name is still a link name")
+    {
+        // The case the rule exists for. There is no `].` here, so this parses
+        // exactly as it did before any of this was written.
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/data/run.3[:]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/data/run.3"));
+        CHECK(parts.subscript == QStringLiteral(":"));
+        CHECK(parts.member.isEmpty());
+    }
+
+    SECTION("a bracket in a link name is still a bracket in a link name")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/stress/awkward[1][0:4]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/stress/awkward[1]"));
+        CHECK(parts.subscript == QStringLiteral("0:4"));
+        CHECK(parts.member.isEmpty());
+    }
+
+    SECTION("everything without a chain reads as it always did")
+    {
+        const gui::Expression whole = gui::splitExpression(QStringLiteral("/series/a"));
+        CHECK(whole.path == QStringLiteral("/series/a"));
+        CHECK(whole.subscript.isEmpty());
+        CHECK(whole.member.isEmpty());
+
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("/a[0]]")).valid());
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("/a[0")).valid());
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("a[0]")).valid());
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a custom tab draws a member of a compound",
+                 "[custom][member]")
+{
+    // /compound is {id: int32, value: float64} x 2, holding {7, 1.5} and
+    // {9, 2.5}. Nothing about it is drawable until a member is named.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+
+    SECTION("naming a member makes a line out of a struct")
+    {
+        add(plot, QStringLiteral("/compound[:].value"));
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(plot->hasData());
+        CHECK(plot->pointCount() == 2);
+        CHECK(plot->minimum() == 1.5);
+        CHECK(plot->maximum() == 2.5);
+        // The entry keeps the name it was written under, chain and all.
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/compound[:].value"));
+    }
+
+    SECTION("two members of one dataset are two lines")
+    {
+        add(plot, QStringLiteral("/compound[:].value"));
+        add(plot, QStringLiteral("/compound[:].id"));
+        CHECK(plot->sourceSeriesCount() == 2);
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(errorOf(plot, 1).isEmpty());
+        CHECK(plot->minimum() == 1.5);
+        CHECK(plot->maximum() == 9.0);
+    }
+
+    SECTION("a compound with no member named says to name one")
+    {
+        add(plot, QStringLiteral("/compound[:]"));
+        const QString problem = errorOf(plot, 0);
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("name one of its members"));
+        // And it suggests one, because the names are in the file and the
+        // reader is being told they cannot have what they asked for.
+        CHECK_THAT(problem.toStdString(), ContainsSubstring(".id"));
+    }
+
+    SECTION("a member that is not there says what is")
+    {
+        add(plot, QStringLiteral("/compound[:].nonesuch"));
+        const QString problem = errorOf(plot, 0);
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("nonesuch"));
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("value"));
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture,
+                 "a member costs what the same line costs as a dataset of its own",
+                 "[custom][member][cost]")
+{
+    // /series/trace_pairs.v holds /trace again, element for element. So these
+    // are one line read two ways, and the two readings had better agree about
+    // both things: what the values are, and what it took to get them.
+    //
+    // The second is the one nothing else would notice. A member read that had
+    // fallen back to one round trip per element -- or to reading the whole
+    // struct and keeping a field of it -- would draw exactly the right picture,
+    // which is how a custom tab once went a release asking HDF5 for one bucket
+    // at a time with nothing anywhere that minded.
+    //
+    // A tab each, because adding an entry re-reads the ones already in the tab,
+    // so two entries side by side would count one of them twice.
+    gui::CustomPlot* plain = tab();
+    const long long beforePlain = gui::CustomPlot::hyperslabs();
+    add(plain, QStringLiteral("/trace[:]"));
+    const long long plainReads = gui::CustomPlot::hyperslabs() - beforePlain;
+
+    gui::CustomPlot* member = set()->plotAt(set()->addPlot());
+    settleAll();
+    REQUIRE(member != nullptr);
+    const long long beforeMember = gui::CustomPlot::hyperslabs();
+    add(member, QStringLiteral("/series/trace_pairs[:].v"));
+    const long long memberReads = gui::CustomPlot::hyperslabs() - beforeMember;
+
+    REQUIRE(errorOf(plain, 0).isEmpty());
+    REQUIRE(errorOf(member, 0).isEmpty());
+
+    // Read for read.
+    CHECK(plainReads == 1);
+    CHECK(memberReads == plainReads);
+
+    // And value for value, down to the one-sample spike an envelope has to keep.
+    CHECK(member->minimum() == plain->minimum());
+    CHECK(member->maximum() == plain->maximum());
+    CHECK(member->maximum() == Approx(9.0));
+    CHECK(member->pointCount() == plain->pointCount());
+    CHECK(member->sourcePointCount() == 20000);
+}
+
+TEST_CASE_METHOD(PlotFixture, "a zoom into a member reads nothing either",
+                 "[custom][member][cost]")
+{
+    // /series/trace_pairs.v is /trace, element for element, at the length every
+    // assertion about reading and zooming is written against. What this checks
+    // is that a pyramid built out of a *member* read behaves like one built out
+    // of a dataset read -- which it should, the pyramid sitting above
+    // DataSource and having no idea which it was handed, but "should" is not
+    // the same as checked, and this is the invariant that would be expensive to
+    // lose.
+    gui::CustomPlot* plot = tab();
+
+    const long long before = gui::CustomPlot::hyperslabs();
+    add(plot, QStringLiteral("/series/trace_pairs[:].v"));
+    const long long spent = gui::CustomPlot::hyperslabs() - before;
+
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+    // The same bound the dataset gets: the round trips follow the length of the
+    // line, not the number of buckets it is folded into.
+    CHECK(spent == (20000 + gui::kReadRun - 1) / gui::kReadRun);
+    CHECK(spent == 1);
+    // The one-sample spike survived the fold, so the reads changed and the
+    // arithmetic did not.
+    CHECK(plot->thinned());
+    CHECK(plot->maximum() == Approx(9.0));
+
+    const gui::PlotLine whole = plot->lineOf(0);
+    const double summaryStep = whole.positionStep;
+
+    const long long asked = gui::CustomPlot::hyperslabs();
+    plot->setVisibleRange(12000.0, 12800.0);
+    settleAll();
+    h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+    settleAll();
+    CHECK(gui::CustomPlot::hyperslabs() - asked == 0);
+
+    // ...and it resolved rather than stretching, which is the half a count of
+    // zero would otherwise be perfectly happy to lie about.
+    const gui::PlotLine near = plot->lineOf(0);
+    REQUIRE(near.values != nullptr);
+    CHECK(near.positionStep < summaryStep);
+    double highest = 0.0;
+    for (qsizetype i = 0; i < near.count; ++i) {
+        highest = std::max(highest, near.values[i]);
+    }
+    CHECK(highest == Approx(9.0));
+}
+
 TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when it does not",
                  "[custom]")
 {
@@ -1171,6 +1374,36 @@ TEST_CASE_METHOD(PlotFixture, "the tabs are named, unique and reorderable", "[cu
         CHECK(plots->detached(first));
         CHECK(plots->activeIndex() == -1);
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a saved view remembers the member it was drawing",
+                 "[custom][member]")
+{
+    // A view is text, and the chain is part of the text: the grammar is a
+    // superset of the one every view already in a settings file was written
+    // under, so nothing had to be migrated and nothing can stop reading.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/compound[:].value"));
+    REQUIRE(plot->hasData());
+    REQUIRE(set()->saveView(QStringLiteral("the values"), 0, {}).isEmpty());
+
+    plot->removeEntry(0);
+    settleAll();
+    REQUIRE(plot->empty());
+
+    set()->restoreView(QStringLiteral("the values"), 0);
+    settleAll();
+    CHECK(plot->sourceSeriesCount() == 1);
+    CHECK(plot->seriesLabel(0) == QStringLiteral("/compound[:].value"));
+    CHECK(errorOf(plot, 0).isEmpty());
+    CHECK(plot->minimum() == 1.5);
+
+    // And the view knows it can still be drawn, which is a question about the
+    // *path* -- the chain rides along inside the entry, where it belongs.
+    set()->checkView(QStringLiteral("the values"));
+    settleAll();
+    CHECK(set()->stateOf(QStringLiteral("the values"))
+          == gui::CustomPlotSet::FullMatch);
 }
 
 TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[custom]")

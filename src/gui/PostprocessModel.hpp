@@ -18,6 +18,8 @@
 
 namespace gui {
 
+class AppController;
+
 /// The rows of the postprocessing panel, and the pipeline behind them.
 ///
 /// One row per line of the diagram in `postprocessing.md`: the input array, the
@@ -79,10 +81,14 @@ public:
     /// carries no argument, cannot be removed and cannot be moved.
     enum Kind {
         Input = 0,  ///< the dataset, before anything
-        Slice = 1,  ///< the slice above the table, mirrored
-        Operation = 2,
-        Adder = 3,  ///< the row that puts another operation in the chain
-        Output = 4, ///< the result the views draw
+        /// The member of a compound the rest of the chain runs on, mirrored
+        /// from the box in the slice bar. Present only over a compound, which
+        /// is the one case there is anything to select.
+        Member = 1,
+        Slice = 2,  ///< the slice above the table, mirrored
+        Operation = 3,
+        Adder = 4,  ///< the row that puts another operation in the chain
+        Output = 5, ///< the result the views draw
     };
     Q_ENUM(Kind)
 
@@ -97,21 +103,50 @@ public:
         RemovableRole,
         MovableRole,
         ComputedRole,     ///< false for a row after the active one
+        /// What a row's argument may be chosen from, when it is chosen rather
+        /// than typed. Empty for every row but the member's, which is the one
+        /// argument in this panel whose whole set of legal values is known
+        /// before the reader types anything.
+        ChoicesRole,
     };
     Q_ENUM(Roles)
 
     explicit PostprocessModel(QObject* parent = nullptr);
 
-    /// The slice this pipeline's second row mirrors. Set once, at construction
+    /// The slice this pipeline's slice row mirrors. Set once, at construction
     /// time, by the controller that owns both.
     void setSliceSource(class TableSetupModel* slice);
 
-    /// The dataset the pipeline runs on. `path` names it in the input row and
-    /// `shape` is where the shape column starts; `numeric` is false for the
-    /// datatypes there is no arithmetic for, which greys the panel with a
-    /// reason rather than offering operations that cannot run.
-    void setDataset(const QString& path, const std::vector<hsize_t>& shape,
-                    bool numeric);
+    /// Where the member row's chain lives, which is the controller. Set once,
+    /// beside the slice source, and for the same reason: the Select row is not
+    /// a copy of the box in the bar, it *is* it, so the panel and the bar can
+    /// never disagree about which member is being read. A model with no source
+    /// simply has no member row, which is what the suites that build one
+    /// without a controller get.
+    void setMemberSource(AppController* controller);
+
+    /// What the pipeline is running on.
+    struct Subject {
+        QString path;
+        /// The shape the slice sees: the dataset's own, with the axes the
+        /// member chain appends after it.
+        std::vector<hsize_t> shape;
+        /// False for the datatypes there is no arithmetic for, which greys the
+        /// panel with a reason rather than offering operations that cannot run.
+        bool numeric = false;
+        /// The dataset's own shape, before any member was named. The input row
+        /// states this one, so the panel reads as the story it is: a hundred
+        /// thousand structs, then `.samples`, then a hundred thousand by four.
+        std::vector<hsize_t> originShape;
+        /// Every member chain the dataset offers, from postproc::memberChains.
+        ///
+        /// One field rather than a `compound` flag beside a list, because the
+        /// two would say the same thing and could disagree: there is a Select
+        /// row exactly when there is something to select in it.
+        QStringList memberChoices;
+    };
+
+    void setDataset(const Subject& subject);
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
@@ -128,6 +163,9 @@ public:
     void setChosenOperation(int index);
     [[nodiscard]] QString error() const { return trace_.error; }
     [[nodiscard]] bool active() const;
+    /// Whether there is a member row: a compound, with a controller to ask.
+    /// The rows below it are all numbered from this.
+    [[nodiscard]] bool hasMember() const;
 
     /// Add an operation at the end, just above the add row.
     Q_INVOKABLE void addStep(const QString& name);
@@ -171,16 +209,29 @@ private:
     /// Re-walk the shapes and tell everyone. Cheap -- it reads no elements --
     /// so it runs on every keystroke that commits.
     void refresh();
-    [[nodiscard]] int stepRow(int index) const { return index + 2; }
-    [[nodiscard]] int stepIndex(int row) const { return row - 2; }
+    /// Which row the slice is, and everything counted from it.
+    ///
+    /// Every piece of row arithmetic here goes through these rather than
+    /// through the constants they used to be, because the member row above the
+    /// slice moves all of them by one and a constant that was right in four
+    /// places and wrong in a fifth is exactly how this would break.
+    [[nodiscard]] int sliceRow() const { return hasMember() ? 2 : 1; }
+    [[nodiscard]] int stepRow(int index) const { return sliceRow() + 1 + index; }
+    [[nodiscard]] int stepIndex(int row) const { return row - sliceRow() - 1; }
+    /// Which stage of the trace a row states. The slice is stage 0; the rows
+    /// above it state no stage and are never asked.
+    [[nodiscard]] int stageOf(int row) const { return row - sliceRow(); }
     [[nodiscard]] bool isStep(int row) const;
     /// The row holding the add control, which is the one above the output.
     [[nodiscard]] int adderRow() const { return rowCount() - 2; }
     [[nodiscard]] QString sliceText() const;
 
     TableSetupModel* slice_ = nullptr;
+    AppController* member_ = nullptr;
     QString path_;
     std::vector<hsize_t> shape_;
+    std::vector<hsize_t> originShape_;
+    QStringList memberChoices_;
     bool numeric_ = false;
     bool enabled_ = false;
     std::vector<postproc::Step> steps_;

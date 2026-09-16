@@ -232,10 +232,45 @@ struct Reading
     float weight;
 };
 
+/// A member that is an *array of structs*, which nothing else in this file has.
+///
+/// It is the shape that says an array member and a nested compound compose:
+/// `.trail` appends an axis of three and `.trail.x` is that axis with a number
+/// on it, rank 2 out of a rank-1 dataset. It is also the one element in this
+/// file whose JSON has to open a list out over lines rather than keep it on
+/// one, which is the half of that rule nothing else would notice losing.
+struct Track
+{
+    char name[8];
+    Point trail[3];    ///< an array of a compound
+    std::int32_t hops;
+};
+
 struct Simple
 {
     std::int32_t id;
     double value;
+};
+
+/// A compound at plot scale, and the one every member class can be reached
+/// through.
+///
+/// The compounds under /types are two and six elements long: enough to check
+/// that a struct is taken apart correctly, and far too short to check anything
+/// about *reading* one. This is the other case -- a hundred thousand records,
+/// so `.energy` is a real line with a real envelope, the read of it is worth
+/// counting, and every one of the six kinds a member chain can land on is in
+/// one dataset: a float, a fixed string, a compound, an array, an enum, and a
+/// ragged list.
+struct Event
+{
+    double time;
+    float energy;
+    char station[8];       ///< a fixed string member
+    Point position;        ///< a compound inside a compound
+    double samples[4];     ///< an array member
+    std::int32_t quality;  ///< an enum member
+    hvl_t tags;            ///< a vlen member: a different length in every one
 };
 
 Id qualityEnum()
@@ -276,6 +311,42 @@ Id readingType()
     must(H5Tinsert(type, "samples", HOFFSET(Reading, samples), samples), "samples");
     must(H5Tinsert(type, "quality", HOFFSET(Reading, quality), quality), "quality");
     must(H5Tinsert(type, "weight", HOFFSET(Reading, weight), H5T_NATIVE_FLOAT), "weight");
+    return type;
+}
+
+Id trackType()
+{
+    const Id name = fixedString(8);
+    const Id point = pointType();
+    const hsize_t trailDims[] = {3};
+    const Id trail(H5Tarray_create2(point, 1, trailDims), &H5Tclose,
+                   "track trail array type");
+
+    Id type(H5Tcreate(H5T_COMPOUND, sizeof(Track)), &H5Tclose, "create track compound");
+    must(H5Tinsert(type, "name", HOFFSET(Track, name), name), "name");
+    must(H5Tinsert(type, "trail", HOFFSET(Track, trail), trail), "trail");
+    must(H5Tinsert(type, "hops", HOFFSET(Track, hops), H5T_NATIVE_INT32), "hops");
+    return type;
+}
+
+Id eventType()
+{
+    const Id station = fixedString(8);
+    const Id point = pointType();
+    const Id quality = qualityEnum();
+    const hsize_t sampleDims[] = {4};
+    const Id samples(H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, sampleDims), &H5Tclose,
+                     "event samples array type");
+    const Id tags(H5Tvlen_create(H5T_NATIVE_INT32), &H5Tclose, "event tags vlen type");
+
+    Id type(H5Tcreate(H5T_COMPOUND, sizeof(Event)), &H5Tclose, "create event compound");
+    must(H5Tinsert(type, "time", HOFFSET(Event, time), H5T_NATIVE_DOUBLE), "time");
+    must(H5Tinsert(type, "energy", HOFFSET(Event, energy), H5T_NATIVE_FLOAT), "energy");
+    must(H5Tinsert(type, "station", HOFFSET(Event, station), station), "station");
+    must(H5Tinsert(type, "position", HOFFSET(Event, position), point), "position");
+    must(H5Tinsert(type, "samples", HOFFSET(Event, samples), samples), "samples");
+    must(H5Tinsert(type, "quality", HOFFSET(Event, quality), quality), "quality");
+    must(H5Tinsert(type, "tags", HOFFSET(Event, tags), tags), "tags");
     return type;
 }
 
@@ -633,6 +704,31 @@ void writeTypes(hid_t file)
                              "reopen nested");
             stringAttribute(dataset, "note",
                             "Members: fixed string, int64, nested compound, array, enum, float");
+        }
+
+        // An array of structs as a member, which is the one composition the
+        // rest of this file does not have: `.trail` appends an axis of three
+        // and `.trail.x` is that axis with a number on it.
+        {
+            const Id tracks = trackType();
+            std::vector<Track> made(4);
+            for (std::size_t i = 0; i < made.size(); ++i) {
+                std::snprintf(made[i].name, sizeof(made[i].name), "T-%02u",
+                              static_cast<unsigned>(i) % 100U);
+                for (int p = 0; p < 3; ++p) {
+                    const auto step = static_cast<double>(p);
+                    made[i].trail[p] = {static_cast<double>(i) + step,
+                                        static_cast<double>(i) * 2.0 + step,
+                                        static_cast<double>(i) * 3.0 + step};
+                }
+                made[i].hops = static_cast<std::int32_t>(i) * 10;
+            }
+            writeDataset(compounds, "tracks", tracks, {made.size()}, made.data());
+            const Id dataset(H5Dopen2(compounds, "tracks", H5P_DEFAULT), &H5Dclose,
+                             "reopen tracks");
+            stringAttribute(dataset, "note",
+                            "trail is an array of three structs: try [:].trail.x, "
+                            "which is 4 x 3");
         }
 
         // A table shape rather than a list: rank 2 of records.
@@ -1627,6 +1723,74 @@ void writePlotting(hid_t file)
         const Id signal(H5Dopen2(group, "volts_500k", H5P_DEFAULT), &H5Dclose, "reopen volts_500k");
         stringAttribute(signal, "units", "V");
         stringAttribute(signal, "x_axis", "/plotting/epoch_seconds_500k");
+    }
+
+    // A hundred thousand events, as a table of structs.
+    //
+    // This is the dataset a member chain exists for: nothing in it can be drawn
+    // until one of its members is named, and once one is, `.energy` is an
+    // ordinary line of a hundred thousand floats with an ordinary envelope. It
+    // is here rather than under /types because the compounds there are six
+    // elements long -- long enough to check that a struct is taken apart
+    // correctly, and far too short to check anything about *reading* one. The
+    // read of this is worth counting, which is what tests/test_cost.cpp does
+    // with it.
+    //
+    // Every kind of member a chain can land on is in the one record, so
+    // `.energy`, `.station`, `.position.x`, `.samples[2]`, `.quality` and
+    // `.tags[0]` are six chains over one dataset.
+    {
+        constexpr hsize_t count = 100000;
+        std::vector<Event> events(count);
+        // The vlen payloads, owned here: an hvl_t points at them and HDF5 reads
+        // through that pointer during the write, so they have to outlive it.
+        std::vector<std::vector<std::int32_t>> tagLists(count);
+
+        for (hsize_t i = 0; i < count; ++i) {
+            Event& event = events[static_cast<std::size_t>(i)];
+            event.time = static_cast<double>(i) * 0.001;
+            // A slow swell with noise on it, and one spike per ten thousand --
+            // the same shape as the traces above, so an envelope has something
+            // to keep and a stride has something to lose.
+            const double phase = 2.0 * std::numbers::pi * static_cast<double>(i) / 12500.0;
+            event.energy = static_cast<float>(50.0 + 40.0 * std::sin(phase) + 2.0 * bell());
+            if (i % 10000 == 7) {
+                event.energy = 500.0F;
+            }
+            std::snprintf(event.station, sizeof(event.station), "S-%03u",
+                          static_cast<unsigned>(i % 1000U));
+            event.position = {static_cast<double>(i % 97), static_cast<double>(i % 89),
+                              static_cast<double>(i % 83)};
+            for (int sample = 0; sample < 4; ++sample) {
+                event.samples[sample] =
+                    static_cast<double>(i) + static_cast<double>(sample) / 4.0;
+            }
+            event.quality = static_cast<std::int32_t>(i % 3);
+
+            // Ragged on purpose, and empty on purpose every fourth record: a
+            // chain indexing a list that short has no value there, which is a
+            // gap rather than a number, and there is nowhere else to find out
+            // whether that is what happens.
+            auto& list = tagLists[static_cast<std::size_t>(i)];
+            list.resize(static_cast<std::size_t>(i % 4));
+            for (std::size_t t = 0; t < list.size(); ++t) {
+                list[t] = static_cast<std::int32_t>(i * 10 + t);
+            }
+            event.tags.len = list.size();
+            event.tags.p = list.empty() ? nullptr : list.data();
+        }
+
+        const Id type = eventType();
+        const Id props = chunked({4096});
+        writeDataset(group, "events", type, {count}, events.data(), props);
+        const Id dataset(H5Dopen2(group, "events", H5P_DEFAULT), &H5Dclose, "reopen events");
+        stringAttribute(dataset, "note",
+                        "A hundred thousand structs. Nothing here plots until a "
+                        "member is named: try [:].energy, [:].position.x, "
+                        "[:].samples[2] or [:].tags[0]");
+        stringAttribute(dataset, "members",
+                        "time float64, energy float32, station string, position "
+                        "compound, samples array[4], quality enum, tags vlen");
     }
 }
 
