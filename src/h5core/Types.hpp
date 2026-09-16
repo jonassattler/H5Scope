@@ -6,8 +6,10 @@
 #include <hdf5.h>
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace h5core {
@@ -61,6 +63,11 @@ std::string toString(TypeClass cls);
     return cls == TypeClass::Integer || cls == TypeClass::Float;
 }
 
+/// One member of a compound datatype. Defined below, and named here first
+/// because a datatype holds its members and a member holds its datatype, which
+/// is a cycle the language has to be told about once.
+struct TypeMember;
+
 /// A rendered description of a datatype, kept as plain data so the GUI never
 /// needs to hold an open HDF5 identifier.
 struct TypeInfo {
@@ -76,7 +83,55 @@ struct TypeInfo {
     bool convertible = true;
     /// Member names for Compound, symbol names for Enum; empty otherwise.
     std::vector<std::string> memberNames;
+
+    /// The members of a Compound, in the order the file declares them, each
+    /// carrying its own type. Empty for every other class -- an Enum's symbols
+    /// are names and nothing more, and they stay in `memberNames`.
+    ///
+    /// `memberNames` is the flat form and it stays exactly as it was: it is
+    /// what the Information panel prints and what an enum uses. This is the
+    /// other question -- what a member *is* -- and it is the one `.member`
+    /// indexing resolves against, because a chain cannot be followed through
+    /// names alone.
+    std::vector<TypeMember> members;
+
+    /// An Array's dimensions. `description` already renders them into
+    /// "array[3][2] of int32", which is all a reader needed until now; a member
+    /// chain needs them as numbers, because they are exactly the axes that `.b`
+    /// appends to the shape of whatever holds it.
+    std::vector<hsize_t> arrayDims;
+
+    /// What an Array or a VarLen holds one of. Null for every other class.
+    ///
+    /// A pointer because a type contains a type, and *shared* because TypeInfo
+    /// is copied rather than moved through this program -- into DatasetInfo,
+    /// and from there into every job that describes a selection. Nothing ever
+    /// writes through it, so one description per type is right however many
+    /// copies of the enclosing one there are.
+    std::shared_ptr<const TypeInfo> base;
 };
+
+/// One member of a compound element, as a datatype rather than as a value.
+///
+/// `FieldValue` is the other half of this pair and answers about one element
+/// that has been read; this answers about the type, before anything is read at
+/// all, which is what a `.member` chain and the datatype tree both need.
+struct TypeMember {
+    std::string name;
+    TypeInfo type;
+    /// Byte offset within the compound element. A partial read -- a memory type
+    /// holding this one member and nothing else -- is built out of this.
+    std::size_t offset = 0;
+};
+
+// A TypeInfo is copied into DatasetInfo and DatasetInfo into every job that
+// describes a selection, so these land in vectors that reallocate. A vector
+// reallocates with std::move_if_noexcept, and a copyable element whose move can
+// throw is *deep-copied* into the new storage rather than moved -- which is the
+// defect the DatasetPlot::Detail paragraph in CLAUDE.md is about, found on one
+// platform and not the others. Asserted here so it is found on all three.
+static_assert(std::is_nothrow_move_constructible_v<TypeInfo>);
+static_assert(std::is_nothrow_move_constructible_v<TypeMember>);
 
 /// One entry in the tree, as shown to the user.
 struct NodeInfo {

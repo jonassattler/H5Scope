@@ -280,6 +280,48 @@ TEST_CASE_METHOD(Fixture, "dataset metadata", "[h5core][dataset]")
         REQUIRE(ds.info().type.memberNames == std::vector<std::string>{"id", "value"});
     }
 
+    SECTION("a compound's members carry their own types")
+    {
+        const h5core::Dataset ds(file, "/compound");
+        const auto& members = ds.info().type.members;
+        REQUIRE(members.size() == 2);
+
+        CHECK(members[0].name == "id");
+        CHECK(members[0].type.cls == h5core::TypeClass::Integer);
+        CHECK(members[0].type.description == "int32");
+
+        CHECK(members[1].name == "value");
+        CHECK(members[1].type.cls == h5core::TypeClass::Float);
+        CHECK(members[1].type.description == "float64");
+
+        // The offsets are what a read of one member on its own is built out
+        // of, so they have to be the file's and not this test's arithmetic.
+        CHECK(members[0].offset < members[1].offset);
+        CHECK(members[1].offset + members[1].type.size <= ds.info().type.size);
+    }
+
+    SECTION("the flat member names stay what they were")
+    {
+        // memberNames carries an enum's symbols as well as a compound's member
+        // names, and the Information panel prints it. The member tree is beside
+        // it rather than in place of it, and this is the assertion that says so.
+        const h5core::Dataset ds(file, "/compound");
+        REQUIRE(ds.info().type.memberNames == std::vector<std::string>{"id", "value"});
+        REQUIRE(ds.info().type.memberNames.size() == ds.info().type.members.size());
+
+        const h5core::Dataset colours(file, "/enum");
+        CHECK(colours.info().type.memberNames.size() == 3);
+        CHECK(colours.info().type.members.empty());
+    }
+
+    SECTION("a type that holds no other type names none")
+    {
+        const h5core::Dataset ds(file, "/matrix");
+        CHECK(ds.info().type.members.empty());
+        CHECK(ds.info().type.arrayDims.empty());
+        CHECK(ds.info().type.base == nullptr);
+    }
+
     SECTION("enum symbols are exposed")
     {
         const h5core::Dataset ds(file, "/enum");

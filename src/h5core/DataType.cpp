@@ -245,11 +245,29 @@ std::string formatBytes(const void* data, std::size_t size)
     return out;
 }
 
+/// How deep a datatype is followed before this stops describing it.
+///
+/// HDF5 types cannot be cyclic -- a compound is built out of types that already
+/// exist, so it can never contain itself -- which means this bound is never
+/// reached by a file anyone wrote. It is here because the recursion below is
+/// driven by bytes off a disk, and a description that runs out of stack is a
+/// worse answer than one that stops.
+constexpr int kMaxTypeDepth = 16;
+
+TypeInfo describeTypeAt(hid_t type, int depth);
+
 } // namespace
 
 TypeInfo describeType(hid_t type)
 {
-    thread::check(__func__);
+    return describeTypeAt(type, 0);
+}
+
+namespace {
+
+TypeInfo describeTypeAt(hid_t type, int depth)
+{
+    thread::check("describeType");
     TypeInfo info;
     info.size = H5Tget_size(type);
     info.cls = classOf(H5Tget_class(type));
@@ -286,15 +304,30 @@ TypeInfo describeType(hid_t type)
         std::ostringstream desc;
         desc << "compound {";
         for (int i = 0; i < count; ++i) {
-            char* member = H5Tget_member_name(type, static_cast<unsigned>(i));
-            if (member != nullptr) {
-                info.memberNames.emplace_back(member);
-                if (i > 0) {
-                    desc << ", ";
-                }
-                desc << member;
-                H5free_memory(member);
+            const auto index = static_cast<unsigned>(i);
+            char* member = H5Tget_member_name(type, index);
+            if (member == nullptr) {
+                continue;
             }
+            info.memberNames.emplace_back(member);
+            if (i > 0) {
+                desc << ", ";
+            }
+            desc << member;
+
+            // The member's own type, offset included. This is the same walk
+            // that builds the description string, so the type it opens on the
+            // way past is kept rather than closed and asked for again later --
+            // there is no second pass anywhere that could ask.
+            if (depth < kMaxTypeDepth) {
+                Handle memberType(H5Tget_member_type(type, index), &H5Tclose);
+                if (memberType.valid()) {
+                    info.members.push_back(
+                        TypeMember{member, describeTypeAt(memberType.get(), depth + 1),
+                                   H5Tget_member_offset(type, index)});
+                }
+            }
+            H5free_memory(member);
         }
         desc << "}";
         info.description = desc.str();
@@ -318,14 +351,17 @@ TypeInfo describeType(hid_t type)
         if (rank > 0) {
             H5Tget_array_dims2(type, dims.data());
         }
+        info.arrayDims = dims;
         Handle base(H5Tget_super(type), &H5Tclose);
         std::ostringstream desc;
         desc << "array";
         for (const hsize_t dim : dims) {
             desc << "[" << dim << "]";
         }
-        if (base.valid()) {
-            desc << " of " << describeType(base.get()).description;
+        if (base.valid() && depth < kMaxTypeDepth) {
+            info.base =
+                std::make_shared<const TypeInfo>(describeTypeAt(base.get(), depth + 1));
+            desc << " of " << info.base->description;
         }
         info.description = desc.str();
         break;
@@ -333,10 +369,13 @@ TypeInfo describeType(hid_t type)
     case TypeClass::VarLen: {
         info.isVariableLength = true;
         Handle base(H5Tget_super(type), &H5Tclose);
-        info.description =
-            base.valid()
-                ? std::format("vlen of {}", describeType(base.get()).description)
-                : "vlen";
+        if (base.valid() && depth < kMaxTypeDepth) {
+            info.base =
+                std::make_shared<const TypeInfo>(describeTypeAt(base.get(), depth + 1));
+        }
+        info.description = (info.base != nullptr)
+                               ? std::format("vlen of {}", info.base->description)
+                               : "vlen";
         break;
     }
     case TypeClass::Bitfield:
@@ -360,9 +399,10 @@ TypeInfo describeType(hid_t type)
         break;
     case TypeClass::Complex: {
         Handle base(H5Tget_super(type), &H5Tclose);
-        info.description = base.valid()
+        info.description = (base.valid() && depth < kMaxTypeDepth)
                                ? std::format("complex{} ({} pair)", info.size * 8,
-                                             describeType(base.get()).description)
+                                             describeTypeAt(base.get(), depth + 1)
+                                                 .description)
                                : std::format("complex ({} bytes)", info.size);
         break;
     }
@@ -373,6 +413,8 @@ TypeInfo describeType(hid_t type)
 
     return info;
 }
+
+} // namespace
 
 std::string formatElement(hid_t type, const void* data)
 {

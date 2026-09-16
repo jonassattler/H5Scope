@@ -676,6 +676,76 @@ TEST_CASE("only the colours the reader kept are painted", "[example][images]")
     }
 }
 
+TEST_CASE("a compound's type resolves all the way down", "[example][types]")
+{
+    // The nested compound is the one type in the file that reaches every class
+    // a member chain can land on: a fixed string, an integer, a compound, an
+    // array, an enum and a float. Following it here is what says the tree is a
+    // tree rather than one level with names on it.
+    const auto file = openExample();
+    const h5test::Dataset ds(file, "/types/compound/nested");
+    const h5core::TypeInfo& type = ds.info().type;
+
+    REQUIRE(type.cls == h5core::TypeClass::Compound);
+    REQUIRE(type.members.size() == 6);
+
+    const auto memberNamed = [&type](const std::string& name) {
+        const auto it = std::find_if(
+            type.members.begin(), type.members.end(),
+            [&name](const h5core::TypeMember& m) { return m.name == name; });
+        REQUIRE(it != type.members.end());
+        return *it;
+    };
+
+    SECTION("a member that is a compound carries its own members")
+    {
+        const h5core::TypeMember position = memberNamed("position");
+        REQUIRE(position.type.cls == h5core::TypeClass::Compound);
+        REQUIRE(position.type.members.size() == 3);
+        CHECK(position.type.members[0].name == "x");
+        CHECK(position.type.members[2].name == "z");
+        CHECK(position.type.members[1].type.cls == h5core::TypeClass::Float);
+        // Offsets are within the member, not within the element that holds it.
+        CHECK(position.type.members[0].offset == 0);
+    }
+
+    SECTION("a member that is an array carries its dimensions as numbers")
+    {
+        // The description has said "array[4] of float64" all along. What is new
+        // is the 4 as a number, which is the axis `.samples` appends.
+        const h5core::TypeMember samples = memberNamed("samples");
+        REQUIRE(samples.type.cls == h5core::TypeClass::Array);
+        REQUIRE(samples.type.arrayDims == std::vector<hsize_t>{4});
+        REQUIRE(samples.type.base != nullptr);
+        CHECK(samples.type.base->cls == h5core::TypeClass::Float);
+        CHECK(samples.type.base->description == "float64");
+    }
+
+    SECTION("a member that is an enum keeps its symbols and gains no members")
+    {
+        const h5core::TypeMember quality = memberNamed("quality");
+        REQUIRE(quality.type.cls == h5core::TypeClass::Enum);
+        CHECK(quality.type.memberNames.size() == 3);
+        CHECK(quality.type.members.empty());
+    }
+
+    SECTION("a member that is a string says which kind")
+    {
+        const h5core::TypeMember station = memberNamed("station");
+        REQUIRE(station.type.cls == h5core::TypeClass::String);
+        CHECK_FALSE(station.type.isVariableLength);
+        CHECK(station.type.size == 16);
+    }
+
+    SECTION("a vlen carries what it holds one of")
+    {
+        const h5test::Dataset tags(file, "/types/vlen_int32");
+        REQUIRE(tags.info().type.cls == h5core::TypeClass::VarLen);
+        REQUIRE(tags.info().type.base != nullptr);
+        CHECK(tags.info().type.base->cls == h5core::TypeClass::Integer);
+    }
+}
+
 TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
 {
     const auto file = openExample();
