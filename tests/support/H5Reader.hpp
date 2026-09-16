@@ -7,6 +7,7 @@
 
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 
 #include <string>
@@ -170,6 +171,55 @@ public:
 
 private:
     std::string path_;
+    h5core::DatasetInfo info_;
+};
+
+/// The same shim over one member of a compound dataset.
+///
+/// `h5core::FieldDataset` is built on the HDF5 thread like everything else that
+/// opens a file, and a test that wants to know what `/nested.samples` reads
+/// should not have to say so four times.
+class Field
+{
+public:
+    Field(const Reader& reader, std::string path, h5core::MemberSelection member)
+        : reader_(&reader), path_(std::move(path)), member_(std::move(member))
+    {
+        info_ = reader.read([&](h5core::File& file) {
+            return h5core::FieldDataset(file, path_, member_).info();
+        });
+    }
+
+    [[nodiscard]] const h5core::DatasetInfo& info() const { return info_; }
+
+    [[nodiscard]] h5core::DataWindow readWindow(const std::vector<hsize_t>& offset,
+                                                const std::vector<hsize_t>& count) const
+    {
+        return reader_->read([&](h5core::File& file) {
+            return h5core::FieldDataset(file, path_, member_).readWindow(offset, count);
+        });
+    }
+    [[nodiscard]] h5core::NumericWindow
+    readNumericWindow(const std::vector<hsize_t>& offset,
+                      const std::vector<hsize_t>& count) const
+    {
+        return reader_->read([&](h5core::File& file) {
+            return h5core::FieldDataset(file, path_, member_)
+                .readNumericWindow(offset, count);
+        });
+    }
+    [[nodiscard]] h5core::ElementValue
+    readElement(const std::vector<hsize_t>& offset) const
+    {
+        return reader_->read([&](h5core::File& file) {
+            return h5core::FieldDataset(file, path_, member_).readElement(offset);
+        });
+    }
+
+private:
+    const Reader* reader_ = nullptr;
+    std::string path_;
+    h5core::MemberSelection member_;
     h5core::DatasetInfo info_;
 };
 

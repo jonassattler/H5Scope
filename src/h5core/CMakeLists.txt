@@ -11,6 +11,7 @@ add_library(h5core STATIC
   File.cpp
   Image.cpp
   Dataset.cpp
+  FieldDataset.cpp
   Attribute.cpp
 )
 

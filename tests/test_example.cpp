@@ -28,6 +28,7 @@
 #include "h5core/File.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
+#include "support/MemberChain.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -744,6 +745,139 @@ TEST_CASE("a compound's type resolves all the way down", "[example][types]")
         REQUIRE(tags.info().type.base != nullptr);
         CHECK(tags.info().type.base->cls == h5core::TypeClass::Integer);
     }
+}
+
+TEST_CASE("a member of a compound reads as a dataset of its own",
+          "[example][member]")
+{
+    // /types/compound/nested holds six readings, i = 0..5, with
+    //   position = {i, 2i, 3i}   samples[s] = i + s/4   weight = i/2
+    // which is enough arithmetic to tell a member that was read from one that
+    // was guessed at.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/nested");
+    const h5core::TypeInfo& type = whole.info().type;
+
+    SECTION("a scalar member keeps the shape and changes the type")
+    {
+        const h5test::Field weight(file, "/types/compound/nested",
+                                   h5test::chainOf(type, {"weight"}));
+        CHECK(weight.info().shape == std::vector<hsize_t>{6});
+        CHECK(weight.info().type.cls == h5core::TypeClass::Float);
+        CHECK(weight.info().isNumeric());
+
+        const auto values = weight.readNumericWindow({0}, {6});
+        REQUIRE(values.values
+                == std::vector<double>{0.0, 0.5, 1.0, 1.5, 2.0, 2.5});
+    }
+
+    SECTION("a chain goes through a compound member to what it holds")
+    {
+        const h5test::Field y(file, "/types/compound/nested",
+                              h5test::chainOf(type, {"position", "y"}));
+        CHECK(y.info().shape == std::vector<hsize_t>{6});
+        const auto values = y.readNumericWindow({0}, {6});
+        REQUIRE(values.values == std::vector<double>{0.0, 2.0, 4.0, 6.0, 8.0, 10.0});
+    }
+
+    SECTION("an array member appends its dimension to the shape")
+    {
+        // This is the case the whole design turns on: .samples is not one value
+        // per record, it is four, and those four are an axis of the result like
+        // any other -- which is what lets the table lay them out and the slice
+        // line address them.
+        const h5test::Field samples(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"samples"}));
+        REQUIRE(samples.info().shape == std::vector<hsize_t>{6, 4});
+        CHECK(samples.info().type.cls == h5core::TypeClass::Float);
+
+        const auto values = samples.readNumericWindow({0, 0}, {6, 4});
+        REQUIRE(values.values.size() == 24);
+        for (hsize_t i = 0; i < 6; ++i) {
+            for (hsize_t s = 0; s < 4; ++s) {
+                const double expected =
+                    static_cast<double>(i) + static_cast<double>(s) / 4.0;
+                CHECK(values.values[i * 4 + s] == expected);
+            }
+        }
+    }
+
+    SECTION("a hyperslab of an array member cuts both halves of the shape")
+    {
+        const h5test::Field samples(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"samples"}));
+        // Records 2 and 3, samples 1 and 2 of each.
+        const auto block = samples.readNumericWindow({2, 1}, {2, 2});
+        CHECK(block.count == std::vector<hsize_t>{2, 2});
+        REQUIRE(block.values == std::vector<double>{2.25, 2.5, 3.25, 3.5});
+    }
+
+    SECTION("a string member is text, and says so rather than plotting")
+    {
+        const h5test::Field station(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"station"}));
+        CHECK(station.info().type.cls == h5core::TypeClass::String);
+        CHECK_FALSE(station.info().isNumeric());
+        const auto cells = station.readWindow({0}, {3});
+        REQUIRE(cells.cells == std::vector<std::string>{"ST-000", "ST-001", "ST-002"});
+    }
+
+    SECTION("an enum member reads as its symbol, as it does in the grid")
+    {
+        const h5test::Field quality(file, "/types/compound/nested",
+                                    h5test::chainOf(type, {"quality"}));
+        const auto cells = quality.readWindow({0}, {4});
+        REQUIRE(cells.cells
+                == std::vector<std::string>{"BAD", "SUSPECT", "GOOD", "BAD"});
+    }
+
+    SECTION("a member that is itself a compound still opens out")
+    {
+        const h5test::Field position(file, "/types/compound/nested",
+                                     h5test::chainOf(type, {"position"}));
+        CHECK(position.info().type.cls == h5core::TypeClass::Compound);
+        const h5core::ElementValue element = position.readElement({2});
+        REQUIRE(element.fields.size() == 3);
+        CHECK(element.fields[0].name == "x");
+        CHECK(element.json == R"({"x": 2, "y": 4, "z": 6})");
+    }
+}
+
+TEST_CASE("a member selection is the same selection written shorter",
+          "[example][member]")
+{
+    // The identity the whole notation rests on:
+    //
+    //     array[i1,i2,i3].b[i4]  ==  (array[:,:,:].b)[i1,i2,i3,i4]
+    //
+    // It holds because the subscript after `.b` binds to the axes `b` itself
+    // contributes, and nothing else. This asserts the right-hand side against
+    // the elements themselves, which is what a reader writing the left-hand
+    // side is promised.
+    const auto file = openExample();
+    const h5test::Dataset whole(file, "/types/compound/nested");
+    const h5test::Field samples(file, "/types/compound/nested",
+                                h5test::chainOf(whole.info().type, {"samples"}));
+
+    // (nested.samples)[3, 2] -- record 3, sample 2.
+    const auto one = samples.readNumericWindow({3, 2}, {1, 1});
+    REQUIRE(one.values.size() == 1);
+    CHECK(one.values[0] == 3.5);
+
+    // Which is exactly what nested[3].samples[2] names, read the long way: the
+    // whole struct, opened out, its samples field, its third entry.
+    const h5core::ElementValue record = whole.readElement({3});
+    REQUIRE(record.fields.size() == 6);
+    const auto field = std::find_if(
+        record.fields.begin(), record.fields.end(),
+        [](const h5core::FieldValue& f) { return f.name == "samples"; });
+    REQUIRE(field != record.fields.end());
+    CHECK_THAT(field->value, ContainsSubstring("3.5"));
+
+    // And the axes are in the order the identity says: the dataset's first,
+    // the member's after, so one slice addresses both halves.
+    REQUIRE(samples.info().shape
+            == std::vector<hsize_t>{whole.info().shape[0], 4});
 }
 
 TEST_CASE("a compound is read apart, and as JSON", "[example][types]")

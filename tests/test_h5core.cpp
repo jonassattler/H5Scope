@@ -6,8 +6,11 @@
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 #include "h5core/Types.hpp"
+
+#include "support/MemberChain.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -344,6 +347,82 @@ TEST_CASE_METHOD(Fixture, "dataset metadata", "[h5core][dataset]")
     SECTION("opening a group as a dataset throws")
     {
         REQUIRE_THROWS_AS(h5core::Dataset(file, "/group"), h5core::H5Error);
+    }
+}
+
+TEST_CASE_METHOD(Fixture, "a member reads as a dataset of its own",
+                 "[h5core][member]")
+{
+    const h5core::File file(temp.path());
+    const h5core::Dataset whole(file, "/compound");
+
+    SECTION("it reports the member's type and the dataset's shape")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+
+        CHECK(value.info().shape == whole.info().shape);
+        CHECK(value.info().type.cls == h5core::TypeClass::Float);
+        CHECK(value.info().isNumeric());
+        CHECK(value.path() == "/compound.value");
+    }
+
+    SECTION("it reads that member's values and no others")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const auto numbers = value.readNumericWindow({0}, {2});
+        REQUIRE(numbers.values == std::vector<double>{1.5, 2.5});
+
+        const h5core::FieldDataset id(file, "/compound",
+                                      h5test::chainOf(whole.info().type, {"id"}));
+        CHECK(id.info().type.cls == h5core::TypeClass::Integer);
+        const auto ids = id.readNumericWindow({0}, {2});
+        REQUIRE(ids.values == std::vector<double>{7.0, 9.0});
+        // As text it prints like the integer it is, not like a double.
+        CHECK(id.readWindow({0}, {2}).cells == std::vector<std::string>{"7", "9"});
+    }
+
+    SECTION("a hyperslab of a member is still a hyperslab")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const auto second = value.readNumericWindow({1}, {1});
+        CHECK(second.count == std::vector<hsize_t>{1});
+        REQUIRE(second.values == std::vector<double>{2.5});
+
+        // Clamped to the bounds, exactly as the dataset's own read is.
+        const auto over = value.readNumericWindow({0}, {99});
+        CHECK(over.count == std::vector<hsize_t>{2});
+    }
+
+    SECTION("one element of a member is one value, not a struct")
+    {
+        const h5core::FieldDataset value(
+            file, "/compound", h5test::chainOf(whole.info().type, {"value"}));
+        const h5core::ElementValue element = value.readElement({1});
+        CHECK(element.text == "2.5");
+        CHECK(element.json == "2.5");
+        // The whole dataset's element is the struct; this one is a number, so
+        // there is nothing left to open out.
+        CHECK(element.fields.empty());
+    }
+
+    SECTION("a chain that does not apply is refused, not guessed at")
+    {
+        h5core::MemberSelection wrong;
+        wrong.links.push_back(h5core::MemberLink{0, "nonesuch", std::nullopt});
+        wrong.text = ".nonesuch";
+        REQUIRE_THROWS_AS(h5core::FieldDataset(file, "/compound", wrong),
+                          h5core::H5Error);
+
+        // The index is right and the name is not: the one way a stale chain
+        // could read the wrong field and never say so.
+        h5core::MemberSelection renamed;
+        renamed.links.push_back(h5core::MemberLink{0, "value", std::nullopt});
+        renamed.text = ".value";
+        REQUIRE_THROWS_AS(h5core::FieldDataset(file, "/compound", renamed),
+                          h5core::H5Error);
     }
 }
 
