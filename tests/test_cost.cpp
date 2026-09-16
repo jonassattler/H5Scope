@@ -38,7 +38,9 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PlotBudget.hpp"
 #include "gui/PlotItem.hpp"
+#include "gui/PlotLevels.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "postproc/Pipeline.hpp"
@@ -1038,6 +1040,104 @@ TEST_CASE("a zoom from the whole line to a single sample reads nothing", "[cost]
         CHECK(back.crossings == 0);
         CHECK(back.reads == 0);
     }
+}
+
+TEST_CASE("turning the budget down gives the memory back, and turning it up reads",
+          "[cost][plot][zoom]")
+{
+    // What applyBudget() used to do was trim the run ladder, under a comment
+    // saying nothing was re-read. That was true while the only held thing was a
+    // handful of runs and became false the moment a whole line was held beside
+    // them: a reader who noticed this program holding gigabytes and turned the
+    // budget down saw no change at all until they selected another dataset.
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    // Pinned rather than taken from the machine: `low` and `greedy` are
+    // fractions of physical memory, and on a machine with enough of it both are
+    // large enough to hold a ten-million-element line at bucket one -- so the
+    // assertion below would pass or fail according to how much RAM the runner
+    // has, which is the one thing this suite exists not to do.
+    auto& budget = gui::PlotBudget::instance();
+    const long long was = budget.pinnedTotal();
+    constexpr long long kMegabyte = 1024LL * 1024LL;
+
+    budget.setPinnedTotal(512 * kMegabyte);
+    Counted::settleAll();
+    const long long roomy = big.plot.heldDoubles();
+    REQUIRE(roomy > 0);
+
+    SECTION("down is free, and it is honoured in the call that asks for it")
+    {
+        const auto cost = big.measure([&] { budget.setPinnedTotal(8 * kMegabyte); });
+        CHECK(big.plot.heldDoubles() < roomy);
+        // Coarsening an envelope is exact, so nothing is read to do it.
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+
+        // ...and what is still held draws the same picture it drew before.
+        big.plot.setVisibleRange(0.0, static_cast<double>(kZoomLine));
+        drawnMatchesTheFile(big.plot.lineOf(0), kZoomLine);
+    }
+
+    SECTION("up is a read, because a finer base is elements it no longer has")
+    {
+        budget.setPinnedTotal(8 * kMegabyte);
+        Counted::settleAll();
+        const long long small = big.plot.heldDoubles();
+        REQUIRE(small < roomy);
+
+        const auto cost = big.measure([&] { budget.setPinnedTotal(512 * kMegabyte); });
+        CHECK(big.plot.heldDoubles() > small);
+        CHECK(cost.reads > 0);
+        drawnMatchesTheFile(big.plot.lineOf(0), kZoomLine);
+    }
+
+    budget.setPinnedTotal(was);
+    Counted::settleAll();
+}
+
+TEST_CASE("a burst of zoom frames does not pile up the retired store",
+          "[cost][plot][zoom]")
+{
+    // Every frame of a zoom trims a level and retires its vectors, and fill()
+    // -- the one moment a renderer that was borrowing them has just been handed
+    // something else -- is the only thing that empties them. Several refreshes
+    // inside one turn of the event loop therefore accumulate several levels'
+    // worth. That is bounded by the ladder, and the bound was reasoned about
+    // and never measured; this is the measurement.
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    const double focus = 4999999.0;
+    double low = 0.0;
+    double high = static_cast<double>(kZoomLine);
+    const double shrink =
+        std::pow(static_cast<double>(kZoomColumns) / static_cast<double>(kZoomLine),
+                 1.0 / static_cast<double>(kZoomFrames));
+
+    long long worst = 0;
+    for (int frame = 0; frame < kZoomFrames; ++frame) {
+        big.plot.setZoomFocus(focus, 1.0 / shrink);
+        low = focus - (focus - low) * shrink;
+        high = focus + (high - focus) * shrink;
+        big.plot.setVisibleRange(low, high);
+        worst = std::max(worst, big.plot.retiredDoubles());
+    }
+
+    // Nothing has drawn, so nothing has been handed a replacement and nothing
+    // has been freed: this is the whole gesture's worth. A run is about
+    // 2 * pane columns doubles per line, and the ladder is kHeldLevels deep, so
+    // a generous bound is a few ladders' worth -- and what would break it is a
+    // retire per frame that nothing ever clears, which is the shape this is
+    // here to catch.
+    const long long run = 2LL * kZoomColumns;
+    INFO("worst " << worst << " doubles, a run is " << run);
+    CHECK(worst <= run * gui::kHeldLevels * 4);
 }
 
 // ---------------------------------------------------------------------------

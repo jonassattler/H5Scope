@@ -114,6 +114,25 @@ long long baseBucketFor(long long length, long long budget)
     return base;
 }
 
+bool coarsenTo(LinePyramid& pyramid, long long base)
+{
+    std::size_t drop = 0;
+    while (drop + 1 < pyramid.levels.size() && pyramid.levels[drop].bucket < base) {
+        ++drop;
+    }
+    if (drop == 0) {
+        return false;
+    }
+    pyramid.levels.erase(pyramid.levels.begin(),
+                         pyramid.levels.begin() + static_cast<long>(drop));
+    // The vectors that went are the whole point, so the capacity goes with
+    // them: a std::vector erased out of the front of another leaves the
+    // survivors where they were, but the elements removed are destroyed and
+    // their buffers freed, which is the memory the reader asked for back.
+    pyramid.levels.shrink_to_fit();
+    return true;
+}
+
 void buildLevels(LinePyramid& pyramid)
 {
     if (pyramid.levels.empty()) {

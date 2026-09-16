@@ -86,6 +86,16 @@ when there are few enough to be results. The box says how many there are. The
 tree is still lazy: nothing is listed to answer a keystroke that nothing is
 being shown for.
 
+**The RAM budget now changes what is already held.** Turning it down used to
+free nothing at all until you selected another dataset, and turning it up made
+no zoom any cheaper — the setting trimmed a few cached runs and left the thing
+actually holding the memory alone. Coarsening a held line is exact and costs
+nothing, so turning the budget down is honoured in the moment you turn it; a
+line is only re-read when you ask for *more* memory than it was built with.
+Opening another plot tab shrinks the ones already open, so the total stays the
+number the setting promises. And the first draw of a large line is about a
+quarter quicker, in the innermost loop that folds it.
+
 **The Information tab opens a compound out**, under the row that names its type:
 a tree indented until nothing is left but base types, with an enum's symbols
 where they were previously unprintable. And the JSON beside a compound cell is

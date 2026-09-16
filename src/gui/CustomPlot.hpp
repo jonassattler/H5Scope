@@ -466,6 +466,18 @@ private:
     [[nodiscard]] std::optional<PlotWindow> closerWanted(const Entry& entry) const;
     /// Doubles one entry's pyramid may spend. See gui::baseBucketFor.
     [[nodiscard]] long long pyramidBudget() const;
+
+public:
+    /// What the pyramids actually cost, in doubles. Measured rather than
+    /// assumed: see heldLevels(). Public so tests can weigh what is held
+    /// against the budget that is supposed to bound it.
+    [[nodiscard]] long long heldDoubles() const;
+
+    /// Doubles waiting in the retired store, for tests. See
+    /// DatasetPlot::retiredDoubles, which carries the argument.
+    [[nodiscard]] long long retiredDoubles() const;
+
+private:
     /// Fill `window` for `entry` out of its pyramid, if it can.
     ///
     /// What refreshCloser() tries before anything is submitted. False when the

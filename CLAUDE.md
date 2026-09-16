@@ -535,6 +535,17 @@ round trip per element would draw exactly the right picture.
    them. A change that made any of those read would not look like a bug, it
    would look like the plot had become slow again.
 
+   `gui::extremesOf` is the innermost loop of all of it — every element of a
+   line on the way to the summary, and every level folded above it. It reads
+   **two comparisons an element and nothing else**, which works because *NaN
+   fails every comparison*: seeded with the infinities, the first drawable
+   element takes both branches and a NaN takes neither, so being drawable needs
+   no test of its own. An actual infinity does pass one of them and is the one
+   case it cannot decide, so a run holding one is handed to the careful reading
+   instead. Worth the paragraph because of where it is: on a line too large to
+   hold at bucket one — which is every line where the first draw is slow enough
+   to notice — it is 46 ms against 35 ms of a 10M first draw.
+
    The values are checked as hard as the counts, and deliberately: a cache that
    is fast and subtly wrong counts exactly like one that works. `test_plotlevels`
    asserts a coarsened envelope equals a read at that bucket value for value,
@@ -563,6 +574,29 @@ round trip per element would draw exactly the right picture.
    bucket one up to about a hundred million elements and bucket sixteen at a
    billion — so a billion-element trace still zooms free for the first ten
    octaves and costs one hyperslab for the rest.
+
+   **Changing the budget changes what is held, and the two directions are not
+   the same operation.** `applyBudget` used to trim the run ladder and nothing
+   else, under a comment saying nothing was re-read — true when the only held
+   thing was a handful of runs, and false from the moment a whole line was held
+   beside them. A reader who noticed this program holding three gigabytes and
+   turned the budget down got none of it back until they selected another
+   dataset, and one who turned it up got no finer a base either.
+
+   > **Coarsening is exact and free; refining is a read.** So a budget turned
+   > down is honoured in the call that turns it down (`gui::coarsenTo`, which
+   > drops the levels finer than the new base and leaves every picture at or
+   > above it identical), and a budget turned *up* drops what it could improve
+   > on and reads it again.
+
+   Those two are also why the budget can be shared honestly at all: a tab
+   opening emits `PlotBudget::changed` through `join()`, so the tabs already
+   built shrink instead of the sum quietly exceeding the promise Settings
+   makes. And what a run ladder may keep is measured against what the pyramids
+   actually cost (`LinePyramid::doubles`, `heldDoubles()`) rather than against
+   a halving of the share that assumed it — the number existed for a release
+   and nothing consulted it, which is exactly how two claims on one share stop
+   adding up.
 
    **Nothing is freed under a renderer that is reading it, and nothing blanks
    the pane to avoid that.** The borrow contract has two halves.

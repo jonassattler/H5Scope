@@ -9,12 +9,13 @@
 
 namespace gui {
 
-Extremes extremesOf(const double* values, long long from, long long to)
+namespace {
+
+/// The careful reading: every element tested for being drawable before it is
+/// compared. Correct for anything, and the slow path of the one below.
+[[nodiscard]] Extremes carefulExtremes(const double* values, long long from, long long to)
 {
     Extremes found;
-    if (values == nullptr) {
-        return found;
-    }
     for (long long i = from; i < to; ++i) {
         const double value = values[i];
         if (!std::isfinite(value)) {
@@ -29,6 +30,63 @@ Extremes extremesOf(const double* values, long long from, long long to)
             found.highAt = i;
         }
     }
+    return found;
+}
+
+} // namespace
+
+Extremes extremesOf(const double* values, long long from, long long to)
+{
+    Extremes found;
+    if (values == nullptr) {
+        return found;
+    }
+
+    // Two comparisons an element and nothing else in the loop.
+    //
+    // This is the innermost loop of the whole plot: it reads every element of
+    // a line on the way to the summary and folds every level of the pyramid
+    // above it, which together are about half of what a ten-million-element
+    // dataset costs between being clicked on and being drawn. The version this
+    // replaces asked three further questions per element -- isfinite(), and
+    // whether either extreme had been seen yet -- and only the *first* element
+    // of a run ever answers the last two differently.
+    //
+    // What lets all three go: **NaN fails every comparison**. Seeded with the
+    // infinities, the first drawable element takes both branches and a NaN
+    // takes neither, so being drawable needs no test of its own. An actual
+    // infinity in the data does pass one of them, and that is the one case this
+    // cannot decide -- so it hands the run to carefulExtremes() instead. Which
+    // is rare: an infinity in a dataset is unusual, a NaN is not, and the two
+    // used to cost the same.
+    double lowest = std::numeric_limits<double>::infinity();
+    double highest = -std::numeric_limits<double>::infinity();
+    long long lowAt = -1;
+    long long highAt = -1;
+    for (long long i = from; i < to; ++i) {
+        const double value = values[i];
+        // Both, not one or the other: a run that only descends would otherwise
+        // never take the second branch and would report no highest at all.
+        if (value < lowest) {
+            lowest = value;
+            lowAt = i;
+        }
+        if (value > highest) {
+            highest = value;
+            highAt = i;
+        }
+    }
+
+    if (lowAt < 0 && highAt < 0) {
+        return found; // nothing passed either comparison: all NaN, and a gap
+    }
+    if (!std::isfinite(lowest) || !std::isfinite(highest)) {
+        return carefulExtremes(values, from, to);
+    }
+    found.lowest = lowest;
+    found.highest = highest;
+    found.lowAt = lowAt;
+    found.highAt = highAt;
     return found;
 }
 

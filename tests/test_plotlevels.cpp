@@ -526,3 +526,58 @@ TEST_CASE("the base bucket is the finest the budget affords", "[levels][pyramid]
         }
     }
 }
+
+TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
+          "[levels][pyramid]")
+{
+    // The direction that is free, and the one that matters: a reader who
+    // notices this program holding three gigabytes and turns the RAM budget
+    // down wants the memory back now, not when they next select a dataset.
+    // Coarsening is exact, so they get it in the same call.
+    std::vector<double> line(1 << 16);
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        line[i] = std::sin(static_cast<double>(i) / 97.0);
+    }
+
+    gui::LinePyramid fine =
+        gui::pyramidOf(line.data(), static_cast<long long>(line.size()), 1);
+    REQUIRE(fine.baseBucket() == 1);
+    const std::size_t before = fine.doubles();
+
+    SECTION("what it costs afterwards is what a pyramid at that base costs")
+    {
+        REQUIRE(gui::coarsenTo(fine, 16));
+        CHECK(fine.baseBucket() == 16);
+        CHECK(fine.doubles() < before / 8);
+        CHECK(static_cast<long long>(fine.doubles())
+              <= gui::pyramidDoubles(static_cast<long long>(line.size()), 16));
+    }
+
+    SECTION("every picture at or above the new base is the picture it was")
+    {
+        gui::LinePyramid coarse = fine;
+        REQUIRE(gui::coarsenTo(coarse, 16));
+
+        for (const long long bucket : {16LL, 64LL, 256LL, 1024LL}) {
+            gui::PlotWindow window{0, static_cast<long long>(line.size()), bucket};
+            std::vector<double> before;
+            std::vector<double> after;
+            REQUIRE(gui::fillWindow(fine, window, before));
+            REQUIRE(gui::fillWindow(coarse, window, after));
+            INFO("bucket " << bucket);
+            CHECK(before == after);
+        }
+    }
+
+    SECTION("a base already coarse enough is left alone, and one level survives")
+    {
+        CHECK_FALSE(gui::coarsenTo(fine, 1));
+        CHECK(fine.baseBucket() == 1);
+
+        // Past the top: there is nothing finer to give up, and a pyramid of the
+        // whole line in a handful of buckets is still a pyramid.
+        REQUIRE(gui::coarsenTo(fine, 1LL << 40));
+        CHECK(fine.levels.size() == 1);
+        CHECK_FALSE(fine.empty());
+    }
+}

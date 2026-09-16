@@ -357,10 +357,40 @@ CustomPlot::~CustomPlot()
 
 void CustomPlot::applyBudget()
 {
-    // Nothing is re-read. What each entry draws is sized by the pane; what
-    // changes here is how many runs there is room to keep beside it.
+    // The pyramids are where the memory is. This used to trim the run ladder
+    // and nothing else, under a comment saying nothing was re-read -- true when
+    // the only held thing was a handful of runs, and misleading from the moment
+    // a whole line was held beside them: a reader who turned the budget down
+    // because this program was holding three gigabytes got none of it back
+    // until they selected another dataset.
+    //
+    // Coarsening is exact and free, so turning the budget down is honoured
+    // here. Refining is not arithmetic -- a finer base is elements this no
+    // longer has -- so it costs the pass that read the line, and refresh() is
+    // how that is asked for. Unlike the Plot tab's, this one is asynchronous:
+    // the window stays live while it lands.
+    const long long budget = pyramidBudget();
+    bool refine = false;
+    const auto resize = [&](Entry& entry) {
+        if (entry.pyramid.empty()) {
+            return;
+        }
+        const long long wanted = baseBucketFor(entry.pyramid.length, budget);
+        if (wanted < entry.pyramid.baseBucket()) {
+            refine = true;
+            return;
+        }
+        coarsenTo(entry.pyramid, wanted);
+    };
+    resize(axis_);
     for (Entry& entry : entries_) {
+        resize(entry);
         trimLevels(entry);
+    }
+    trimLevels(axis_);
+    if (refine) {
+        refresh();
+        return;
     }
     refreshCloser();
 }
@@ -1227,15 +1257,39 @@ bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
     return true;
 }
 
+long long CustomPlot::retiredDoubles() const
+{
+    long long held = 0;
+    for (const std::vector<double>& values : retired_) {
+        held += static_cast<long long>(values.size());
+    }
+    return held;
+}
+
+long long CustomPlot::heldDoubles() const
+{
+    long long held = static_cast<long long>(axis_.pyramid.doubles());
+    for (const Entry& entry : entries_) {
+        held += static_cast<long long>(entry.pyramid.doubles());
+    }
+    return held;
+}
+
 int CustomPlot::heldLevels() const
 {
     // Each run is about `bucketBudget()` buckets of two values, per entry, so
     // how many there is room for is the budget divided by what one costs. A tab
     // of a few entries gets all of them; one carrying hundreds keeps the run it
     // is on and nothing else.
+    //
+    // Out of what is *left* of the share once the pyramids have been paid for,
+    // rather than out of the whole of it -- see DatasetPlot::heldLevels, which
+    // carries the argument.
+    const long long spare =
+        std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
     const int entries = std::max(seriesCount(), 1);
     const long long affordable =
-        PlotBudget::instance().share() / std::max<long long>(entries * 4LL * bucketBudget(), 1);
+        spare / std::max<long long>(entries * 4LL * bucketBudget(), 1);
     return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
@@ -1340,7 +1394,8 @@ void CustomPlot::refreshCloser()
             own.has_value() && fillCloser(entry, *own)) {
             filled = true;
         }
-        for (int step = 0; step <= heldLevels(); ++step) {
+        int step = 0;
+        for (; step <= heldLevels(); ++step) {
             const std::optional<PlotWindow> next = closerWanted(entry);
             if (!next.has_value() || !fillCloser(entry, *next)) {
                 break;
@@ -1349,6 +1404,13 @@ void CustomPlot::refreshCloser()
             trimLevels(entry);
         }
         trimLevels(entry);
+        // A loop that ran to its bound stopped because it ran out of turns
+        // rather than because the ladder was full: closerWanted() and
+        // fillCloser() have stopped agreeing about what is held. The bound
+        // keeps that from hanging; this is what keeps it from being invisible,
+        // because in a release build the symptom would not look like a bug, it
+        // would look like the plot had become slow again.
+        Q_ASSERT(step <= heldLevels());
     }
     if (filled) {
         announce();
