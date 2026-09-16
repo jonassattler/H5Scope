@@ -17,6 +17,7 @@
 #include "gui/AppController.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
+#include "gui/DatasetLookup.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
@@ -970,6 +971,41 @@ TEST_CASE("the viewer draws a member of a compound", "[example][member]")
         // typed, and for the same reason: nothing is read to find out.
         CHECK_FALSE(controller.memberError(QStringLiteral(".enrgy")).isEmpty());
         CHECK(controller.memberError(QStringLiteral(".weight")).isEmpty());
+    }
+
+    SECTION("the line a plot draws pastes back as an expression")
+    {
+        // The hand-off to a custom tab. What the legend offers has to be a line
+        // someone can paste into an entry box, so the subscript's two halves go
+        // on either side of the chain: the dataset's own axes before the member
+        // is named, the axes it appends after.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        // Six records down the rows, four samples across: one row is one
+        // record's four samples.
+        const QString line = table->lineExpression(3, true);
+        CHECK(line == QStringLiteral("/types/compound/nested[3].samples[:]"));
+
+        // And it reads back as the same selection it was written from.
+        const gui::Expression parts = gui::splitExpression(line);
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/types/compound/nested"));
+        CHECK(parts.member == QStringLiteral(".samples[:]"));
+    }
+
+    SECTION("with no member the expression is what it always was")
+    {
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/matrix")));
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        CHECK_THAT(table->lineExpression(0, true).toStdString(),
+                   ContainsSubstring("/data/matrix["));
+        CHECK_THAT(table->lineExpression(0, true).toStdString(),
+                   !ContainsSubstring("."));
     }
 
     SECTION("coming back to a dataset comes back to the member")

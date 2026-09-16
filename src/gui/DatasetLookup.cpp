@@ -7,6 +7,7 @@
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
+#include "postproc/MemberPath.hpp"
 #include "postproc/Operations.hpp"
 #include "postproc/Subscripts.hpp"
 
@@ -61,6 +62,18 @@ Expression splitExpression(const QString& text)
     int depth = 0;
     qsizetype opened = -1;
     qsizetype closed = -1;
+    // The first depth-zero pair whose ']' has a '.' after it: that '.' starts a
+    // member chain, and everything before the pair is the path.
+    //
+    // A chain is recognised only there, which is what keeps this from having to
+    // guess. An HDF5 link name may hold a '.' as freely as it holds a '[' --
+    // `/data/run.3` is a dataset, not member 3 of `run` -- so a rule that
+    // looked for any '.' would have to ask the file which reading was meant,
+    // on every keystroke, for a path nobody has selected. After a ']' there is
+    // nothing else a '.' can be: the subscript has closed and the object is
+    // named. Everything without a `].` in it parses exactly as it always did.
+    qsizetype chainOpened = -1;
+    qsizetype chainClosed = -1;
     for (qsizetype i = 0; i < line.size(); ++i) {
         const QChar c = line.at(i);
         if (c == QLatin1Char('[')) {
@@ -78,6 +91,11 @@ Expression splitExpression(const QString& text)
             }
             if (depth == 0) {
                 closed = i;
+                if (chainClosed < 0 && i + 1 < line.size()
+                    && line.at(i + 1) == QLatin1Char('.')) {
+                    chainOpened = opened;
+                    chainClosed = i;
+                }
             }
         }
     }
@@ -86,7 +104,12 @@ Expression splitExpression(const QString& text)
         return result;
     }
 
-    if (opened < 0) {
+    if (chainClosed >= 0) {
+        result.path = line.left(chainOpened).trimmed();
+        result.subscript =
+            line.mid(chainOpened + 1, chainClosed - chainOpened - 1).trimmed();
+        result.member = line.mid(chainClosed + 1).trimmed();
+    } else if (opened < 0) {
         // A bare path, which selects the whole of the object -- exactly what
         // the slice line prints for a scalar, and what a reader writes for a
         // vector they want all of.
@@ -279,6 +302,7 @@ PathFacts lookupFacts(h5core::File* file, const QString& path)
         const h5core::Dataset dataset(*file, native);
         const h5core::DatasetInfo& info = dataset.info();
         facts.shape = info.shape;
+        facts.type = info.type;
         if (info.isNull()) {
             facts.problem = QStringLiteral("this dataset holds no elements");
             return facts;
@@ -287,7 +311,12 @@ PathFacts lookupFacts(h5core::File* file, const QString& path)
             facts.problem = QString::fromStdString(info.unreadableReason());
             return facts;
         }
-        if (!info.isNumeric()) {
+        // A compound passes: it is not drawable as it stands, and a member
+        // chain is exactly what makes it drawable. Refusing it here would
+        // refuse `/events[:].energy` for the shape of the struct it selects a
+        // float out of. What a chain resolves to is judged in
+        // expressionProblem, which is where the chain is.
+        if (!info.isNumeric() && info.type.cls != h5core::TypeClass::Compound) {
             facts.problem = QStringLiteral("this dataset holds %1, and only "
                                            "numbers can be plotted")
                                 .arg(QString::fromStdString(info.type.description));
@@ -346,6 +375,24 @@ void DatasetLookup::resolve(const QStringList& paths, std::function<void()> then
         });
 }
 
+QString undrawableReason(const h5core::TypeInfo& landed, const h5core::TypeInfo& type,
+                         bool chained)
+{
+    if (h5core::isNumeric(landed.cls)) {
+        return {};
+    }
+    if (!chained && type.cls == h5core::TypeClass::Compound) {
+        return QStringLiteral("this dataset holds %1 -- name one of its members, "
+                              "as '.%2'")
+            .arg(QString::fromStdString(type.description),
+                 type.memberNames.empty()
+                     ? QStringLiteral("member")
+                     : QString::fromStdString(type.memberNames.front()));
+    }
+    return QStringLiteral("this holds %1, and only numbers can be plotted")
+        .arg(QString::fromStdString(landed.description));
+}
+
 QString expressionProblem(const QString& text, const DatasetLookup& lookup)
 {
     const Expression parts = splitExpression(text);
@@ -364,12 +411,31 @@ QString expressionProblem(const QString& text, const DatasetLookup& lookup)
         return facts->problem;
     }
 
+    // The chain first: it decides both what shape the subscript is against and
+    // whether there are numbers here at all.
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(parts.member, facts->type);
+    if (!chain.valid()) {
+        return chain.error;
+    }
+    if (const QString undrawable =
+            undrawableReason(chain.selection.type, facts->type, !chain.empty());
+        !undrawable.isEmpty()) {
+        return undrawable;
+    }
+
+    std::vector<hsize_t> shape = facts->shape;
+    shape.insert(shape.end(), chain.selection.dims.begin(),
+                 chain.selection.dims.end());
+
     std::vector<std::vector<hsize_t>> indices;
     std::vector<bool> drop;
     QString error;
     // The reason is the answer here, not the verdict: `error` is empty exactly
     // when this returns true.
-    (void)resolveLine(parts.subscript, facts->shape, indices, drop, error);
+    (void)resolveLine(postproc::sliceLineFor(parts.subscript, chain.folded,
+                                             facts->shape.size()),
+                      shape, indices, drop, error);
     return error;
 }
 

@@ -76,10 +76,12 @@ h5core::Dataset* H5Session::dataset(const std::string& path)
     return dataset_.get();
 }
 
-h5core::Dataset* H5Session::held(const std::string& path)
+h5core::Dataset* H5Session::held(const std::string& path,
+                                 const h5core::MemberSelection& member)
 {
+    const std::string key = path + member.text;
     for (auto& [name, dataset] : heldDatasets_) {
-        if (name == path) {
+        if (name == key) {
             return dataset.get();
         }
     }
@@ -88,7 +90,9 @@ h5core::Dataset* H5Session::held(const std::string& path)
     }
     std::unique_ptr<h5core::Dataset> opened;
     try {
-        opened = std::make_unique<h5core::Dataset>(*file_, path);
+        opened = member.empty()
+                     ? std::make_unique<h5core::Dataset>(*file_, path)
+                     : std::make_unique<h5core::FieldDataset>(*file_, path, member);
     } catch (const h5core::H5Error&) {
         // Null is the answer, as it is in dataset(): the caller asked whether
         // this path is a readable dataset and is about to say so in the entry's
@@ -98,7 +102,7 @@ h5core::Dataset* H5Session::held(const std::string& path)
     if (heldDatasets_.size() >= kHeldDatasets) {
         heldDatasets_.erase(heldDatasets_.begin());
     }
-    heldDatasets_.emplace_back(path, std::move(opened));
+    heldDatasets_.emplace_back(key, std::move(opened));
     return heldDatasets_.back().second.get();
 }
 

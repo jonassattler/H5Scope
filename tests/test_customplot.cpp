@@ -166,6 +166,117 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot draws slices of several datasets to
     }
 }
 
+TEST_CASE("an expression may name a member after its subscript", "[custom][member]")
+{
+    // Pure text. The rule is that a chain is recognised only after a closing
+    // bracket, because a link name holds a '.' as freely as it holds a '[' and
+    // telling `/data/run.3` from member 3 of `run` would mean asking the file.
+
+    SECTION("a chain after the subscript is taken off the path")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/events[0:100].energy"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/events"));
+        CHECK(parts.subscript == QStringLiteral("0:100"));
+        CHECK(parts.member == QStringLiteral(".energy"));
+    }
+
+    SECTION("the chain keeps its own subscripts")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/events[3, :].samples[2]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/events"));
+        CHECK(parts.subscript == QStringLiteral("3, :"));
+        CHECK(parts.member == QStringLiteral(".samples[2]"));
+    }
+
+    SECTION("a dotted link name is still a link name")
+    {
+        // The case the rule exists for. There is no `].` here, so this parses
+        // exactly as it did before any of this was written.
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/data/run.3[:]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/data/run.3"));
+        CHECK(parts.subscript == QStringLiteral(":"));
+        CHECK(parts.member.isEmpty());
+    }
+
+    SECTION("a bracket in a link name is still a bracket in a link name")
+    {
+        const gui::Expression parts =
+            gui::splitExpression(QStringLiteral("/stress/awkward[1][0:4]"));
+        REQUIRE(parts.valid());
+        CHECK(parts.path == QStringLiteral("/stress/awkward[1]"));
+        CHECK(parts.subscript == QStringLiteral("0:4"));
+        CHECK(parts.member.isEmpty());
+    }
+
+    SECTION("everything without a chain reads as it always did")
+    {
+        const gui::Expression whole = gui::splitExpression(QStringLiteral("/series/a"));
+        CHECK(whole.path == QStringLiteral("/series/a"));
+        CHECK(whole.subscript.isEmpty());
+        CHECK(whole.member.isEmpty());
+
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("/a[0]]")).valid());
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("/a[0")).valid());
+        CHECK_FALSE(gui::splitExpression(QStringLiteral("a[0]")).valid());
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a custom tab draws a member of a compound",
+                 "[custom][member]")
+{
+    // /compound is {id: int32, value: float64} x 2, holding {7, 1.5} and
+    // {9, 2.5}. Nothing about it is drawable until a member is named.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+
+    SECTION("naming a member makes a line out of a struct")
+    {
+        add(plot, QStringLiteral("/compound[:].value"));
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(plot->hasData());
+        CHECK(plot->pointCount() == 2);
+        CHECK(plot->minimum() == 1.5);
+        CHECK(plot->maximum() == 2.5);
+        // The entry keeps the name it was written under, chain and all.
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/compound[:].value"));
+    }
+
+    SECTION("two members of one dataset are two lines")
+    {
+        add(plot, QStringLiteral("/compound[:].value"));
+        add(plot, QStringLiteral("/compound[:].id"));
+        CHECK(plot->sourceSeriesCount() == 2);
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(errorOf(plot, 1).isEmpty());
+        CHECK(plot->minimum() == 1.5);
+        CHECK(plot->maximum() == 9.0);
+    }
+
+    SECTION("a compound with no member named says to name one")
+    {
+        add(plot, QStringLiteral("/compound[:]"));
+        const QString problem = errorOf(plot, 0);
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("name one of its members"));
+        // And it suggests one, because the names are in the file and the
+        // reader is being told they cannot have what they asked for.
+        CHECK_THAT(problem.toStdString(), ContainsSubstring(".id"));
+    }
+
+    SECTION("a member that is not there says what is")
+    {
+        add(plot, QStringLiteral("/compound[:].nonesuch"));
+        const QString problem = errorOf(plot, 0);
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("nonesuch"));
+        CHECK_THAT(problem.toStdString(), ContainsSubstring("value"));
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when it does not",
                  "[custom]")
 {
@@ -1171,6 +1282,36 @@ TEST_CASE_METHOD(PlotFixture, "the tabs are named, unique and reorderable", "[cu
         CHECK(plots->detached(first));
         CHECK(plots->activeIndex() == -1);
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a saved view remembers the member it was drawing",
+                 "[custom][member]")
+{
+    // A view is text, and the chain is part of the text: the grammar is a
+    // superset of the one every view already in a settings file was written
+    // under, so nothing had to be migrated and nothing can stop reading.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/compound[:].value"));
+    REQUIRE(plot->hasData());
+    REQUIRE(set()->saveView(QStringLiteral("the values"), 0, {}).isEmpty());
+
+    plot->removeEntry(0);
+    settleAll();
+    REQUIRE(plot->empty());
+
+    set()->restoreView(QStringLiteral("the values"), 0);
+    settleAll();
+    CHECK(plot->sourceSeriesCount() == 1);
+    CHECK(plot->seriesLabel(0) == QStringLiteral("/compound[:].value"));
+    CHECK(errorOf(plot, 0).isEmpty());
+    CHECK(plot->minimum() == 1.5);
+
+    // And the view knows it can still be drawn, which is a question about the
+    // *path* -- the chain rides along inside the entry, where it belongs.
+    set()->checkView(QStringLiteral("the values"));
+    settleAll();
+    CHECK(set()->stateOf(QStringLiteral("the values"))
+          == gui::CustomPlotSet::FullMatch);
 }
 
 TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[custom]")

@@ -120,7 +120,14 @@ public:
     /// what this model keeps is a copy of its description, which is plain data,
     /// and every actual read goes back across as a job. That is why this takes
     /// a DatasetInfo where it used to take a shared_ptr<DataSource>.
-    void setSource(bool present, h5core::DatasetInfo info, QString path);
+    ///
+    /// `member` is the chain the source is read through, and `originRank` how
+    /// many of `info`'s axes are the dataset's own rather than the member's.
+    /// Both are needed only to write an expression back out -- see
+    /// `lineExpression`, which has to put the subscript's two halves on either
+    /// side of the chain.
+    void setSource(bool present, h5core::DatasetInfo info, QString path,
+                   QString member = {}, int originRank = -1);
 
     /// What is being shown, or a default-constructed description when nothing
     /// is. `present()` is the question "is there anything".
@@ -399,6 +406,10 @@ private:
     bool present_ = false;
     h5core::DatasetInfo info_;
     QString sourcePath_;
+    /// The path and the chain apart, for writing an expression back out.
+    QString sourceOrigin_;
+    QString sourceMember_;
+    int sourceOriginRank_ = -1;
     /// Never null: see sharedAxes() for why it is a pointer.
     std::shared_ptr<const TableAxes> axes_ = std::make_shared<const TableAxes>();
 

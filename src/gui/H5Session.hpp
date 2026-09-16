@@ -87,7 +87,13 @@ public:
     /// Kept apart from `dataset_` rather than folded into it so that a custom
     /// tab cannot evict what the selection is drawing, or be evicted by it.
     /// Bounded at kHeldDatasets and emptied with the file.
-    [[nodiscard]] h5core::Dataset* held(const std::string& path);
+    ///
+    /// With a member chain, what is held is a `FieldDataset` over that path,
+    /// cached under the path *and* the chain: one custom tab can perfectly well
+    /// draw `/events.energy` beside `/events.time`, and those are two readings
+    /// of one dataset rather than one of them twice.
+    [[nodiscard]] h5core::Dataset* held(const std::string& path,
+                                        const h5core::MemberSelection& member = {});
 
     /// Install the pipeline's output as what the views read. Passing nullptr
     /// puts them back on the file.

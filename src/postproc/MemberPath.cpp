@@ -57,6 +57,17 @@ std::optional<hsize_t> readVlenIndex(const QString& member, const QString& text,
     return static_cast<hsize_t>(index);
 }
 
+/// A subscript with its outer brackets taken off, if it was written with them.
+/// `bracketedIfListed` is the other direction, and this undoes it.
+QString bracketedBody(const QString& text)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.startsWith(QLatin1Char('[')) && trimmed.endsWith(QLatin1Char(']'))) {
+        return trimmed.mid(1, trimmed.size() - 2);
+    }
+    return trimmed;
+}
+
 } // namespace
 
 bool parseMemberChain(const QString& text, std::vector<MemberStep>& chain,
@@ -124,6 +135,54 @@ bool parseMemberChain(const QString& text, std::vector<MemberStep>& chain,
         }
     }
     return true;
+}
+
+QString sliceLineFor(const QString& subscript, const QStringList& folded,
+                     std::size_t originRank)
+{
+    if (folded.isEmpty()) {
+        return subscript;
+    }
+
+    // What the reader wrote for the dataset's own axes, one term per axis. The
+    // two shorthands the grammar allows -- the trailing dimensions nobody wrote
+    // and the one '...' standing for the rest -- have to be spelled out here,
+    // because the member's terms go *after* them and a term that stands for
+    // "however many are left" cannot have anything written after it.
+    QStringList leading;
+    QString ignored;
+    if (!splitSubscripts(bracketedBody(subscript), leading, ignored)) {
+        return subscript; // it does not read; the grammar below says so better
+    }
+    if (leading.size() == 1 && leading.front().trimmed().isEmpty()) {
+        leading.clear();
+    }
+
+    QStringList line;
+    const auto rank = static_cast<qsizetype>(originRank);
+    const qsizetype ellipsis = leading.indexOf(QStringLiteral("..."));
+    if (ellipsis >= 0) {
+        const qsizetype named = leading.size() - 1;
+        for (qsizetype i = 0; i < leading.size(); ++i) {
+            if (i != ellipsis) {
+                line.append(leading.at(i));
+            } else {
+                for (qsizetype f = 0; f < rank - named; ++f) {
+                    line.append(QStringLiteral(":"));
+                }
+            }
+        }
+    } else {
+        line = leading;
+        while (line.size() < rank) {
+            line.append(QStringLiteral(":"));
+        }
+    }
+
+    for (const QString& term : folded) {
+        line.append(term.isEmpty() ? QStringLiteral(":") : term);
+    }
+    return line.join(QStringLiteral(", "));
 }
 
 QString writeMemberChain(const std::vector<MemberStep>& chain)

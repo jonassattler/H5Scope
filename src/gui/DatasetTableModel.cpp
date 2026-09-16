@@ -18,7 +18,8 @@ namespace gui {
 
 DatasetTableModel::DatasetTableModel(QObject* parent) : QAbstractTableModel(parent) {}
 
-void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QString path)
+void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QString path,
+                                  QString member, int originRank)
 {
     beginResetModel();
     // Anything still on its way describes the last dataset. Disowning it here
@@ -30,6 +31,12 @@ void DatasetTableModel::setSource(bool present, h5core::DatasetInfo info, QStrin
     present_ = present;
     info_ = std::move(info);
     sourcePath_ = std::move(path);
+    sourceMember_ = std::move(member);
+    sourceOrigin_ = sourcePath_;
+    if (!sourceMember_.isEmpty() && sourceOrigin_.endsWith(sourceMember_)) {
+        sourceOrigin_.chop(sourceMember_.size());
+    }
+    sourceOriginRank_ = originRank;
     blocks_.clear();
     errorText_.clear();
 
@@ -1092,8 +1099,27 @@ QString DatasetTableModel::lineExpression(int line, bool fromRows) const
             parts << QString::number(coords[d]);
         }
     }
-    return sourcePath_ + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
-           QStringLiteral("]");
+    if (sourceMember_.isEmpty() || sourceOriginRank_ < 0) {
+        return sourcePath_ + QStringLiteral("[") + parts.join(QStringLiteral(", "))
+               + QStringLiteral("]");
+    }
+
+    // With a chain, the subscript has two halves and the chain goes between
+    // them: the dataset's own axes are addressed before the member is named,
+    // and the axes the member appends after it. That is the notation a reader
+    // writes -- `/events[3, :].samples[2]` -- and it is the one that pastes
+    // back into a custom tab, which is the whole reason this line exists.
+    const auto split = std::min<qsizetype>(sourceOriginRank_, parts.size());
+    const QStringList leading = parts.mid(0, split);
+    const QStringList trailing = parts.mid(split);
+    QString out = sourceOrigin_ + QStringLiteral("[")
+                  + leading.join(QStringLiteral(", ")) + QStringLiteral("]")
+                  + sourceMember_;
+    if (!trailing.isEmpty()) {
+        out += QStringLiteral("[") + trailing.join(QStringLiteral(", "))
+               + QStringLiteral("]");
+    }
+    return out;
 }
 
 QHash<int, QByteArray> DatasetTableModel::roleNames() const

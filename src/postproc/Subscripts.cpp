@@ -212,6 +212,8 @@ bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
 ///
 /// Returns false and sets `error` on a bracket that does not pair up, rather
 /// than silently reading "[0,2" as two subscripts.
+} // namespace
+
 bool splitSubscripts(const QString& text, QStringList& out, QString& error)
 {
     int depth = 0;
@@ -239,6 +241,8 @@ bool splitSubscripts(const QString& text, QStringList& out, QString& error)
     out << text.mid(start);
     return true;
 }
+
+namespace {
 
 /// "1 subscript", "3 subscripts". The count is the point of the sentence this
 /// goes into, so it is never written as a bare number.

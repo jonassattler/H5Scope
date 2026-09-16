@@ -208,7 +208,8 @@ void AppController::applyDataSource()
         // just resolved; the cells themselves are fetched per block, when the
         // grid asks. Doing it here rather than a round trip later is what keeps
         // rearranging a table immediate.
-        datasetModel_->setSource(true, datasetInfo_, shown);
+        datasetModel_->setSource(true, datasetInfo_, shown, memberText_,
+                                 static_cast<int>(originInfo_.shape.size()));
         // Moved rather than copied. A layout names every index it selects, so
         // on a ten-million-element vector it is eighty megabytes, and this
         // branch is the last reader of it.

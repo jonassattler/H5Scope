@@ -92,6 +92,22 @@ struct MemberChain {
 [[nodiscard]] MemberChain resolveMemberChain(const std::vector<MemberStep>& chain,
                                              const h5core::TypeInfo& type);
 
+/// The one slice line a member expression means, over the derived shape.
+///
+/// This is the identity, as a string. `/events[0:100].samples[2]` selects the
+/// same elements as `(/events.samples)[0:100, 2]`, so the leading subscript is
+/// expanded to name every axis of the dataset and the chain's own subscripts
+/// are written after it, in the order the chain appended them. What comes back
+/// is an ordinary slice line against an ordinary shape, which is what every
+/// reader below this point already knows how to do.
+///
+/// `originRank` is the dataset's own rank -- how many of the terms in the line
+/// belong to the leading subscript. The expansion here is textual and stops at
+/// the comma: the terms themselves are read by the ordinary grammar, against
+/// the ordinary shape, afterwards.
+[[nodiscard]] QString sliceLineFor(const QString& subscript, const QStringList& folded,
+                                   std::size_t originRank);
+
 /// A chain printed back: ".position.x". What the member box shows, and what
 /// `path()` puts after the dataset's own name.
 [[nodiscard]] QString writeMemberChain(const std::vector<MemberStep>& chain);

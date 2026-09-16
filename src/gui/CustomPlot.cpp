@@ -11,6 +11,7 @@
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
 #include "postproc/Array.hpp"
+#include "postproc/MemberPath.hpp"
 #include "postproc/Operations.hpp"
 #include "postproc/Pipeline.hpp"
 
@@ -104,9 +105,33 @@ struct Reply
         return answer;
     }
 
+    // The chain, before the subscript: it decides what shape the subscript is
+    // against, because the axes a member appends are axes of the line.
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(parts.member, known->second.type);
+    if (!chain.valid()) {
+        answer.problem = chain.error;
+        return answer;
+    }
+    // The same sentence the entry box gives while it is being typed, said here
+    // because this is where a reader who typed a path and pressed Return finds
+    // out -- and "name one of its members" is a more useful answer than the
+    // read's own "which has no numeric value".
+    answer.problem = undrawableReason(chain.selection.type, known->second.type,
+                                      !chain.empty());
+    if (!answer.problem.isEmpty()) {
+        return answer;
+    }
+
+    std::vector<hsize_t> shape = known->second.shape;
+    shape.insert(shape.end(), chain.selection.dims.begin(),
+                 chain.selection.dims.end());
+
     std::vector<std::vector<hsize_t>> indices;
     std::vector<bool> drop;
-    if (!resolveLine(parts.subscript, known->second.shape, indices, drop, answer.problem)) {
+    if (!resolveLine(postproc::sliceLineFor(parts.subscript, chain.folded,
+                                            known->second.shape.size()),
+                     shape, indices, drop, answer.problem)) {
         return answer;
     }
 
@@ -125,7 +150,8 @@ struct Reply
         answer.start = static_cast<double>(ask.window->first);
     }
 
-    h5core::Dataset* open = session.held(parts.path.toStdString());
+    h5core::Dataset* open =
+        session.held(parts.path.toStdString(), chain.selection);
     if (open == nullptr) {
         answer.problem = known->second.problem.isEmpty()
                              ? QStringLiteral("cannot open %1").arg(parts.path)
