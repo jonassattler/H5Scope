@@ -450,45 +450,41 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(cost.elements == 0);
     }
 
-    SECTION("a closer look is read once, after the view has stopped moving")
+    SECTION("a closer look is folded out of the line, not read again")
     {
         // The whole point of the closer look: zooming in resolves detail
-        // instead of stretching a summary. What it must not do is read while
-        // the reader is still moving, and what it must not cost is more than
-        // the run on screen.
+        // instead of stretching a summary. It used to cost a read to do it --
+        // one run, one crossing, a settle's wait -- and this section counted
+        // that read and held it to exactly one.
+        //
+        // It is now none. The whole-line read keeps the elements it already
+        // touched, at the finest bucket the budget affords, so a closer look is
+        // a fold of a buffer in hand rather than a second question to the file.
+        // Zero is the tighter bound and the one worth asserting: a read
+        // reappearing here would not look like a bug, it would look like the
+        // plot had gone back to being slow.
         Counted wide({1, 1000000});
-        (void)wide.plot.pointCount(); // the whole line, at 1024 buckets
+        (void)wide.plot.pointCount(); // the whole line, and the pyramid under it
         Counted::settleAll();
 
-        // Just past one settle, which is the pane's own read and nothing else:
-        // the octaves read ahead of the reader each wait out a settle of their
-        // own, so the first of them has not gone yet.
-        const auto cost = wide.measure([&] {
-            wide.plot.setVisibleRange(0.0, 10000.0);
-            h5test::settleFor(220);
-        });
+        const auto cost = wide.measure([&] { wide.plot.setVisibleRange(0.0, 10000.0); });
 
-        CHECK(cost.crossings == 1);
-        // Twice the visible span, because that is what a run is, and not one
-        // element more. The whole line is a million.
-        CHECK(cost.elements == 32768);
-        // And one read, because thirty-two thousand elements fit in a single
-        // hyperslab. The run is what decides the round trips; the thousand
-        // buckets it is folded into decide nothing about them.
-        CHECK(cost.reads == 1);
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+        CHECK(cost.elements == 0);
 
-        // Then the octaves out, one settle apart, and then nothing. That is
-        // what the outward direction costs and why it is spent while the reader
-        // is looking rather than while they are waiting -- going *in* needs no
-        // read at all, because a run is read finer than the pane asked.
-        //
-        // A bound rather than a count: each of these runs is four times as wide
-        // as the one below it, so the second is skipped whenever the first
-        // already covers where it would have looked. What must hold is that
-        // there are not more of them than were asked for, and that they stop.
+        // ...and it is drawn at the finer bucket in the same call, with no
+        // settle waited out and no round trip. This is the assertion the count
+        // above is only half of: nothing read *and* the picture resolved.
+        CHECK(wide.plot.pointCount() > 2 * 1024);
+
+        // Then the octaves read ahead, which are also folds now, and then
+        // nothing. What must still hold is that it stops: a ladder that went on
+        // asking for ever finer runs of a line with no more to give would be a
+        // loop rather than a wait.
         const auto ahead = wide.measure([&] { h5test::settleFor(900); });
-        CHECK(ahead.crossings >= 1);
-        CHECK(ahead.crossings <= DatasetPlot::kPrefetchOctaves);
+        CHECK(ahead.crossings == 0);
+        CHECK(ahead.reads == 0);
 
         const auto quiet = wide.measure([&] { h5test::settleFor(500); });
         CHECK(quiet.crossings == 0);
@@ -513,6 +509,76 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
 
         CHECK(cost.crossings == 0);
         CHECK(cost.reads == 0);
+    }
+
+    SECTION("a gesture that says where it is going is answered without reading")
+    {
+        // The other half of the section above, and the reason it is still true
+        // rather than merely still passing: a drag has nowhere it is heading,
+        // so it waits. A *zoom* does, and waiting was costing the reader a
+        // tenth of a second at the end of every gesture for a picture that
+        // could have been arriving while they span the wheel.
+        //
+        // Dropping the wait was the first half of that and this is the second:
+        // there is nothing left to wait for. Sixty notches through six octaves
+        // are sixty folds of a buffer already in hand, so the count that used
+        // to be "a handful rather than sixty" is now none at all -- and the
+        // picture is right at every one of them rather than at the end.
+        Counted wide({1, 1000000});
+        (void)wide.plot.pointCount();
+        Counted::settleAll();
+
+        const auto cost = wide.measure([&] {
+            // Sixty notches in, about a point a fifth of the way across the
+            // pane -- the corner case, not the middle, because the middle is
+            // what the arithmetic used to assume.
+            double low = 100000.0;
+            double high = 900000.0;
+            const double focus = low + 0.2 * (high - low);
+            for (int step = 0; step < 60; ++step) {
+                wide.plot.setZoomFocus(focus, 1.25);
+                low = focus - (focus - low) / 1.25;
+                high = focus + (high - focus) / 1.25;
+                wide.plot.setVisibleRange(low, high);
+                // Asked in the same turn the range was pushed in, which is what
+                // a frame does.
+                (void)wide.plot.pointCount();
+            }
+        });
+
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+        CHECK(cost.elements == 0);
+
+        // Sixty notches is six octaves and more, so the end of the spin is the
+        // line itself, sample for sample -- reached without a single read. That
+        // is the claim: not that the last picture is right, which the whole-line
+        // summary could have managed, but that the whole descent to it was
+        // answered out of one pass over the file.
+        //
+        // What each of those frames actually drew is asserted in "a zoom from
+        // the whole line to a single sample" below, value for value against the
+        // elements themselves. A count cannot see a cache that is fast and
+        // wrong.
+        CHECK_FALSE(wide.plot.thinned());
+
+        // And it goes quiet, which is what it always had to do.
+        h5test::settleFor(1500);
+        Counted::settleAll();
+        const auto quiet = wide.measure([&] { h5test::settleFor(500); });
+        CHECK(quiet.crossings == 0);
+        CHECK(quiet.reads == 0);
+
+        // ...and a pan afterwards is a pan: no focus, so the settle is back.
+        wide.plot.clearZoomFocus();
+        const auto dragging = wide.measure([&] {
+            for (int step = 0; step < 20; ++step) {
+                const double at = 200000.0 + 1000.0 * static_cast<double>(step);
+                wide.plot.setVisibleRange(at, at + 50000.0);
+            }
+        });
+        CHECK(dragging.crossings == 0);
+        CHECK(dragging.reads == 0);
     }
 
     SECTION("panning inside the run in hand reads nothing")
@@ -561,21 +627,25 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
 
     SECTION("the next octave in is already in hand")
     {
-        // The prefetch, counted. A run is read one octave finer than the pane
-        // needs -- see DatasetPlot::detailBuckets -- and the whole argument for
-        // it is that the octave costs nothing to read and saves the reader a
-        // wait. Both halves are here: the settled read that follows a zoom, and
-        // then the next step in, which must not read at all.
+        // The prefetch, counted. A run used to be read one octave finer than
+        // the pane needed -- the cheapest read there was, because a run costs
+        // its span and not its resolution -- so that the step down landed on
+        // detail that had come with it.
+        //
+        // The pyramid generalises that from one octave to all of them. There is
+        // no "arriving" half any more: the run the pane is on and the run one
+        // step in are both folds of the same held line, so both halves of this
+        // are zero and the octave that used to be a bargain is now free.
         Counted wide({1, 1000000});
         (void)wide.plot.pointCount();
         Counted::settleAll();
 
         const auto arriving = wide.measure([&] {
             wide.plot.setVisibleRange(0.0, 10000.0);
-            h5test::settleFor(1200); // the run, and the octaves read ahead of it
+            h5test::settleFor(1200);
         });
-        CHECK(arriving.crossings >= 2);
-        CHECK(arriving.crossings <= 1 + DatasetPlot::kPrefetchOctaves);
+        CHECK(arriving.crossings == 0);
+        CHECK(arriving.reads == 0);
 
         const auto stepping = wide.measure([&] {
             // Half the span, about the same centre: one octave in.
@@ -587,7 +657,7 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(stepping.elements == 0);
 
         // ...and it is drawn at the finer bucket rather than stretched, which
-        // is what makes the step worth prefetching in the first place.
+        // is what makes the step worth holding the line for in the first place.
         CHECK(wide.plot.thinned());
         CHECK(wide.plot.pointCount() > 2 * 1024);
     }
@@ -661,21 +731,40 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(cost.reads == 0);
     }
 
-    SECTION("a wider pane reads the same elements in more buckets")
+    SECTION("a wider pane refolds the same elements into more buckets")
     {
         // What a line is thinned to follows the pane -- a bucket is a column --
         // so a wider window asks for more buckets. What it must not do is read
-        // more of the file, or make more round trips for them: an envelope
-        // reads every element exactly once either way, in reads of up to
-        // kReadRun, and the bucket count decides only how many answers those
-        // elements are folded into.
+        // more of the file, or make more round trips for them.
+        //
+        // It used to re-read the whole line at the new bucket, which was
+        // defensible while the elements were not kept: an envelope reads every
+        // element exactly once either way, so a wider pane cost the same reads
+        // as a narrower one and only the fold differed. Now the elements *are*
+        // kept, and "only the fold differed" is the whole of what is left --
+        // so a resize costs nothing at all and the bucket counts are the only
+        // thing that changes.
         Counted wide({1, 1000000});
-        (void)wide.plot.pointCount();
-        Counted::settleAll();
 
-        // The wait is inside the measurement, not before it: a pane that is
-        // being dragged reads nothing at all, and what is counted here is the
-        // one read at the end of the gesture. See DatasetPlot::setPaneColumns.
+        // The first pass, measured: this is where the file is read, and the
+        // count that used to be asserted of every resize belongs here now.
+        const auto first = wide.measure([&] {
+            (void)wide.plot.pointCount();
+            Counted::settleAll();
+        });
+        // The whole line, exactly once. Not "about the whole line": a read is
+        // cut back to a whole number of buckets precisely so that no element is
+        // read twice at the seam between two of them.
+        CHECK(first.elements == 1000000);
+        // Sixteen reads of sixty-five thousand cover a million, and cutting
+        // each of them back to a whole number of buckets can cost one more.
+        // This is the number that used to follow the *bucket* count -- one read
+        // per bucket -- and it is where the cost of the legend's `all` on a
+        // ten-thousand-line table was.
+        CHECK(first.reads >= 1000000 / 65536);
+        CHECK(first.reads <= 2 + 1000000 / 65536);
+        CHECK(first.crossings == 1);
+
         const auto resize = [&](int columns) {
             return wide.measure([&] {
                 wide.plot.setPaneColumns(columns);
@@ -701,27 +790,14 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         };
         CHECK(few == 2 * bucketsFor(512));
         CHECK(many == 2 * bucketsFor(2048));
-        // The whole line, exactly once, both times. Not "about the whole line":
-        // a read is cut back to a whole number of buckets precisely so that no
-        // element is read twice at the seam between two of them.
-        CHECK(narrow.elements == 1000000);
-        CHECK(broad.elements == 1000000);
 
-        // And in the same number of round trips, because a round trip is a
-        // hyperslab of up to kReadRun elements and has nothing to do with how
-        // many buckets those elements are folded into. This is the number that
-        // used to follow the bucket count -- one read per bucket -- and it is
-        // where the cost of the legend's `all` on a ten-thousand-line table
-        // was: a hundred and twenty-eight buckets of eight elements each is a
-        // hundred and twenty-eight reads to move a kilobyte, ten thousand
-        // times over.
-        CHECK(narrow.reads == broad.reads);
-        // Sixteen reads of sixty-five thousand cover a million, and cutting
-        // each of them back to a whole number of buckets can cost one more.
-        CHECK(narrow.reads >= 1000000 / 65536);
-        CHECK(narrow.reads <= 2 + 1000000 / 65536);
-        CHECK(narrow.crossings == 1);
-        CHECK(broad.crossings == 1);
+        // And neither of them touched the file. A window dragged across a dozen
+        // column quanta is a dozen folds now, where it was a dozen readings of
+        // a million elements.
+        CHECK(narrow.reads == 0);
+        CHECK(broad.reads == 0);
+        CHECK(narrow.crossings == 0);
+        CHECK(broad.crossings == 0);
     }
 
     SECTION("a bucket of eight elements is not a read of eight elements")
@@ -770,13 +846,19 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(dragging.reads == 0);
         CHECK(dragging.elements == 0);
 
-        // ...and the moment it stops, once.
+        // ...and the moment it stops, still nothing: the new width is a
+        // different fold of elements already held, so what the debounce used to
+        // be protecting -- one read of the whole file at the end of the drag
+        // instead of one per quantum during it -- has no read left to defer.
         const auto settled = wide.measure([&] {
             h5test::settleFor(DatasetPlot::kResizeMilliseconds + 200);
             (void)wide.plot.pointCount();
         });
-        CHECK(settled.crossings == 1);
-        CHECK(settled.elements == 1000000);
+        CHECK(settled.crossings == 0);
+        CHECK(settled.elements == 0);
+        // The pane is drawn at the width it was dragged to, which is the half
+        // of this that a count of zero would otherwise be happy to lie about.
+        CHECK(wide.plot.pointCount() == 2 * ((1000000 + 488) / 489));
     }
 
     SECTION("a selection of thousands holds fewer points in each line")
@@ -801,6 +883,160 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         CHECK(many.plot.pointCount() <= DatasetPlot::kMinPoints);
         // ...and it is still an envelope, so nothing has been skipped over.
         CHECK(many.plot.thinned());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The whole descent, at the rate a hand moves
+// ---------------------------------------------------------------------------
+//
+// The benchmark this was all for: a reader puts the pointer on one exact
+// position of a ten-million-element line and zooms from the whole of it down to
+// a single sample per column, in twenty frames -- a tenth of a second at two
+// hundred a second, which is one pinch on a trackpad.
+//
+// Each of those frames has to show the *right* data at its own level of detail,
+// and that is the half a cost test cannot see: a cache that is fast and subtly
+// wrong counts exactly like one that works. So every frame is checked against
+// the elements themselves here, and the milliseconds are tools/bench-zoom's to
+// print. This asserts what makes the speed possible and what makes it correct;
+// it does not assert a duration, because a duration measures the machine.
+//
+// Twenty reads of runs the reader has already left, on a thread that runs one
+// job after another, is what this used to be. It is now none.
+
+namespace {
+
+/// How many frames the gesture is drawn in, and how fine it ends.
+constexpr int kZoomFrames = 20;
+constexpr long long kZoomLine = 10000000;
+constexpr int kZoomColumns = 2048;
+
+/// Check one drawn line against the elements it claims to summarise.
+///
+/// CountingSource answers a cell with its own row-major position, so a line of
+/// `{1, N}` is `f(i) = i` -- which makes every drawn value predictable to the
+/// last digit rather than approximately right. Two rules pin the whole run:
+///
+///   - an envelope bucket holds `[p, p + bucket)` and answers with its two
+///     extremes in occurrence order, so on a rising line those are `p` and
+///     `p + bucket - 1`;
+///   - the two sit half a bucket apart, so the *even* sample of each pair sits
+///     at the bucket's own start -- and its value is therefore exactly its own
+///     axis position.
+///
+/// Both hold unchanged for a run drawn sample for sample, where the step is one
+/// and each element is its own bucket. So one rule covers every resolution, and
+/// an off-by-one in the alignment, the bucket, the offset or the order of the
+/// pair fails it immediately.
+void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
+{
+    REQUIRE(line.values != nullptr);
+    REQUIRE(line.count > 0);
+    const double step = line.positionStep;
+    for (qsizetype i = 0; i < line.count; ++i) {
+        const double at = line.positionStart + static_cast<double>(i) * step;
+        // The far end of the bucket, clipped by the end of the line -- the last
+        // bucket of a run that reaches it is summarised from what there is.
+        const double want =
+            (i % 2 == 0) ? at : std::min(at + step - 1.0, static_cast<double>(length - 1));
+        INFO("sample " << i << " of " << line.count << " at " << at << " step " << step);
+        REQUIRE(line.values[i] == want);
+    }
+}
+
+} // namespace
+
+TEST_CASE("a zoom from the whole line to a single sample reads nothing", "[cost][plot][zoom]")
+{
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount(); // the one pass over the file
+    Counted::settleAll();
+
+    REQUIRE(big.plot.seriesCount() == 1);
+
+    // One exact, well-known position: the middle of the record. A zoom holds
+    // the pointer still and brings both edges in towards it, which is what
+    // PlotSurface.zoomedAxis does and what setZoomFocus says is happening.
+    const double focus = 4999999.0;
+    double low = 0.0;
+    double high = static_cast<double>(kZoomLine);
+    // Twenty frames from the whole line to one sample a column.
+    const double shrink =
+        std::pow(static_cast<double>(kZoomColumns) / static_cast<double>(kZoomLine),
+                 1.0 / static_cast<double>(kZoomFrames));
+
+    int checked = 0;
+    int resolved = 0;
+    const auto cost = big.measure([&] {
+        for (int frame = 0; frame < kZoomFrames; ++frame) {
+            big.plot.setZoomFocus(focus, 1.0 / shrink);
+            low = focus - (focus - low) * shrink;
+            high = focus + (high - focus) * shrink;
+            big.plot.setVisibleRange(low, high);
+
+            // Drawn in the same turn the range was pushed in. No settle, no
+            // event loop, no waiting on a thread: this is what a frame does.
+            const gui::PlotLine line = big.plot.lineOf(0);
+            drawnMatchesTheFile(line, kZoomLine);
+
+            // ...and at the resolution the frame asked for. A bucket is a
+            // column, so the run on screen carries at least one drawn station
+            // per pane column -- fewer than that is a summary stretched over
+            // the pane rather than the detail the reader zoomed in for, which
+            // is the failure this whole arrangement exists to remove.
+            //
+            // One rather than the two an envelope aims for, because the bucket
+            // is rounded up to a power of two: a span a hair over an octave
+            // boundary is drawn at the next bucket up and loses half its
+            // stations, which is deliberate -- an arbitrary bucket would
+            // reshuffle which samples each column held on every pixel of zoom.
+            //
+            // Asked only while there is a closer look to have. The first frame
+            // or two are still showing half the dataset, where the whole-line
+            // summary is the finest reading of it there is -- it is one bucket
+            // per column of the *whole* line, so a view of part of it holds
+            // that fraction of them and no read could improve on it.
+            const double stations = (high - low) / line.positionStep;
+            INFO("frame " << frame << " span " << (high - low) << " stations " << stations);
+            if (gui::windowFor(low, high, kZoomLine, kZoomColumns).has_value()) {
+                CHECK(stations > kZoomColumns - 1.0);
+                ++resolved;
+            }
+            ++checked;
+        }
+    });
+
+    CHECK(checked == kZoomFrames);
+    // All but the opening frames, which are the ones still showing so much of
+    // the line that the summary is the whole answer.
+    CHECK(resolved >= kZoomFrames - 2);
+    // The whole descent, out of one pass over the file.
+    CHECK(cost.crossings == 0);
+    CHECK(cost.reads == 0);
+    CHECK(cost.elements == 0);
+    // And it ends on the line itself rather than on a summary of it.
+    CHECK_FALSE(big.plot.thinned());
+
+    SECTION("and coming back out reads nothing either")
+    {
+        // Retracing a zoom is the direction that used to cost most: the runs
+        // the reader came in through had been evicted by the ones read ahead of
+        // them, so every step out was a read of a wider span than the step in
+        // had been. Out of a held line there is nothing to evict and nothing to
+        // re-read.
+        const auto back = big.measure([&] {
+            for (int frame = 0; frame < kZoomFrames; ++frame) {
+                big.plot.setZoomFocus(focus, shrink);
+                low = focus - (focus - low) / shrink;
+                high = focus + (high - focus) / shrink;
+                big.plot.setVisibleRange(low, high);
+                drawnMatchesTheFile(big.plot.lineOf(0), kZoomLine);
+            }
+        });
+        CHECK(back.crossings == 0);
+        CHECK(back.reads == 0);
     }
 }
 

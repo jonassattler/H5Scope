@@ -41,6 +41,19 @@ qt_add_executable(bench-data bench-data.cpp)
 target_link_libraries(bench-data PRIVATE gui postproc Qt6::Core Qt6::Gui)
 qt_import_plugins(bench-data INCLUDE Qt6::QOffscreenIntegrationPlugin)
 
+# ...and what moving a view costs, once it is open. The third of the same
+# question, and a separate tool for the same reason the second one is: opening a
+# plot pays for a pass over the file, and zooming used to pay for another one at
+# every notch. That second number is the one a reader feels as the plot being
+# jumpy rather than as the plot being slow, and nothing else measures it.
+#
+# It drives the same DatasetPlot and CustomPlot the window binds to, through the
+# same setZoomFocus/setVisibleRange the surface pushes, and projects every frame
+# through gui::samplesOf -- so a frame here is a frame rather than a model call.
+qt_add_executable(bench-zoom bench-zoom.cpp)
+target_link_libraries(bench-zoom PRIVATE gui postproc Qt6::Core Qt6::Gui)
+qt_import_plugins(bench-zoom INCLUDE Qt6::QOffscreenIntegrationPlugin)
+
 # The pictures in README.md, taken off the application's own window. See the
 # header of make-screenshots.cpp: they went stale because they were taken by
 # hand, and this is what makes them a thing the build produces instead.

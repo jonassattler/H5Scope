@@ -2281,24 +2281,43 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         CHECK(back.values == whole.values);
     }
 
-    SECTION("the next step in is already in hand")
+    SECTION("the next step in is drawn at once, and finer")
     {
-        // The prefetch, through the seam the renderer is handed: the run is
-        // read an octave finer than the pane needs, so stepping in lands on the
-        // values already here. The same pointer, not a new one -- which is what
-        // "nothing was read" looks like from this side.
+        // The step down, through the seam the renderer is handed.
+        //
+        // This used to assert that stepping in landed on the *same pointer*: a
+        // run was read an octave finer than the pane needed, so the step down
+        // reused it, and an unchanged pointer was what "nothing was read"
+        // looked like from this side.
+        //
+        // The pointer changes now, and for a better reason than it used to stay
+        // the same. The line is held whole, so the step down is folded at
+        // exactly the bucket the new pane asks for rather than settling for the
+        // run that happened to be in hand -- which was up to an octave coarser
+        // than the pane, about one drawn station per column where it asked for
+        // two. Reusing it was the right trade while the alternative was a round
+        // trip; out of a held line the finer fold has nothing to weigh against.
+        //
+        // It still costs no read. That half is counted in tests/test_cost.cpp,
+        // where a count can say it -- a pointer cannot.
         plot->setVisibleRange(0.0, 4000.0);
         h5test::settleFor(300);
         const gui::PlotLine closer = plot->lineOf(0);
         REQUIRE(closer.values != whole.values);
 
         plot->setVisibleRange(1000.0, 3000.0); // half the span, same centre
-        h5test::settleFor(300);
 
+        // In the same call, with no settle waited out and nothing in flight.
         const gui::PlotLine stepped = plot->lineOf(0);
-        CHECK(stepped.values == closer.values);
-        CHECK(stepped.positionStep == Catch::Approx(closer.positionStep));
-        CHECK(stepped.positionStart == Catch::Approx(closer.positionStart));
+        REQUIRE(stepped.values != nullptr);
+        REQUIRE(stepped.count > 0);
+        CHECK(stepped.positionStep < closer.positionStep);
+        // ...and it covers the pane, which is the thing a finer run gets wrong
+        // when it is wrong: a line that starts or ends inside the frame.
+        CHECK(stepped.positionStart <= 1000.0);
+        CHECK(stepped.positionStart +
+                  static_cast<double>(stepped.count - 1) * stepped.positionStep >=
+              3000.0);
     }
 
     SECTION("a run off the end of the line is what is left of it")

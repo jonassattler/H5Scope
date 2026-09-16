@@ -24,6 +24,7 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotItem.hpp"
+#include "gui/PlotLevels.hpp"
 #include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
@@ -43,6 +44,7 @@
 
 #include <hdf5.h>
 
+#include <algorithm>
 #include <limits>
 #include <cmath>
 #include <vector>
@@ -561,6 +563,79 @@ TEST_CASE_METHOD(PlotFixture, "the same slice draws the same in both plots", "[c
     CHECK(custom->maximum() == Approx(9.0));
 }
 
+TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not by the bucket",
+                 "[custom][cost]")
+{
+    // The other half of the test above, and the half that was missing.
+    //
+    // That one asserts the two plots agree about every value, and they always
+    // did. What they did not agree about was what it cost to find them out: the
+    // Plot tab read a line in hyperslabs of up to gui::kReadRun and folded the
+    // buckets out of the buffer, and a custom tab asked HDF5 for one bucket at
+    // a time. Same elements, same picture, a thousand times the round trips --
+    // which is invisible to a test that compares values and is the whole of
+    // what a reader feels on a dataset of any size.
+    //
+    // Counted rather than timed, for tests/test_cost.cpp's reason: a duration
+    // measures the machine, a count measures the program.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+
+    const long long before = gui::CustomPlot::hyperslabs();
+    add(plot, QStringLiteral("/trace[:]"));
+    const long long spent = gui::CustomPlot::hyperslabs() - before;
+
+    // Twenty thousand elements is one hyperslab of sixty-four thousand, however
+    // many buckets they are folded into. It used to be one per bucket, which at
+    // the default pane is a thousand of them.
+    REQUIRE(plot->seriesCount() == 1);
+    REQUIRE(plot->sourcePointCount() == 20000);
+    CHECK(spent == (20000 + gui::kReadRun - 1) / gui::kReadRun);
+    CHECK(spent == 1);
+
+    // And the fold is still a fold: the one-sample spike at 12345 survives it,
+    // which is what says the batching changed the reads and not the arithmetic.
+    CHECK(plot->thinned());
+    CHECK(plot->maximum() == Approx(9.0));
+
+    SECTION("and a closer look is not read at all")
+    {
+        // The one pass above kept what it read, at the finest bucket the budget
+        // affords, so zooming in is a fold of a buffer already in hand. This
+        // used to be "a bounded number of hyperslabs rather than one per drawn
+        // point", which was the right bound while a closer look was a read; the
+        // bound now is none.
+        //
+        // The Plot tab does the same thing on the same code -- see
+        // tests/test_cost.cpp, "a zoom from the whole line to a single sample
+        // reads nothing" -- which is what keeps the two tabs one program.
+        const gui::PlotLine whole = plot->lineOf(0);
+        const double summaryStep = whole.positionStep;
+
+        const long long asked = gui::CustomPlot::hyperslabs();
+        plot->setVisibleRange(12000.0, 12800.0);
+        settleAll();
+        h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+        settleAll();
+        const long long closer = gui::CustomPlot::hyperslabs() - asked;
+
+        CHECK(closer == 0);
+
+        // ...and it resolved rather than stretching, which is the half a count
+        // of zero would otherwise be perfectly happy to lie about.
+        const gui::PlotLine near = plot->lineOf(0);
+        REQUIRE(near.values != nullptr);
+        CHECK(near.positionStep < summaryStep);
+        // The spike is still in it: the run covers 12000..12800 and 12345 is
+        // inside, so whatever the bucket, one of these values is the spike.
+        double highest = 0.0;
+        for (qsizetype i = 0; i < near.count; ++i) {
+            highest = std::max(highest, near.values[i]);
+        }
+        CHECK(highest == Approx(9.0));
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "a wider pane is read at a finer bucket", "[custom][plot]")
 {
     // What a line is thinned to is a property of the pane it is drawn in, not a
@@ -793,24 +868,51 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
 
     SECTION("the next step in is already in hand")
     {
-        // The prefetch: a run is read an octave finer than the pane needs, so
-        // the reader's next step down lands on values that are already here.
-        // Observable as the pointer -- the same buffer, not a new one -- which
-        // is the only way to say "nothing was read" without counting.
+        // The prefetch: a run is read finer than the pane needs, so the
+        // reader's next step down lands on values that are already here.
+        //
+        // This used to be asserted as the pointer -- the same buffer, not a new
+        // one -- because that was the only way to say "nothing was read"
+        // without counting. There is a count now, and it says it directly;
+        // which matters, because the step down no longer hands back the *same*
+        // buffer. A run is held finer than the pane can show and folded to what
+        // it can, so stepping in re-folds it at an octave finer. Different
+        // pointer, finer picture, still no read, which is the thing that was
+        // being asserted all along.
         plot->setVisibleRange(0.0, 4000.0);
         h5test::settleFor(300);
         settleAll();
         const gui::PlotLine closer = plot->lineOf(0);
         REQUIRE(closer.values != whole.values);
 
+        const long long before = gui::CustomPlot::hyperslabs();
         plot->setVisibleRange(1000.0, 3000.0); // half the span, same centre
         h5test::settleFor(300);
         settleAll();
 
         const gui::PlotLine stepped = plot->lineOf(0);
-        CHECK(stepped.values == closer.values);
-        CHECK(stepped.positionStep == Approx(closer.positionStep));
+        CHECK(gui::CustomPlot::hyperslabs() == before);
+        CHECK(stepped.positionStep <= closer.positionStep);
         CHECK(stepped.positionStart == Approx(closer.positionStart));
+
+        // And it is the same data underneath, whichever buffer it is folded
+        // into: the fold is exact, so a point of the coarser picture is the
+        // extreme of the finer points it was folded from.
+        REQUIRE(stepped.count > 0);
+        double lowest = stepped.values[0];
+        double highest = stepped.values[0];
+        for (qsizetype i = 0; i < stepped.count; ++i) {
+            lowest = std::min(lowest, stepped.values[i]);
+            highest = std::max(highest, stepped.values[i]);
+        }
+        double wasLowest = closer.values[0];
+        double wasHighest = closer.values[0];
+        for (qsizetype i = 0; i < closer.count; ++i) {
+            wasLowest = std::min(wasLowest, closer.values[i]);
+            wasHighest = std::max(wasHighest, closer.values[i]);
+        }
+        CHECK(lowest >= wasLowest);
+        CHECK(highest <= wasHighest);
     }
 
     SECTION("the octaves out are already in hand")

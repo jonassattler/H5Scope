@@ -2167,4 +2167,97 @@ std::size_t writeScaleFile(const std::filesystem::path& path, const ScaleSpec& s
     return ec ? 0U : static_cast<std::size_t>(size);
 }
 
+std::size_t writeAdcFile(const std::filesystem::path& path, std::size_t count)
+{
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    if (count == 0) {
+        return 0;
+    }
+
+    {
+        const Id file(H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT),
+                      &H5Fclose, "create the adc file");
+        const Id group = makeGroup(file, "plotting");
+
+        // The same trace /plotting/adc_10M carries, at whatever length is asked
+        // for: a slow drift, a mid-band oscillation, broadband noise, and one
+        // impulse every sixteenth of the record at an index no round stride
+        // lands on. The periods scale with the length so that the picture at
+        // any size is the same picture -- a hundred million samples of the same
+        // instrument, not a hundred million samples of a faster one.
+        const auto length = static_cast<double>(count);
+        const double scale = length / 10000000.0;
+        std::mt19937_64 rng(0x5EED5CA1EULL);
+        const auto uniform = [&rng] {
+            return static_cast<double>(rng() >> 11) / 9007199254740992.0 * 2.0 - 1.0;
+        };
+        const auto bell = [&uniform] {
+            return (uniform() + uniform() + uniform() + uniform()) / 2.0;
+        };
+
+        const Id props = chunked({65536});
+        const Id space = makeSpace({static_cast<hsize_t>(count)});
+        const Id dataset(
+            H5Dcreate2(group, "adc", H5T_NATIVE_INT16, space, H5P_DEFAULT, props, H5P_DEFAULT),
+            &H5Dclose, "create adc");
+
+        // Written a block at a time rather than as one buffer: a billion int16
+        // is two gigabytes, and materialising that before the first byte
+        // reaches the file is two gigabytes of resident memory to write a file
+        // whose whole point is being larger than memory is comfortable with.
+        constexpr std::size_t kBlock = 1 << 20;
+        std::vector<std::int16_t> block(kBlock);
+        std::size_t done = 0;
+        bool up = true;
+        // Seventeen impulses, one every seventeenth of the record and each one
+        // offset from that boundary by an odd amount, so that no round stride
+        // lands on any of them -- which is the whole reason the plot reads an
+        // envelope and not every nth element. The offset is adc_10M's own first
+        // impulse, so a reader comparing the two is looking at the same trace.
+        const std::size_t spacing = std::max<std::size_t>(count / 17, 1);
+        const std::size_t offset = 15013 % spacing;
+        std::size_t nextImpulse = offset;
+
+        while (done < count) {
+            const std::size_t take = std::min(kBlock, count - done);
+            for (std::size_t i = 0; i < take; ++i) {
+                const double t = static_cast<double>(done + i);
+                const double value = 9000.0 * std::sin(t / (640000.0 * scale)) +
+                                     2500.0 * std::sin(t / (1730.0 * scale)) +
+                                     700.0 * std::sin(t / 37.0) + 900.0 * bell();
+                block[i] = static_cast<std::int16_t>(std::clamp(value, -32000.0, 32000.0));
+            }
+            while (nextImpulse < done + take) {
+                block[nextImpulse - done] = up ? std::int16_t{32000} : std::int16_t{-32000};
+                up = !up;
+                nextImpulse += spacing;
+            }
+
+            const Id fileSpace(H5Dget_space(dataset), &H5Sclose, "adc file space");
+            const hsize_t start = done;
+            const hsize_t howMany = take;
+            must(H5Sselect_hyperslab(fileSpace, H5S_SELECT_SET, &start, nullptr, &howMany, nullptr),
+                 "select adc block");
+            const Id memorySpace(H5Screate_simple(1, &howMany, nullptr), &H5Sclose,
+                                 "adc memory space");
+            must(H5Dwrite(dataset, H5T_NATIVE_INT16, memorySpace, fileSpace, H5P_DEFAULT,
+                          block.data()),
+                 "write adc block");
+            done += take;
+        }
+
+        stringAttribute(dataset, "note",
+                        "One impulse every seventeenth of the record, each a single sample. "
+                        "A stride lands on none of them; an envelope keeps all of them");
+        doubleAttribute(dataset, "sample_rate_hz", 100000.0);
+        stringAttribute(group, "purpose", "One long trace, for measuring the plot on");
+    }
+
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? 0U : static_cast<std::size_t>(size);
+}
+
 } // namespace h5example

@@ -31,14 +31,18 @@ namespace {
 void usage(const char* program)
 {
     std::fprintf(stderr,
-                 "usage: %s [directory] [--scale] [--runs N] [--flat N]\n"
+                 "usage: %s [directory] [--scale] [--runs N] [--flat N] [--adc N]\n"
                  "\n"
                  "  directory   where to write (default: the working directory)\n"
                  "  --scale     also write example_scale.h5, the many-object file\n"
                  "  --runs N    acquisition groups in the scale file (default 240)\n"
                  "  --flat N    members of its one flat group (default 8192)\n"
                  "  --sessions N  groups holding many members each (default 256)\n"
-                 "  --small     a scale file a tenth the size, for a quick check\n",
+                 "  --small     a scale file a tenth the size, for a quick check\n"
+                 "  --adc N     also write example_adc_N.h5: one trace of N samples\n"
+                 "              and nothing else, for measuring the plot on.\n"
+                 "              100000000 is 200 MB and 1000000000 is 2 GB;\n"
+                 "              neither is written by the test suite or by CI.\n",
                  program);
 }
 
@@ -64,6 +68,7 @@ int main(int argc, char** argv)
 {
     std::filesystem::path directory = ".";
     bool scale = false;
+    long long adc = 0;
     h5example::ScaleSpec spec;
 
     for (int i = 1; i < argc; ++i) {
@@ -84,13 +89,27 @@ int main(int argc, char** argv)
         } else if (argument == "--sessions") {
             spec.sessions = intOption(argc, argv, i);
             scale = true;
-        } else if (argument == "--help" || argument == "-h") {
+        }
+        else if (argument == "--adc") {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 2;
+            }
+            adc = std::atoll(argv[++i]);
+            if (adc <= 0) {
+                usage(argv[0]);
+                return 2;
+            }
+        }
+        else if (argument == "--help" || argument == "-h") {
             usage(argv[0]);
             return 0;
-        } else if (argument.starts_with("--")) {
+        }
+        else if (argument.starts_with("--")) {
             usage(argv[0]);
             return 2;
-        } else {
+        }
+        else {
             directory = argument;
         }
         if (spec.runs < 0 || spec.flatChildren < 0 || spec.sessions < 0) {
@@ -110,6 +129,13 @@ int main(int argc, char** argv)
             const auto path = directory / "example_scale.h5";
             const std::size_t bytes = h5example::writeScaleFile(path, spec);
             std::printf("wrote %s (%.2f GB)\n", path.string().c_str(),
+                        static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+        }
+
+        if (adc > 0) {
+            const auto path = directory / ("example_adc_" + std::to_string(adc) + ".h5");
+            const std::size_t bytes = h5example::writeAdcFile(path, static_cast<std::size_t>(adc));
+            std::printf("wrote %s (%.2f GB, /plotting/adc)\n", path.string().c_str(),
                         static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
         }
         return 0;

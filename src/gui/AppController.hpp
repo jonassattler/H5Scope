@@ -48,6 +48,19 @@ class AppController : public QObject
     QML_ELEMENT
     QML_SINGLETON
 
+public:
+    /// The three the menu offers. Named rather than a number of megabytes,
+    /// because the right number depends on the machine and the reader knows
+    /// how much of theirs they want spent, not how many megabytes that is.
+    enum RamBudget
+    {
+        LowRam,
+        MediumRam,
+        GreedyRam,
+    };
+    Q_ENUM(RamBudget)
+
+private:
     Q_PROPERTY(QAbstractItemModel* treeModel READ treeModel CONSTANT)
     /// The tree as the view shows it: `treeModel` behind the tree's filter box.
     Q_PROPERTY(QAbstractItemModel* filteredTreeModel READ filteredTreeModel CONSTANT)
@@ -77,6 +90,16 @@ class AppController : public QObject
     /// together, so nothing about them moves when the tree does -- but every
     /// entry is a path *inside* a file, and this is emptied when that changes.
     Q_PROPERTY(gui::CustomPlotSet* customPlots READ customPlots CONSTANT)
+
+    /// How much memory the plots may spend holding what they have read.
+    ///
+    /// The one setting in this application that is about the machine rather
+    /// than about the data, which is why it is under Settings and not under
+    /// View. It decides nothing about what is drawn -- only how much of what
+    /// has been read is kept, so that zooming and panning back over it does not
+    /// read it again. See gui::PlotBudget.
+    Q_PROPERTY(gui::AppController::RamBudget ramBudget READ ramBudget WRITE setRamBudget
+                   NOTIFY ramBudgetChanged)
 
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
 
@@ -165,6 +188,9 @@ public:
     [[nodiscard]] DatasetImage* datasetImage() const;
     [[nodiscard]] CustomPlotSet* customPlots() const;
 
+    [[nodiscard]] RamBudget ramBudget() const { return ramBudget_; }
+    void setRamBudget(RamBudget budget);
+
     [[nodiscard]] bool hasFile() const { return fileOpen_; }
     /// Whether the file is being read right now.
     ///
@@ -240,6 +266,7 @@ public:
     Q_INVOKABLE bool selectPath(const QString& path);
 
 signals:
+    void ramBudgetChanged();
     void fileChanged();
     void busyChanged();
     /// The answer to openFile(), which only says that an open was started.
@@ -292,6 +319,7 @@ private:
 
     /// Whether the session has a file open. The file itself lives on the HDF5
     /// thread and is deliberately not reachable from here -- see H5Session.
+    RamBudget ramBudget_ = MediumRam;
     bool fileOpen_ = false;
     QString filePath_;
     QString currentPath_;

@@ -6,6 +6,8 @@
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
+#include "PlotBudget.hpp"
+#include "PlotLevels.hpp"
 
 #include <QObject>
 #include <QPointer>
@@ -17,6 +19,7 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -113,6 +116,7 @@ class DatasetPlot : public QObject
 
 public:
     explicit DatasetPlot(DatasetTableModel* table, QObject* parent = nullptr);
+    ~DatasetPlot() override;
 
     [[nodiscard]] bool seriesFromRows() const { return seriesFromRows_; }
     void setSeriesFromRows(bool fromRows);
@@ -177,6 +181,29 @@ public:
     /// asynchronously. A drag never reads; a drag that ends does, once.
     Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
 
+    /// Where the reader is zooming, and which way.
+    ///
+    /// `x` is the value under the pointer, in the x the axis prints, and
+    /// `factor` is the wheel notch: above one is in. The surface has always
+    /// known both -- a wheel event carries where it happened, and zoomedAxis()
+    /// uses it to decide what stays still under the pointer -- and until now
+    /// only the *resulting* range crossed into this object. So the runs read
+    /// ahead of a zoom were centred on the view, and a reader zooming into one
+    /// corner of the pane walked off them after a step or two and waited for
+    /// the file each time.
+    ///
+    /// Two things follow from knowing it. The octaves read ahead go towards the
+    /// pointer rather than towards the middle of the frame, and they go *now*
+    /// rather than after the gesture stops: an inward run costs half the span
+    /// of the one above it, so the whole inward ladder is cheaper than the
+    /// single octave outward that was already being read speculatively. See
+    /// gui::kFocusOctavesIn.
+    Q_INVOKABLE void setZoomFocus(double x, double factor);
+
+    /// Forget it: the reader is panning, or has reset the view. What is read
+    /// ahead goes back to being centred on what is on screen.
+    Q_INVOKABLE void clearZoomFocus();
+
     /// How wide the pane the lines are drawn in is, in device-independent
     /// pixels.
     ///
@@ -238,9 +265,6 @@ private:
     /// Sample every line in the drawn set that has not been sampled yet, and
     /// with it the extent and the point count they share.
     void ensure() const;
-    /// The rectangle of the table one line is: a row of it, or a column when
-    /// the lines run the other way.
-    [[nodiscard]] DatasetTableModel::SampleRequest requestFor(int series) const;
     /// Read every drawn line that is not already held, in one batch. Asking
     /// per line is a blocking round trip per line, which is what `all` on a
     /// table of thousands used to cost.
@@ -266,6 +290,11 @@ private:
     /// Take the pane width the surface last pushed. What the debounce timer
     /// calls; see setPaneColumns.
     void applyColumns();
+    /// Take the share of memory this object is now allowed: a different
+    /// appetite, or a custom tab opened or closed. Nothing is re-read -- what
+    /// may be *drawn* has not changed -- but runs beyond the new allowance are
+    /// given up, and a larger one may make another worth reading.
+    void applyBudget();
     /// Stop whatever was last filled from reading `lines_` or `windowLines_`.
     ///
     /// The borrow contract, honoured the blunt way: the renderer is emptied and
@@ -347,6 +376,7 @@ private:
         /// One entry per drawn line, keyed as `lines_` is. Borrowed by the
         /// renderer on exactly the same terms.
         std::map<int, std::vector<double>> lines;
+
     };
 
     // Asserted rather than left to the one platform that noticed. A member
@@ -377,10 +407,7 @@ private:
     /// a pane showing the end of a line shows some empty axis past it.
     [[nodiscard]] bool drawnPositions(double& first, double& last) const;
     /// The finest run in hand that covers what is on screen and holds every
-    /// drawn line, or -1. What lineOf() draws; the whole-line summary covers
-    /// everything by construction and is what is drawn when this finds nothing,
-    /// which is why zooming past the runs held is a correct picture immediately
-    /// rather than half a line for a moment.
+    /// drawn line, or -1. See gui::drawnLevel.
     [[nodiscard]] int drawnLevel() const;
     [[nodiscard]] bool detailCovers() const { return drawnLevel() >= 0; }
     /// The window drawnLevel() names, for the one caller that has to notice it
@@ -388,21 +415,20 @@ private:
     [[nodiscard]] std::optional<PlotWindow> drawnWindow() const;
     /// Where `window` is held, or -1.
     [[nodiscard]] int levelAt(const PlotWindow& window) const;
-    /// Whether some run in hand already answers a pane that needs `needed` --
-    /// it covers what is on screen at a bucket no coarser. This is where the
-    /// octaves are spent: a step in lands on the finer bucket the run it came
-    /// from was read at, and a step out lands on a run read ahead of it.
-    [[nodiscard]] bool levelServes(const PlotWindow& needed) const;
-    /// Whether some run in hand covers `low`..`high` at a bucket no coarser
-    /// than `bucket`, holding every drawn line. The question the prefetch asks
-    /// about an octave it is thinking of reading: a run the reader zoomed *in*
-    /// from is finer than the octave out of where they are now and covers more
-    /// of the line, so it answers for that octave and reading it again would
-    /// be a round trip spent on nothing.
-    [[nodiscard]] bool served(double low, double high, long long bucket) const;
-    /// The run to read next: the one the pane is waiting for, or -- when the
-    /// pane is already answered -- the nearest octave out that is not held yet.
-    /// Nothing when there is nothing left worth reading.
+    /// What the reader is looking at, as gui::wantedLevel and the rest of the
+    /// policy want it. An unusable view -- no axis, nothing drawn, or more
+    /// lines drawn than kWindowedSeries -- is how "read no closer look at all"
+    /// is said.
+    [[nodiscard]] LevelView levelView() const;
+    /// The runs in hand as the policy sees them, in `levels_` order.
+    ///
+    /// Into a scratch vector this object keeps, so asking costs no allocation:
+    /// lineOf() asks once per line per fill. The span is good until the next
+    /// call.
+    [[nodiscard]] std::span<const HeldLevel> ladder() const;
+    /// The focus as the policy wants it: in the line's own positions.
+    [[nodiscard]] PlotFocus focusFor() const;
+    /// The run to read next. See gui::wantedLevel.
     [[nodiscard]] std::optional<PlotWindow> detailWanted() const;
     /// Work out what to read next and arm it, or drop what is held when the
     /// view wants nothing. Every path that can change the answer ends here: a
@@ -411,11 +437,25 @@ private:
     /// Ask for it. What the settle timer calls, and the one place a read is
     /// submitted rather than waited for.
     void askForDetail();
+    /// Fill `detail` for every drawn line out of the pyramids, if they can.
+    ///
+    /// What askForDetail() tries before it submits anything. A run at or above
+    /// a line's base bucket is a fold of a buffer already in hand -- a few
+    /// thousand doubles, microseconds -- so it is installed in the same call
+    /// rather than a round trip later, which is the whole of why twenty frames
+    /// of a zoom can be twenty frames rather than twenty reads.
+    ///
+    /// False when any drawn line cannot answer, which leaves the whole run to
+    /// the file: a run half in memory and half on disk would be two pictures.
+    [[nodiscard]] bool fillDetail(const PlotWindow& detail);
+    /// Build the pyramid for every drawn line that has none. Blocks.
+    void buildPyramids() const;
+    /// Doubles one line's pyramid may spend. See gui::baseBucketFor.
+    [[nodiscard]] long long pyramidBudget() const;
     /// Install an answer, if it is still the answer that was wanted.
     void takeDetail(const PlotWindow& detail, const std::vector<int>& series,
                     std::vector<DatasetTableModel::NumericGrid> grids);
-    /// Drop the runs furthest from the one the pane is on, down to
-    /// heldLevels().
+    /// Drop runs down to heldLevels(), coldest first. See gui::coldestLevel.
     void trimLevels();
     /// Forget every run without saying so. dropDetail() is the same thing plus
     /// the signal, which invalidate() does not want because it emits its own.
@@ -440,6 +480,20 @@ private:
     /// Pruned to the drawn set on every sample, so what is held is what is on
     /// screen and a line that goes away stops costing memory.
     mutable std::map<int, std::vector<double>> lines_;
+
+    /// Each drawn line held whole, at every resolution it will be drawn at.
+    ///
+    /// The cache the closer look is served out of, and the reason a zoom stopped
+    /// costing a read. `lines_` above is derived from these -- it is the top of
+    /// each pyramid, folded to the pane's width -- and so is every run in
+    /// `levels_` whose bucket the pyramid can answer. See PlotPyramid.hpp.
+    ///
+    /// Keyed as `lines_` is and pruned with it. Not borrowed by the renderer:
+    /// what reaches PlotLine is always a vector in `lines_` or in a Detail, so
+    /// these can be replaced without the retire dance -- and must be, because a
+    /// pyramid is the one thing here large enough that keeping two would matter.
+    mutable std::map<int, LinePyramid> pyramids_;
+
     mutable int points_ = 0;
     /// Table positions between one drawn point and the next. A double because
     /// an envelope puts two points in each bucket, so they sit half a bucket
@@ -499,6 +553,23 @@ private:
     /// because ensure() is const by Qt's contract and prunes every cache down
     /// to the drawn set.
     mutable std::vector<Detail> levels_;
+    /// `levels_` as the policy sees it. See ladder(); kept so that asking
+    /// costs no allocation.
+    mutable std::vector<HeldLevel> ladder_;
+    /// Where the reader is zooming, when they are. See setZoomFocus.
+    ///
+    /// Kept in the x the axis prints rather than as a position, because
+    /// everything that changes how a position becomes an x -- the axis moving,
+    /// a different start or step -- would otherwise leave this pointing
+    /// somewhere the reader never was.
+    double focusX_ = 0.0;
+    bool focusInward_ = true;
+    bool focusActive_ = false;
+    /// Whether a read is out. One at a time, and the reply arms the next: a
+    /// zoom no longer waits out the settle, so without this a wheel spun
+    /// through six octaves would queue six reads of runs the reader has already
+    /// left behind on a thread that can only run them one after another.
+    bool inFlight_ = false;
     /// What is to be read next, and what is in flight. Two rather than one: a
     /// reply that is no longer wanted is dropped by its ticket, and a run
     /// already being read is not asked for twice.
@@ -513,26 +584,24 @@ private:
     H5Requests requests_;
 
 public:
-    /// Columns assumed until the surface has measured itself. Two of these --
-    /// a bucket answers with a low and a high -- is the two thousand points a
-    /// line used to be thinned to unconditionally.
-    static constexpr int kDefaultColumns = 1024;
-    /// The most points a line is ever thinned to, however wide the pane.
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kDefaultColumns = gui::kDefaultColumns;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kMaxPoints = gui::kMaxPoints;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kMinPoints = gui::kMinPoints;
+    /// Doubles the *renderer* walks, all drawn lines together.
     ///
-    /// Eight thousand buckets is a pane eight thousand *device* pixels across
-    /// -- see PlotSurface.pushColumns, which measures in those rather than in
-    /// logical ones -- so it covers a maximised window on a 5K display and a
-    /// 4K one at double scaling. Past that there is nothing left to resolve
-    /// for: a bucket would be narrower than a pixel.
-    static constexpr int kMaxPoints = 16384;
-    /// ...and the fewest, however many lines are sharing the budget. Below
-    /// this a line stops being a shape and starts being a sketch of one, and
-    /// nothing is saved that was worth the difference.
-    static constexpr int kMinPoints = 256;
-    /// Doubles held for the drawn set, all lines together. Two million of
-    /// them, which is sixteen megabytes -- and, far more to the point, two
-    /// million the projection has to walk on every frame of a drag.
-    static constexpr int kPointBudget = 1 << 21;
+    /// Two million of them, which is sixteen megabytes and, far more to the
+    /// point, two million the projection walks on every frame of a drag. This
+    /// one is bounded by the frame rate rather than by the machine, so it does
+    /// not move with the reader's RAM budget: a workstation with five hundred
+    /// gigabytes does not have a faster projection than a laptop, it merely has
+    /// room to *hold* more. What may be held is gui::PlotBudget, and separating
+    /// the two is what lets that one be large.
+    ///
+    /// It was called kPointBudget when it was both.
+    static constexpr int kDrawBudget = 1 << 21;
     /// Lines a new selection opens on. A ceiling on what the reader is shown
     /// before they have asked for anything, not on what they may ask for:
     /// the legend ticks any line in the table and `select all` takes them all.
@@ -543,46 +612,14 @@ public:
     /// thousands -- and small enough that the answers in hand never amount to
     /// a second copy of everything already drawn.
     static constexpr std::size_t kReadBatch = 256;
-    /// How long the view has to hold still before a closer look is read.
-    ///
-    /// Long enough that a wheel spun through six octaves reads once rather than
-    /// six times, and short enough that it lands before a reader who has
-    /// stopped to look at something has finished looking at it. The picture
-    /// does not wait for it: what is already on screen keeps being drawn.
-    static constexpr int kSettleMilliseconds = 150;
-    /// How far out a run is read before the reader has asked for it.
-    ///
-    /// The two directions of a zoom are not the same shape, and this is the one
-    /// that needs a read. Going *in* is free: a run costs its span, so the run
-    /// the reader is on is read an octave finer than the pane needs -- see
-    /// detailBuckets() -- and the step down lands on detail that came with it.
-    /// Going *out* cannot be free that way, because the next view is wider than
-    /// the run in hand and no amount of resolution inside it helps; what is
-    /// needed is another run, twice as wide at twice the bucket. That one costs
-    /// twice the elements, which is why it is read while the reader is looking
-    /// rather than while they are waiting.
-    ///
-    /// Two of them, so a double tap's worth of zooming out is already drawn.
-    /// Each costs one level of memory and its own span in reads; past two, the
-    /// spans double again and the whole-line summary is close enough to be the
-    /// honest answer.
-    static constexpr int kPrefetchOctaves = 2;
-    /// Runs held at once, at most.
-    ///
-    /// The run the pane is on, the two read ahead of it, and two the reader has
-    /// already been through -- because a run is not thrown away when the view
-    /// leaves it, so zooming back along the way you came costs nothing at all.
-    /// Bounded by the budget as well: see heldLevels().
-    static constexpr int kHeldLevels = 5;
-    /// How long the pane has to hold still before it is re-thinned.
-    ///
-    /// Longer than kSettleMilliseconds, because a window resize is a slower
-    /// gesture than a wheel spin and the cost at the end of it is higher: a
-    /// zoom re-reads one run of each line, a resize re-reads all of every one.
-    /// What the reader sees while they drag is the line thinned for the pane
-    /// they started from, stretched -- which is the right answer, because the
-    /// pane they are dragging towards is not one they have chosen yet.
-    static constexpr int kResizeMilliseconds = 200;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kSettleMilliseconds = gui::kSettleMilliseconds;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kHeldLevels = gui::kHeldLevels;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
     /// Lines past which no closer look is read at all.
     ///
     /// One crossing's worth, which is kReadBatch. Past a few hundred strokes
@@ -591,15 +628,8 @@ public:
     /// whole cost of the selection again to sharpen something nobody can
     /// follow. They stretch, as they always did.
     static constexpr int kWindowedSeries = static_cast<int>(kReadBatch);
-    /// What the pane's width is rounded down to.
-    ///
-    /// Down rather than up, and this is not arbitrary: the renderer summarises
-    /// again if it is handed more than two points per column, and it does so in
-    /// powers of two -- so a cap a hair above twice the pane costs *half* the
-    /// horizontal resolution rather than none of it. Staying under the pane
-    /// keeps the two in step, and a resize then re-reads once every sixty-four
-    /// pixels rather than once a pixel.
-    static constexpr int kColumnQuantum = 64;
+    /// See PlotLevels.hpp, which is where the argument for it is.
+    static constexpr int kColumnQuantum = gui::kColumnQuantum;
 };
 
 } // namespace gui
