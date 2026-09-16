@@ -231,6 +231,35 @@ std::string numberJson(double value)
     return std::format("{}", value);
 }
 
+/// One level of indentation. Two spaces, because a compound nests as deep as
+/// the file wants and the pane this lands in is a rail rather than a page.
+inline constexpr std::string_view kJsonIndent = "  ";
+
+/// The lead-in for a line at `depth`.
+std::string jsonLead(int depth)
+{
+    std::string out;
+    out.reserve(static_cast<std::size_t>(std::max(depth, 0)) * kJsonIndent.size());
+    for (int i = 0; i < depth; ++i) {
+        out += kJsonIndent;
+    }
+    return out;
+}
+
+/// Whether a value of this class is written over several lines once it has
+/// anything in it.
+///
+/// A struct always is: its members are named, and a reader looking one up
+/// wants the names down the left edge rather than hunting along a line. A list
+/// is broken only when it holds structs or lists of its own -- four samples on
+/// four lines is a worse reading of four samples than four samples on one, and
+/// an array member of a hundred is a hundred lines of nothing.
+bool jsonBreaksOpen(TypeClass cls)
+{
+    return cls == TypeClass::Compound || cls == TypeClass::Array
+           || cls == TypeClass::VarLen;
+}
+
 std::string formatBytes(const void* data, std::size_t size)
 {
     std::string out;
@@ -546,7 +575,7 @@ std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
     return fields;
 }
 
-std::string toJson(hid_t type, const void* data)
+std::string toJson(hid_t type, const void* data, int depth)
 {
     thread::check(__func__);
     switch (classOf(H5Tget_class(type))) {
@@ -572,17 +601,22 @@ std::string toJson(hid_t type, const void* data)
         return quoteJson(formatEnum(type, data));
     case TypeClass::Compound: {
         const int count = H5Tget_nmembers(type);
+        if (count <= 0) {
+            H5Eclear2(H5E_DEFAULT);
+            return "{}";
+        }
         std::ostringstream out;
-        out << "{";
+        out << "{\n";
         for (int i = 0; i < count; ++i) {
             const auto index = static_cast<unsigned>(i);
             Handle member(H5Tget_member_type(type, index), &H5Tclose);
             const std::size_t offset = H5Tget_member_offset(type, index);
             if (i > 0) {
-                out << ", ";
+                out << ",\n";
             }
             char* name = H5Tget_member_name(type, index);
-            out << quoteJson((name != nullptr) ? std::string_view(name)
+            out << jsonLead(depth + 1)
+                << quoteJson((name != nullptr) ? std::string_view(name)
                                                : std::string_view{})
                 << ": ";
             if (name != nullptr) {
@@ -590,10 +624,11 @@ std::string toJson(hid_t type, const void* data)
             }
             out << (member.valid()
                         ? toJson(member.get(),
-                                 static_cast<const unsigned char*>(data) + offset)
+                                 static_cast<const unsigned char*>(data) + offset,
+                                 depth + 1)
                         : std::string("null"));
         }
-        out << "}";
+        out << "\n" << jsonLead(depth) << "}";
         return out.str();
     }
     case TypeClass::Array: {
@@ -608,20 +643,30 @@ std::string toJson(hid_t type, const void* data)
         }
 
         Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid()) {
+        if (!base.valid() || total == 0) {
             H5Eclear2(H5E_DEFAULT);
             return "[]";
         }
         const std::size_t stride = H5Tget_size(base.get());
+        const bool broken = jsonBreaksOpen(classOf(H5Tget_class(base.get())));
 
         std::ostringstream out;
         out << "[";
         for (hsize_t i = 0; i < total; ++i) {
             if (i > 0) {
-                out << ", ";
+                out << ",";
+            }
+            if (broken) {
+                out << "\n" << jsonLead(depth + 1);
+            } else if (i > 0) {
+                out << " ";
             }
             out << toJson(base.get(),
-                          static_cast<const unsigned char*>(data) + i * stride);
+                          static_cast<const unsigned char*>(data) + i * stride,
+                          broken ? depth + 1 : depth);
+        }
+        if (broken) {
+            out << "\n" << jsonLead(depth);
         }
         out << "]";
         return out.str();
@@ -629,20 +674,30 @@ std::string toJson(hid_t type, const void* data)
     case TypeClass::VarLen: {
         const auto* vl = static_cast<const hvl_t*>(data);
         Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || vl->p == nullptr) {
+        if (!base.valid() || vl->p == nullptr || vl->len == 0) {
             H5Eclear2(H5E_DEFAULT);
             return "[]";
         }
         const std::size_t stride = H5Tget_size(base.get());
+        const bool broken = jsonBreaksOpen(classOf(H5Tget_class(base.get())));
 
         std::ostringstream out;
         out << "[";
         for (std::size_t i = 0; i < vl->len; ++i) {
             if (i > 0) {
-                out << ", ";
+                out << ",";
+            }
+            if (broken) {
+                out << "\n" << jsonLead(depth + 1);
+            } else if (i > 0) {
+                out << " ";
             }
             out << toJson(base.get(),
-                          static_cast<const unsigned char*>(vl->p) + i * stride);
+                          static_cast<const unsigned char*>(vl->p) + i * stride,
+                          broken ? depth + 1 : depth);
+        }
+        if (broken) {
+            out << "\n" << jsonLead(depth);
         }
         out << "]";
         return out.str();
@@ -656,9 +711,12 @@ std::string toJson(hid_t type, const void* data)
             return quoteJson(formatElement(type, data));
         }
         const std::size_t part = H5Tget_size(base.get());
+        // On one line whatever the depth: two numbers with fixed names are one
+        // value, and breaking them apart says they are a struct to look up.
         return std::format(
-            "{{\"re\": {}, \"im\": {}}}", toJson(base.get(), data),
-            toJson(base.get(), static_cast<const unsigned char*>(data) + part));
+            "{{\"re\": {}, \"im\": {}}}", toJson(base.get(), data, depth),
+            toJson(base.get(), static_cast<const unsigned char*>(data) + part,
+                   depth));
     }
     case TypeClass::Bitfield:
     case TypeClass::Opaque:

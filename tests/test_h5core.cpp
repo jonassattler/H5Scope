@@ -5,9 +5,11 @@
 
 #include "h5core/Attribute.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/DataType.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
+#include "h5core/Handle.hpp"
 #include "h5core/Types.hpp"
 
 #include "support/MemberChain.hpp"
@@ -528,8 +530,10 @@ TEST_CASE_METHOD(Fixture, "reading data", "[h5core][dataset]")
         CHECK(element.fields[1].type == "float64");
         CHECK(element.fields[1].value == "2.5");
 
-        // Numbers stay numbers and names are quoted, so this parses.
-        CHECK(element.json == R"({"id": 9, "value": 2.5})");
+        // Numbers stay numbers and names are quoted, so this parses -- and it
+        // is written out over lines, because the pane it lands in is showing
+        // one element to somebody reading it.
+        CHECK(element.json == "{\n  \"id\": 9,\n  \"value\": 2.5\n}");
         // The same element as the grid prints it, so the two cannot disagree.
         CHECK(element.text == ds.readAll().cells[1]);
     }
@@ -585,6 +589,88 @@ TEST_CASE_METHOD(Fixture, "reading data", "[h5core][dataset]")
     {
         const h5core::Dataset ds(file, "/compressed"); // 10,000 elements
         REQUIRE_THROWS_AS(ds.readAll(100), h5core::H5Error);
+    }
+}
+
+TEST_CASE("JSON is written to be read, and not only to be parsed", "[h5core][json]")
+{
+    // No file at all: toJson takes a datatype and a buffer. A type built here
+    // is also the only way to state the rule about a list of structs, because
+    // nothing in the fixtures or the example file has one.
+    struct Point {
+        double x;
+        double y;
+    };
+    struct Holder {
+        Point trail[2];
+        std::int32_t count;
+    };
+
+    h5core::Handle point(H5Tcreate(H5T_COMPOUND, sizeof(Point)), &H5Tclose);
+    REQUIRE(point.valid());
+    H5Tinsert(point.get(), "x", HOFFSET(Point, x), H5T_NATIVE_DOUBLE);
+    H5Tinsert(point.get(), "y", HOFFSET(Point, y), H5T_NATIVE_DOUBLE);
+
+    const hsize_t two = 2;
+    h5core::Handle trail(H5Tarray_create2(point.get(), 1, &two), &H5Tclose);
+    REQUIRE(trail.valid());
+
+    h5core::Handle holder(H5Tcreate(H5T_COMPOUND, sizeof(Holder)), &H5Tclose);
+    REQUIRE(holder.valid());
+    H5Tinsert(holder.get(), "trail", HOFFSET(Holder, trail), trail.get());
+    H5Tinsert(holder.get(), "count", HOFFSET(Holder, count), H5T_NATIVE_INT32);
+
+    const Holder value{{{1.0, 2.0}, {3.0, 4.0}}, 7};
+
+    SECTION("a scalar is one line, whatever it is a member of")
+    {
+        CHECK(h5core::toJson(H5T_NATIVE_DOUBLE, &value.trail[0].x) == "1");
+        CHECK(h5core::toJson(H5T_NATIVE_INT32, &value.count) == "7");
+    }
+
+    SECTION("a struct opens out, one member to a line")
+    {
+        CHECK(h5core::toJson(point.get(), &value.trail[0])
+              == "{\n  \"x\": 1,\n  \"y\": 2\n}");
+    }
+
+    SECTION("a list of structs opens out too, indented under its own name")
+    {
+        // Each element on its own line, and each element's members indented
+        // under that -- so the whole of it reads as a shape rather than as one
+        // very long line the pane has to wrap.
+        CHECK(h5core::toJson(holder.get(), &value)
+              == "{\n"
+                 "  \"trail\": [\n"
+                 "    {\n      \"x\": 1,\n      \"y\": 2\n    },\n"
+                 "    {\n      \"x\": 3,\n      \"y\": 4\n    }\n"
+                 "  ],\n"
+                 "  \"count\": 7\n"
+                 "}");
+    }
+
+    SECTION("a list of numbers stays on the line its name is on")
+    {
+        // The other half of the same rule. Four samples on four lines is a
+        // worse reading of four samples than four samples on one, and an array
+        // member of a hundred would be a hundred lines of nothing.
+        const hsize_t four = 4;
+        h5core::Handle samples(H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, &four),
+                               &H5Tclose);
+        REQUIRE(samples.valid());
+        const double values[4] = {0.0, 0.25, 0.5, 0.75};
+        CHECK(h5core::toJson(samples.get(), values) == "[0, 0.25, 0.5, 0.75]");
+    }
+
+    SECTION("nothing in it is nothing to open out")
+    {
+        // An empty list is two characters, not two lines with a blank between
+        // them -- and an empty list is what every fourth record of the example
+        // file's `tags` holds, so this is the common case rather than an edge.
+        h5core::Handle list(H5Tvlen_create(H5T_NATIVE_INT32), &H5Tclose);
+        REQUIRE(list.valid());
+        const hvl_t none{0, nullptr};
+        CHECK(h5core::toJson(list.get(), &none) == "[]");
     }
 }
 

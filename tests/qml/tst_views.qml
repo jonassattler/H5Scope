@@ -1633,7 +1633,7 @@ TestCase {
         compare(first.fields.length, 2)
         compare(first.fields[0].name, "id")
         compare(first.fields[0].value, "7")
-        compare(first.json, '{"id": 7, "value": 1.5}')
+        compare(first.json, '{\n  "id": 7,\n  "value": 1.5\n}')
 
         // The plot and the image are unavailable for it, as for any dataset
         // whose cells hold no number.

@@ -841,7 +841,7 @@ TEST_CASE("a member of a compound reads as a dataset of its own",
         const h5core::ElementValue element = position.readElement({2});
         REQUIRE(element.fields.size() == 3);
         CHECK(element.fields[0].name == "x");
-        CHECK(element.json == R"({"x": 2, "y": 4, "z": 6})");
+        CHECK(element.json == "{\n  \"x\": 2,\n  \"y\": 4,\n  \"z\": 6\n}");
     }
 }
 
@@ -1157,7 +1157,12 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         CHECK(element.fields[4].value == "BAD");
 
         CHECK_THAT(element.json, ContainsSubstring(R"("station": "ST-000")"));
-        CHECK_THAT(element.json, ContainsSubstring(R"("position": {"x": 0, "y": 0, "z": 0})"));
+        // The nested struct opens out under its own name, one member per line
+        // and indented under it.
+        CHECK_THAT(element.json,
+                   ContainsSubstring("\"position\": {\n    \"x\": 0,"));
+        // The array of four does not: four numbers on four lines is a worse
+        // reading of four numbers than four numbers on one.
         CHECK_THAT(element.json, ContainsSubstring(R"("samples": [0, 0.25, 0.5, 0.75])"));
         CHECK_THAT(element.json, ContainsSubstring(R"("quality": "BAD")"));
     }
@@ -1189,7 +1194,7 @@ TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
         const QVariantMap element = table->elementAt(1, 2);
         CHECK(element.value(QStringLiteral("label")).toString() == QStringLiteral("[1,2]"));
         CHECK(element.value(QStringLiteral("json")).toString() ==
-              QStringLiteral(R"({"id": 7, "value": 0.875})"));
+              QStringLiteral("{\n  \"id\": 7,\n  \"value\": 0.875\n}"));
         CHECK(element.value(QStringLiteral("fields")).toList().size() == 2);
 
         // A cell that is not there is not an error, it is nothing.
