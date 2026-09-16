@@ -10,6 +10,7 @@
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 
 #include <QAbstractItemModel>
@@ -162,6 +163,15 @@ private:
     /// makes exactly this editable, so that what can be typed is always a
     /// complete slice of the object already named beside it.
     Q_PROPERTY(QString sliceText READ sliceText NOTIFY tableLayoutChanged)
+    /// The member chain the selection is read through: `.position.x`, or empty
+    /// for the dataset itself.
+    ///
+    /// Its own box after the closing bracket rather than part of `sliceText`,
+    /// because the two say different things and one of them is only a question
+    /// for a compound. Keeping them apart is also what leaves the pipeline's
+    /// slice row alone: that row *is* the slice line, and it had better go on
+    /// being exactly it.
+    Q_PROPERTY(QString memberText READ memberText NOTIFY tableLayoutChanged)
     /// Files opened before, newest first. Each entry is
     /// `{ path, name, folder, missing }` -- `missing` when the file is no
     /// longer where it was, which is worth showing rather than hiding, because
@@ -230,6 +240,28 @@ public:
     /// can. Checks without applying, so the bar can report a line as it is
     /// typed.
     Q_INVOKABLE QString sliceError(const QString& text) const;
+    [[nodiscard]] QString memberText() const { return memberText_; }
+    /// Apply an edited member chain. Returns the reason it could not be read,
+    /// or an empty string once the views are showing that member.
+    ///
+    /// A subscript written on the chain is *folded onto the slice line*, and
+    /// the box prints back the bare chain: `.samples[2]` becomes `.samples`
+    /// with a `2` in the slice beside it. They are the same selection -- that
+    /// is the identity the whole notation rests on -- and the canonical half is
+    /// the one where the member's axes are ordinary dimensions the reader can
+    /// slice, lay out and put on an axis like any others.
+    Q_INVOKABLE QString applyMember(const QString& text);
+    /// Why an edited member chain cannot be read, or empty when it can. Pure
+    /// arithmetic over the datatype already described, so it answers on every
+    /// keystroke without opening anything.
+    Q_INVOKABLE QString memberError(const QString& text) const;
+
+private:
+    /// What the data views draw: the dataset, or the dataset seen through the
+    /// member chain. `originInfo_` is what the file said; this is the result.
+    [[nodiscard]] h5core::DatasetInfo projectedInfo() const;
+
+public:
     // --- settings a view keeps for the dataset they were made on ---------
     /// What `group` last held for the dataset now selected, or an empty map.
     ///
@@ -330,6 +362,16 @@ private:
     bool datasetIsString_ = false;
     bool datasetIsNumeric_ = false;
     bool datasetIsCompound_ = false;
+    /// What the file says the selection is, before any member chain. The
+    /// chain resolves against this, and `datasetInfo_` below is the result:
+    /// what the data views are actually drawing.
+    h5core::DatasetInfo originInfo_;
+    QString memberText_;
+    h5core::MemberSelection memberSelection_;
+    /// What each dataset's member chain was when it was last left, so that
+    /// coming back to one comes back to the member. Beside `slices_`, and for
+    /// the same reason.
+    QHash<QString, QString> members_;
     bool datasetIsFloat_ = false;
     int datasetRank_ = 0;
     qint64 datasetElementCount_ = 0;

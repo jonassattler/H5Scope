@@ -274,7 +274,20 @@ MemberChain resolveMemberChain(const std::vector<MemberStep>& chain,
     }
 
     result.selection.type = *level;
-    result.selection.text = writeMemberChain(chain).toStdString();
+
+    // The canonical chain: the members, and nothing else. Every subscript the
+    // reader wrote has gone into `folded` to be put on the slice line, so what
+    // is left here is what the box prints back and what names the result. The
+    // one exception is a vlen index, which has no slice line to go to.
+    QString canonical;
+    for (const h5core::MemberLink& link : result.selection.links) {
+        canonical += QLatin1Char('.') + QString::fromStdString(link.name);
+        if (link.vlenIndex.has_value()) {
+            canonical += QLatin1Char('[') + QString::number(*link.vlenIndex)
+                         + QLatin1Char(']');
+        }
+    }
+    result.selection.text = canonical.toStdString();
     return result;
 }
 

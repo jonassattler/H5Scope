@@ -20,6 +20,7 @@
 #include "h5core/Attribute.hpp"
 #include "h5scope/Version.hpp"
 #include "postproc/ComputedDataset.hpp"
+#include "postproc/MemberPath.hpp"
 #include "postproc/Pipeline.hpp"
 
 #include <QCoreApplication>
@@ -195,6 +196,11 @@ void AppController::applyDataSource()
     const QString path = currentPath_;
     const bool pipeline = postprocessModel_->active();
     TableLayout layout = tableSetupModel_->layout();
+    // What the views are drawing is named for what it is: "/events.samples"
+    // rather than "/events", because a reader looking at a column of floats
+    // should be told which column.
+    const QString shown = path + memberText_;
+    const h5core::MemberSelection member = memberSelection_;
 
     if (!pipeline) {
         // The common case, and it reads nothing. What the table is being told
@@ -202,7 +208,7 @@ void AppController::applyDataSource()
         // just resolved; the cells themselves are fetched per block, when the
         // grid asks. Doing it here rather than a round trip later is what keeps
         // rearranging a table immediate.
-        datasetModel_->setSource(true, datasetInfo_, path);
+        datasetModel_->setSource(true, datasetInfo_, shown);
         // Moved rather than copied. A layout names every index it selects, so
         // on a ten-million-element vector it is eighty megabytes, and this
         // branch is the last reader of it.
@@ -212,12 +218,19 @@ void AppController::applyDataSource()
             datasetMessage_ = message;
             emit selectionChanged();
         }
-        // The pipeline's last output, dropped on the thread that owns it.
-        // Nothing waits for this: the table has already been put back on the
-        // file, and a source it is no longer reading can go when it goes.
+        // The pipeline's last output, dropped on the thread that owns it, and
+        // the member the selection is now read through, set on the same
+        // crossing. Nothing waits for either: the table has already been put
+        // back on the file, and a source it is no longer reading can go when it
+        // goes. The member has to be set before the next read rather than
+        // before this call returns, and every read is a later job.
         H5Thread::instance().submitVoid(
             sourceRequests_,
-            [](H5Session& session) { session.setComputed(nullptr); }, [] {});
+            [member](H5Session& session) {
+                session.setComputed(nullptr);
+                session.setMember(member);
+            },
+            [] {});
         return;
     }
 
@@ -234,8 +247,11 @@ void AppController::applyDataSource()
 
     H5Thread::instance().submit(
         sourceRequests_,
-        [path, steps, upTo, computedSuffix](H5Session& session) {
+        [path, steps, upTo, computedSuffix, member](H5Session& session) {
             Source source;
+            // Before the dataset is asked for: the pipeline runs on what the
+            // views draw, which with a chain set is the member.
+            session.setMember(member);
             h5core::Dataset* dataset = session.dataset(path.toStdString());
             if (dataset == nullptr) {
                 session.setComputed(nullptr);
@@ -463,6 +479,102 @@ QString AppController::applySlice(const QString& text)
     return tableSetupModel_->applySlice(text);
 }
 
+h5core::DatasetInfo AppController::projectedInfo() const
+{
+    // What the data views draw. With no chain it is the dataset; with one it is
+    // the dataset's shape followed by the axes the chain appends, holding what
+    // the chain lands on -- which is the same derivation h5core::FieldDataset
+    // makes when it opens, stated here so the panels know the shape before
+    // anything has been read.
+    if (memberSelection_.empty()) {
+        return originInfo_;
+    }
+    h5core::DatasetInfo info = originInfo_;
+    info.type = memberSelection_.type;
+    info.shape.insert(info.shape.end(), memberSelection_.dims.begin(),
+                      memberSelection_.dims.end());
+    info.maxShape = info.shape;
+    info.chunk.clear();
+    // A member projection has just made whatever the Image spec said about
+    // these dimensions untrue, for ComputedDataset's reason.
+    info.image.reset();
+    if (info.space == h5core::Dataspace::Scalar && !memberSelection_.dims.empty()) {
+        info.space = h5core::Dataspace::Simple;
+    }
+    return info;
+}
+
+QString AppController::memberError(const QString& text) const
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return tr("no dataset is selected");
+    }
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(text, originInfo_.type);
+    return chain.error;
+}
+
+QString AppController::applyMember(const QString& text)
+{
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return tr("no dataset is selected");
+    }
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(text, originInfo_.type);
+    if (!chain.valid()) {
+        return chain.error;
+    }
+
+    // What the leading dimensions -- the dataset's own -- are already showing.
+    // The chain only ever changes the axes after them, so a reader who has set
+    // up a slice and then picks a member keeps the slice they set up.
+    const QStringList kept = tableSetupModel_->summaries();
+    const auto originRank = static_cast<qsizetype>(originInfo_.shape.size());
+
+    memberSelection_ = chain.selection;
+    // The canonical chain, which the resolver already wrote: the members with
+    // their subscripts taken off, because those are about to go on the slice.
+    memberText_ = QString::fromStdString(memberSelection_.text);
+    if (memberText_.isEmpty()) {
+        members_.remove(currentPath_);
+    } else {
+        members_.insert(currentPath_, memberText_);
+    }
+
+    const h5core::DatasetInfo info = projectedInfo();
+    datasetInfo_ = info;
+    datasetRank_ = static_cast<int>(info.rank());
+    datasetIsString_ = info.type.cls == h5core::TypeClass::String;
+    datasetIsNumeric_ = info.isNumeric() && info.readable();
+    datasetIsFloat_ = info.type.cls == h5core::TypeClass::Float && info.readable();
+    datasetElementCount_ = static_cast<qint64>(info.elementCount());
+
+    postprocessModel_->setDataset(currentPath_, info.shape,
+                                  info.isNumeric() && info.readable());
+    tableSetupModel_->setShape(info.shape, info.image);
+
+    // The subscripts the chain carried belong on the slice line: `.samples[2]`
+    // and a `2` on the axis `.samples` appended are the same selection, and the
+    // line is where every other subscript in this program lives. This is the
+    // one place a box rewrites what was typed, and what it rewrites it into is
+    // sitting next to it.
+    QStringList line;
+    for (qsizetype d = 0; d < originRank; ++d) {
+        line.append(d < kept.size() ? kept[d] : QStringLiteral(":"));
+    }
+    for (const QString& folded : chain.folded) {
+        line.append(folded.isEmpty() ? QStringLiteral(":") : folded);
+    }
+    if (!line.isEmpty()) {
+        static_cast<void>(tableSetupModel_->applySlice(line.join(QStringLiteral(", "))));
+    }
+
+    emit selectionChanged();
+    emit tableLayoutChanged();
+    applyDataSource();
+    return {};
+}
+
 QString AppController::sliceError(const QString& text) const
 {
     if (!datasetTabVisible_) {
@@ -609,6 +721,10 @@ bool AppController::openFile(const QString& path)
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    // With the slices, and for their reason: two files can hold a `/data` that
+    // have nothing to do with each other, and a member chain says even more
+    // about which one than a slice does -- it names a datatype.
+    members_.clear();
     customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
@@ -693,6 +809,10 @@ void AppController::closeFile()
     leaveSelection();
     settings_.clear();
     slices_.clear();
+    // With the slices, and for their reason: two files can hold a `/data` that
+    // have nothing to do with each other, and a member chain says even more
+    // about which one than a slice does -- it names a datatype.
+    members_.clear();
     customPlots_->clear();
     postprocessModel_->reset();
     hasDataset_ = false;
@@ -846,6 +966,9 @@ void AppController::applySelection(SelectionFacts facts)
     datasetMessage_.clear();
     hasDataset_ = false;
     datasetInfo_ = {};
+    originInfo_ = {};
+    memberText_.clear();
+    memberSelection_ = {};
 
     if (!facts.described) {
         if (!facts.message.isEmpty()) {
@@ -862,12 +985,31 @@ void AppController::applySelection(SelectionFacts facts)
     metadataTabVisible_ = facts.hasAttributes;
 
     if (facts.isDataset && facts.datasetOpened) {
-        const h5core::DatasetInfo& info = facts.info;
+        originInfo_ = facts.info;
+        // Whatever member this dataset was last read through, before anything
+        // is described: every fact below is a fact about what is being drawn,
+        // and with a chain set that is the member and not the struct.
+        memberText_.clear();
+        memberSelection_ = {};
+        if (const auto held = members_.constFind(currentPath_);
+            held != members_.constEnd()) {
+            const postproc::MemberChain chain =
+                postproc::resolveMemberChain(*held, originInfo_.type);
+            if (chain.valid() && !chain.empty()) {
+                memberText_ = *held;
+                memberSelection_ = chain.selection;
+            }
+        }
+        const h5core::DatasetInfo info = projectedInfo();
+
         datasetRank_ = static_cast<int>(info.rank());
         datasetIsString_ = info.type.cls == h5core::TypeClass::String;
         datasetIsNumeric_ = info.isNumeric() && info.readable();
+        // The *dataset's* class, not the projection's: this is what puts the
+        // member box on screen, and a reader who has chained down to a float
+        // still needs the box they typed it into.
         datasetIsCompound_ =
-            info.type.cls == h5core::TypeClass::Compound && info.readable();
+            originInfo_.type.cls == h5core::TypeClass::Compound && info.readable();
         datasetIsFloat_ = info.type.cls == h5core::TypeClass::Float && info.readable();
         datasetElementCount_ = static_cast<qint64>(info.elementCount());
         const std::vector<hsize_t> shape = info.shape;

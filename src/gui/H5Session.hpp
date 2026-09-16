@@ -5,6 +5,7 @@
 
 #include "h5core/DataSource.hpp"
 #include "h5core/Dataset.hpp"
+#include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 
 #include <memory>
@@ -57,7 +58,20 @@ public:
     /// The dataset at `path`, opened if it is not already the one open.
     /// Kept between calls so that scrolling a table does not reopen it once a
     /// row. Returns null and leaves the session unchanged if it will not open.
+    ///
+    /// When a member chain is set (see `setMember`) this is a `FieldDataset`
+    /// over that path, which is a `Dataset` and answers every question one
+    /// answers -- about the member rather than about the struct. That is the
+    /// whole of how `.energy` reaches the table, the plot, the image and the
+    /// pipeline: they all read what `source()` hands back, and none of them
+    /// learns what a compound is.
     [[nodiscard]] h5core::Dataset* dataset(const std::string& path);
+
+    /// Read the selection through a member chain, or through none.
+    ///
+    /// Drops the open dataset when the chain changes, because which member is
+    /// being read is part of what was opened rather than an argument to a read.
+    void setMember(h5core::MemberSelection member);
     /// Drop the open dataset and any computed result over it.
     void clearSelection();
 
@@ -88,6 +102,8 @@ private:
     std::string path_;
     std::string datasetPath_;
     std::unique_ptr<h5core::Dataset> dataset_;
+    /// The chain `dataset_` was opened through; empty for the dataset itself.
+    h5core::MemberSelection member_;
     std::shared_ptr<const h5core::DataSource> computed_;
 
     /// Datasets held open for `held()`, newest last.

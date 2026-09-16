@@ -87,12 +87,27 @@ import H5Scope.Backend
 Rectangle {
     id: field
 
-    /// Why what is in the box cannot be read as a slice, or "" when it can.
-    /// The bar prints this beside the field; nothing here has room for it.
-    readonly property alias error: internal.error
+    /// Why what is in either box cannot be read, or "" when both can. The bar
+    /// prints this beside the field; nothing here has room for it.
+    ///
+    /// One line for two boxes because there is one well and one note beside
+    /// it. The member is reported first when both are wrong: a chain that does
+    /// not resolve is the reason the shape the slice is against is not the one
+    /// the reader thinks it is.
+    readonly property string error: internal.memberError !== ""
+                                    ? internal.memberError : internal.error
     /// A scalar is one cell: there are no subscripts, so there is nothing to
     /// type and the line is the path by itself.
     readonly property bool editable: AppController.datasetRank > 0
+    /// Whether there is a member to name at all. A compound is the only thing
+    /// with members, and the box for them is not drawn for anything else --
+    /// which is also how a reader finds out the notation exists: it appears,
+    /// holding a `.member` hint, the first time a struct is selected.
+    ///
+    /// The *dataset's* class, so the box stays after a chain has resolved to a
+    /// float: the reader has to be able to get back at what they typed.
+    readonly property bool hasMember: AppController.datasetIsCompound
+
     /// What is in the box reads as a slice, and is not the slice on screen.
     ///
     /// The whole tab below this line is a picture of some elements, and while
@@ -100,8 +115,10 @@ Rectangle {
     /// note beside the well and the well lifts off its ground -- the same pair
     /// the pipeline panel's argument boxes use, because it is the same
     /// contract: nothing is applied until the reader commits.
-    readonly property bool pending: field.editable && internal.error === ""
-                                    && body.text !== AppController.sliceText
+    readonly property bool pending: (field.editable && internal.error === ""
+                                     && body.text !== AppController.sliceText)
+                                    || (field.hasMember && internal.memberError === ""
+                                        && member.text !== AppController.memberText)
 
     /// The slack asked for after the closing bracket. Enough that the well
     /// reads as a well and is worth clicking into while the slice in it is
@@ -126,7 +143,7 @@ Rectangle {
     /// far has already spent that on the subscripts.
     readonly property real minimumUsefulWidth:
         Math.min(field.implicitWidth,
-                 Theme.gapM * 2
+                 Theme.gapM * 2 + field.memberWanted
                  + (field.editable ? field.typingRoom + field.bracketsWidth
                                    : Theme.s12))
 
@@ -159,10 +176,15 @@ Rectangle {
     /// Both brackets: chrome that is never squeezed, whatever else is.
     readonly property real bracketsWidth: field.editable
         ? openBracket.implicitWidth + closeBracket.implicitWidth : 0
+    /// What the member chain would like: whichever is wider of what is in it
+    /// and the hint standing in for it, so an empty box is still a box.
+    readonly property real memberWanted: field.hasMember
+        ? Math.max(member.implicitWidth, memberHint.implicitWidth) + Theme.gapXS
+        : 0
     /// What the line wants: the path, the subscripts, and both brackets. The
     /// slack after the closing bracket is not part of it -- that is room to
     /// grow into rather than something being drawn.
-    readonly property real contentWanted: field.pathWanted
+    readonly property real contentWanted: field.pathWanted + field.memberWanted
         + (field.editable ? field.bodyWanted + field.bracketsWidth : 0)
     /// The well, less its margins.
     readonly property real innerWidth:
@@ -177,10 +199,19 @@ Rectangle {
                              field.innerWidth - field.contentWanted))
     /// The well, less its margins and whatever slack survived.
     readonly property real lineWidth: field.innerWidth - field.slackWidth
+    /// The member chain takes what it needs out of what the brackets leave,
+    /// and takes it before the subscripts do. It is shorter than a slice line
+    /// and it is what says *which column* is on screen, so a well too narrow
+    /// for both is better spent here -- a slice scrolling inside its box is
+    /// still legible, and `.pos` where `.position` was written is not.
+    readonly property real memberWidth: field.hasMember
+        ? Math.min(field.memberWanted,
+                   Math.max(0, field.lineWidth - field.bracketsWidth))
+        : 0
     /// What is left for the subscripts and the path, the brackets being
     /// chrome that is drawn whatever else is not.
     readonly property real bodyRoom:
-        Math.max(0, field.lineWidth - field.bracketsWidth)
+        Math.max(0, field.lineWidth - field.bracketsWidth - field.memberWidth)
     /// The subscripts take exactly what they need, so the bracket sits against
     /// the last character of them, and the whole of what is left when there is
     /// less than that. There is no floor here: the room to type in is held
@@ -193,21 +224,26 @@ Rectangle {
     /// ...and the path takes what is left, which on a bar with room to spare
     /// is the whole of it.
     readonly property real pathWidth:
-        Math.max(0, field.lineWidth - field.bodyWidth - field.bracketsWidth)
+        Math.max(0, field.lineWidth - field.bodyWidth - field.bracketsWidth
+                 - field.memberWidth)
 
     implicitHeight: Theme.smallControlHeight
     implicitWidth: Theme.gapM * 2 + field.growingRoom + field.contentWanted
     radius: Theme.radiusS
     color: field.pending ? Theme.surfacePending : Theme.surfaceInset
-    border.width: (body.activeFocus || internal.error !== "")
+    border.width: (body.activeFocus || member.activeFocus
+                   || internal.error !== "" || internal.memberError !== "")
                   ? Theme.borderWidthAccent : Theme.borderWidth
-    border.color: internal.error !== "" ? Theme.warning
-                : body.activeFocus ? Theme.accent : Theme.borderStrong
+    border.color: (internal.error !== "" || internal.memberError !== "")
+                    ? Theme.warning
+                : (body.activeFocus || member.activeFocus) ? Theme.accent
+                : Theme.borderStrong
 
     QtObject {
         id: internal
 
         property string error: ""
+        property string memberError: ""
     }
 
     /// The path at its full length, whatever the label is drawing.
@@ -224,7 +260,9 @@ Rectangle {
     /// normalises "0:4" to what the table resolved it to.
     function revert() {
         body.text = AppController.sliceText
+        member.text = AppController.memberText
         internal.error = ""
+        internal.memberError = ""
     }
 
     /// Apply what has been typed. A line that does not read is left where it
@@ -246,6 +284,23 @@ Rectangle {
         internal.error = AppController.applySlice(body.text)
         if (internal.error === "")
             body.text = AppController.sliceText
+    }
+
+    /// Apply an edited member chain, on the slice line's own terms.
+    ///
+    /// Read back afterwards for the slice line's own reason as well, and a
+    /// louder one: a subscript written on the chain is folded onto the slice
+    /// beside it, so `.samples[2]` comes back as `.samples` with a `2` in the
+    /// box to its left. What was typed has moved rather than gone, which is
+    /// the difference between this and a box that argues.
+    function commitMember() {
+        if (!field.hasMember || member.text === AppController.memberText) {
+            internal.memberError = ""
+            return
+        }
+        internal.memberError = AppController.applyMember(member.text)
+        if (internal.memberError === "")
+            member.text = AppController.memberText
     }
 
     Component.onCompleted: field.revert()
@@ -368,6 +423,72 @@ Rectangle {
             font: Theme.mono
             color: Theme.textDisabled
             verticalAlignment: Text.AlignVCenter
+        }
+
+        // --- the member chain, for a compound ------------------------------
+        //
+        // After the bracket, because that is where it goes: the subscript is of
+        // the dataset and the chain is of what one element of it holds, and
+        // `/events[0:100].energy` is the order those two are written in. It is
+        // its own box rather than part of the one above for the same reason the
+        // brackets are chrome -- what stands between them is a complete slice
+        // of the object named beside it, and it had better stay that, because
+        // the postprocessing panel's first row *is* that line.
+        Item {
+            id: memberWell
+
+            anchors.left: closeBracket.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: field.memberWidth
+            visible: field.hasMember
+            clip: true
+
+            /// What the box would hold if the reader wrote something. Laid out
+            /// whatever is in the box, because the well is sized off it: a
+            /// member box that collapsed to nothing when empty would be a box
+            /// nobody could find to type into.
+            Text {
+                id: memberHint
+
+                objectName: "sliceMemberHint"
+
+                anchors.fill: parent
+                visible: member.text === ""
+                text: ".member"
+                font: Theme.mono
+                color: Theme.textDisabled
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            TextInput {
+                id: member
+
+                objectName: "sliceMemberInput"
+
+                anchors.fill: parent
+                font: Theme.mono
+                color: Theme.textEmphasis
+                selectionColor: Theme.accent
+                selectedTextColor: Theme.accentText
+                selectByMouse: true
+                verticalAlignment: TextInput.AlignVCenter
+
+                // The contract the box to the left keeps, and for its reason:
+                // every keystroke is checked against the datatype already
+                // described -- which costs no read -- and nothing is applied
+                // until the reader commits, so a half-typed chain never
+                // becomes a selection.
+                onTextEdited: internal.memberError =
+                    AppController.memberError(member.text)
+                onAccepted: field.commitMember()
+                onActiveFocusChanged: if (!member.activeFocus) field.commitMember()
+
+                Keys.onEscapePressed: {
+                    field.revert()
+                    member.focus = false
+                }
+            }
         }
     }
 }

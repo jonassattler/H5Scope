@@ -880,6 +880,112 @@ TEST_CASE("a member selection is the same selection written shorter",
             == std::vector<hsize_t>{whole.info().shape[0], 4});
 }
 
+TEST_CASE("the viewer draws a member of a compound", "[example][member]")
+{
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller,
+                                      QString::fromStdString(example().path())));
+
+    SECTION("picking a member turns a struct into numbers")
+    {
+        // /types/compound/table_4x5 is rank 2 of {id: int32, value: float64},
+        // value = i/8 in row-major order. Before a member is picked there is
+        // nothing here any plot can draw.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/table_4x5")));
+        REQUIRE(controller.datasetIsCompound());
+        REQUIRE_FALSE(controller.datasetIsNumeric());
+
+        REQUIRE(controller.applyMember(QStringLiteral(".value")).isEmpty());
+
+        // The dataset is still a compound -- that is what keeps the member box
+        // on screen -- but what is being drawn is a float, and the plot and the
+        // image exist for it now.
+        CHECK(controller.datasetIsCompound());
+        CHECK(controller.datasetIsNumeric());
+        CHECK(controller.datasetIsFloat());
+        CHECK(controller.datasetRank() == 2);
+        CHECK(controller.memberText() == QStringLiteral(".value"));
+
+        auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+        REQUIRE(table != nullptr);
+        CHECK(table->numeric());
+        // Row 1, column 2 is element 7 of the flat order: 7/8. Read through the
+        // member, so the cell is the number and not the struct it sits in.
+        CHECK(h5test::settledData(controller.datasetModel(),
+                                  controller.datasetModel()->index(1, 2),
+                                  Qt::DisplayRole)
+                  .toString()
+              == QStringLiteral("0.875"));
+    }
+
+    SECTION("an array member appends an axis the table can lay out")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.datasetRank() == 1);
+
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+        // Six records of four samples: the member's axis is a dimension of the
+        // table like any other, which is the whole point of appending it.
+        CHECK(controller.datasetRank() == 2);
+        CHECK(controller.datasetElementCount() == 24);
+        CHECK(controller.sliceText() == QStringLiteral(":, :"));
+    }
+
+    SECTION("a subscript on the member is folded onto the slice line")
+    {
+        // The identity, as the two boxes show it: what was typed on the chain
+        // ends up on the slice, and the chain prints back bare. The member's
+        // axes are ordinary dimensions and this is where they are addressed.
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".samples[2]")).isEmpty());
+
+        CHECK(controller.memberText() == QStringLiteral(".samples"));
+        CHECK(controller.sliceText() == QStringLiteral(":, 2"));
+    }
+
+    SECTION("a chain keeps the slice the reader had already set up")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applySlice(QStringLiteral("1:4")).isEmpty());
+        REQUIRE(controller.applyMember(QStringLiteral(".samples")).isEmpty());
+        // The chain only ever changes the axes after the dataset's own, so the
+        // leading subscript is the one that was there.
+        CHECK(controller.sliceText() == QStringLiteral("1:4, :"));
+    }
+
+    SECTION("a chain that does not read changes nothing and says why")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        const QString before = controller.sliceText();
+        const QString reason = controller.applyMember(QStringLiteral(".enrgy"));
+        CHECK_THAT(reason.toStdString(), ContainsSubstring("no member 'enrgy'"));
+        CHECK(controller.memberText().isEmpty());
+        CHECK(controller.sliceText() == before);
+        // Checked without applying, the way the bar reports a slice as it is
+        // typed, and for the same reason: nothing is read to find out.
+        CHECK_FALSE(controller.memberError(QStringLiteral(".enrgy")).isEmpty());
+        CHECK(controller.memberError(QStringLiteral(".weight")).isEmpty());
+    }
+
+    SECTION("coming back to a dataset comes back to the member")
+    {
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applyMember(QStringLiteral(".weight")).isEmpty());
+        REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/data/matrix")));
+        CHECK(controller.memberText().isEmpty());
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        CHECK(controller.memberText() == QStringLiteral(".weight"));
+        CHECK(controller.datasetIsNumeric());
+    }
+}
+
 TEST_CASE("a compound is read apart, and as JSON", "[example][types]")
 {
     const auto file = openExample();

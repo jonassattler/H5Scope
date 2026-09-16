@@ -1064,6 +1064,122 @@ TestCase {
                 TableSetupModel.All)
     }
 
+    /// The member box: the compound half of the slice line.
+    ///
+    /// It is drawn only for a compound, which is also how a reader finds out
+    /// the notation exists -- nothing in the bar mentions members until there
+    /// is one to name.
+    function test_the_member_box_is_there_for_a_compound_and_not_otherwise() {
+        verify(select("/matrix"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        verify(box, "the member box is built whether or not it is drawn")
+        const well = box.parent
+        compare(well.visible, false, "a matrix of numbers has no members")
+
+        verify(select("/compound"))
+        waitForRendering(win.contentItem)
+        compare(well.visible, true, "a compound does")
+        compare(box.text, "", "and it opens empty")
+
+        // The hint stands in for what is not there, so the box is findable.
+        const hint = findChild(win.contentItem, "sliceMemberHint")
+        verify(hint)
+        compare(hint.visible, true)
+        compare(hint.text, ".member")
+        verify(well.width > 0, "an empty member box is still a box")
+    }
+
+    /// Naming a member is what turns a grid of structs into a column of
+    /// numbers, and the plot and the image exist for it afterwards.
+    function test_naming_a_member_draws_it() {
+        verify(select("/compound")) // {id: int32, value: float64} x 2
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        compare(AppController.datasetIsCompound, true)
+        compare(AppController.datasetIsNumeric, false)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ".value"
+        box.textEdited()
+        // Typing checks and does not apply, as the slice box does.
+        compare(AppController.datasetIsNumeric, false)
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(AppController.memberText, ".value")
+        compare(AppController.datasetIsNumeric, true)
+        // Still a compound, so the box the reader typed into is still there.
+        compare(AppController.datasetIsCompound, true)
+        compare(box.parent.visible, true)
+
+        // Put it back: a chain is remembered per dataset, which is the point of
+        // it, so a test that leaves one leaves it for every test after.
+        AppController.applyMember("")
+    }
+
+    /// A subscript written on the chain moves to the slice line beside it.
+    /// They are the same selection, and the line is where every other
+    /// subscript in this program lives.
+    function test_a_member_subscript_moves_to_the_slice_line() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const member = findChild(win.contentItem, "sliceMemberInput")
+        const slice = findChild(win.contentItem, "sliceInput")
+        member.forceActiveFocus()
+        member.text = ".value"
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(member.text, ".value")
+        compare(slice.text, AppController.sliceText)
+
+        AppController.applyMember("")
+    }
+
+    /// A chain that does not read is left in the box, in amber, with the
+    /// reason -- the slice box's contract, because it is the same contract.
+    function test_a_member_that_does_not_read_says_so_and_changes_nothing() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceMemberInput")
+        box.forceActiveFocus()
+        box.text = ".nonesuch"
+        box.textEdited()
+        const note = findChild(win.contentItem, "sliceNote")
+        verify(note)
+        verify(note.text.indexOf("nonesuch") >= 0,
+               "the note names the member that is not there: " + note.text)
+        // And the list of the ones that are, which is the useful half.
+        verify(note.text.indexOf("value") >= 0, note.text)
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, "", "nothing was applied")
+        compare(box.text, ".nonesuch", "and what was typed is still there")
+
+        // Escape puts back what the table is showing.
+        keyClick(Qt.Key_Escape)
+        waitForRendering(win.contentItem)
+        compare(box.text, "")
+    }
+
     /// The well holds the line *and* the room to grow it, the whole well is one
     /// target, and none of the three parts is cut short while the bar has room.
     ///
