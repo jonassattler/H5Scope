@@ -67,6 +67,7 @@ fixed in both. `tools/bench-zoom` is the new measurement — per-frame times for
 zoom, beside a count of how many of those frames still held the one-sample spike
 the pointer was on — and `make-example-file --adc N` writes the long traces to
 run it against.
+
 ## 0.5.1
 
 **Fixes reported from use.** A custom tab drawn against a time series drew
