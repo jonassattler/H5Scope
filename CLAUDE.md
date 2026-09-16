@@ -191,16 +191,25 @@ Four pieces:
 - **`postproc::MemberPath`** — the grammar, beside the subscript grammar for the
   reason already written over that one. Resolving is arithmetic over a
   `TypeInfo`, so it costs no read and answers on every keystroke.
-- **The three entry points.** The slice bar grows a second box after the closing
-  bracket, shown only for a compound; `sliceText` keeps its exact meaning, which
-  is what leaves the pipeline's slice row alone. A custom tab types the whole
-  line at once, and there a chain is recognised **only after a `]`** — a link
-  name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a dataset
-  and not member 3 of `run`. Every expression without a `].` in it parses
+- **The three entry points.** Over a compound the slice bar makes *everything
+  after the path* one box — `[:, 2].samples`, brackets and all — and keeps the
+  bracketed `path[ box ]` form for everything else. `sliceText` and `memberText`
+  keep their exact meanings underneath, which is what leaves the pipeline's
+  slice row alone; `selectionText` / `applySelection` / `selectionError` are the
+  one line the bar reads and writes them through, checked whole and applied
+  whole. It began as a second box after the closing bracket, and that was the
+  wrong shape: a chain and the subscript over the axes it appends are one
+  statement, so rearranging one is usually rearranging both, and two boxes made
+  that two commits with a shape nobody asked for in between — and the second box
+  was a few characters wide with a grey `.member` in it, which reads as a value
+  somebody chose rather than as a box nobody has typed in. A custom tab types the
+  whole line at once, and there a chain is recognised **only after a `]`** — a
+  link name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a
+  dataset and not member 3 of `run`. Every expression without a `].` in it parses
   exactly as it always did, which is why saved views migrate for free.
   The postprocessing panel grows a **Select** row, and it is the same
-  relationship the slice row has to the slice bar: not a copy of the member box,
-  *it is it*. It sits above the slice and is furniture rather than an added
+  relationship the slice row has to the slice bar: not a copy of what the bar
+  offers, *it is it*. It sits above the slice and is furniture rather than an added
   operation, because after a transpose or a reduction there is no compound left
   to select from — an operation legal in exactly one position is not an
   operation, it is a property of the input. Its list is
@@ -227,8 +236,8 @@ Three consequences worth keeping in mind when editing around it:
 
 **Completion** (`gui::Completion`, `src/qml/CompletionPopup.qml`). Two boxes in
 this application are typed into rather than chosen from — a custom plot's entry
-and the member box — and the names in both come out of the file and nowhere the
-reader can see them. `completionRequest` says which of the three grammars on a
+and the slice bar's own box — and the names in both come out of the file and
+nowhere the reader can see them. `completionRequest` says which of the three grammars on a
 line the caret is in; a path offers the children of the group being typed into,
 a closed subscript offers the datatype's chains, and an open subscript offers
 nothing, because what may be written there is every integer and every range and
@@ -364,6 +373,35 @@ round trip per element would draw exactly the right picture.
    the pointer, the octaves out — is folded before the frame that asked for it
    is drawn. `refreshDetail` loops rather than returning, because there is no
    reply to arm the next step with.
+
+   **A time base is a line, and is held like one.** A custom tab drawn against
+   another dataset used to be the one axis of the three that could not be
+   zoomed, and it failed in both halves at once. The line, because a range of x
+   over a lookup table was refused outright; and the axis, because a time base
+   was read once at a pane's worth of points and never again — so a reader
+   zoomed past that was handed one x per column and the curve collapsed onto a
+   staircase of vertical treads. The rule that unlocks it is one sentence:
+
+   > **A time base that only ever goes one way is a map that can be run
+   > backwards.** A range of x is then a range of positions, and everything the
+   > index and range axes do — narrow the run, fold it finer, read towards the
+   > pointer — follows without another line of policy.
+
+   So `CustomPlot::axis_` is an `Entry` like any other, with its own pyramid and
+   its own held runs, and `CustomPlot::axisPositionOf` is the way back: a
+   bisection of the whole-line summary first, then again in whatever finer run
+   of it covers that answer, because a bracket only as sharp as one drawn point
+   of the summary is five thousand elements wide on a ten-million-element log
+   and would pin every zoom three octaves short. `recomputeView()` inverts the
+   view once per change, into axis positions, and every entry divides that by
+   its own scaling — under Index and Range the same function is one division.
+   `PlotAxis` carries the folded run **beside** the whole rather than instead of
+   it, so a line whose own closer look has not landed yet is still drawn against
+   positions the whole answers for. A time base that doubles back is not such a
+   map, gets none of it, and draws exactly what it always drew;
+   `positionOfX` asks the array it is about to search whether it is sorted,
+   rather than asking the time base as a whole, because a summary can ascend
+   while the elements under one of its buckets do not.
 
    The pane gets its *own* preferred bucket on every frame, even when a coarser
    run in hand would have covered it. Settling for that run was right while the

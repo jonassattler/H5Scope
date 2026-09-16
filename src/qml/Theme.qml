@@ -471,6 +471,17 @@ QtObject {
     /// Enough for a short path and a rank-four slice whole, which is the case
     /// the bar is read in.
     readonly property int sliceWellMinimum: 240
+    /// The widest a list of completions is drawn at.
+    ///
+    /// The list is as wide as the box it drops from, because that is where the
+    /// line it is offering will go -- and that is wrong wherever the box is
+    /// narrow, which the slice bar's is: it is only ever as wide as the line
+    /// in it, so a fresh `[:]` gives the list four characters and every
+    /// candidate arrives elided to `…osition`. It takes the width of its
+    /// own longest candidate instead, up to this. Past it a candidate is a
+    /// path long enough that its head is the part worth giving up, which is
+    /// what the elide from the left already does.
+    readonly property int completionWidthMax: 420
     /// The measure for running prose in a dialog -- the About box's licence
     /// notice is the only one. Narrower than the picker on purpose: a
     /// paragraph set to the width of a file list is a paragraph nobody reads.

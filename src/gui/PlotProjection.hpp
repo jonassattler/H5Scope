@@ -192,7 +192,34 @@ struct PlotAxis
     /// same pane.
     double valueStep = 1.0;
 
+    /// The run of the time base the reader is looking at, read finer.
+    ///
+    /// The three above are the *whole* time base, summarised to about a pane's
+    /// worth of points however long it is -- so at ten million elements one of
+    /// its drawn points stands for five thousand of them, and a reader zoomed
+    /// in past that is being handed one x for every column of the pane. The
+    /// line resolves as they zoom and the axis under it does not, which is a
+    /// plot that cannot be zoomed: the curve collapses onto a handful of x and
+    /// draws as a staircase of vertical treads.
+    ///
+    /// So the time base is folded again over the run on screen, exactly as the
+    /// lines are, and that run is here. Where it reaches it is the better
+    /// answer and is the one taken; outside it the whole-line summary above is
+    /// still a correct one, which is what keeps a line whose own closer look
+    /// has not landed yet drawn against an axis that has.
+    ///
+    /// Borrowed on the same terms as everything else here.
+    const double* closerValues = nullptr;
+    qsizetype closerCount = 0;
+    /// The axis position `closerValues[0]` is the x of. A run does not start at
+    /// the beginning of the line, which is the whole of what makes it a run.
+    double closerStart = 0.0;
+    /// Axis positions between one of those values and the next, as `valueStep`
+    /// is for the whole.
+    double closerStep = 1.0;
+
     [[nodiscard]] bool explicitX() const { return values != nullptr && count > 0; }
+    [[nodiscard]] bool hasCloser() const { return closerValues != nullptr && closerCount > 0; }
 };
 
 /// The window being shown and the pane it is shown in.

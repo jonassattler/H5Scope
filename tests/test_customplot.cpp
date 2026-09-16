@@ -1203,14 +1203,16 @@ TEST_CASE_METHOD(PlotFixture, "a stretched entry is looked at closely where it i
     CHECK(points.size() > summarised / 4);
 }
 
-TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base keeps its whole summary",
+TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base that doubles back keeps its "
+                              "whole summary",
                  "[custom]")
 {
-    // A time base is a lookup table, not an affine map: it need not be
-    // monotonic and need not be evenly spaced, so a range of x is not a range
-    // of indices and there is nothing to narrow a read to. The same reason
-    // projectLine() refuses to envelope that path. Zooming there does what it
-    // always did -- it stretches -- and nothing is read.
+    // A time base is a lookup table rather than an affine map, so the way back
+    // from a range of x to a range of elements is a bisection -- and a
+    // bisection of a run that is not sorted answers nothing. `/trace` is a sine
+    // with a spike in it, so it is the same value at a hundred places and there
+    // is no run to narrow to. Zooming there does what it always did: it
+    // stretches, and nothing is read.
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/trace[:]"));
     plot->setXMode(gui::CustomPlot::Dataset);
@@ -1219,6 +1221,7 @@ TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base keeps its whole s
     REQUIRE(plot->xReady());
 
     const gui::PlotLine before = plot->lineOf(0);
+    const long long asked = gui::CustomPlot::hyperslabs();
     plot->setVisibleRange(-0.5, 0.5);
     h5test::settleFor(300);
     settleAll();
@@ -1227,6 +1230,136 @@ TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base keeps its whole s
     CHECK(after.values == before.values);
     CHECK(after.count == before.count);
     CHECK(after.positionStart == 0.0);
+    CHECK(gui::CustomPlot::hyperslabs() - asked == 0);
+    CHECK_FALSE(plot->drawingAxis().hasCloser());
+}
+
+TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base is read closer where the reader "
+                              "zooms in",
+                 "[custom][plot]")
+{
+    // The bug this is here for: a time series was the one axis of the three
+    // that could not be zoomed at all. Both halves of the picture stood still
+    // -- the line, because a range of x was refused outright, and the axis,
+    // because a time base was read once at a pane's worth of points and never
+    // again. The second is the half that is easy to miss: resolving the line
+    // under an axis that has not resolved hands every sample in a column the
+    // same x, and the curve draws as a staircase of vertical treads.
+    //
+    // /trace is 20000 elements and /trace_time is i/1000 over the same 20000,
+    // so an element of the line and a second of the axis are the same index and
+    // every assertion below can be written in either.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    plot->setXExpression(QStringLiteral("/trace_time[:]"));
+    plot->setXMode(gui::CustomPlot::Dataset);
+    settleAll();
+    REQUIRE(plot->xError().isEmpty());
+    REQUIRE(plot->xReady());
+    REQUIRE(plot->sourcePointCount() == 20000);
+
+    const gui::PlotLine whole = plot->lineOf(0);
+    REQUIRE(whole.positionStep == Approx(10.0)); // 1000 buckets of twenty
+    const double extent = plot->maximum();
+
+    SECTION("the line resolves, and so does the axis under it")
+    {
+        // The spike is element 12345, which is 12.345 seconds in.
+        plot->setVisibleRange(12.3, 12.4);
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine closest = plot->lineOf(0);
+        CHECK(closest.positionStep == Approx(1.0)); // the file's own samples
+        const gui::PlotAxis axis = plot->drawingAxis();
+        CHECK(axis.hasCloser());
+        CHECK(axis.closerStep == Approx(1.0));
+
+        // Every drawn point sits at the time the file records for the element
+        // it is, and no two of them share one. That pair is the whole of what
+        // "the axis resolved too" means: before, the hundred samples on screen
+        // took their x from one drawn point of the summary and landed on top of
+        // one another.
+        const QList<QPointF> points = drawn(plot, 0);
+        REQUIRE(points.size() > 100);
+        int shared = 0;
+        for (qsizetype i = 1; i < points.size(); ++i) {
+            if (points.at(i).x() == points.at(i - 1).x()) {
+                ++shared;
+            }
+        }
+        CHECK(shared == 0);
+        for (qsizetype i = 0; i < points.size(); ++i) {
+            const auto element = static_cast<long long>(
+                std::llround(closest.positionStart + static_cast<double>(i)));
+            CHECK(points.at(i).x() == Approx(static_cast<double>(element) / 1000.0));
+        }
+
+        // The spike is in it, at its own time, and the extent is still the
+        // whole line's so the y axis holds still while detail arrives.
+        const auto at = static_cast<qsizetype>(12345 - std::llround(closest.positionStart));
+        REQUIRE(at >= 0);
+        REQUIRE(at < closest.count);
+        CHECK(closest.values[at] == Approx(9.0));
+        CHECK(plot->maximum() == extent);
+    }
+
+    SECTION("and none of it costs a read")
+    {
+        // The pyramid's whole claim, now made of the axis as well: the time
+        // base was held by the one pass that read it, so every fold of it is
+        // arithmetic over a buffer already in hand.
+        const long long asked = gui::CustomPlot::hyperslabs();
+        double low = 0.0;
+        double high = 20.0;
+        for (int frame = 0; frame < 20; ++frame) {
+            const double span = (high - low) / 2.0;
+            low = 12.345 - span / 2.0;
+            high = 12.345 + span / 2.0;
+            plot->setZoomFocus(12.345, 2.0);
+            plot->setVisibleRange(low, high);
+            QCoreApplication::processEvents();
+            CHECK(plot->lineOf(0).count > 1);
+        }
+        h5test::settleFor(300);
+        settleAll();
+        CHECK(gui::CustomPlot::hyperslabs() - asked == 0);
+    }
+
+    SECTION("zooming back out is the whole summary again, in the same call")
+    {
+        plot->setVisibleRange(12.3, 12.4);
+        h5test::settleFor(300);
+        settleAll();
+        REQUIRE(plot->lineOf(0).positionStep == Approx(1.0));
+
+        plot->setVisibleRange(0.0, 20.0);
+        const gui::PlotLine back = plot->lineOf(0);
+        CHECK(back.values == whole.values);
+        CHECK(back.positionStep == Approx(10.0));
+        CHECK_FALSE(plot->drawingAxis().hasCloser());
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a descending time base is a time base", "[custom]")
+{
+    // /series/b is 100 - i: monotonic, and the other way up. The axis is drawn
+    // right to left and the inversion runs the same way round; nothing above
+    // the bisection cares which.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]")); // 64 elements, i
+    plot->setXExpression(QStringLiteral("/series/b[:]"));
+    plot->setXMode(gui::CustomPlot::Dataset);
+    settleAll();
+    REQUIRE(plot->xReady());
+
+    // Sixty-four elements are drawn sample for sample already, so there is
+    // nothing finer to resolve to -- what is under test is that the view is
+    // inverted at all, which is what levelView() refuses when it cannot be.
+    const QList<QPointF> points = drawn(plot, 0);
+    REQUIRE(points.size() == 64);
+    CHECK(points.first().x() == Approx(100.0));
+    CHECK(points.last().x() == Approx(37.0));
 }
 
 TEST_CASE_METHOD(PlotFixture, "an entry is checked as it is typed once its path is known",
