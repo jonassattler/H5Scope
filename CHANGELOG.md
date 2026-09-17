@@ -101,6 +101,13 @@ a tree indented until nothing is left but base types, with an enum's symbols
 where they were previously unprintable. And the JSON beside a compound cell is
 written to be read — a struct over lines, a list of numbers on one.
 
+**Every card on the Information tab stays on screen.** The tab used to scroll as
+a page, so an object with a lot to say about itself put half of what it said
+below the fold, with nothing at the top of the window to say there was anything
+under it. The cards now share the window out between them: each is drawn at the
+height it wants for as long as there is room for it, and the ones there is no
+room for scroll their own contents instead.
+
 ## 0.5.2
 
 **A zoom costs nothing.** The plot holds each line whole — at the finest
