@@ -200,6 +200,23 @@ TestCase {
         id: menuSpy
     }
 
+    // Copying is asynchronous -- a grab is one more frame rendered -- so the
+    // test that asserts it has to wait for the answer rather than read a
+    // return value.
+    SignalSpy {
+        id: copySpy
+
+        target: ImageClipboard
+        signalName: "copied"
+    }
+
+    SignalSpy {
+        id: copyFailedSpy
+
+        target: ImageClipboard
+        signalName: "failed"
+    }
+
     /// The whole tab in a window of its own, for the tests that have to look
     /// at pixels: an item parented into the test case is never effectively
     /// visible, and an invisible item is never rendered.
@@ -520,7 +537,7 @@ TestCase {
         plot.lock("start")
         plot.rangeStep = 0.25
         plot.lock("step")
-        plot.showGrid = false
+        plot.gridMode = "none"
         plot.colorMode = "viridis"
         compare(plot.resolved.start, 10)
         compare(plot.resolved.step, 0.25)
@@ -532,7 +549,7 @@ TestCase {
         compare(plot.locks.length, 0)
         compare(plot.resolved.start, 0)
         compare(plot.resolved.step, 1)
-        compare(plot.showGrid, true)
+        compare(plot.gridMode, "loose")
         compare(plot.colorMode, "spectrum")
 
         // ...and coming back finds what was left there.
@@ -541,7 +558,7 @@ TestCase {
         compare(plot.locks.length, 2)
         compare(plot.resolved.start, 10)
         compare(plot.resolved.step, 0.25)
-        compare(plot.showGrid, false)
+        compare(plot.gridMode, "none")
         compare(plot.colorMode, "viridis")
     }
 
@@ -2207,20 +2224,557 @@ TestCase {
             return found
         }
 
-        plot.showGrid = true
+        plot.gridMode = "loose"
         waitForRendering(win.view)
         const withGrid = rulesIn(grabImage(plot))
         verify(withGrid >= 3,
                "the grid must draw its rules: only " + withGrid + " found")
 
-        plot.showGrid = false
+        plot.gridMode = "none"
         waitForRendering(win.view)
         const without = rulesIn(grabImage(plot))
         verify(without < withGrid,
                "turning the grid off must take rules away: " + without
                + " of " + withGrid + " left")
 
-        plot.showGrid = true
+        // ...and the two densities above "off" are ordered. Dense rules
+        // between the numbered ticks rather than at more of them, so what this
+        // counts is a strictly larger set than `loose` drew -- the same rules
+        // plus the minors between them.
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+        const dense = rulesIn(grabImage(plot))
+        verify(dense > withGrid,
+               "dense must rule more finely than loose: " + dense + " against "
+               + withGrid)
+
+        // Custom rules where it is told to and nowhere else. A step of a
+        // quarter of the y span is three rules inside the pane, whatever the
+        // data is -- and a step of nothing is not a finer grid, it is no grid,
+        // which is what the box holds while a number is half typed.
+        plot.gridMode = "custom"
+        plot.gridStepX = 0
+        plot.gridStepY = (plot.viewMaxY - plot.viewMinY) / 4
+        waitForRendering(win.view)
+        const custom = rulesIn(grabImage(plot))
+        verify(custom >= 2 && custom < dense,
+               "a custom step must rule where it says: " + custom)
+
+        plot.gridStepY = 0
+        waitForRendering(win.view)
+        compare(rulesIn(grabImage(plot)), without,
+                "a step of zero must rule nothing at all")
+
+        plot.gridMode = "loose"
+        plot.gridStepX = 0
+        plot.gridStepY = 0
+    }
+
+    /// A right-drag says which part of the plot to look at, and the view goes
+    /// there.
+    ///
+    /// The gesture every plot in every field has and this one did not: the
+    /// wheel zooms about a point, so a reader who could *see* the region they
+    /// wanted had to arrive at it by turning the wheel and correcting with a
+    /// drag, several times, by eye.
+    ///
+    /// Asserted in the window rather than in the zoom, because the zoom is the
+    /// arithmetic and the window is the promise: the band the reader drew is
+    /// where the axes end up.
+    function test_a_right_drag_puts_the_view_on_the_region_it_draws() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const gestures = findChild(win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+
+        const area = plot.plotRect
+        verify(area.width > 0 && area.height > 0)
+
+        // A quarter of the pane, in the middle of it. Worked out before the
+        // drag, because the axes are about to move under them.
+        const spanX = plot.viewMaxX - plot.viewMinX
+        const spanY = plot.viewMaxY - plot.viewMinY
+        const fromX = area.x + area.width * 0.25
+        const toX = area.x + area.width * 0.75
+        const fromY = area.y + area.height * 0.25
+        const toY = area.y + area.height * 0.75
+        const wantMinX = plot.viewMinX + spanX * 0.25
+        const wantMaxX = plot.viewMinX + spanX * 0.75
+        // y grows downward on screen and upward on the axis, so the band's top
+        // edge is the larger value.
+        const wantMinY = plot.viewMinY + spanY * 0.25
+        const wantMaxY = plot.viewMinY + spanY * 0.75
+
+        mouseDrag(gestures, Math.round(fromX), Math.round(fromY),
+                  Math.round(toX - fromX), Math.round(toY - fromY),
+                  Qt.RightButton)
+        waitForRendering(win.view)
+
+        // Within a pixel's worth of the axis, because the drag is delivered in
+        // whole pixels and the band is read back out of them.
+        const slackX = spanX / area.width * 2
+        const slackY = spanY / area.height * 2
+        verify(Math.abs(plot.viewMinX - wantMinX) < slackX,
+               "x must start at the band: " + plot.viewMinX + " for " + wantMinX)
+        verify(Math.abs(plot.viewMaxX - wantMaxX) < slackX,
+               "x must stop at the band: " + plot.viewMaxX + " for " + wantMaxX)
+        verify(Math.abs(plot.viewMinY - wantMinY) < slackY,
+               "y must start at the band: " + plot.viewMinY + " for " + wantMinY)
+        verify(Math.abs(plot.viewMaxY - wantMaxY) < slackY,
+               "y must stop at the band: " + plot.viewMaxY + " for " + wantMaxY)
+
+        // ...and a slip is not a region. A band of a few pixels is a
+        // magnification of several hundred on an axis nobody meant to touch,
+        // and the only way out of it would be a reset -- so it does nothing at
+        // all rather than something drastic.
+        plot.resetView()
+        waitForRendering(win.view)
+        const settled = plot.viewMinX
+        mouseDrag(gestures, Math.round(area.x + area.width / 2),
+                  Math.round(area.y + area.height / 2), 2, 2, Qt.RightButton)
+        waitForRendering(win.view)
+        compare(plot.viewMinX, settled, "a slip must move nothing")
+        verify(!plot.zoomed, "a slip must not zoom")
+
+        plot.resetView()
+    }
+
+    /// The four boxes under View are the window, both ways round.
+    ///
+    /// They are a readout as well as a control, and that is the half worth
+    /// asserting: a region selected with the right button reports here without
+    /// a second path between the two, so there is nothing that can go stale.
+    function test_the_plotting_range_boxes_say_where_the_view_is_and_put_it_there() {
+        verify(select("/compressed"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+
+        const plot = findChild(view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 800,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+        const minX = findChild(panel, "rangeViewMinX")
+        const maxX = findChild(panel, "rangeViewMaxX")
+        const minY = findChild(panel, "rangeViewMinY")
+        const maxY = findChild(panel, "rangeViewMaxY")
+        verify(minX && maxX && minY && maxY, "the four boxes must be reachable")
+
+        compare(minX.value, plot.viewMinX)
+        compare(maxX.value, plot.viewMaxX)
+        compare(minY.value, plot.viewMinY)
+        compare(maxY.value, plot.viewMaxY)
+
+        // Stated, and taken. A quarter of the x axis, which is a zoom of four.
+        const spanX = plot.axisMaxX - plot.axisMinX
+        const wantMin = plot.axisMinX + spanX * 0.25
+        const wantMax = plot.axisMinX + spanX * 0.5
+        plot.setViewRange(wantMin, wantMax, plot.viewMinY, plot.viewMaxY)
+        waitForRendering(view)
+        fuzzyCompare(plot.viewMinX, wantMin, spanX * 1e-6)
+        fuzzyCompare(plot.viewMaxX, wantMax, spanX * 1e-6)
+        fuzzyCompare(plot.zoomX, 4, 1e-6)
+
+        // ...and the boxes followed it without being told.
+        compare(minX.value, plot.viewMinX)
+        compare(maxX.value, plot.viewMaxX)
+
+        // There is nothing outside the data to look at, so a window past its
+        // ends comes back as the nearest one that exists -- and the boxes then
+        // show what is in force rather than what was typed, because they are
+        // bound rather than held.
+        plot.setViewRange(plot.axisMinX - spanX, plot.axisMaxX + spanX,
+                          plot.lowerBound, plot.upperBound)
+        waitForRendering(view)
+        compare(plot.zoomX, 1)
+        compare(plot.panX, 0)
+        compare(minX.value, plot.viewMinX)
+        compare(maxX.value, plot.viewMaxX)
+
+        plot.resetView()
+    }
+
+    /// The legend drawn on the plot names the lines that are drawn, and sits
+    /// in the corner it is told to.
+    ///
+    /// It exists for the copy: a plot leaves this application through the
+    /// clipboard, and it takes its children with it and nothing beside it, so
+    /// six unnamed traces in a document are six traces nobody can read. Which
+    /// is why this asserts the *names* and not merely that a box appeared.
+    function test_the_legend_on_the_plot_names_the_lines_it_draws() {
+        verify(select("/matrix"))
+        // A window of its own, because this asserts that the legend is drawn:
+        // an item parented into the TestCase is never effectively visible, so
+        // everything under one reports invisible whatever its binding says.
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        const view = win.view
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+
+        const plot = findChild(view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const overlay = findChild(view, "plotOverlayLegend")
+        verify(overlay, "the on-plot legend must be reachable")
+
+        // Off until it is asked for: on screen the panel on the left already
+        // answers this, and this one stands over part of the drawing.
+        compare(plot.legendOnPlot, false)
+        verify(!overlay.visible)
+
+        // ...and while it is off it asks the plot *nothing*. Not a nicety: a
+        // question put to a plot object is a reading of the file, and one of
+        // these sits on every plot in the window whether or not it is the one
+        // on screen. The first version of this file reached for `drawnSeries`
+        // whatever the setting said, and the custom tab's picture came out an
+        // empty pane with a correct axis under it -- the reads it disturbed
+        // landed after the frame that was waiting for them.
+        //
+        // Asserted on the drawn set rather than on the visible flag, because
+        // the flag would be false either way and the question would still have
+        // been asked.
+        verify(AppController.datasetPlot.drawnSeries.length > 0,
+               "the fixture must have lines for this to be worth asking about")
+        compare(overlay.drawn.length, 0)
+        compare(overlay.rows.length, 0)
+
+        plot.legendOnPlot = true
+        waitForRendering(view)
+        verify(overlay.visible, "asking for it must draw it")
+
+        const drawn = AppController.datasetPlot.drawnSeries
+        verify(drawn.length > 0, "the fixture must draw something")
+        compare(overlay.rows.length, Math.min(drawn.length, Theme.plotLegendRows))
+        for (let i = 0; i < overlay.rows.length; ++i) {
+            compare(overlay.rows[i].series, drawn[i])
+            compare(overlay.rows[i].label,
+                    AppController.datasetPlot.seriesLabel(drawn[i]))
+        }
+
+        // Inside the pane, in the corner asked for. Four corners and four
+        // different answers, which is what says the property is read rather
+        // than the default drawn four times.
+        const area = plot.plotRect
+        plot.legendCorner = "topLeft"
+        waitForRendering(view)
+        const left = overlay.x
+        const top = overlay.y
+        verify(left >= area.x && top >= area.y, "top left must be inside the pane")
+
+        plot.legendCorner = "bottomRight"
+        waitForRendering(view)
+        verify(overlay.x > left, "the right-hand corners must sit further right")
+        verify(overlay.y > top, "the bottom corners must sit further down")
+        verify(overlay.x + overlay.width <= area.x + area.width + 1,
+               "it must stay inside the pane")
+        verify(overlay.y + overlay.height <= area.y + area.height + 1,
+               "it must stay inside the pane")
+
+        plot.legendOnPlot = false
+    }
+
+    /// A title and two axis names cost nothing until they say something.
+    ///
+    /// The whole of "no wasted space" is that they are measured into the
+    /// gutters rather than reserved: an untitled plot's pane is where it
+    /// always was, to the pixel, and each name filled in takes room from
+    /// exactly the edge it is drawn against and from no other.
+    function test_a_title_costs_nothing_until_there_is_one() {
+        verify(select("/compressed"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+
+        const plot = findChild(view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        compare(plot.plotTitle, "")
+        compare(plot.xLabel, "")
+        compare(plot.yLabel, "")
+
+        // The four numbers, as numbers. A `rect` read into a var is a
+        // reference to the property rather than a copy of it -- QML value
+        // types track what they came from -- so a "before" held that way is
+        // the "after" by the time it is compared against, and every assertion
+        // below would pass without the feature existing.
+        const paneOf = (item) => ({ x: item.plotRect.x, y: item.plotRect.y,
+                                    width: item.plotRect.width,
+                                    height: item.plotRect.height })
+        const bare = paneOf(plot)
+        verify(bare.width > 0 && bare.height > 0)
+
+        // A title takes room off the top and off nothing else.
+        plot.plotTitle = "pressure over the run"
+        waitForRendering(view)
+        const titled = paneOf(plot)
+        verify(titled.y > bare.y, "a title must take room off the top: "
+               + titled.y + " for " + bare.y)
+        compare(titled.x, bare.x)
+        compare(titled.width, bare.width)
+        verify(titled.height < bare.height)
+
+        // An x name off the bottom, which is height and not the origin.
+        plot.plotTitle = ""
+        plot.xLabel = "seconds"
+        waitForRendering(view)
+        const named = paneOf(plot)
+        compare(named.y, bare.y)
+        compare(named.x, bare.x)
+        verify(named.height < bare.height, "an x label must take room off the bottom")
+
+        // ...and a y name off the left, which is the origin and the width,
+        // because it is drawn turned a quarter.
+        plot.xLabel = ""
+        plot.yLabel = "bar"
+        waitForRendering(view)
+        const sideways = paneOf(plot)
+        compare(sideways.y, bare.y)
+        compare(sideways.height, bare.height)
+        verify(sideways.x > bare.x, "a y label must take room off the left")
+        verify(sideways.width < bare.width)
+
+        // Emptied again, the pane is exactly where it started.
+        plot.yLabel = ""
+        waitForRendering(view)
+        const back = paneOf(plot)
+        compare(back.x, bare.x)
+        compare(back.y, bare.y)
+        compare(back.width, bare.width)
+        compare(back.height, bare.height)
+    }
+
+    /// The panel's three boxes reach the picture, and the picture reaches the
+    /// boxes back.
+    ///
+    /// The wiring rather than the drawing -- what a title looks like is
+    /// asserted next door, in the pane it takes room from. What is asserted
+    /// here is that a box committed writes to the surface and that its binding
+    /// survives the write, because these three are per-dataset: a box whose
+    /// binding a typed character had discarded would go on showing the words
+    /// belonging to the dataset before this one.
+    function test_the_label_boxes_write_to_the_plot_and_stay_bound() {
+        verify(select("/compressed"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+        const plot = findChild(view, "plotSurface")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 900,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+        const boxes = [[findChild(panel, "plotTitleField"), "plotTitle"],
+                       [findChild(panel, "plotXLabelField"), "xLabel"],
+                       [findChild(panel, "plotYLabelField"), "yLabel"]]
+
+        for (let i = 0; i < boxes.length; ++i) {
+            const box = boxes[i][0]
+            const name = boxes[i][1]
+            verify(box, name + " must have a box")
+            compare(box.text, "")
+
+            box.text = "written " + name
+            panel.commitLabel(box, name)
+            compare(plot[name], "written " + name)
+
+            // ...and the box is bound again, so a value arriving from anywhere
+            // else -- DatasetMemory restoring one -- shows up in it.
+            plot[name] = "from elsewhere"
+            compare(box.text, "from elsewhere")
+            plot[name] = ""
+            compare(box.text, "")
+        }
+    }
+
+    /// The panel's grid dropdown and its corner radios name what the plot is
+    /// actually doing.
+    ///
+    /// Both of these are controls whose mark is written imperatively by the
+    /// thing underneath them -- a ComboBox sets its own currentIndex, a
+    /// ButtonGroup sets `checked` -- and an imperative write to a bound
+    /// property discards the binding for good. Every setting here is
+    /// per-dataset, so a control that lost its binding would go on naming the
+    /// density or the corner belonging to the dataset before this one, which
+    /// is a control that is wrong rather than one that is stale.
+    function test_the_grid_and_corner_controls_follow_the_plot() {
+        verify(select("/compressed"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+        const plot = findChild(view, "plotSurface")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 900,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+
+        const box = findChild(panel, "gridModeBox")
+        verify(box, "the grid dropdown must be reachable")
+        compare(panel.gridModeKeys.length, panel.gridModeLabels.length)
+        for (let i = 0; i < panel.gridModeKeys.length; ++i) {
+            plot.gridMode = panel.gridModeKeys[i]
+            compare(box.selectedIndex, i,
+                    "the box must name " + panel.gridModeKeys[i])
+        }
+
+        // The two step boxes are absent under the other three densities
+        // rather than disabled: a control that cannot do anything is a
+        // control the reader has to work out the rule for.
+        const stepX = findChild(panel, "gridStepXField")
+        const stepY = findChild(panel, "gridStepYField")
+        verify(stepX && stepY, "the custom steps must be reachable")
+        compare(plot.gridMode, "custom")
+        verify(panel.customGrid)
+        plot.gridMode = "loose"
+        verify(!panel.customGrid)
+
+        // A step is a distance, so backwards is not a finer grid and zero is
+        // "none" said in the wrong control; both come back as nothing ruled,
+        // which is what PlotFrame does with a step it cannot use.
+        plot.gridMode = "custom"
+        stepX.committed(-5)
+        compare(plot.gridStepX, 0)
+        stepY.committed(2.5)
+        compare(plot.gridStepY, 2.5)
+
+        // ...and the four corners.
+        plot.legendOnPlot = true
+        for (let i = 0; i < panel.cornerKeys.length; ++i) {
+            plot.legendCorner = panel.cornerKeys[i]
+            const marks = findAllChecked(panel)
+            compare(marks.length, 1,
+                    "exactly one corner must be marked, not " + marks.length)
+            compare(marks[0].text, panel.cornerLabels[i])
+        }
+
+        plot.legendOnPlot = false
+        plot.gridMode = "loose"
+        plot.gridStepX = 0
+        plot.gridStepY = 0
+    }
+
+    /// The corner radios that are ticked, by their label. Found by what they
+    /// are rather than by an objectName apiece: a Repeater's delegates have no
+    /// names of their own, and these are the only radios in the panel whose
+    /// text is one of the four corners.
+    function findAllChecked(panel) {
+        const corners = panel.cornerLabels
+        const found = []
+        const visit = (item) => {
+            if (item.checked === true && corners.indexOf(item.text) >= 0)
+                found.push(item)
+            for (let i = 0; i < item.children.length; ++i)
+                visit(item.children[i])
+        }
+        visit(panel)
+        return found
+    }
+
+    /// The plot goes to the clipboard as a picture.
+    ///
+    /// Copying succeeds by putting something where this program cannot see it,
+    /// which is why ImageClipboard can be asked what is on the clipboard: a
+    /// feature whose only witness is a paste into some other application is a
+    /// feature no test can hold.
+    ///
+    /// The grab is one more frame rendered, so nothing is on the clipboard in
+    /// the call that asks for it -- tryVerify is what waits for the frame.
+    function test_a_copied_plot_reaches_the_clipboard() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        verify(plot.drawable, "there must be a plot to copy")
+
+        copySpy.clear()
+        copyFailedSpy.clear()
+        verify(plot.copyImage(), "a drawn plot must accept the request")
+        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
+                  "the grab must answer one way or the other")
+        compare(copyFailedSpy.count, 0,
+                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+
+        // The frame's own size in device pixels, which is what a reader
+        // pastes. Device and not logical: an item is laid out in logical
+        // pixels and drawn into a framebuffer with devicePixelRatio of them
+        // for each, so copying at the logical size would throw exactly that
+        // factor away before the picture left here.
+        //
+        // The frame is the surface minus whatever the legend panel is holding
+        // on the left, which is nothing while it is closed. Asserted exactly
+        // rather than within a tolerance, because "a picture of the plot" and
+        // "a picture of the window" differ by a great deal more than a
+        // rounding and this is the only place that could tell them apart.
+        const copied = ImageClipboard.imageOnClipboard()
+        const ratio = Math.max(1, Screen.devicePixelRatio)
+        verify(copied.width > 0 && copied.height > 0,
+               "something must be on the clipboard")
+        compare(copied.width,
+                Math.round((plot.width - plot.contentLeft) * ratio))
+        compare(copied.height, Math.round(plot.height * ratio))
+    }
+
+    /// ...and Ctrl+C does it with the pointer over the pane.
+    ///
+    /// The half of the pair that is easy to get wrong, because it depends on
+    /// something nothing else in this window depends on: neither the plot nor
+    /// the frame holds the keyboard -- the focus is wherever the reader last
+    /// typed -- so the shortcut has to be armed by where the *pointer* is and
+    /// not by focus. Which is also what keeps two plots in one window from
+    /// both claiming it.
+    function test_ctrl_c_copies_the_plot_the_pointer_is_over() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        win.requestActivate()
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot && lines, "the plot and its lines must be reachable")
+
+        // Pointer somewhere else: the shortcut is not armed, so the key goes
+        // wherever it would have gone and nothing is copied.
+        mouseMove(lines, -20, -20)
+        waitForRendering(win.view)
+        copySpy.clear()
+        copyFailedSpy.clear()
+        keyClick(Qt.Key_C, Qt.ControlModifier)
+        wait(50)
+        compare(copySpy.count, 0, "a plot nobody is pointing at must not copy")
+
+        // ...and over the pane it is.
+        mouseMove(lines, Math.round(lines.width / 2),
+                  Math.round(lines.height / 2))
+        waitForRendering(win.view)
+        keyClick(Qt.Key_C, Qt.ControlModifier)
+        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
+                  "the grab must answer one way or the other")
+        compare(copyFailedSpy.count, 0,
+                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+
+        mouseMove(lines, -20, -20)
     }
 
     /// The ticks are drawn where the curve is.

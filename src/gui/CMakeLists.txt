@@ -30,6 +30,7 @@ qt_add_library(gui STATIC
   CustomPlotSet.cpp
   FileSystem.cpp
   FocusRelease.cpp
+  ImageClipboard.cpp
   EmbeddedFonts.cpp
   EmbeddedIcon.cpp
 )

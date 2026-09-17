@@ -11,6 +11,9 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
 - Visualize datasets as spreadsheets, plots or images
 - Draw slices of several datasets together on one pair of axes, against the
   index, a stated range, or another dataset read as a time series
+- Zoom a plot to a region you drag out, or to a range you type, and give it a
+  title, axis names and a legend on the picture
+- Copy a plot to the clipboard as an image, from the panel or with Ctrl+C
 - Save an arrangement of lines as a named view and put it back on another file,
   which says up front how much of it that file still holds
 - View images, which are automatically detected based on the HDF5 specification

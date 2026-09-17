@@ -32,9 +32,37 @@ Item {
     property real viewMinY: 0.0
     property real viewMaxY: 1.0
 
-    property bool showGrid: true
+    /// How closely the grid is ruled: "none", "loose", "dense" or "custom".
+    ///
+    /// This was a bool, and a bool is the wrong control for it. A grid is
+    /// reading aid rather than decoration -- a reader counting a spike's width
+    /// off the rules wants more of them than a reader looking at the shape of
+    /// a trace does -- and "on" picked one density for both of them.
+    ///
+    /// The *numbered* ticks do not move with it. They are what the axis says,
+    /// and an axis that prints sixteen labels down a narrow pane because
+    /// somebody wanted a finer grid has answered the wrong question. So
+    /// `loose` rules at the labels, `dense` adds minor rules between them, and
+    /// `custom` rules wherever the reader says -- and all three print the same
+    /// numbers.
+    property string gridMode: "loose"
+    /// Under "custom", how far apart the rules are, in the data's own units.
+    /// Zero or less draws nothing on that axis, which is what a half-typed
+    /// number in the box resolves to.
+    property real gridStepX: 0.0
+    property real gridStepY: 0.0
     /// Roughly how many ticks an axis carries.
     property int tickTarget: 8
+
+    /// A title over the pane, and a name for each axis. Empty by default and
+    /// empty for most plots: what a dataset is called is already in the slice
+    /// bar above it, so these are for the reader who is making a picture to
+    /// show somebody else rather than one to read now.
+    ///
+    /// Each costs room only when it says something -- see gutterTop below.
+    property string title: ""
+    property string xLabel: ""
+    property string yLabel: ""
 
     /// Punctuation on the lines: a dot at every sample, where the line is
     /// drawn sample for sample rather than summarised.
@@ -59,6 +87,15 @@ Item {
     /// produces, which is a line of numbers in the bar below the plot and is
     /// therefore something a reader may reasonably want to stop changing.
     property bool showCursor: true
+
+    /// Whether the pointer is over the pane -- the lines themselves, not the
+    /// gutters the labels live in.
+    ///
+    /// The same HoverHandler the crosshair reads, handed out because Ctrl+C
+    /// copies the plot "while the mouse is inside it" and this is where that
+    /// is known. Not guarded by showCursor: turning the readout off says
+    /// nothing about where the pointer is.
+    readonly property alias hovered: pointer.hovered
 
     /// The item the lines are drawn on. Handed out so that whoever owns the
     /// data can fill it; this file knows nothing about what is in it.
@@ -92,9 +129,17 @@ Item {
     /// Theme.readout is monospaced, so the longest string is the widest one.
     /// No cycle: a tick's *text* comes from the view, and only its position
     /// comes from the pane this decides the size of.
+    ///
+    /// The y axis's *name*, when there is one, is added on the outside of
+    /// that: it is drawn rotated, so what it costs sideways is a line's height
+    /// and not its length. Nothing is reserved for it when the box is empty,
+    /// which is the whole of "no wasted space" -- an unnamed axis's pane
+    /// starts exactly where it started before this existed.
     readonly property int gutterLeft:
         Math.max(Theme.plotLabelMargin,
                  Math.ceil(yLabelMetrics.width) + Theme.gapM)
+        + (frame.yLabel === ""
+           ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
 
     readonly property string widestYLabel: {
         let widest = ""
@@ -113,19 +158,45 @@ Item {
     }
 
     readonly property int gutterRight: Theme.s9
+    /// Air, plus a line for the title when there is one.
     readonly property int gutterTop: Theme.gapS
+        + (frame.title === ""
+           ? 0 : Math.ceil(titleMetrics.height) + Theme.gapS)
     /// Measured rather than stated, because it has to hold a line of type and
     /// the token that used to stand here does not know how tall one is. Qt
     /// Graphs drew its own labels inside its own margin and got away with
     /// plotMargin exactly; drawn here, the same number put the last two pixels
     /// of every x label past the bottom of the frame.
+    ///
+    /// The axis's name goes under the numbers, and only when it has one.
     readonly property int gutterBottom: Math.ceil(tickMetrics.height) + Theme.gapS
+        + (frame.xLabel === ""
+           ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
 
     TextMetrics {
         id: tickMetrics
 
         font: Theme.readout
         text: "0.0"
+    }
+
+    // The two faces the title and the axis names are set in, measured off a
+    // line of type rather than off the reader's own words: what decides the
+    // gutter is how tall a line is, and every line in one face is as tall as
+    // every other. Measuring the strings themselves would make the pane's
+    // geometry depend on whether the title happens to carry a descender.
+    TextMetrics {
+        id: titleMetrics
+
+        font: Theme.bodyStrong
+        text: "Ag"
+    }
+
+    TextMetrics {
+        id: axisNameMetrics
+
+        font: Theme.bodySmall
+        text: "Ag"
     }
 
     // --- where a value sits ----------------------------------------------
@@ -243,13 +314,87 @@ Item {
         return out
     }
 
+    // --- which rules ------------------------------------------------------
+    /// How far apart the rules go on an axis spanning `low`..`high`, or 0 for
+    /// an axis that is not ruled. `custom` is the reader's own number and is
+    /// taken as given, including the nonsense ones: a step of zero or less
+    /// draws nothing, which is what a box holding "-" or "1e" resolves to
+    /// while it is being typed.
+    function gridStep(low, high, custom) {
+        const span = high - low
+        if (frame.gridMode === "none")
+            return 0
+        if (frame.gridMode === "custom")
+            return custom > 0 ? custom : 0
+        if (frame.gridMode === "dense")
+            return frame.niceStep(span, frame.tickTarget * Theme.plotGridDenseFactor)
+        return frame.niceStep(span, frame.tickTarget)
+    }
+
+    /// One entry per rule: where it goes, and whether it is a major.
+    ///
+    /// A major is a rule that lands on a numbered tick, and it is drawn a step
+    /// stronger than the rest. That distinction only exists under `dense`,
+    /// where the rules outnumber the labels -- under `loose` every rule is on
+    /// a label and under `custom` the reader asked for exactly these, so
+    /// neither has anything to demote.
+    ///
+    /// The multiple is tested with a tolerance because the two steps are
+    /// computed separately: a rule at 0.30000000000000004 and a label at 0.3
+    /// are the same rule, and comparing them exactly would draw the one line
+    /// that ought to be strongest as the faintest thing on the axis.
+    function gridAt(low, high, step, labelStep, vertical) {
+        const out = []
+        if (!(step > 0))
+            return out
+        const values = frame.ticksBetween(low, high, step)
+        const minor = frame.gridMode === "dense" && labelStep > 0
+        for (let i = 0; i < values.length; ++i) {
+            const on = minor
+                ? Math.abs(values[i] / labelStep
+                           - Math.round(values[i] / labelStep)) < 1e-6
+                : true
+            out.push({ at: vertical ? frame.yFraction(values[i])
+                                    : frame.xFraction(values[i]),
+                       major: on })
+        }
+        return out
+    }
+
+    readonly property var xGrid: frame.gridAt(
+        frame.viewMinX, frame.viewMaxX,
+        frame.gridStep(frame.viewMinX, frame.viewMaxX, frame.gridStepX),
+        frame.niceStep(frame.viewMaxX - frame.viewMinX, frame.tickTarget), false)
+
+    readonly property var yGrid: frame.gridAt(
+        frame.viewMinY, frame.viewMaxY,
+        frame.gridStep(frame.viewMinY, frame.viewMaxY, frame.gridStepY),
+        frame.niceStep(frame.viewMaxY - frame.viewMinY, frame.tickTarget), true)
+
     // --- the drawing ------------------------------------------------------
+    // The ground, drawn here rather than only behind the whole surface.
+    //
+    // It is the same colour the surface already stands on, so on screen this
+    // changes nothing at all. What it buys is that the frame is a complete
+    // picture by itself: "copy plot" grabs this item, and an item whose ground
+    // is a sibling behind it grabs as strokes and labels on transparency --
+    // which is what lands in the clipboard and what a reader pastes.
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.surfaceInset
+    }
+
     // A step stronger than a table's rules, for the same reason the table's own
     // went up: this plot's ground is the inset, which is true black, and a
     // hairline at line-1 against it is a line nobody can see. The axis rules go
     // a step further again, so the frame reads as the frame.
+    //
+    // A minor rule -- one the dense grid puts between two numbered ticks --
+    // goes back down a step. It is subdivision rather than structure, and at
+    // the majors' weight a dense grid reads as a hatch with a curve somewhere
+    // in it.
     Repeater {
-        model: frame.showGrid ? frame.yTicks : []
+        model: frame.yGrid
 
         Rectangle {
             required property var modelData
@@ -258,12 +403,12 @@ Item {
             y: Math.round(frame.area.y + (1 - modelData.at) * frame.area.height)
             width: frame.area.width
             height: Theme.hairline
-            color: Theme.borderStrong
+            color: modelData.major ? Theme.borderStrong : Theme.border
         }
     }
 
     Repeater {
-        model: frame.showGrid ? frame.xTicks : []
+        model: frame.xGrid
 
         Rectangle {
             required property var modelData
@@ -272,7 +417,7 @@ Item {
             y: frame.area.y
             width: Theme.hairline
             height: frame.area.height
-            color: Theme.borderStrong
+            color: modelData.major ? Theme.borderStrong : Theme.border
         }
     }
 
@@ -405,6 +550,89 @@ Item {
             font: Theme.readout
             color: Theme.textSecondary
             horizontalAlignment: Text.AlignHCenter
+        }
+    }
+
+    // --- what the reader called it ----------------------------------------
+    // The title and the two axis names. Each sits in the room its own gutter
+    // grew for it, so none of them can be drawn over a number -- and when the
+    // box is empty the gutter never grew and there is nothing here at all.
+    //
+    // All three elide over the pane's width rather than wrapping. A plot is a
+    // fixed rectangle and a title that took three lines would take them out of
+    // the picture; the pointer reaches the whole of it, which is the contract
+    // every elided thing in this application keeps.
+    Text {
+        id: titleText
+
+        x: frame.area.x
+        y: Theme.gapS
+        width: frame.area.width
+        visible: frame.title !== ""
+        text: frame.title
+        font: Theme.bodyStrong
+        color: Theme.textPrimary
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+
+        HoverHandler { id: titleHover }
+
+        AppToolTip {
+            shown: titleHover.hovered && titleText.truncated
+            verbatim: true
+            text: frame.title
+        }
+    }
+
+    Text {
+        id: xNameText
+
+        x: frame.area.x
+        y: frame.area.y + frame.area.height + Theme.s3
+           + Math.ceil(tickMetrics.height) + Theme.gapXS
+        width: frame.area.width
+        visible: frame.xLabel !== ""
+        text: frame.xLabel
+        font: Theme.bodySmall
+        color: Theme.textSecondary
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+
+        HoverHandler { id: xNameHover }
+
+        AppToolTip {
+            shown: xNameHover.hovered && xNameText.truncated
+            verbatim: true
+            text: frame.xLabel
+        }
+    }
+
+    // Turned a quarter, reading upwards, which is where every plot in every
+    // field puts the name of a y axis. Rotation about the item's own centre,
+    // so the arithmetic is "put the centre where the middle of the pane's left
+    // edge is": the box is laid out as wide as the pane is tall and then
+    // turned, which is also what gives `elide` the right width to measure
+    // against.
+    Text {
+        id: yNameText
+
+        width: frame.area.height
+        x: Math.ceil(axisNameMetrics.height) / 2 - width / 2
+        y: frame.area.y + frame.area.height / 2 - height / 2
+        rotation: -90
+        visible: frame.yLabel !== ""
+        text: frame.yLabel
+        font: Theme.bodySmall
+        color: Theme.textSecondary
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+
+        HoverHandler { id: yNameHover }
+
+        AppToolTip {
+            shown: yNameHover.hovered && yNameText.truncated
+            verbatim: true
+            text: frame.yLabel
         }
     }
 }
