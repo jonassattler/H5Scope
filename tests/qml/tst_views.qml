@@ -996,6 +996,104 @@ TestCase {
         }
     }
 
+    /// Every card is on screen, and a card that will not fit scrolls rather
+    /// than the page under it.
+    ///
+    /// The tab was one long scrolling page until this, which answered "what is
+    /// this object?" with a column to be travelled down: the panel a reader
+    /// wanted was as likely to be below the fold as not, and nothing at the
+    /// top said whether there was anything under it. Both halves are asserted
+    /// here because either alone is a different layout -- a page that fits
+    /// everything by hiding the ends of it, or one that shows every card whole
+    /// by putting half of them past the bottom of the window.
+    ///
+    /// Two window heights rather than one, and the same selection in both: the
+    /// tall one is where nothing may scroll, because a card that scrolls with
+    /// room to spare is a card drawn short of what it was given.
+    function test_the_cards_scroll_and_the_information_tab_does_not() {
+        verify(select("/compound"))
+
+        const roomy = createTemporaryObject(infoWindowComponent, testCase)
+        verify(roomy, "the information window must instantiate")
+        waitForRendering(roomy.info)
+
+        const whole = infoCards(roomy.info)
+        verify(whole.length >= 4, "the tab must draw its cards")
+        for (const card of whole) {
+            compare(card.scrolls, false,
+                    "\"" + card.title + "\" has room and must not scroll")
+            fuzzyCompare(card.height, card.implicitHeight, 1,
+                         "\"" + card.title + "\" is drawn at its full height")
+        }
+
+        // The same cards in a window too short for them. Nothing leaves the
+        // screen; what does not fit goes behind a scrollbar instead.
+        const cramped = createTemporaryObject(infoWindowComponent, testCase,
+                                              { height: 500 })
+        verify(cramped, "the short information window must instantiate")
+        waitForRendering(cramped.info)
+
+        const cards = infoCards(cramped.info)
+        compare(cards.length, whole.length, "every card is still drawn")
+
+        let scrolling = 0
+        for (const card of cards) {
+            const bottom = card.mapToItem(cramped.info, 0, card.height).y
+            verify(bottom <= cramped.info.height,
+                   "\"" + card.title + "\" ends " + Math.round(bottom)
+                   + " into a tab " + Math.round(cramped.info.height) + " tall")
+            verify(card.height >= Math.min(card.implicitHeight,
+                                           card.minimumHeight) - 1,
+                   "\"" + card.title + "\" keeps its floor")
+            if (card.scrolls)
+                ++scrolling
+        }
+        verify(scrolling > 0,
+               "a window this short has to be holding something back")
+
+        // And what is held back is reachable: the body moves, and it moves far
+        // enough to put the last row of the card on screen.
+        for (const card of cards) {
+            if (!card.scrolls)
+                continue
+            const viewport = flickableIn(card)
+            verify(viewport, "\"" + card.title + "\" must scroll something")
+            verify(viewport.contentHeight > viewport.height,
+                   "\"" + card.title + "\" has more content than viewport")
+            viewport.contentY = viewport.contentHeight - viewport.height
+            fuzzyCompare(viewport.contentY,
+                         viewport.contentHeight - viewport.height, 1,
+                         "\"" + card.title + "\" reaches its last row")
+        }
+    }
+
+    /// The Panels on the Information tab, found by the two properties a card
+    /// declares about its own height.
+    function infoCards(root) {
+        const found = []
+        const visit = (item) => {
+            if (item.scrolls !== undefined && item.minimumHeight !== undefined)
+                found.push(item)
+            for (let i = 0; i < item.children.length; ++i)
+                visit(item.children[i])
+        }
+        visit(root)
+        return found
+    }
+
+    /// The viewport inside one, found by a property only a Flickable has.
+    function flickableIn(item) {
+        for (let i = 0; i < item.children.length; ++i) {
+            const child = item.children[i]
+            if (child.maximumFlickVelocity !== undefined)
+                return child
+            const deeper = flickableIn(child)
+            if (deeper)
+                return deeper
+        }
+        return null
+    }
+
     /// Every TextEdit under `root` -- which on the Information tab is every
     /// string it draws.
     function selectableTexts(root) {

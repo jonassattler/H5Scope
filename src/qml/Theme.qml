@@ -431,6 +431,18 @@ QtObject {
     /// Narrowest an Information panel may get before the layout reflows to one
     /// fewer column.
     readonly property int panelMinWidth:   340
+    /// Shortest a body inside one may be squeezed to before the panel stops
+    /// giving room back -- three rows of it.
+    ///
+    /// The Information tab shows every card at once and scrolls the ones that
+    /// do not fit, so its cards share out one window's height between them.
+    /// This is the share a card will not go below: two rows and a scrollbar
+    /// beside them read as a fault rather than as a list, and three is where a
+    /// list still looks like one. It is also what decides the shortest window
+    /// the tab fits in at all -- five cards at this floor and their gutters --
+    /// so a more generous number here is a window height below which every
+    /// card is on screen in name only.
+    readonly property int panelMinHeight:  rowHeight * 3
     /// The label column inside one. Wide enough for the longest label the
     /// Information tab produces, which is an attribute name rather than one of
     /// its own words -- "IMAGE_SUBCLASS" is fourteen tracked mono characters.
