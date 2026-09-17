@@ -25,7 +25,7 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
-## 0.7.0
+## 0.6.2
 
 **Drag a region with the right button and the plot goes there.** The wheel
 zooms about a point, which meant a reader who could already see the part they
