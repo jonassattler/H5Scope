@@ -25,6 +25,45 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.0
+
+**Drag a region with the right button and the plot goes there.** The wheel
+zooms about a point, which meant a reader who could already see the part they
+wanted had to arrive at it by turning the wheel and correcting with a drag, by
+eye, several times. The band says where to look and the plot reads towards it
+at once rather than after the gesture settles. Dragging a few pixels does
+nothing: that is a slip, and a two-pixel-tall window is a magnification of
+several hundred on an axis nobody meant to touch.
+
+**...and the window is four numbers under Plot Settings > View.** X start and
+stop, Y start and stop — a range you have in mind rather than one you can point
+at, which is what a wheel cannot be asked for. They are the readout as well:
+selecting a region, zooming, panning and resetting all report into the same
+four boxes. They take `0.2`, `0,2` and `1.2e-3`, and the window is clamped to
+the data, because there is nothing outside it to show.
+
+**The grid has four densities instead of two.** None, loose, dense, and custom
+with a step of your own for each axis. The numbered ticks do not move with it —
+a grid is a reading aid and an axis printing sixteen labels down a narrow pane
+has answered a question nobody asked — so dense rules *between* the labels and
+draws those minor rules a step weaker.
+
+**A plot can carry a title, two axis names and a legend.** All four are empty
+or off to begin with and cost no room at all while they are: an untitled plot's
+pane is exactly where it was. The legend is drawn in a corner of the plot
+itself, naming each drawn line beside its own colour, with a custom tab's alias
+where it has one.
+
+**A plot goes to the clipboard as a picture.** "Copy plot" under Plot Settings,
+or Ctrl+C with the pointer over the pane, on Windows and on Linux. What is
+copied is the plot — the ground, the rules, the ticks, their labels, the title,
+the axis names, the strokes and the legend in the corner — and not the panel of
+controls beside it. That is what the legend on the plot is for: six unnamed
+traces pasted into a document are six traces nobody can read.
+
+Saved views made before this release keep their grid: "on" is what `loose`
+now means.
+
 ## 0.6.1
 
 **A compound's selection is one line.** Over a compound the slice bar makes

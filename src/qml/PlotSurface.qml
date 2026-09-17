@@ -27,11 +27,35 @@ Item {
     id: surface
 
     // --- settings, written by PlotSettingsPanel -------------------------
-    property bool showGrid: true
+    /// How closely the grid is ruled: "none", "loose", "dense" or "custom",
+    /// and under "custom" how far apart the rules go on each axis. See the
+    /// note on PlotFrame.gridMode, which is where the four are drawn.
+    property string gridMode: "loose"
+    property real gridStepX: 0.0
+    property real gridStepY: 0.0
     property bool showMarkers: false
     /// Whether pointing at the plot reads the sample under the pointer: a
     /// crosshair on the plot and a line of numbers in the bar below it.
     property bool showCursor: true
+
+    /// A title over the pane, and a name for each axis. Empty draws nothing
+    /// and costs no room -- see PlotFrame's gutters, which grow for these only
+    /// when there is something in them.
+    ///
+    /// They are for the picture that leaves this application rather than for
+    /// the one on screen: what is being drawn is already named in the slice
+    /// bar above the plot and in the legend beside it, and neither of those
+    /// goes to the clipboard.
+    property string plotTitle: ""
+    property string xLabel: ""
+    property string yLabel: ""
+
+    /// Whether the lines are named on the plot as well as beside it, and in
+    /// which corner. See PlotOverlayLegend for why a second legend exists at
+    /// all: this one is a caption on the picture and is part of what "copy
+    /// plot" copies.
+    property bool legendOnPlot: false
+    property string legendCorner: "topRight"
 
     /// Whether this is the presentation on screen. Reading `plot.hasData`
     /// samples the file, so every path into the plot is guarded by this: a
@@ -443,6 +467,94 @@ Item {
         }
     }
 
+    /// The zoom and pan that put `from`..`to` on an axis running `low`..`high`.
+    ///
+    /// The inverse of visibleLow/visibleHigh, which is what makes it exact:
+    /// asked for the window those two report, it gives back the zoom and pan
+    /// they were computed from. Clamped the way every other path here is --
+    /// never below 1, never past maxZoom, never outside the data -- so a
+    /// window nobody can be shown comes back as the nearest one that can be.
+    function viewedAxis(low, high, from, to) {
+        const full = high - low
+        const span = Math.abs(to - from)
+        if (!(full > 0) || !(span > 0))
+            return { zoom: 1.0, pan: 0.0 }
+        const zoom = Math.max(1.0, Math.min(surface.maxZoom, full / span))
+        const centre = (from + to) / 2.0
+        return { zoom: zoom,
+                 pan: surface.clampPan(centre - (low + high) / 2.0,
+                                       zoom, low, high) }
+    }
+
+    /// Put the window at exactly these four numbers, in data coordinates.
+    ///
+    /// The one way in for everything that states a window rather than nudging
+    /// one: the region band, and the four boxes under Plot Settings > View.
+    /// Both of those are the reader saying where to look, which is the same
+    /// thing said twice -- so it is arithmetic in one place and the boxes
+    /// report the band's answer without either knowing about the other.
+    function setViewRange(x0, x1, y0, y1) {
+        const x = surface.viewedAxis(surface.axisMinX, surface.axisMaxX,
+                                     Math.min(x0, x1), Math.max(x0, x1))
+        const y = surface.viewedAxis(surface.lowerBound, surface.upperBound,
+                                     Math.min(y0, y1), Math.max(y0, y1))
+        surface.zoomX = x.zoom
+        surface.panX = x.pan
+        surface.zoomY = y.zoom
+        surface.panY = y.pan
+    }
+
+    /// Go to the region a right-drag has just drawn, in this item's pixels.
+    ///
+    /// Two things happen here and the order of them is the whole feature. The
+    /// focus is pushed *first*, with the magnification the move amounts to, so
+    /// that the closer look the model reads is read towards the region and
+    /// goes out in the same turn rather than after the settle -- a stated
+    /// region is not a gesture that might carry on, it is a reader who has
+    /// already said where they are going. Then the window moves, and the
+    /// bindings under it push the range.
+    ///
+    /// A band under a few pixels in either direction is a slip rather than a
+    /// request: a two-pixel-tall window is a magnification of several hundred
+    /// on an axis the reader never meant to touch, and the way out of it would
+    /// be a reset. Refused whole rather than clamped to one axis, because
+    /// which axis was meant is not something this can know.
+    function zoomToRegion(px0, py0, px1, py1) {
+        const area = surface.plotRect
+        if (area.width <= 0 || area.height <= 0)
+            return false
+        const left = Math.min(px0, px1)
+        const right = Math.max(px0, px1)
+        const top = Math.min(py0, py1)
+        const bottom = Math.max(py0, py1)
+        if (right - left < surface.minimumBand
+                || bottom - top < surface.minimumBand)
+            return false
+
+        const at = (px) => surface.viewMinX
+            + Math.max(0, Math.min(1, (px - area.x) / area.width))
+              * (surface.viewMaxX - surface.viewMinX)
+        // y grows downward on screen and upward on the axis, so the band's top
+        // edge is the larger value.
+        const up = (py) => surface.viewMinY
+            + (1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height)))
+              * (surface.viewMaxY - surface.viewMinY)
+
+        const x0 = at(left)
+        const x1 = at(right)
+        const y0 = up(bottom)
+        const y1 = up(top)
+
+        const span = surface.viewMaxX - surface.viewMinX
+        if (span > 0 && x1 > x0)
+            surface.pushZoomFocus((x0 + x1) / 2.0, span / (x1 - x0))
+        surface.setViewRange(x0, x1, y0, y1)
+        return true
+    }
+
+    /// The smallest band that counts as one. See zoomToRegion.
+    readonly property int minimumBand: Theme.gapL
+
     /// Which axes a wheel event with these modifiers zooms.
     ///
     /// Shift alone is x, Ctrl alone is y, and everything else -- neither, both,
@@ -541,12 +653,31 @@ Item {
         viewMaxX: surface.viewMaxX
         viewMinY: surface.viewMinY
         viewMaxY: surface.viewMaxY
-        showGrid: surface.showGrid
+        gridMode: surface.gridMode
+        gridStepX: surface.gridStepX
+        gridStepY: surface.gridStepY
         tickTarget: surface.tickTarget
+
+        title: surface.plotTitle
+        xLabel: surface.xLabel
+        yLabel: surface.yLabel
 
         markers: surface.showMarkers
         markerSize: Theme.plotMarkerSize
         showCursor: surface.showCursor
+
+        // Declared in here rather than beside the frame, which is what makes
+        // it part of the picture: copyImage() grabs this item, and a caption
+        // that was a sibling of the frame would be a caption on everything but
+        // the copy. PlotFrame stays ignorant of it -- that file knows the
+        // numbers and not the names, and this is handed the surface instead.
+        PlotOverlayLegend {
+            objectName: "plotOverlayLegend"
+
+            target: surface
+            corner: surface.legendCorner
+            area: frame.area
+        }
     }
 
     /// What the pointer is over, snapped to the nearest drawn sample:
@@ -593,6 +724,42 @@ Item {
         if (!isFinite(value))
             return String(value)
         return Number.isInteger(value) ? String(value) : value.toPrecision(6)
+    }
+
+    // --- taking the picture away ------------------------------------------
+    /// Put what is drawn on the clipboard, as an image.
+    ///
+    /// The frame and not this item: the frame is the plot -- the ground, the
+    /// rules, the ticks, their labels, the title, the axis names, the strokes
+    /// and the caption in the corner. What it leaves out is the legend panel
+    /// on the left, which is a control the reader opens to decide which lines
+    /// there are rather than a part of the drawing. That is what the legend on
+    /// the plot is for, and it is why that one lives inside the frame.
+    ///
+    /// The grab is asynchronous and nothing here waits for it; ImageClipboard
+    /// says how it went, and the settings panel prints that.
+    function copyImage() {
+        if (!surface.drawable)
+            return false
+        return ImageClipboard.copyItem(frame)
+    }
+
+    // Ctrl+C with the pointer over the pane, which is the other half of what
+    // was asked for -- a reader looking at a plot should not have to open a
+    // panel to take it away.
+    //
+    // A Shortcut rather than a Keys handler because neither the plot nor the
+    // frame holds the keyboard: the focus is wherever the reader last typed,
+    // usually the slice bar or the tree's filter, and a plot that stole it to
+    // offer a copy would take the caret out of a line somebody was writing.
+    //
+    // `frame.hovered` is what makes it unambiguous with more than one plot in
+    // the window: only one pane can be under the pointer, so only one of these
+    // is ever enabled. Nothing else in this application binds Ctrl+C.
+    Shortcut {
+        sequences: [StandardKey.Copy]
+        enabled: surface.active && surface.drawable && frame.hovered
+        onActivated: surface.copyImage()
     }
 
     /// Hand the lines over and dress them.
@@ -782,7 +949,10 @@ Item {
         "rangeStart", "rangeStep", "rangeStop", "locks",
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
-        "showGrid", "showMarkers", "showCursor"
+        "gridMode", "gridStepX", "gridStepY",
+        "showMarkers", "showCursor",
+        "plotTitle", "xLabel", "yLabel",
+        "legendOnPlot", "legendCorner"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -807,6 +977,19 @@ Item {
             if (values.hasOwnProperty(name))
                 surface[name] = values[name]
         }
+        // A view saved before the grid had four densities carries `showGrid`
+        // and no `gridMode`. Passing it over would have been within the rule
+        // above -- a setting that has gone away costs the reader that setting
+        // -- except that this one has not gone away, it has grown: "on" is
+        // exactly what `loose` now means, and a view saved with the grid
+        // turned off would otherwise come back with it on.
+        //
+        // Read only when the new name is absent, so a view written by this
+        // build is never second-guessed by one written by an older one.
+        if (!values.hasOwnProperty("gridMode")
+                && values.hasOwnProperty("showGrid")) {
+            surface.gridMode = values["showGrid"] ? "loose" : "none"
+        }
     }
 
     // A window onto one dataset says nothing about the next one, and neither
@@ -820,7 +1003,10 @@ Item {
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
-                "showGrid", "showMarkers", "showCursor", "highlighted",
+                "gridMode", "gridStepX", "gridStepY",
+                "showMarkers", "showCursor", "highlighted",
+                "plotTitle", "xLabel", "yLabel",
+                "legendOnPlot", "legendCorner",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
@@ -912,6 +1098,74 @@ Item {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton
             onDoubleClicked: surface.resetView()
+        }
+
+        // --- the region band ---------------------------------------------
+        // The right button draws a rectangle and the view goes to it. It is
+        // the gesture every plot in every field has for "look at this part",
+        // and the one this plot did not: the wheel zooms about a point and a
+        // reader who can see the region they want had to arrive at it by
+        // turning the wheel and correcting with a drag, by eye, several times.
+        //
+        // The right button rather than a modifier on the left, because the
+        // left is already the pan and the two would have to be told apart by a
+        // key held down before the press. Nothing else on this pane uses it --
+        // the legend's rows do, but those are in the panel and not here.
+        DragHandler {
+            id: band
+
+            objectName: "plotRegionDrag"
+
+            target: null
+            acceptedButtons: Qt.RightButton
+
+            /// Where the press was, and where the pointer is now. Held rather
+            /// than read off the centroid at draw time so that the rectangle
+            /// below depends on two plain points and stops existing the moment
+            /// the gesture does.
+            property point from: Qt.point(0, 0)
+            property point to: Qt.point(0, 0)
+
+            onActiveChanged: {
+                if (band.active) {
+                    band.from = centroid.pressPosition
+                    band.to = centroid.pressPosition
+                    return
+                }
+                // Released. A band too small to have been meant is dropped
+                // without moving anything -- see zoomToRegion.
+                surface.zoomToRegion(band.from.x, band.from.y,
+                                     band.to.x, band.to.y)
+            }
+
+            onCentroidChanged: {
+                if (band.active)
+                    band.to = centroid.position
+            }
+        }
+
+        // What the reader is about to ask for, drawn while they are deciding.
+        // Clipped to the pane, so a drag that runs off the edge says "to the
+        // edge" rather than drawing over the axis labels -- and the zoom that
+        // follows clamps to exactly the same place, so the band is a promise
+        // the result keeps.
+        Item {
+            x: surface.plotRect.x
+            y: surface.plotRect.y
+            width: surface.plotRect.width
+            height: surface.plotRect.height
+            clip: true
+            visible: band.active
+
+            Rectangle {
+                x: Math.min(band.from.x, band.to.x) - parent.x
+                y: Math.min(band.from.y, band.to.y) - parent.y
+                width: Math.abs(band.to.x - band.from.x)
+                height: Math.abs(band.to.y - band.from.y)
+                color: Theme.plotBandFill
+                border.width: Theme.borderWidthAccent
+                border.color: Theme.accent
+            }
         }
     }
 

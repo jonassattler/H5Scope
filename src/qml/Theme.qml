@@ -557,6 +557,41 @@ QtObject {
     /// column index under it; the other two sides are air, and take a gap.
     readonly property int plotMargin: s7
     readonly property int plotLabelMargin: s10
+    /// The band a right-drag draws over the plot to say which region to go to.
+    ///
+    /// An alpha rather than a mix, for `surfaceMatch`'s reason and a stronger
+    /// one: what is underneath a selection band is the picture itself -- the
+    /// ground, the grid and however many strokes -- so there is no one colour
+    /// to mix against. What matters is that the curve stays legible through it,
+    /// because the band is drawn *while* the reader is deciding where to stop.
+    readonly property color plotBandFill: dark ? Qt.rgba(1, 1, 1, 0.14)
+                                               : Qt.rgba(0, 0, 0, 0.12)
+    /// The ground under a legend drawn on the plot rather than beside it.
+    ///
+    /// Opaque would be simpler and is wrong: a legend in a corner covers part
+    /// of the pane, and a reader has to be able to see that a stroke runs
+    /// under it rather than stopping there. Heavier than `rampVeil`, which
+    /// veils eighteen pixels of a scale; this one has text standing on it.
+    readonly property color plotLegendGround: dark ? Qt.rgba(0, 0, 0, 0.78)
+                                                   : Qt.rgba(1, 1, 1, 0.84)
+    /// How many lines a legend drawn on the plot names before it stops and
+    /// says how many are left.
+    ///
+    /// A plot of ten thousand lines has a legend ten thousand rows tall, which
+    /// is not a legend -- it is the picture replaced by a list of what is in
+    /// it. Twelve is about a third of a pane at this application's row height,
+    /// which is as much of the drawing as a caption may take.
+    readonly property int plotLegendRows: 12
+    /// The swatch beside a name in it: a stroke of line, not a block of
+    /// colour, because what it stands for is a stroke.
+    readonly property int plotLegendSwatch: s6
+    /// How much finer the dense grid is than the numbered ticks.
+    ///
+    /// Four, which after niceStep's rounding to 1, 2 or 5 is usually five
+    /// minor rules between two labels and sometimes two. Not a raw number at
+    /// its use site, because it is the one quantity that decides what "dense"
+    /// means and it is read by both axes.
+    readonly property int plotGridDenseFactor: 4
     /// A settings panel's rows are taller than a table's: each carries a
     /// control, not a line of text.
     readonly property int settingRowHeight: 30

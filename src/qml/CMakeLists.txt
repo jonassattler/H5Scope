@@ -26,6 +26,8 @@ qt_add_qml_module(appqml
     TableSurface.qml
     PlotSurface.qml
     PlotFrame.qml
+    PlotOverlayLegend.qml
+    PlotRangeSetting.qml
     RangeAxis.qml
     RangeAxisSetting.qml
     CustomView.qml

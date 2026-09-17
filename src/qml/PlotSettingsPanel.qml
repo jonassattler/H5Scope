@@ -31,6 +31,87 @@ SettingsPanel {
 
     title: qsTr("plot settings")
 
+    // --- what to call it --------------------------------------------------
+    // A title and two axis names, all three empty to begin with and all three
+    // drawing nothing while they are. They are not for the plot on screen --
+    // the slice bar above it already says what is being drawn and the legend
+    // beside it says which line is which -- they are for the plot that leaves
+    // here through "copy plot", where neither of those goes.
+    //
+    // Nothing is checked, because there is nothing a phrase can be wrong
+    // about. FilterInput is the same box CustomEntryRow gives an alias, and
+    // for the same reason: what is being typed is language rather than a value.
+    SettingRow {
+        label: qsTr("labels")
+
+        FilterInput {
+            id: titleField
+
+            objectName: "plotTitleField"
+
+            width: parent.width
+            implicitHeight: Theme.smallControlHeight
+            font: Theme.body
+            text: panel.target ? panel.target.plotTitle : ""
+            placeholderText: qsTr("plot title")
+            enabled: !!panel.target
+            onAccepted: panel.commitLabel(titleField, "plotTitle")
+            onActiveFocusChanged: {
+                if (!titleField.activeFocus)
+                    panel.commitLabel(titleField, "plotTitle")
+            }
+        }
+
+        FilterInput {
+            id: xLabelField
+
+            objectName: "plotXLabelField"
+
+            width: parent.width
+            implicitHeight: Theme.smallControlHeight
+            font: Theme.body
+            text: panel.target ? panel.target.xLabel : ""
+            placeholderText: qsTr("x label")
+            enabled: !!panel.target
+            onAccepted: panel.commitLabel(xLabelField, "xLabel")
+            onActiveFocusChanged: {
+                if (!xLabelField.activeFocus)
+                    panel.commitLabel(xLabelField, "xLabel")
+            }
+        }
+
+        FilterInput {
+            id: yLabelField
+
+            objectName: "plotYLabelField"
+
+            width: parent.width
+            implicitHeight: Theme.smallControlHeight
+            font: Theme.body
+            text: panel.target ? panel.target.yLabel : ""
+            placeholderText: qsTr("y label")
+            enabled: !!panel.target
+            onAccepted: panel.commitLabel(yLabelField, "yLabel")
+            onActiveFocusChanged: {
+                if (!yLabelField.activeFocus)
+                    panel.commitLabel(yLabelField, "yLabel")
+            }
+        }
+    }
+
+    /// Write a label box back to the surface, and put the box's binding back.
+    ///
+    /// The binding matters more here than the write does: these three are
+    /// per-dataset, so selecting another dataset restores its own title, and a
+    /// box whose binding a typed character had discarded would go on showing
+    /// the previous dataset's words over the new one's plot.
+    function commitLabel(box, name) {
+        if (!panel.target)
+            return
+        panel.target[name] = box.text
+        box.text = Qt.binding(() => panel.target ? panel.target[name] : "")
+    }
+
     // --- the x axis, as three numbers ------------------------------------
     // Start, step and stop, of which any two determine the third. They are the
     // x values of the data, not a window onto them: element i is drawn at
@@ -273,6 +354,21 @@ SettingsPanel {
     SettingRow {
         label: qsTr("view")
 
+        // Where the window is, in numbers. The wheel, the drag and the
+        // right-button band all say this with the pointer; a reader who has a
+        // range in mind -- the same band over two traces, or the one a paper
+        // prints -- cannot ask a wheel for it.
+        //
+        // Also the readout for the band: the four boxes are bound to the view,
+        // so a region just selected is reported here without a second path
+        // between the two.
+        PlotRangeSetting {
+            objectName: "plottingRange"
+
+            width: parent.width
+            target: panel.target
+        }
+
         // The wheel zooms about the pointer and a drag pans; this is the way
         // back for a reader who would rather press something than remember
         // that a double-click does the same.
@@ -291,15 +387,143 @@ SettingsPanel {
             enabled: panel.target ? panel.target.highlighted >= 0 : false
             onClicked: { if (panel.target) panel.target.highlighted = -1 }
         }
+
+        // --- the picture, out of here -------------------------------------
+        // What a reader does with a plot they have arranged is put it in
+        // something else, and until this the only way out of this window was a
+        // screenshot of it -- which takes the chrome, the rail and whatever
+        // else is on screen along with the plot.
+        //
+        // The same thing Ctrl+C does with the pointer over the pane; this is
+        // the discoverable half of the pair.
+        AppToolButton {
+            objectName: "copyPlotButton"
+
+            width: parent.width
+            text: qsTr("copy plot")
+            size: "sm"
+            enabled: panel.target ? panel.target.drawable : false
+            onClicked: { if (panel.target) panel.target.copyImage() }
+
+            AppToolTip {
+                shown: parent.hovered
+                text: qsTr("Put a picture of the plot on the clipboard. Ctrl+C "
+                           + "does the same with the pointer over it.")
+            }
+        }
+
+        // How it went. This application has no toast and no animation, so a
+        // line that changes and then stays is the way it reports something
+        // that happened a moment ago -- and a copy needs reporting, because it
+        // succeeds by putting something somewhere the reader cannot see.
+        Text {
+            objectName: "copyPlotResult"
+
+            width: parent.width
+            visible: panel.copyResult !== ""
+            text: panel.copyResult
+            font: Theme.caption
+            color: panel.copyFailed ? Theme.warning : Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    /// What the last copy did, and whether it was a complaint. Cleared when
+    /// the plot changes underneath it, because "copied" is a fact about a
+    /// picture and the picture has moved on.
+    property string copyResult: ""
+    property bool copyFailed: false
+
+    Connections {
+        target: ImageClipboard
+
+        function onCopied() {
+            panel.copyResult = qsTr("Copied to the clipboard.")
+            panel.copyFailed = false
+        }
+
+        function onFailed(reason) {
+            panel.copyResult = reason
+            panel.copyFailed = true
+        }
+    }
+
+    Connections {
+        target: panel.plot
+
+        function onChanged() { panel.copyResult = "" }
     }
 
     SettingRow {
         label: qsTr("drawing")
 
-        AppCheckBox {
-            text: qsTr("grid lines")
-            checked: panel.target ? panel.target.showGrid : false
-            onToggled: { if (panel.target) panel.target.showGrid = checked }
+        // Four densities rather than on and off. A grid is a reading aid, and
+        // how much of it a reader wants depends on what they are reading: the
+        // shape of a trace wants the rules out of the way, counting a spike's
+        // width off them wants more of them, and lining a picture up with
+        // something else wants the steps stated. "On" answered only the first.
+        //
+        // The numbered ticks do not move with this -- see PlotFrame.gridMode.
+        AppComboBox {
+            objectName: "gridModeBox"
+
+            width: parent.width
+            model: panel.gridModeLabels
+            selectedIndex: {
+                const at = panel.gridModeKeys.indexOf(
+                    panel.target ? panel.target.gridMode : "loose")
+                return at < 0 ? 0 : at
+            }
+            onActivated: index => {
+                if (panel.target)
+                    panel.target.gridMode = panel.gridModeKeys[index]
+            }
+        }
+
+        // Absent rather than disabled under the other three, which is the
+        // stance this panel already takes on the map-range slider: a control
+        // that cannot do anything is a control the reader has to work out the
+        // rule for.
+        Text {
+            width: parent.width
+            visible: panel.customGrid
+            text: qsTr("a rule every, along x and along y, in the data's own units")
+            font: Theme.caption
+            color: Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+
+        RowLayout {
+            width: parent.width
+            spacing: Theme.gapS
+            visible: panel.customGrid
+
+            RealField {
+                objectName: "gridStepXField"
+
+                Layout.fillWidth: true
+                value: panel.target ? panel.target.gridStepX : 0
+                // Negative is not a narrower grid, it is a grid drawn
+                // backwards; zero is "none" said in the wrong control. Both
+                // come back as nothing ruled on that axis, which is what
+                // PlotFrame does with a step it cannot use, so the box and the
+                // picture agree.
+                onCommitted: amount => {
+                    if (panel.target)
+                        panel.target.gridStepX = Math.max(0, amount)
+                }
+            }
+
+            RealField {
+                objectName: "gridStepYField"
+
+                Layout.fillWidth: true
+                value: panel.target ? panel.target.gridStepY : 0
+                onCommitted: amount => {
+                    if (panel.target)
+                        panel.target.gridStepY = Math.max(0, amount)
+                }
+            }
         }
 
         AppCheckBox {
@@ -315,6 +539,71 @@ SettingsPanel {
             text: qsTr("cursor")
             checked: panel.target ? panel.target.showCursor : false
             onToggled: { if (panel.target) panel.target.showCursor = checked }
+        }
+    }
+
+    // --- naming the lines inside the picture ------------------------------
+    // The panel on the left of the plot already names them, and better: it
+    // lists every line in the table, ticks them on and off, and scrolls. This
+    // is not that. It is a caption drawn *on* the plot, and it is here because
+    // a copied plot takes its children with it and takes nothing beside it --
+    // six unnamed traces pasted into a document are six traces nobody can read.
+    //
+    // Off by default for that reason: on screen it is a second answer to a
+    // question already answered, and it stands over part of the drawing.
+    SettingRow {
+        label: qsTr("legend")
+
+        AppCheckBox {
+            objectName: "legendOnPlotBox"
+
+            text: qsTr("show legend on plot")
+            checked: panel.target ? panel.target.legendOnPlot : false
+            onToggled: { if (panel.target) panel.target.legendOnPlot = checked }
+        }
+
+        // The four corners, in reading order rather than in the order the
+        // property's strings happen to sort in. Absent while the legend is
+        // off, for the reason the custom grid steps are.
+        ButtonGroup { id: corners }
+
+        Column {
+            spacing: Theme.gapXS
+            visible: !!panel.target && panel.target.legendOnPlot
+
+            Repeater {
+                model: panel.cornerKeys
+
+                delegate: AppRadioButton {
+                    id: cornerButton
+
+                    required property int index
+
+                    text: panel.cornerLabels[cornerButton.index]
+                    ButtonGroup.group: corners
+                    onClicked: {
+                        if (panel.target) {
+                            panel.target.legendCorner =
+                                panel.cornerKeys[cornerButton.index]
+                        }
+                    }
+
+                    // The mark follows the setting rather than the click, for
+                    // the reason the two colour-kind radios give above: a
+                    // ButtonGroup writes `checked` imperatively, and an
+                    // imperative write to a bound property discards the
+                    // binding for good -- which here would leave the mark on
+                    // the corner belonging to the dataset before this one.
+                    Binding {
+                        target: cornerButton
+                        property: "checked"
+                        value: !!panel.target
+                               && panel.target.legendCorner
+                                  === panel.cornerKeys[cornerButton.index]
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                }
+            }
         }
     }
 
@@ -344,6 +633,24 @@ SettingsPanel {
             }
         }
     }
+
+    // --- the grid's four densities ----------------------------------------
+    /// Stable lists rather than expressions that build an array each time they
+    /// run, for the reason the colour dropdown's note gives at length: a fresh
+    /// array makes the ComboBox reset its index, which clears the binding
+    /// under it and leaves the box naming a density the plot is not drawing.
+    readonly property var gridModeKeys: ["none", "loose", "dense", "custom"]
+    readonly property var gridModeLabels:
+        [qsTr("none"), qsTr("loose"), qsTr("dense"), qsTr("custom")]
+
+    readonly property bool customGrid:
+        !!panel.target && panel.target.gridMode === "custom"
+
+    /// The four corners a legend on the plot can take, in reading order.
+    readonly property var cornerKeys:
+        ["topLeft", "topRight", "bottomLeft", "bottomRight"]
+    readonly property var cornerLabels: [qsTr("top left"), qsTr("top right"),
+                                         qsTr("bottom left"), qsTr("bottom right")]
 
     // --- the two kinds, and what each one offers --------------------------
     /// The cycles of each kind, as four lists that stay put.
