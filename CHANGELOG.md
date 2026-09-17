@@ -38,11 +38,12 @@ learned what a compound is.
 
 A subscript written after a member binds to the axes that member contributes, so
 `array[i, j].b[k]` and `(array[:, :].b)[i, j, k]` are the same selection, element
-for element and shape for shape. It is spelled in three places: a box after the
-slice bar's closing bracket, a whole line in a custom tab
-(`/events[0:1000].energy`), and a **Select** row at the head of the
-postprocessing panel. Saved views migrate untouched — every expression without a
-`].` in it parses exactly as it always did.
+for element and shape for shape. It is spelled in three places: the slice bar,
+where a compound makes everything after the path one editable line —
+`[0:1000].energy`, brackets and all, checked as you type and applied whole; a
+whole line in a custom tab (`/events[0:1000].energy`); and a **Select** row at
+the head of the postprocessing panel. Saved views migrate untouched — every
+expression without a `].` in it parses exactly as it always did.
 
 A member is read as a member and not as a struct: the transfer asks HDF5 for
 that field alone, so `.energy` over a hundred thousand records moves four bytes
@@ -53,11 +54,47 @@ with a gap wherever a record's list was too short, and a range of one is refused
 with a sentence saying what to write instead.
 
 **The two text fields that are typed into now say what could come next.** A
-custom tab's entry and the member box offer what matches as you type — groups
+custom tab's entry and the slice bar's box offer what matches as you type — groups
 and datasets, then the datatype's members — and Tab writes as much as every
 candidate shares, completing a dataset with the subscript that selects the whole
 of it at the right rank. Nothing is read to answer a keystroke that you had not
 already asked to see.
+
+**A custom tab drawn against a time series zooms.** It was the one axis of the
+three that could not: the line was refused a closer look because a time base is
+a lookup table rather than a formula, and the time base itself was read once at
+a pane's worth of points and never again — so zooming stretched the picture
+instead of resolving it, and past a few octaves every sample in a column shared
+one x and the curve drew as a staircase. A time base that only ever goes one
+way is a map that can be run backwards, and that is every time base anyone
+plots against: the range on screen is turned back into a range of elements, and
+the axis is now held whole and folded finer with the lines it carries. Zooming
+a time series costs what zooming an index costs, which is nothing.
+
+**The filter box searches the whole file, and answers out of memory.** It used
+to match what you had expanded, which made a search over a file nobody had
+walked find nothing and made one over a file somebody *had* walked cost a
+recursive pass over the tree with two regular-expression matches per row —
+three hundred thousand objects measured at 160–330 ms a keystroke, and a
+wildcard over a group of sixty-five thousand members took twenty-two seconds.
+Every name is now read once, in the background, into one block of memory, and a
+keystroke is a linear pass over it: 5 ms for a run of characters and 30 ms for
+the worst wildcard, at three hundred thousand objects. What it finds is
+complete — a name eight levels down in a branch you have never opened is found,
+the branches holding it stay on screen, and the tree opens itself to the results
+when there are few enough to be results. The box says how many there are. The
+tree is still lazy: nothing is listed to answer a keystroke that nothing is
+being shown for.
+
+**The RAM budget now changes what is already held.** Turning it down used to
+free nothing at all until you selected another dataset, and turning it up made
+no zoom any cheaper — the setting trimmed a few cached runs and left the thing
+actually holding the memory alone. Coarsening a held line is exact and costs
+nothing, so turning the budget down is honoured in the moment you turn it; a
+line is only re-read when you ask for *more* memory than it was built with.
+Opening another plot tab shrinks the ones already open, so the total stays the
+number the setting promises. And the first draw of a large line is about a
+quarter quicker, in the innermost loop that folds it.
 
 **The Information tab opens a compound out**, under the row that names its type:
 a tree indented until nothing is left but base types, with an enum's symbols

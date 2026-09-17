@@ -10,6 +10,7 @@ qt_add_library(gui STATIC
   AttributeTableModel.cpp
   ObjectInfoModel.cpp
   TreeFilterProxyModel.cpp
+  NameIndex.cpp
   DatasetStringListModel.cpp
   DatasetPlot.cpp
   PlotItem.cpp

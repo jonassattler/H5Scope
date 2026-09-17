@@ -1192,34 +1192,38 @@ TestCase {
                 TableSetupModel.All)
     }
 
-    /// The member box: the compound half of the slice line.
+    /// The one-line selection box: how a compound is written.
     ///
-    /// It is drawn only for a compound, which is also how a reader finds out
-    /// the notation exists -- nothing in the bar mentions members until there
-    /// is one to name.
-    function test_the_member_box_is_there_for_a_compound_and_not_otherwise() {
+    /// It replaces the bracketed form for a compound and for nothing else,
+    /// which is also how a reader finds out the notation exists -- nothing in
+    /// the bar mentions members until there is one to name.
+    function test_a_compound_is_written_as_one_line_and_nothing_else_is() {
         verify(select("/matrix"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
         waitForRendering(win.contentItem)
 
-        const box = findChild(win.contentItem, "sliceMemberInput")
-        verify(box, "the member box is built whether or not it is drawn")
-        const well = box.parent
-        compare(well.visible, false, "a matrix of numbers has no members")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const body = findChild(win.contentItem, "sliceInput")
+        verify(box, "the one-line box is built whether or not it is drawn")
+        verify(body)
+        compare(box.parent.visible, false, "a matrix of numbers has no members")
+        compare(body.visible, true, "so it is written between brackets")
 
         verify(select("/compound"))
         waitForRendering(win.contentItem)
-        compare(well.visible, true, "a compound does")
-        compare(box.text, "", "and it opens empty")
+        compare(box.parent.visible, true, "a compound is written as one line")
+        compare(body.visible, false, "and the brackets are the reader's to write")
+        compare(box.text, "[:]", "which opens holding the slice and no member")
 
-        // The hint stands in for what is not there, so the box is findable.
-        const hint = findChild(win.contentItem, "sliceMemberHint")
+        // The hint stands in for what is not there, so the box is findable and
+        // names both halves.
+        const hint = findChild(win.contentItem, "sliceSelectionHint")
         verify(hint)
-        compare(hint.visible, true)
-        compare(hint.text, ".member")
-        verify(well.width > 0, "an empty member box is still a box")
+        compare(hint.visible, false, "the box is not empty: it holds the slice")
+        compare(hint.text, "[:].member")
+        verify(box.parent.width > 0, "and the well is a well")
     }
 
     /// Naming a member is what turns a grid of structs into a column of
@@ -1234,18 +1238,19 @@ TestCase {
         compare(AppController.datasetIsCompound, true)
         compare(AppController.datasetIsNumeric, false)
 
-        const box = findChild(win.contentItem, "sliceMemberInput")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
         box.forceActiveFocus()
-        box.text = ".value"
+        box.text = "[:].value"
         box.textEdited()
-        // Typing checks and does not apply, as the slice box does.
+        // Typing checks and does not apply, as the bracketed box does.
         compare(AppController.datasetIsNumeric, false)
         keyClick(Qt.Key_Return)
         waitForRendering(win.contentItem)
 
         compare(AppController.memberText, ".value")
+        compare(AppController.selectionText, "[:].value")
         compare(AppController.datasetIsNumeric, true)
-        // Still a compound, so the box the reader typed into is still there.
+        // Still a compound, so the line the reader typed into is still one box.
         compare(AppController.datasetIsCompound, true)
         compare(box.parent.visible, true)
 
@@ -1254,25 +1259,62 @@ TestCase {
         AppController.applyMember("")
     }
 
-    /// A subscript written on the chain moves to the slice line beside it.
-    /// They are the same selection, and the line is where every other
-    /// subscript in this program lives.
-    function test_a_member_subscript_moves_to_the_slice_line() {
+    /// The subscript and the chain are one statement, and one commit.
+    ///
+    /// Two boxes made this two: the chain, then the shape it produced, then the
+    /// subscript over that shape -- with a selection nobody asked for in
+    /// between. Written as one line it is read whole and applied whole.
+    function test_the_subscript_and_the_member_are_applied_together() {
+        verify(select("/compound")) // {id: int32, value: float64} x 2
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        box.forceActiveFocus()
+        box.text = "[1].value"
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+
+        compare(AppController.memberText, ".value")
+        compare(AppController.sliceText, "1")
+        compare(AppController.selectionText, "[1].value")
+
+        AppController.applyMember("")
+    }
+
+    /// The box prints back the canonical line, whatever was typed into it.
+    ///
+    /// A subscript left off is the whole of the dataset, which the grammar
+    /// already means by an empty one -- so `.value` reads, and comes back
+    /// spelled out. That the line the reader ends up holding is the line the
+    /// views are showing is the same contract the bracketed box keeps: "0:4"
+    /// over a four-long axis comes back as ":".
+    ///
+    /// The other rewriting this box does -- a subscript written on the chain
+    /// moving onto the slice in front of it -- needs an array member, which
+    /// this fixture has none of. It is asserted as arithmetic in
+    /// tests/test_member.cpp, where the identity itself lives.
+    function test_the_box_prints_back_the_line_the_views_are_showing() {
         verify(select("/compound"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
         waitForRendering(win.contentItem)
 
-        const member = findChild(win.contentItem, "sliceMemberInput")
-        const slice = findChild(win.contentItem, "sliceInput")
-        member.forceActiveFocus()
-        member.text = ".value"
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        box.forceActiveFocus()
+        box.text = ".value"
+        box.textEdited()
+        compare(AppController.selectionError(box.text), "",
+                "a line with no subscript is the whole of the dataset")
         keyClick(Qt.Key_Return)
         waitForRendering(win.contentItem)
 
-        compare(member.text, ".value")
-        compare(slice.text, AppController.sliceText)
+        compare(AppController.memberText, ".value")
+        compare(AppController.sliceText, ":")
+        compare(box.text, "[:].value", "and the box holds what the views show")
 
         AppController.applyMember("")
     }
@@ -1280,24 +1322,27 @@ TestCase {
     /// The members of a compound are in the file and nowhere the reader can
     /// see them. Offering them here is what makes the box writable at all --
     /// `.position.x` is otherwise something you have to already know.
-    function test_the_member_box_offers_what_could_go_in_it() {
+    function test_the_selection_box_offers_what_could_go_in_it() {
         verify(select("/compound")) // {id: int32, value: float64}
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
         waitForRendering(win.contentItem)
 
-        const box = findChild(win.contentItem, "sliceMemberInput")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
         box.forceActiveFocus()
-        box.text = ""
+        box.text = "[:]"
         box.textEdited()
         waitForRendering(win.contentItem)
 
-        // An empty box asks for everything that could go there. No file is
-        // touched for it: a chain resolves against the datatype already
-        // described, which is why this answers on the keystroke.
-        compare(AppController.memberCompletions("").length, 2)
-        const list = findChild(win, "sliceMemberCompletion")
+        // A line with no chain on it yet asks for everything that could go
+        // there. No file is touched for it: a chain resolves against the
+        // datatype already described, which is why this answers on the
+        // keystroke. Whole lines, so the subscript already written comes back
+        // with each of them.
+        compare(AppController.selectionCompletions("[:]").length, 2)
+        compare(AppController.selectionCompletions("[:]")[0], "[:].id")
+        const list = findChild(win, "sliceSelectionCompletion")
         verify(list, "the box must have its list")
         verify(list.visible, "and it is up while the box is being written in")
         // Drawn, not merely flagged: a popup whose content was never built
@@ -1310,12 +1355,12 @@ TestCase {
         // choosing to the reader -- a shell's behaviour, which is the one a
         // reader already has.
         keyClick(Qt.Key_Tab)
-        compare(box.text, ".")
+        compare(box.text, "[:].")
 
-        box.text = ".v"
+        box.text = "[:].v"
         box.textEdited()
         keyClick(Qt.Key_Tab)
-        compare(box.text, ".value")
+        compare(box.text, "[:].value")
 
         keyClick(Qt.Key_Return)
         waitForRendering(win.contentItem)
@@ -1334,10 +1379,10 @@ TestCase {
         win.selectTab("table")
         waitForRendering(win.contentItem)
 
-        const box = findChild(win.contentItem, "sliceMemberInput")
-        const list = findChild(win, "sliceMemberCompletion")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const list = findChild(win, "sliceSelectionCompletion")
         box.forceActiveFocus()
-        box.text = ".v"
+        box.text = "[:].v"
         box.textEdited()
         waitForRendering(win.contentItem)
         verify(list.visible)
@@ -1345,28 +1390,30 @@ TestCase {
         keyClick(Qt.Key_Escape)
         waitForRendering(win.contentItem)
         verify(!list.visible, "the list goes")
-        compare(box.text, ".v", "and what was typed stays")
+        compare(box.text, "[:].v", "and what was typed stays")
 
         keyClick(Qt.Key_Escape)
         waitForRendering(win.contentItem)
-        compare(box.text, "", "the second one puts back what the table shows")
+        compare(box.text, "[:]", "the second one puts back what the table shows")
     }
 
-    /// A chain that does not read is left in the box, in amber, with the
-    /// reason -- the slice box's contract, because it is the same contract.
-    function test_a_member_that_does_not_read_says_so_and_changes_nothing() {
+    /// A line that does not read is left in the box, in amber, with the
+    /// reason -- the bracketed box's contract, because it is the same
+    /// contract. Neither half of it is applied: a selection is one statement.
+    function test_a_selection_that_does_not_read_says_so_and_changes_nothing() {
         verify(select("/compound"))
         const win = createTemporaryObject(windowComponent, testCase)
         waitForRendering(win.contentItem)
         win.selectTab("table")
         waitForRendering(win.contentItem)
 
-        const box = findChild(win.contentItem, "sliceMemberInput")
-        box.forceActiveFocus()
-        box.text = ".nonesuch"
-        box.textEdited()
+        const box = findChild(win.contentItem, "sliceSelectionInput")
         const note = findChild(win.contentItem, "sliceNote")
         verify(note)
+
+        box.forceActiveFocus()
+        box.text = "[:].nonesuch"
+        box.textEdited()
         verify(note.text.indexOf("nonesuch") >= 0,
                "the note names the member that is not there: " + note.text)
         // And the list of the ones that are, which is the useful half.
@@ -1375,12 +1422,27 @@ TestCase {
         keyClick(Qt.Key_Return)
         waitForRendering(win.contentItem)
         compare(AppController.memberText, "", "nothing was applied")
-        compare(box.text, ".nonesuch", "and what was typed is still there")
+        compare(box.text, "[:].nonesuch", "and what was typed is still there")
+
+        // A subscript the shape cannot take is refused the same way, and the
+        // member beside it is not applied either.
+        box.text = "[9].value"
+        box.textEdited()
+        verify(note.text !== "", "a subscript past the end is refused: " + note.text)
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, "", "the member went nowhere with it")
+        compare(AppController.sliceText, ":")
+
+        // A bracket nobody closed is a line, not a slice, and says so.
+        box.text = "[0.value"
+        box.textEdited()
+        verify(note.text.indexOf("closing bracket") >= 0, note.text)
 
         // Escape puts back what the table is showing.
         keyClick(Qt.Key_Escape)
         waitForRendering(win.contentItem)
-        compare(box.text, "")
+        compare(box.text, "[:]")
     }
 
     /// The well holds the line *and* the room to grow it, the whole well is one
@@ -4404,6 +4466,50 @@ TestCase {
         verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group/nested"))))
 
         clearFilter()
+    }
+
+    function test_a_name_in_a_branch_nobody_opened_is_still_found() {
+        // No treeWithGroupRead() here, deliberately: nothing below the root has
+        // been listed. The filter used to match what the reader had expanded,
+        // so a search for a name three levels down found nothing at all until
+        // they had walked to it by hand. It is answered out of the name index
+        // now, and the branch on the way is opened for them.
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+        win.tree.collapseAll()
+        waitForRendering(win.tree)
+
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        typeIntoFilter(win, "leaf")
+        tryVerify(() => model.indexForPath("/group/nested/leaf").valid, 5000,
+                  "the search must reach a name nobody had expanded the way to")
+        tryVerify(() => view.rowAtIndex(model.indexForPath("/group/nested/leaf")) >= 0,
+                  5000, "...and the tree must be opened to it")
+        compare(model.matchCount, 1, "one name in the file is called leaf")
+
+        clearFilter()
+    }
+
+    function test_the_box_says_how_much_of_the_file_it_found() {
+        const win = createTemporaryObject(treeWindowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.tree)
+        settleTree(win)
+
+        const filter = typeIntoFilter(win, "str_")
+        tryVerify(() => filter.hint !== "", 5000,
+                  "the box must report what the filter took")
+        // str_fixed, str_vlen, str_scalar, str_grid -- counted over the file
+        // rather than over what happens to be on screen.
+        compare(AppController.filteredTreeModel.matchCount, 4)
+        compare(filter.hint, "4 matches")
+
+        clearFilter()
+        compare(filter.hint, "", "an empty box reports nothing")
     }
 
     function test_a_matched_group_is_not_poured_out() {

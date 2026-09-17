@@ -80,6 +80,9 @@ Rectangle {
         rowMenu.popup()
     }
 
+    /// How many rows the view is showing. For probes and tests.
+    function treeRows() { return tree.rows }
+
     /// Which branches are open, by path, in tree order.
     function openBranches() {
         const model = AppController.filteredTreeModel
@@ -788,6 +791,19 @@ Rectangle {
             enabled: AppController.hasFile
             placeholderText: qsTr("filter by name or path")
             text: AppController.filterText
+            // How much of the *file* the filter took, not how much of the tree
+            // is on screen. They are different numbers now that the search is
+            // answered out of an index of every name rather than out of what
+            // the reader had expanded, and the one worth printing is the one
+            // that says whether the thing being looked for is in here at all.
+            hint: {
+                if (AppController.filterText === "")
+                    return ""
+                const found = AppController.filteredTreeModel.matchCount
+                if (found < 0)
+                    return ""
+                return found === 1 ? qsTr("1 match") : qsTr("%1 matches").arg(found)
+            }
             // Written down here rather than in onFilterTextChanged, because by
             // the time that runs the filter has been applied and half the
             // branches this is asking about are no longer on screen to ask.
@@ -809,6 +825,22 @@ Rectangle {
             if (root.filtering && !searching) {
                 root.restoreBranches(root.branchesBeforeFilter)
                 root.branchesBeforeFilter = []
+            }
+            if (searching && !root.filtering) {
+                // A search starts from a closed tree and opens to its results.
+                //
+                // What the reader had open is written down a line above this
+                // and put back when the box is cleared, so nothing of theirs is
+                // lost. What it buys is the difference between a filter box and
+                // a stopwatch: every row on screen when the filter changes has
+                // to be taken out of the view one run of adjacent losers at a
+                // time, and QQuickTreeView pays for each of those over the whole
+                // of its flattened row list. A reader who had opened a group of
+                // sixty-five thousand members and then typed `item*7` waited
+                // twenty-two seconds for one keystroke. Closed, the same
+                // keystroke is a few milliseconds, because the rows being
+                // filtered are not on screen to be taken out of it.
+                root.collapseAll()
             }
             root.filtering = searching
             if (searching) {

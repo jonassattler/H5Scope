@@ -77,9 +77,37 @@ DatasetPlot::~DatasetPlot()
 
 void DatasetPlot::applyBudget()
 {
-    // Nothing is re-read and nothing is released: what is drawn is sized by the
-    // pane and by kDrawBudget, neither of which this touches. What changes is
-    // how many runs there is room to keep beside it.
+    // The pyramids are where the memory is, so this has to touch them. It used
+    // to trim the run ladder and nothing else, under a comment saying nothing
+    // was re-read -- which was true when the only held thing was a handful of
+    // runs and became misleading the moment a whole line was held beside them.
+    // A reader who noticed this program holding three gigabytes and turned the
+    // budget down saw no change at all until they selected another dataset.
+    //
+    // Coarsening is exact and free, so a budget turned down is honoured in the
+    // call that turns it down. Refining is not arithmetic at all -- a finer
+    // base is elements this no longer has -- so a budget turned *up* drops what
+    // it could improve on and reads it again. That read is the one
+    // readMissing() already makes and it blocks this thread, which is
+    // unpleasant on a very large line; it is also exactly what the reader asked
+    // for, through a menu, and is what selecting the dataset would have cost
+    // them anyway. Drawing a pyramid as it fills is what would make it free,
+    // and it is the largest piece of work left on this path.
+    const long long budget = pyramidBudget();
+    bool refine = false;
+    for (auto it = pyramids_.begin(); it != pyramids_.end();) {
+        const long long wanted = baseBucketFor(it->second.length, budget);
+        if (wanted < it->second.baseBucket()) {
+            it = pyramids_.erase(it);
+            refine = true;
+            continue;
+        }
+        coarsenTo(it->second, wanted);
+        ++it;
+    }
+    if (refine) {
+        buildPyramids();
+    }
     trimLevels();
     refreshDetail();
 }
@@ -823,6 +851,24 @@ int DatasetPlot::detailBuckets() const
 }
 
 
+long long DatasetPlot::retiredDoubles() const
+{
+    long long held = 0;
+    for (const std::vector<double>& values : retired_) {
+        held += static_cast<long long>(values.size());
+    }
+    return held;
+}
+
+long long DatasetPlot::heldDoubles() const
+{
+    long long held = 0;
+    for (const auto& [series, pyramid] : pyramids_) {
+        held += static_cast<long long>(pyramid.doubles());
+    }
+    return held;
+}
+
 int DatasetPlot::heldLevels() const
 {
     // A run is about `cap_` doubles per line -- paneBuckets() buckets, and a
@@ -830,9 +876,17 @@ int DatasetPlot::heldLevels() const
     // is the budget divided by what one costs. One line gets all of them; a
     // selection wide enough to be spending the budget on the summaries
     // themselves keeps the run it is on and nothing else.
+    //
+    // Out of what is *left* of the share once the pyramids have been paid for,
+    // rather than out of the whole of it. LinePyramid::doubles() was written
+    // for exactly this question and then went a release unused, which is the
+    // shape of the problem it was written about: the number existed and nothing
+    // consulted it, so the halving in pyramidBudget() was the only thing
+    // standing between the two claims on one share.
+    const long long spare =
+        std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
     const int lines = std::max(static_cast<int>(drawn_.size()), 1);
-    const long long affordable =
-        PlotBudget::instance().share() / std::max<long long>(lines * 2LL * cap_, 1);
+    const long long affordable = spare / std::max<long long>(lines * 2LL * cap_, 1);
     return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
@@ -963,7 +1017,8 @@ void DatasetPlot::refreshDetail()
         trimLevels();
     }
 
-    for (int step = 0; step <= heldLevels(); ++step) {
+    int step = 0;
+    for (; step <= heldLevels(); ++step) {
         wanted_ = detailWanted();
         if (!wanted_.has_value() || !fillDetail(*wanted_)) {
             break;
@@ -971,6 +1026,14 @@ void DatasetPlot::refreshDetail()
         filled = true;
         trimLevels();
     }
+    // A loop that ran to its bound stopped because it ran out of turns rather
+    // than because the ladder was full, which means wantedLevel() and
+    // fillDetail() have stopped agreeing about what is held. The bound above
+    // keeps that from hanging; this is what keeps it from being invisible,
+    // because the symptom in a release build would not look like a bug -- it
+    // would look like the plot had become slow again, which is the failure this
+    // whole path exists to remove.
+    Q_ASSERT(step <= heldLevels());
     if (filled) {
         emit changed();
     }

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -32,6 +33,46 @@ namespace {
 /// See CustomPlot::hyperslabs(). Relaxed because it is a count for a test to
 /// difference, never a thing another thread waits on.
 std::atomic<long long> gHyperslabs{0};
+
+/// Which drawn point of one reading of a time base `x` falls on, as an axis
+/// position -- where that reading's first value sits at `start` and its values
+/// are `step` positions apart.
+///
+/// **A time base that only ever goes one way is a map that can be run
+/// backwards**, and that is the whole of what makes a time series zoomable: a
+/// range of x becomes a range of positions, and everything the index and range
+/// axes already do -- narrow the run, fold it finer, read towards the pointer --
+/// follows without another line. One that doubles back is not such a map and
+/// gets none of it, which is what `false` says here; the tab then draws what it
+/// always drew and a zoom stretches it.
+///
+/// The order is asked of the very array about to be searched rather than of the
+/// time base as a whole, because a summary can ascend while the elements under
+/// one of its buckets do not, and it is the array being bisected whose order
+/// has to hold.
+[[nodiscard]] bool positionOfX(const std::vector<double>& values, double start, double step,
+                               double x, double& position)
+{
+    if (values.empty() || !(step > 0.0) || !std::isfinite(x)) {
+        return false;
+    }
+    std::size_t at = 0;
+    if (std::is_sorted(values.begin(), values.end())) {
+        at = static_cast<std::size_t>(
+            std::lower_bound(values.begin(), values.end(), x) - values.begin());
+    }
+    else if (std::is_sorted(values.rbegin(), values.rend())) {
+        // A descending time base is a time base. It is drawn right to left and
+        // is inverted the same way round; nothing above here cares which.
+        at = static_cast<std::size_t>(
+            std::lower_bound(values.begin(), values.end(), x, std::greater<>{}) - values.begin());
+    }
+    else {
+        return false;
+    }
+    position = start + static_cast<double>(std::min(at, values.size() - 1)) * step;
+    return std::isfinite(position);
+}
 
 /// What the job is asked for: one line per expression, the time base first
 /// when there is one.
@@ -316,10 +357,40 @@ CustomPlot::~CustomPlot()
 
 void CustomPlot::applyBudget()
 {
-    // Nothing is re-read. What each entry draws is sized by the pane; what
-    // changes here is how many runs there is room to keep beside it.
+    // The pyramids are where the memory is. This used to trim the run ladder
+    // and nothing else, under a comment saying nothing was re-read -- true when
+    // the only held thing was a handful of runs, and misleading from the moment
+    // a whole line was held beside them: a reader who turned the budget down
+    // because this program was holding three gigabytes got none of it back
+    // until they selected another dataset.
+    //
+    // Coarsening is exact and free, so turning the budget down is honoured
+    // here. Refining is not arithmetic -- a finer base is elements this no
+    // longer has -- so it costs the pass that read the line, and refresh() is
+    // how that is asked for. Unlike the Plot tab's, this one is asynchronous:
+    // the window stays live while it lands.
+    const long long budget = pyramidBudget();
+    bool refine = false;
+    const auto resize = [&](Entry& entry) {
+        if (entry.pyramid.empty()) {
+            return;
+        }
+        const long long wanted = baseBucketFor(entry.pyramid.length, budget);
+        if (wanted < entry.pyramid.baseBucket()) {
+            refine = true;
+            return;
+        }
+        coarsenTo(entry.pyramid, wanted);
+    };
+    resize(axis_);
     for (Entry& entry : entries_) {
+        resize(entry);
         trimLevels(entry);
+    }
+    trimLevels(axis_);
+    if (refine) {
+        refresh();
+        return;
     }
     refreshCloser();
 }
@@ -703,7 +774,7 @@ double CustomPlot::maximum() const
 int CustomPlot::sourcePointCount() const
 {
     if (xMode_ == Dataset) {
-        return std::max(xSourceLength_, 1);
+        return std::max(axis_.sourceLength, 1);
     }
     int longest = 0;
     for (const Entry& entry : entries_) {
@@ -745,8 +816,8 @@ QString CustomPlot::error() const
 {
     // The time base first: without one, in Dataset mode, nothing has an x and
     // every entry would otherwise report the same silence.
-    if (xMode_ == Dataset && !xProblem_.isEmpty()) {
-        return xProblem_;
+    if (xMode_ == Dataset && !axis_.problem.isEmpty()) {
+        return axis_.problem;
     }
     for (const Entry& entry : entries_) {
         if (entry.drawn && !entry.problem.isEmpty()) {
@@ -939,28 +1010,124 @@ double CustomPlot::stretchScale(const Entry& entry) const
            static_cast<double>(entry.sourceLength - 1);
 }
 
-bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) const
+bool CustomPlot::axisPositionOf(double x, double& position, double& resolution) const
 {
-    if (xMode_ == Dataset) {
-        // A time base is a lookup table, not an affine map. It need not be
-        // monotonic, so a range of x is not a range of indices and there is
-        // nothing here to run backwards -- the same reason projectLine()
-        // refuses to envelope that path.
+    // The whole of the time base first: it is the one reading that answers for
+    // every position, so it is where the bracket starts.
+    if (!positionOfX(axis_.values, 0.0, axis_.step, x, position)) {
         return false;
     }
-    if (!std::isfinite(viewMin_) || !std::isfinite(viewMax_) || !std::isfinite(xStart_) ||
-        !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+    resolution = axis_.step;
+    // ...and then again in whatever finer run of it covers that answer. Each
+    // pass is a strictly finer reading than the last, so this ends -- and it
+    // ends at the pyramid's base, which on any time base a reader has is the
+    // elements themselves. Without it the bracket stays as wide as one drawn
+    // point of the summary, which on a ten-million-element log is five thousand
+    // elements, and the run that comes back is three octaves coarser than the
+    // pane asked for however far the reader zooms.
+    for (std::size_t pass = 0; pass < axis_.levels.size(); ++pass) {
+        const Level* finer = nullptr;
+        for (const Level& level : axis_.levels) {
+            if (level.values.empty() || !(level.step > 0.0) || !(level.step < resolution)) {
+                continue;
+            }
+            if (!level.window.covers(position, position)) {
+                continue;
+            }
+            if (finer == nullptr || level.step < finer->step) {
+                finer = &level;
+            }
+        }
+        if (finer == nullptr) {
+            break;
+        }
+        double closer = 0.0;
+        if (!positionOfX(finer->values, static_cast<double>(finer->window.first), finer->step, x,
+                         closer)) {
+            break;
+        }
+        position = closer;
+        resolution = finer->step;
+    }
+    return true;
+}
+
+void CustomPlot::recomputeView()
+{
+    viewUsable_ = false;
+    focusUsable_ = false;
+    // A range of no width is what "nothing has been pushed" looks like: the two
+    // are zero until a surface says otherwise. Refused here rather than left to
+    // fall out of the arithmetic, because under Dataset the bracket is opened
+    // by the resolution it was inverted at -- so a degenerate range would come
+    // back a bucket wide and take a closer look at the *start* of every line,
+    // which is a tab drawn from the first two thousand elements of itself.
+    if (!std::isfinite(viewMin_) || !std::isfinite(viewMax_) || !(viewMax_ > viewMin_)) {
+        return;
+    }
+
+    if (xMode_ == Dataset) {
+        double low = 0.0;
+        double high = 0.0;
+        double lowResolution = 1.0;
+        double highResolution = 1.0;
+        if (!axisPositionOf(viewMin_, low, lowResolution) ||
+            !axisPositionOf(viewMax_, high, highResolution)) {
+            return;
+        }
+        if (low > high) {
+            std::swap(low, high);
+            std::swap(lowResolution, highResolution);
+        }
+        // Opened by the resolution each end was settled at. The inversion is
+        // only as sharp as the reading it was made against, and a run that
+        // stops short of what is drawn is a line clipped in the middle of the
+        // pane -- so the bracket errs outwards, which costs at most one bucket
+        // of span and cannot cost a stroke.
+        viewLow_ = low - lowResolution;
+        viewHigh_ = high + highResolution;
+        viewUsable_ = std::isfinite(viewLow_) && std::isfinite(viewHigh_) && viewHigh_ > viewLow_;
+        if (focusActive_) {
+            double at = 0.0;
+            double ignored = 1.0;
+            focusUsable_ = axisPositionOf(focusX_, at, ignored);
+            focusPosition_ = at;
+        }
+        return;
+    }
+
+    if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return;
+    }
+    double low = (viewMin_ - xStart_) / xStep_;
+    double high = (viewMax_ - xStart_) / xStep_;
+    if (low > high) {
+        std::swap(low, high);
+    }
+    if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
+        return;
+    }
+    viewLow_ = low;
+    viewHigh_ = high;
+    viewUsable_ = true;
+    if (focusActive_) {
+        const double at = (focusX_ - xStart_) / xStep_;
+        focusUsable_ = std::isfinite(at);
+        focusPosition_ = at;
+    }
+}
+
+bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) const
+{
+    if (!viewUsable_) {
         return false;
     }
     const double scale = stretchScale(entry);
     if (!(std::abs(scale) > 0.0)) {
         return false;
     }
-    double low = (viewMin_ - xStart_) / xStep_ / scale;
-    double high = (viewMax_ - xStart_) / xStep_ / scale;
-    if (low > high) {
-        std::swap(low, high);
-    }
+    const double low = viewLow_ / scale;
+    const double high = viewHigh_ / scale;
     if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
         return false;
     }
@@ -988,20 +1155,14 @@ void CustomPlot::clearZoomFocus()
 PlotFocus CustomPlot::focusFor(const Entry& entry) const
 {
     PlotFocus focus;
-    if (!focusActive_ || xMode_ == Dataset) {
-        // A time base is a lookup table rather than an affine map, so there is
-        // no position to turn an x into -- the same reason lineRange() gives up
-        // on that path.
-        return focus;
-    }
-    if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+    if (!focusActive_ || !focusUsable_) {
         return focus;
     }
     const double scale = stretchScale(entry);
     if (!(std::abs(scale) > 0.0)) {
         return focus;
     }
-    const double position = (focusX_ - xStart_) / xStep_ / scale;
+    const double position = focusPosition_ / scale;
     if (!std::isfinite(position)) {
         return focus;
     }
@@ -1063,11 +1224,13 @@ int CustomPlot::drawnLevel(const Entry& entry) const
 
 long long CustomPlot::pyramidBudget() const
 {
-    // The share this tab may hold, split between its entries. Twice, for the
-    // reason DatasetPlot::pyramidBudget gives: what is held has to leave room
-    // for the runs a bucket below the base still reads.
-    const int entries = std::max(seriesCount(), 1);
-    return PlotBudget::instance().share() / (2LL * entries);
+    // The share this tab may hold, split between its entries -- and the time
+    // base, which is one more line held at every resolution and has to be paid
+    // for out of the same share rather than beside it. Twice, for the reason
+    // DatasetPlot::pyramidBudget gives: what is held has to leave room for the
+    // runs a bucket below the base still reads.
+    const int lines = std::max(seriesCount(), 1) + (xMode_ == Dataset ? 1 : 0);
+    return PlotBudget::instance().share() / (2LL * lines);
 }
 
 bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
@@ -1094,15 +1257,39 @@ bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
     return true;
 }
 
+long long CustomPlot::retiredDoubles() const
+{
+    long long held = 0;
+    for (const std::vector<double>& values : retired_) {
+        held += static_cast<long long>(values.size());
+    }
+    return held;
+}
+
+long long CustomPlot::heldDoubles() const
+{
+    long long held = static_cast<long long>(axis_.pyramid.doubles());
+    for (const Entry& entry : entries_) {
+        held += static_cast<long long>(entry.pyramid.doubles());
+    }
+    return held;
+}
+
 int CustomPlot::heldLevels() const
 {
     // Each run is about `bucketBudget()` buckets of two values, per entry, so
     // how many there is room for is the budget divided by what one costs. A tab
     // of a few entries gets all of them; one carrying hundreds keeps the run it
     // is on and nothing else.
+    //
+    // Out of what is *left* of the share once the pyramids have been paid for,
+    // rather than out of the whole of it -- see DatasetPlot::heldLevels, which
+    // carries the argument.
+    const long long spare =
+        std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
     const int entries = std::max(seriesCount(), 1);
     const long long affordable =
-        PlotBudget::instance().share() / std::max<long long>(entries * 4LL * bucketBudget(), 1);
+        spare / std::max<long long>(entries * 4LL * bucketBudget(), 1);
     return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
@@ -1145,6 +1332,55 @@ void CustomPlot::refreshCloser()
     bool dropped = false;
     bool filled = false;
 
+    recomputeView();
+
+    // The time base first, and the order is the whole of why it works.
+    //
+    // Every run below is a run of *positions*, and under Dataset a position is
+    // whatever the time base says it is -- so folding the axis finer tightens
+    // the bracket every entry is then measured against. That is why this loops:
+    // each pass inverts the view against a sharper reading than the last and so
+    // asks for a sharper one still, and it settles at the pyramid's base. Out
+    // of a held line every one of those folds is arithmetic over a buffer
+    // already in hand, so the loop costs the pane and not the file.
+    if (xMode_ == Dataset) {
+        std::optional<PlotWindow> own;
+        for (int step = 0; step <= kHeldLevels; ++step) {
+            own = closerFor(axis_, closerBuckets());
+            if (!own.has_value() || !fillCloser(axis_, *own)) {
+                break;
+            }
+            filled = true;
+            trimLevels(axis_);
+            recomputeView(); // finer, now that a finer reading is in hand
+        }
+        if (!closerFor(axis_, bucketBudget()).has_value()) {
+            if (!axis_.levels.empty()) {
+                // Zoomed back out past every run of the axis. Retired rather
+                // than freed: the renderer may be drawing against one of them,
+                // and the whole-line summary covers every position by
+                // construction, so the frame after this is a correct picture
+                // either way.
+                for (Level& level : axis_.levels) {
+                    retire(level.values);
+                }
+                axis_.levels.clear();
+                dropped = true;
+                recomputeView();
+            }
+        }
+        else if (own.has_value() && !closerCovers(axis_)) {
+            // The one run of the axis the pyramid could not answer, which is a
+            // zoom below its base bucket. Asked of the file, as row -1.
+            //
+            // Only that one. The octaves an entry reads ahead are there because
+            // the *next* view would otherwise cost a round trip; a fold costs
+            // nothing, so an axis run held against a zoom the reader has not
+            // made yet is memory spent on arithmetic that is already free.
+            wanted = true;
+        }
+    }
+
     // Everything the pyramids can answer, now, in this call.
     //
     // The same loop DatasetPlot::refreshDetail runs and for the same reason: a
@@ -1158,7 +1394,8 @@ void CustomPlot::refreshCloser()
             own.has_value() && fillCloser(entry, *own)) {
             filled = true;
         }
-        for (int step = 0; step <= heldLevels(); ++step) {
+        int step = 0;
+        for (; step <= heldLevels(); ++step) {
             const std::optional<PlotWindow> next = closerWanted(entry);
             if (!next.has_value() || !fillCloser(entry, *next)) {
                 break;
@@ -1167,6 +1404,13 @@ void CustomPlot::refreshCloser()
             trimLevels(entry);
         }
         trimLevels(entry);
+        // A loop that ran to its bound stopped because it ran out of turns
+        // rather than because the ladder was full: closerWanted() and
+        // fillCloser() have stopped agreeing about what is held. The bound
+        // keeps that from hanging; this is what keeps it from being invisible,
+        // because in a release build the symptom would not look like a bug, it
+        // would look like the plot had become slow again.
+        Q_ASSERT(step <= heldLevels());
     }
     if (filled) {
         announce();
@@ -1223,6 +1467,17 @@ void CustomPlot::askForCloser()
     }
     std::vector<int> rows;
     std::vector<Ask> asks;
+    // The time base is row -1: a line too long to hold at bucket one still has
+    // octaves below its pyramid's base, and an axis stuck three octaves coarser
+    // than the entries drawn against it is a curve laid on a staircase. Asked
+    // for on the same terms as any other line, because it is one.
+    if (xMode_ == Dataset && !xExpression_.trimmed().isEmpty() && !closerCovers(axis_)) {
+        if (const std::optional<PlotWindow> want = closerFor(axis_, closerBuckets());
+            want.has_value()) {
+            rows.push_back(-1);
+            asks.push_back(Ask{xExpression_, want, closerBuckets(), 0});
+        }
+    }
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const Entry& entry = entries_[i];
         const std::optional<PlotWindow> want = closerWanted(entry);
@@ -1260,14 +1515,23 @@ void CustomPlot::askForCloser()
             closerInFlight_ = false;
             const std::size_t count = std::min(rows.size(), reply.lines.size());
             for (std::size_t i = 0; i < count; ++i) {
-                const auto row = static_cast<std::size_t>(rows[i]);
-                if (row >= entries_.size()) {
-                    continue; // a row removed while this was out
+                Entry* into = nullptr;
+                if (rows[i] < 0) {
+                    // The time base. Still the one being drawn against, or the
+                    // next settle asks about whatever replaced it.
+                    if (xMode_ == Dataset && xExpression_ == asks[i].expression) {
+                        into = &axis_;
+                    }
                 }
-                Entry& entry = entries_[row];
-                if (entry.expression != asks[i].expression) {
-                    continue; // retyped while this was out; the next settle asks again
+                else if (const auto row = static_cast<std::size_t>(rows[i]);
+                         row < entries_.size() &&
+                         entries_[row].expression == asks[i].expression) {
+                    into = &entries_[row];
                 }
+                if (into == nullptr) {
+                    continue; // removed or retyped while this was out
+                }
+                Entry& entry = *into;
                 Answer& answer = reply.lines[i];
                 const PlotWindow window = *asks[i].window;
                 // Remembered even when it read nothing, so a line that will not
@@ -1316,6 +1580,14 @@ void CustomPlot::clearCloser()
         }
         entry.levels.clear();
     }
+    // The axis's own runs go with them. They are runs of the time base as it
+    // was before whatever is clearing this, which is exactly what a stale run
+    // is.
+    for (Level& level : axis_.levels) {
+        retire(level.values);
+    }
+    axis_.levels.clear();
+    recomputeView();
 }
 
 bool CustomPlot::scalable(const Entry& entry) const
@@ -1392,7 +1664,7 @@ PlotLine CustomPlot::lineOf(int series) const
     // rather than falling back to positions: the reader asked for these values
     // against *those* x, and an axis of indices with the same line on it is a
     // different plot wearing the same label.
-    if (xMode_ == Dataset && xValues_.empty()) {
+    if (xMode_ == Dataset && axis_.values.empty()) {
         return line;
     }
 
@@ -1437,9 +1709,21 @@ PlotAxis CustomPlot::drawingAxis() const
     axis.start = xStart_;
     axis.step = xStep_;
     if (xMode_ == Dataset) {
-        axis.values = xValues_.data();
-        axis.count = static_cast<qsizetype>(xValues_.size());
-        axis.valueStep = xValueStep_;
+        axis.values = axis_.values.data();
+        axis.count = static_cast<qsizetype>(axis_.values.size());
+        axis.valueStep = axis_.step;
+        // ...and the run of it the reader is looking at, which is the same
+        // time base folded finer over what is on screen. Handed over *beside*
+        // the whole rather than instead of it, for the reason PlotAxis says: a
+        // line whose own closer look has not landed yet is still drawn against
+        // the positions the whole answers for.
+        if (const int at = drawnLevel(axis_); at >= 0) {
+            const Level& level = axis_.levels[static_cast<std::size_t>(at)];
+            axis.closerValues = level.values.data();
+            axis.closerCount = static_cast<qsizetype>(level.values.size());
+            axis.closerStart = static_cast<double>(level.window.first);
+            axis.closerStep = level.step;
+        }
     }
     return axis;
 }
@@ -1544,7 +1828,7 @@ void CustomPlot::recount()
     }
     // In Dataset mode a line with no time base to draw against is not drawable
     // however many finite values it holds.
-    if (xMode_ == Dataset && xValues_.empty()) {
+    if (xMode_ == Dataset && axis_.values.empty()) {
         hasFinite_ = false;
     }
 
@@ -1556,7 +1840,7 @@ void CustomPlot::recount()
     xMinimum_ = 0.0;
     xMaximum_ = 1.0;
     bool seen = false;
-    for (const double value : xValues_) {
+    for (const double value : axis_.values) {
         if (!std::isfinite(value)) {
             continue;
         }
@@ -1584,27 +1868,33 @@ void CustomPlot::refresh()
     // without carrying a second list.
     const bool wantsX = xMode_ == Dataset && !xExpression_.trimmed().isEmpty();
 
-    // The entries are held at every resolution; the time base is not.
+    // The time base is held at every resolution too, and that is the change
+    // that made a time series zoomable.
     //
-    // A time base is read to turn an axis position into a printed x, one value
-    // per drawn point -- it is not a line anybody zooms into, and holding it at
-    // every resolution would be a second copy of a dataset for nothing.
+    // It used to be asked for with no budget, under "a time base is read to
+    // turn an axis position into a printed x, one value per drawn point -- it
+    // is not a line anybody zooms into". The first half is true and the second
+    // does not follow: an axis summarised to a pane's worth of points has one x
+    // per column, so a reader zoomed past that is handed the same x for every
+    // sample in the column and the curve collapses onto a staircase. The axis
+    // has to resolve with the lines it carries, so it is read like one.
     const long long budget = pyramidBudget();
 
     std::vector<Ask> asks;
     asks.reserve(entries_.size() + 1);
     if (wantsX) {
-        asks.push_back(Ask{xExpression_, {}, bucketBudget(), 0});
+        asks.push_back(Ask{xExpression_, {}, bucketBudget(), budget});
     }
     for (const Entry& entry : entries_) {
         asks.push_back(Ask{entry.expression, {}, bucketBudget(), budget});
     }
 
     if (asks.empty()) {
-        xProblem_.clear();
-        retire(xValues_);
-        xValueStep_ = 1.0;
-        xSourceLength_ = 0;
+        axis_.problem.clear();
+        retire(axis_.values);
+        axis_.step = 1.0;
+        axis_.sourceLength = 0;
+        axis_.pyramid = {};
         clearCloser();
         recount();
         announce();
@@ -1646,23 +1936,25 @@ void CustomPlot::refresh()
             if (wantsX) {
                 if (!reply.lines.empty()) {
                     Answer& answer = reply.lines.front();
-                    xProblem_ = answer.problem;
-                    retire(xValues_);
-                    xValues_ = std::move(answer.values);
+                    axis_.problem = answer.problem;
+                    retire(axis_.values);
+                    axis_.values = std::move(answer.values);
                     // The time base's own thinning, which is what turns an
                     // axis position back into one of these values. It is not
                     // the entries' -- they are thinned against the same pane
                     // and need not be the same length as it.
-                    xValueStep_ = answer.step;
-                    xSourceLength_ = answer.sourceLength;
+                    axis_.step = answer.step;
+                    axis_.sourceLength = answer.sourceLength;
+                    axis_.pyramid = std::move(answer.pyramid);
                 }
                 at = 1;
             }
             else {
-                xProblem_.clear();
-                retire(xValues_);
-                xValueStep_ = 1.0;
-                xSourceLength_ = 0;
+                axis_.problem.clear();
+                retire(axis_.values);
+                axis_.step = 1.0;
+                axis_.sourceLength = 0;
+                axis_.pyramid = {};
             }
 
             for (std::size_t i = 0; i < entries_.size(); ++i, ++at) {

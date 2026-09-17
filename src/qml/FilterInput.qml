@@ -30,6 +30,12 @@ TextField {
     /// rather than a colour, so it is legible without being a warning -- this
     /// is not a mistake, it is an unfinished sentence.
     property bool pending: false
+    /// A short readout at the right-hand end -- how many rows the filter found,
+    /// say. Inside the box rather than beside it, because what it reports is a
+    /// property of what is written here and a box with a number hanging off it
+    /// is two controls where the reader sees one. Empty draws nothing and costs
+    /// no room.
+    property string hint: ""
 
     implicitHeight: Theme.controlHeight
     font: Theme.monoSmall
@@ -38,7 +44,21 @@ TextField {
     selectionColor: Theme.accent
     selectedTextColor: Theme.accentText
     leftPadding: Theme.gapS
-    rightPadding: Theme.gapS
+    // Enough room for the readout, so a long filter runs under it rather than
+    // through it.
+    rightPadding: Theme.gapS + (hintLabel.visible ? hintLabel.width + Theme.gapS : 0)
+
+    Text {
+        id: hintLabel
+
+        anchors.right: parent.right
+        anchors.rightMargin: Theme.gapS
+        anchors.verticalCenter: parent.verticalCenter
+        visible: control.hint !== ""
+        text: control.hint
+        font: Theme.micro
+        color: Theme.textSecondary
+    }
 
     background: Rectangle {
         radius: Theme.radiusS

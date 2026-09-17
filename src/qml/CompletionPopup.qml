@@ -9,11 +9,11 @@ import H5Scope.Backend
 ///
 /// Two boxes in this application are typed into rather than chosen from: a
 /// custom plot's entry, which names a dataset, a subscript and a member all on
-/// one line, and the member box after the slice bar's closing bracket. The
-/// names in both come out of the file and nowhere the reader can see them, so
-/// this is not a convenience -- without it the only way to write
-/// `/plotting/events[:].position.x` is to have the tree open beside you and
-/// count the dimensions yourself.
+/// one line, and the slice bar's own box, which over a compound holds
+/// everything after the path. The names in both come out of the file and
+/// nowhere the reader can see them, so this is not a convenience -- without it
+/// the only way to write `/plotting/events[:].position.x` is to have the tree
+/// open beside you and count the dimensions yourself.
 ///
 /// The owner supplies `options` and nothing else. They are whole strings: what
 /// the box would hold if one were taken, rather than fragments to splice --
@@ -75,8 +75,41 @@ Popup {
 
     onOptionsChanged: popup.highlighted = 0
 
+    /// The widest candidate, measured off the font the rows are set in.
+    ///
+    /// A Text that elides reports the *elided* line as its implicit width, and
+    /// a list sized from its own rows would therefore settle at the width of an
+    /// ellipsis -- the latch SliceField carries the same note about. Metrics
+    /// cannot elide.
+    ///
+    /// FontMetrics and its `advanceWidth(text)` *function*, rather than a
+    /// TextMetrics whose `text` is assigned in the loop: assigning a property
+    /// that the same binding then reads is a binding loop, and QML says so on
+    /// every keystroke that changes the list.
+    readonly property real widestOption: {
+        let widest = 0
+        for (let i = 0; i < popup.options.length; ++i) {
+            widest = Math.max(widest, metrics.advanceWidth(popup.options[i]))
+        }
+        return Math.ceil(widest)
+    }
+
+    FontMetrics {
+        id: metrics
+
+        font: Theme.monoSmall
+    }
+
     y: parent ? parent.height : 0
-    width: parent ? parent.width : 0
+    // At least as wide as the box it drops from, because that is where the line
+    // is going; wider when the box is narrower than what it is offering, which
+    // the slice bar's is -- it is only ever as wide as the line in it. Capped,
+    // because past the cap what is being given up is the head of a path and the
+    // rows already elide from the left.
+    width: Math.max(parent ? parent.width : 0,
+                    Math.min(Theme.completionWidthMax,
+                             popup.widestOption + Theme.gapS * 2
+                             + Theme.borderWidth * 2 + Theme.gapM))
     padding: Theme.borderWidth
     popupType: Popup.Item
     // Never takes the keyboard, and never opens or closes itself: the reader

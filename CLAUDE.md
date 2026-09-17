@@ -58,7 +58,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), and `Completion` — which of the three grammars on a typed line the caret is in. QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
@@ -191,16 +191,25 @@ Four pieces:
 - **`postproc::MemberPath`** — the grammar, beside the subscript grammar for the
   reason already written over that one. Resolving is arithmetic over a
   `TypeInfo`, so it costs no read and answers on every keystroke.
-- **The three entry points.** The slice bar grows a second box after the closing
-  bracket, shown only for a compound; `sliceText` keeps its exact meaning, which
-  is what leaves the pipeline's slice row alone. A custom tab types the whole
-  line at once, and there a chain is recognised **only after a `]`** — a link
-  name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a dataset
-  and not member 3 of `run`. Every expression without a `].` in it parses
+- **The three entry points.** Over a compound the slice bar makes *everything
+  after the path* one box — `[:, 2].samples`, brackets and all — and keeps the
+  bracketed `path[ box ]` form for everything else. `sliceText` and `memberText`
+  keep their exact meanings underneath, which is what leaves the pipeline's
+  slice row alone; `selectionText` / `applySelection` / `selectionError` are the
+  one line the bar reads and writes them through, checked whole and applied
+  whole. It began as a second box after the closing bracket, and that was the
+  wrong shape: a chain and the subscript over the axes it appends are one
+  statement, so rearranging one is usually rearranging both, and two boxes made
+  that two commits with a shape nobody asked for in between — and the second box
+  was a few characters wide with a grey `.member` in it, which reads as a value
+  somebody chose rather than as a box nobody has typed in. A custom tab types the
+  whole line at once, and there a chain is recognised **only after a `]`** — a
+  link name holds a `.` as freely as it holds a `[`, so `/data/run.3` is a
+  dataset and not member 3 of `run`. Every expression without a `].` in it parses
   exactly as it always did, which is why saved views migrate for free.
   The postprocessing panel grows a **Select** row, and it is the same
-  relationship the slice row has to the slice bar: not a copy of the member box,
-  *it is it*. It sits above the slice and is furniture rather than an added
+  relationship the slice row has to the slice bar: not a copy of what the bar
+  offers, *it is it*. It sits above the slice and is furniture rather than an added
   operation, because after a transpose or a reduction there is no compound left
   to select from — an operation legal in exactly one position is not an
   operation, it is a property of the input. Its list is
@@ -227,8 +236,8 @@ Three consequences worth keeping in mind when editing around it:
 
 **Completion** (`gui::Completion`, `src/qml/CompletionPopup.qml`). Two boxes in
 this application are typed into rather than chosen from — a custom plot's entry
-and the member box — and the names in both come out of the file and nowhere the
-reader can see them. `completionRequest` says which of the three grammars on a
+and the slice bar's own box — and the names in both come out of the file and
+nowhere the reader can see them. `completionRequest` says which of the three grammars on a
 line the caret is in; a path offers the children of the group being typed into,
 a closed subscript offers the datatype's chains, and an open subscript offers
 nothing, because what may be written there is every integer and every range and
@@ -252,6 +261,85 @@ group that is not listed is *asked for* rather than walked, the answer arrives a
 moment later, and `completionsChanged` is what tells the box to ask again. A
 completer that listed its way down to answer a keystroke would spend exactly
 what that laziness saves.
+
+**Searching is the one exception, and `gui::NameIndex` is where it is made.**
+
+> **The tree stays lazy and the search does not.** A name is the one thing about
+> a file a reader may want to search the whole of without having looked at any
+> of it, and it is small: three hundred thousand paths is eighteen megabytes.
+> So every name is read once per file, in the background, and after that a
+> keystroke is a linear pass over contiguous memory.
+
+That laziness used to reach the filter, and it was wrong in both directions. It
+matched what the reader had expanded, so a search over a file nobody had walked
+found *nothing at all* and the only way to make it find something was to open
+the tree by hand, which reads. And it was slow where it did work, because the
+match happened per node of every subtree on every keystroke, with two QString
+conversions and two PCRE2 matches apiece: three hundred thousand objects
+measured at 160–330 ms a character.
+
+Four things hold it up, and each is a failure it was built out of:
+
+- **The walk is cut into jobs** (`kGroupsPerPass`). `H5Thread`'s queue is
+  strictly ordered and there is one of it, so a single pass over a large file
+  would put every listing the reader clicks for behind a second of indexing.
+  Each pass lists a bounded number of groups and re-arms at the *back* of the
+  queue. It uses `children(path, Resolve::Objects)`, because the kind is what
+  says whether there is anything below a name and asking for it during the
+  listing is one object-header read per name rather than two — measured at 1.0 s
+  against 2.2 s over three hundred thousand objects, which is `H5Lvisit`'s own
+  speed out of an interface that can be stopped and resumed.
+- **It answers before it is finished, and says when it cannot say.** Marks are
+  computed for whatever has arrived. A group the walk has not reached, one it
+  declined to descend into, and everything past `kMaxNames` come back `Unknown`,
+  and `TreeFilterProxyModel` then falls back to the recursive walk over what the
+  model has read — which is exactly what it did before. So the filter is never
+  wrong: it is complete where the index is and lazy where it is not. A group is
+  only ever `No` once the whole walk is in, because a listed group still has
+  unlisted groups under it.
+- **A loop is an ancestor repeating itself, not a name seen twice.**
+  `/aliases/alias_0000` and `/runs/run_0000` can be one object under two names;
+  the tree shows the contents of both and so must this, or the second gets an
+  `Opaque` where an answer was available. Only an identity already on the path
+  from the root stops the walk.
+- **`gui::matchesWildcard` is written out by hand.** PCRE2 is about a
+  microsecond a call and there are two calls per name, which is a third of a
+  second per character at three hundred thousand objects. A back-tracking glob
+  is two orders of magnitude cheaper on the patterns people write, because
+  almost every one of them fails on the first character. `test_models` holds it
+  against `QRegularExpression::fromWildcard` over a table of patterns and names,
+  so the parity is asserted rather than claimed. The same applies to the case
+  fold under it: `QChar::toCaseFolded` is an out-of-line call into QtCore, and
+  doing ASCII inline first is what takes a keystroke from 23 ns a character to
+  under two.
+
+Two costs live above the index rather than in it, and both are about the *view*
+rather than about the search:
+
+- **A search starts from a closed tree.** Every row on screen when the filter
+  changes has to be taken out of the view one run of adjacent losers at a time,
+  and QQuickTreeView pays for each of those over the whole of its flattened row
+  list. A reader who had opened a group of sixty-five thousand members and then
+  typed `item*7` waited twenty-two seconds for one keystroke. `ObjectTree.qml`
+  collapses when a search begins — what was open is already written down, and
+  already put back when the box is cleared — and the same keystroke is then a
+  few milliseconds. What is left is `QSortFilterProxyModel`'s own list surgery,
+  which is `QList::remove` per interval and so quadratic in the width of a
+  group; it is a second at sixty-five thousand members and unmeasurable at
+  eight thousand. `invalidate()` would replace all of it with one
+  `layoutChanged` — and does, in about fifty milliseconds — but it throws the
+  mappings away under every `QModelIndex` already handed out, which
+  `QQmlTreeModelToTableModel` answers with "Invalid index" warnings and an
+  intermittent use-after-free. Do not reach for it.
+- **Opening the tree to the results is bounded** (`kRevealLimit`). A result in a
+  branch nobody has expanded is still a result, and `H5TreeModel::revealPath`
+  will list the way down to it — but a search that matched more rows than a pane
+  could show is not a result to be opened, it is a search to be narrowed, so
+  past the bound nothing is opened at all rather than the first two hundred of
+  a quarter of a million. It is also settled (`kRevealMilliseconds`) rather than
+  run per keystroke, because `temperature` typed a character at a time would
+  otherwise list the file's way down to the results of eleven prefixes, ten of
+  them abandoned by the next character.
 
 **The vlen rule.** A vlen's length differs in every record and every view here
 is a rectangle, so it contributes no axis: `.tags` keeps the dataset's shape and
@@ -365,6 +453,35 @@ round trip per element would draw exactly the right picture.
    is drawn. `refreshDetail` loops rather than returning, because there is no
    reply to arm the next step with.
 
+   **A time base is a line, and is held like one.** A custom tab drawn against
+   another dataset used to be the one axis of the three that could not be
+   zoomed, and it failed in both halves at once. The line, because a range of x
+   over a lookup table was refused outright; and the axis, because a time base
+   was read once at a pane's worth of points and never again — so a reader
+   zoomed past that was handed one x per column and the curve collapsed onto a
+   staircase of vertical treads. The rule that unlocks it is one sentence:
+
+   > **A time base that only ever goes one way is a map that can be run
+   > backwards.** A range of x is then a range of positions, and everything the
+   > index and range axes do — narrow the run, fold it finer, read towards the
+   > pointer — follows without another line of policy.
+
+   So `CustomPlot::axis_` is an `Entry` like any other, with its own pyramid and
+   its own held runs, and `CustomPlot::axisPositionOf` is the way back: a
+   bisection of the whole-line summary first, then again in whatever finer run
+   of it covers that answer, because a bracket only as sharp as one drawn point
+   of the summary is five thousand elements wide on a ten-million-element log
+   and would pin every zoom three octaves short. `recomputeView()` inverts the
+   view once per change, into axis positions, and every entry divides that by
+   its own scaling — under Index and Range the same function is one division.
+   `PlotAxis` carries the folded run **beside** the whole rather than instead of
+   it, so a line whose own closer look has not landed yet is still drawn against
+   positions the whole answers for. A time base that doubles back is not such a
+   map, gets none of it, and draws exactly what it always drew;
+   `positionOfX` asks the array it is about to search whether it is sorted,
+   rather than asking the time base as a whole, because a summary can ascend
+   while the elements under one of its buckets do not.
+
    The pane gets its *own* preferred bucket on every frame, even when a coarser
    run in hand would have covered it. Settling for that run was right while the
    alternative was a round trip and it cost up to an octave — about one drawn
@@ -418,6 +535,17 @@ round trip per element would draw exactly the right picture.
    them. A change that made any of those read would not look like a bug, it
    would look like the plot had become slow again.
 
+   `gui::extremesOf` is the innermost loop of all of it — every element of a
+   line on the way to the summary, and every level folded above it. It reads
+   **two comparisons an element and nothing else**, which works because *NaN
+   fails every comparison*: seeded with the infinities, the first drawable
+   element takes both branches and a NaN takes neither, so being drawable needs
+   no test of its own. An actual infinity does pass one of them and is the one
+   case it cannot decide, so a run holding one is handed to the careful reading
+   instead. Worth the paragraph because of where it is: on a line too large to
+   hold at bucket one — which is every line where the first draw is slow enough
+   to notice — it is 46 ms against 35 ms of a 10M first draw.
+
    The values are checked as hard as the counts, and deliberately: a cache that
    is fast and subtly wrong counts exactly like one that works. `test_plotlevels`
    asserts a coarsened envelope equals a read at that bucket value for value,
@@ -446,6 +574,29 @@ round trip per element would draw exactly the right picture.
    bucket one up to about a hundred million elements and bucket sixteen at a
    billion — so a billion-element trace still zooms free for the first ten
    octaves and costs one hyperslab for the rest.
+
+   **Changing the budget changes what is held, and the two directions are not
+   the same operation.** `applyBudget` used to trim the run ladder and nothing
+   else, under a comment saying nothing was re-read — true when the only held
+   thing was a handful of runs, and false from the moment a whole line was held
+   beside them. A reader who noticed this program holding three gigabytes and
+   turned the budget down got none of it back until they selected another
+   dataset, and one who turned it up got no finer a base either.
+
+   > **Coarsening is exact and free; refining is a read.** So a budget turned
+   > down is honoured in the call that turns it down (`gui::coarsenTo`, which
+   > drops the levels finer than the new base and leaves every picture at or
+   > above it identical), and a budget turned *up* drops what it could improve
+   > on and reads it again.
+
+   Those two are also why the budget can be shared honestly at all: a tab
+   opening emits `PlotBudget::changed` through `join()`, so the tabs already
+   built shrink instead of the sum quietly exceeding the promise Settings
+   makes. And what a run ladder may keep is measured against what the pyramids
+   actually cost (`LinePyramid::doubles`, `heldDoubles()`) rather than against
+   a halving of the share that assumed it — the number existed for a release
+   and nothing consulted it, which is exactly how two claims on one share stop
+   adding up.
 
    **Nothing is freed under a renderer that is reading it, and nothing blanks
    the pane to avoid that.** The borrow contract has two halves.

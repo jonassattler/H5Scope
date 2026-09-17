@@ -14,57 +14,79 @@ TreeFilterProxyModel::TreeFilterProxyModel(QObject* parent)
 
 bool TreeFilterProxyModel::isWildcard(const QString& text)
 {
-    return text.contains(u'*') || text.contains(u'?') || text.contains(u'[');
+    return NameQuery(text).isWildcard();
+}
+
+void TreeFilterProxyModel::setNameIndex(NameIndex* index)
+{
+    if (index_ == index) {
+        return;
+    }
+    if (index_ != nullptr) {
+        disconnect(index_, nullptr, this, nullptr);
+    }
+    index_ = index;
+    if (index_ == nullptr) {
+        return;
+    }
+    // A branch that had nothing in it a moment ago may have something in it
+    // now: the walk fills in behind the reader, and a filter typed while it is
+    // running has to widen as the names land.
+    connect(index_, &NameIndex::grew, this, [this] {
+        if (query_.isEmpty()) {
+            return;
+        }
+        index_->select(query_);
+        beginFilterChange();
+        endFilterChange(QSortFilterProxyModel::Direction::Rows);
+        emit matchCountChanged();
+    });
 }
 
 void TreeFilterProxyModel::setFilterText(const QString& text)
 {
-    if (filterText_ == text) {
+    if (query_.text() == text) {
         return;
     }
-    beginFilterChange();
-    filterText_ = text;
-
-    pattern_.reset();
-    if (isWildcard(text)) {
-        // NonPathWildcardConversion: `*` crosses `/` as well as everything
-        // else. A path is one string in this box, so `/run/*/temp` has to be
-        // able to reach past a separator -- the path-aware conversion would
-        // stop it at one.
-        QRegularExpression compiled = QRegularExpression::fromWildcard(
-            text, Qt::CaseInsensitive,
-            QRegularExpression::NonPathWildcardConversion);
-        if (compiled.isValid()) {
-            pattern_ = std::move(compiled);
-        }
+    query_ = NameQuery(text);
+    if (index_ != nullptr) {
+        // One pass over every name in the file, here rather than per row: the
+        // rows ask for a mark afterwards and each answer is a hash lookup.
+        index_->select(query_);
     }
+    // `invalidate()` rather than `endFilterChange(Rows)`, and this is the
+    // difference between a filter box and a stopwatch.
+    //
+    // Ending a filter change walks what survived and removes the rest as
+    // *intervals*, one beginRemoveRows/endRemoveRows per run of adjacent
+    // losers -- and each removal is a `QList::remove` out of the middle of the
+    // parent's mapping, which is O(rows). A pattern that takes every tenth of
+    // a group's sixty-five thousand children is therefore six and a half
+    // thousand interval removals over a list of sixty-five thousand, plus six
+    // and a half thousand row-removal signals for the view to act on. Measured
+    // on `/flat` in the scale file: 30 s for one keystroke, and it was 30 s
+    // before the index existed too -- the index made the matching fast and
+    // left this untouched.
+    //
+    // `invalidate()` throws the mappings away instead and lets them be rebuilt
+    // for whatever the view asks about next, under one layoutChanged. It keeps
+    // persistent indexes (QSortFilterProxyModelPrivate::_q_clearMapping stores
+    // and restores them), which is what the tree's expansion state is made of.
+    beginFilterChange();
     endFilterChange(QSortFilterProxyModel::Direction::Rows);
+    emit matchCountChanged();
+}
+
+int TreeFilterProxyModel::matchCount() const
+{
+    return index_ == nullptr ? -1 : index_->hits();
 }
 
 QVariantMap TreeFilterProxyModel::matchIn(const QString& name) const
 {
-    const auto answer = [](int start, int length) {
-        return QVariantMap{{QStringLiteral("start"), start},
-                           {QStringLiteral("length"), length}};
-    };
-    if (filterText_.isEmpty()) {
-        return answer(-1, 0);
-    }
-    if (pattern_.has_value()) {
-        // A pattern is anchored, so it takes the whole name or none of it --
-        // there is no shorter run to look for, and no arithmetic to do.
-        const QRegularExpressionMatch found = pattern_->match(name);
-        if (!found.hasMatch()) {
-            return answer(-1, 0);
-        }
-        return answer(static_cast<int>(found.capturedStart()),
-                      static_cast<int>(found.capturedLength()));
-    }
-    const qsizetype at = name.indexOf(filterText_, 0, Qt::CaseInsensitive);
-    if (at < 0) {
-        return answer(-1, 0);
-    }
-    return answer(static_cast<int>(at), static_cast<int>(filterText_.size()));
+    const auto [start, length] = query_.markIn(name);
+    return QVariantMap{{QStringLiteral("start"), start},
+                       {QStringLiteral("length"), length}};
 }
 
 QString TreeFilterProxyModel::pathAt(const QModelIndex& index) const
@@ -82,8 +104,31 @@ QModelIndex TreeFilterProxyModel::indexForPath(const QString& path) const
 QVariantList TreeFilterProxyModel::matchIndexes() const
 {
     QVariantList found;
-    if (!filterText_.isEmpty()) {
-        collectMatches({}, found);
+    if (query_.isEmpty()) {
+        return found;
+    }
+    // Past the bound there is nothing to open: see kRevealLimit. Asked of the
+    // index rather than counted here, so that the tree does not open to the
+    // first two hundred of a quarter of a million and stop -- which would read
+    // as the search having found exactly those.
+    if (index_ != nullptr && index_->topHits(kRevealLimit).size() > kRevealLimit) {
+        return found;
+    }
+    collectMatches({}, found);
+    if (found.size() > kRevealLimit) {
+        found.clear();
+    }
+    return found;
+}
+
+QStringList TreeFilterProxyModel::revealPaths() const
+{
+    if (query_.isEmpty() || index_ == nullptr) {
+        return {};
+    }
+    QStringList found = index_->topHits(kRevealLimit);
+    if (found.size() > kRevealLimit) {
+        return {}; // more results than results: see kRevealLimit
     }
     return found;
 }
@@ -92,13 +137,16 @@ void TreeFilterProxyModel::collectMatches(const QModelIndex& parent,
                                           QVariantList& into) const
 {
     const auto* tree = qobject_cast<const H5TreeModel*>(sourceModel());
-    // Same rule as the filter itself: never ask a group for children it has
-    // not read, because asking is what reads them.
+    // Never ask a group for children it has not read, because asking is what
+    // reads them. What this can reach is what the tree is already showing.
     if (tree == nullptr || !tree->isPopulated(mapToSource(parent))) {
         return;
     }
     const int count = rowCount(parent);
     for (int row = 0; row < count; ++row) {
+        if (into.size() > kRevealLimit) {
+            return; // one past the bound is enough to know there are too many
+        }
         const QModelIndex child = index(row, 0, parent);
         if (matches(mapToSource(child))) {
             into.append(QVariant::fromValue(child));
@@ -112,14 +160,31 @@ bool TreeFilterProxyModel::matches(const QModelIndex& index) const
 {
     const QString name = index.data(H5TreeModel::NameRole).toString();
     const QString path = index.data(H5TreeModel::PathRole).toString();
-    if (pattern_.has_value()) {
-        return pattern_->match(name).hasMatch() || pattern_->match(path).hasMatch();
-    }
-    return name.contains(filterText_, Qt::CaseInsensitive)
-           || path.contains(filterText_, Qt::CaseInsensitive);
+    return query_.accepts(name, path);
 }
 
 bool TreeFilterProxyModel::subtreeMatches(const QModelIndex& index) const
+{
+    const auto* tree = qobject_cast<const H5TreeModel*>(sourceModel());
+    if (tree == nullptr) {
+        return true;
+    }
+    if (index_ != nullptr) {
+        // One conversion of one path, rather than the recursive walk this
+        // used to be: the answer covers everything below the row as well.
+        switch (index_->answer(tree->pathAt(index))) {
+        case NameIndex::Answer::Yes:
+            return true;
+        case NameIndex::Answer::No:
+            return false;
+        case NameIndex::Answer::Unknown:
+            break; // the index has not been here; look for ourselves
+        }
+    }
+    return readSubtreeMatches(index);
+}
+
+bool TreeFilterProxyModel::readSubtreeMatches(const QModelIndex& index) const
 {
     if (matches(index)) {
         return true;
@@ -134,7 +199,7 @@ bool TreeFilterProxyModel::subtreeMatches(const QModelIndex& index) const
 
     const int count = tree->rowCount(index);
     for (int row = 0; row < count; ++row) {
-        if (subtreeMatches(tree->index(row, 0, index))) {
+        if (readSubtreeMatches(tree->index(row, 0, index))) {
             return true;
         }
     }
@@ -143,7 +208,7 @@ bool TreeFilterProxyModel::subtreeMatches(const QModelIndex& index) const
 
 bool TreeFilterProxyModel::filterAcceptsRow(int row, const QModelIndex& parent) const
 {
-    if (filterText_.isEmpty()) {
+    if (query_.isEmpty()) {
         return true;
     }
     QAbstractItemModel* source = sourceModel();

@@ -73,6 +73,14 @@ struct Frames
 }
 
 /// One line's drawn extremes, and whether `wanted` is among its values.
+///
+/// Exact equality, and it must stay exact. Nothing in the fold computes a
+/// value: `reduceBuckets` and `coarsenEnvelope` choose the smallest and the
+/// largest of what they are given by comparison and copy them, so a value that
+/// survives a fold survives it bit for bit, at every level, whatever the
+/// datatype. A tolerance here would read as caution and would in fact hide the
+/// one thing this column exists to catch -- a fold that averaged, or a level
+/// built out of the wrong elements -- behind a column that still says PASS.
 void inspect(const gui::PlotLine& line, double wanted, bool& held)
 {
     held = false;

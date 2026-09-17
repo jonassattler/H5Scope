@@ -117,6 +117,21 @@ struct LinePyramid
 /// filled. Spread over the machine; the ranges of one level are disjoint.
 void buildLevels(LinePyramid& pyramid);
 
+/// Throw away every level finer than `base`, and say whether anything went.
+///
+/// The free direction of the budget, and the one that matters. A reader who
+/// notices this program holding three gigabytes and turns the RAM budget down
+/// is asking for the memory back *now*; coarsening is exact, so they get it in
+/// the same call, with no read and no change to any picture drawn at or above
+/// the new base. Going the other way is not arithmetic at all -- a finer base
+/// is elements this no longer has -- so there is no refineTo() beside this and
+/// there cannot be one.
+///
+/// At least one level always survives: a pyramid of the whole line in a handful
+/// of buckets is still a pyramid, and the octaves below it are reads rather
+/// than a blank pane.
+bool coarsenTo(LinePyramid& pyramid, long long base);
+
 /// A pyramid built a hyperslab at a time, while the elements are still warm.
 ///
 /// The streaming form, and the one both plots read through: a line of a hundred
