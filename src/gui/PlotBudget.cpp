@@ -106,22 +106,33 @@ void PlotBudget::setAppetite(Appetite appetite)
     emit changed();
 }
 
+PlotBudget::PlotBudget()
+{
+    // The environment override, read once here rather than into a static inside
+    // total(): the same number is now settable at runtime, and two ways of
+    // saying one thing is how they come to disagree.
+    const QByteArray asked = qgetenv("H5SCOPE_PLOT_BUDGET_MB");
+    if (asked.isEmpty()) {
+        return;
+    }
+    bool ok = false;
+    const long long megabytes = asked.toLongLong(&ok);
+    pinned_ = ok && megabytes > 0 ? megabytes * kMegabyte : 0LL;
+}
+
+void PlotBudget::setPinnedTotal(long long bytes)
+{
+    const long long wanted = std::max(bytes, 0LL);
+    if (pinned_ == wanted) {
+        return;
+    }
+    pinned_ = wanted;
+    emit changed();
+}
+
 long long PlotBudget::total() const
 {
-    // An override, for the suites and for tools/bench-data. A benchmark whose
-    // cache size depended on the machine it ran on would be measuring the
-    // machine, which is the thing tests/test_cost.cpp exists not to do.
-    static const long long pinned = [] {
-        const QByteArray asked = qgetenv("H5SCOPE_PLOT_BUDGET_MB");
-        if (asked.isEmpty()) {
-            return 0LL;
-        }
-        bool ok = false;
-        const long long megabytes = asked.toLongLong(&ok);
-        return ok && megabytes > 0 ? megabytes * kMegabyte : 0LL;
-    }();
-
-    const long long bytes = pinned > 0 ? pinned : allowance(appetite_, physicalMemory());
+    const long long bytes = pinned_ > 0 ? pinned_ : allowance(appetite_, physicalMemory());
     return bytes / static_cast<long long>(sizeof(double));
 }
 

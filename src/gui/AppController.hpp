@@ -9,11 +9,13 @@
 #include "DatasetPlot.hpp"
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
+#include "postproc/MemberPath.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/FieldDataset.hpp"
 #include "h5core/File.hpp"
 
 #include <QAbstractItemModel>
+#include <QBasicTimer>
 #include <QHash>
 #include <QObject>
 #include <QStringList>
@@ -33,6 +35,7 @@ class AttributeTableModel;
 class DatasetStringListModel;
 class DatasetTableModel;
 class H5TreeModel;
+class NameIndex;
 class ObjectInfoModel;
 class TableSetupModel;
 class TreeFilterProxyModel;
@@ -166,12 +169,26 @@ private:
     /// The member chain the selection is read through: `.position.x`, or empty
     /// for the dataset itself.
     ///
-    /// Its own box after the closing bracket rather than part of `sliceText`,
-    /// because the two say different things and one of them is only a question
-    /// for a compound. Keeping them apart is also what leaves the pipeline's
-    /// slice row alone: that row *is* the slice line, and it had better go on
-    /// being exactly it.
+    /// Held apart from `sliceText` rather than folded into it, because the two
+    /// say different things and one of them is only a question for a compound.
+    /// Keeping them apart is what leaves the pipeline's slice row alone: that
+    /// row *is* the slice line, and it had better go on being exactly it. The
+    /// slice bar puts them back together for the reader -- see `selectionText`
+    /// -- which is a question about how a line is *written*, not about what
+    /// the two of them mean.
     Q_PROPERTY(QString memberText READ memberText NOTIFY tableLayoutChanged)
+    /// The two of them as one line, the way a reader would type it:
+    /// `[:, 2].samples`.
+    ///
+    /// What the slice bar makes editable over a **compound**, where the split
+    /// into two boxes was the wrong shape for the job. A chain and the
+    /// subscript it appends axes to are one statement -- `.samples[2]` belongs
+    /// on the slice and `[:, 2].samples` is the same selection written the
+    /// other way round -- so a reader rearranging one of them is usually
+    /// rearranging both, and two boxes made that two commits with a shape they
+    /// did not ask for in between. One line is also the only form that can be
+    /// *pasted*: it is what `sliceExpression` prints, less the path.
+    Q_PROPERTY(QString selectionText READ selectionText NOTIFY tableLayoutChanged)
     /// Files opened before, newest first. Each entry is
     /// `{ path, name, folder, missing }` -- `missing` when the file is no
     /// longer where it was, which is worth showing rather than hiding, because
@@ -255,6 +272,37 @@ public:
     /// arithmetic over the datatype already described, so it answers on every
     /// keystroke without opening anything.
     Q_INVOKABLE QString memberError(const QString& text) const;
+
+    /// The subscript and the chain as one line: `[:, 2].samples`.
+    [[nodiscard]] QString selectionText() const;
+    /// Apply one. The chain first, because it is what decides the shape the
+    /// subscript is against -- and both are read before either is applied, so
+    /// a line that will not do leaves the views exactly as they were.
+    ///
+    /// The subscript may be left off (`.energy` alone is the whole of the
+    /// dataset through that member) and so may the chain (`[0:100]` alone is
+    /// the struct itself). What comes back is always the canonical pair, which
+    /// is where a chain's own subscripts have moved onto the slice: type
+    /// `[:].samples[2]` and the box prints `[:, 2].samples`.
+    Q_INVOKABLE QString applySelection(const QString& text);
+    /// Why one cannot be read, or empty when it can. Checks without applying,
+    /// as every other box in this window does.
+    Q_INVOKABLE QString selectionError(const QString& text) const;
+    /// What could be written next on such a line: the chains, each with
+    /// whatever subscript is already in front of it.
+    [[nodiscard]] Q_INVOKABLE QStringList selectionCompletions(const QString& text) const;
+
+private:
+    /// Read a selection line into the chain it names and the slice line it
+    /// means. Returns the reason it will not do, or empty.
+    ///
+    /// One function because there are two callers and they must not disagree:
+    /// what `selectionError` refuses is exactly what `applySelection` will not
+    /// apply, and a second copy of the reading is a second grammar.
+    [[nodiscard]] QString readSelection(const QString& text, QString& chainText,
+                                        postproc::MemberChain& chain, QString& line) const;
+
+public:
 
     // --- what could be written next --------------------------------------
     //
@@ -364,8 +412,16 @@ signals:
     /// Non-fatal problems worth surfacing transiently in the UI.
     void statusMessage(const QString& message);
 
+protected:
+    /// Only the reveal settle; see kRevealMilliseconds.
+    void timerEvent(QTimerEvent* event) override;
+
 private:
     void refreshSelection();
+    /// Open the tree to what the filter found, wherever in the file that is --
+    /// including branches nobody has expanded, which is one listing per level
+    /// and is why this is settled rather than run per keystroke.
+    void revealMatches();
     /// Announce that the selection is leaving `currentPath_`, and write down
     /// the one setting this object keeps itself -- the slice.
     void leaveSelection();
@@ -420,6 +476,16 @@ private:
 
     H5TreeModel* treeModel_ = nullptr;
     TreeFilterProxyModel* filteredTreeModel_ = nullptr;
+    /// Every name in the open file, so the filter box answers out of RAM. Walked
+    /// in the background from the moment the file opens -- see NameIndex for why
+    /// the one thing about a file that is read whole is its names.
+    NameIndex* nameIndex_ = nullptr;
+    /// How long the filter box is left alone before the tree is opened to what
+    /// it found. A search is typed a character at a time and every prefix of it
+    /// has its own results; opening to each of them in turn is a listing per
+    /// level per keystroke, of branches the next keystroke throws away.
+    static constexpr int kRevealMilliseconds = 200;
+    QBasicTimer revealSettle_;
     DatasetTableModel* datasetModel_ = nullptr;
     DatasetStringListModel* datasetStringModel_ = nullptr;
     AttributeTableModel* attributeModel_ = nullptr;

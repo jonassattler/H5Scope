@@ -129,6 +129,17 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
     // elements they were summarised from. See PlotAxis::valueStep -- with a
     // time base twenty thousand elements long summarised to two thousand
     // points, reading it at the position is reading ten times past its end.
+    //
+    // The run the reader is looking at first, where there is one and where it
+    // reaches this position: it is the same time base read finer, so it is the
+    // same answer only sharper. See PlotAxis::closerValues.
+    if (axis.hasCloser() && std::abs(axis.closerStep) > 0.0) {
+        const double at = std::round((position - axis.closerStart) / axis.closerStep);
+        if (at >= 0.0 && at < static_cast<double>(axis.closerCount)) {
+            const double x = axis.closerValues[static_cast<std::size_t>(at)];
+            return std::isfinite(x) ? x : std::numeric_limits<double>::quiet_NaN();
+        }
+    }
     if (!(std::abs(axis.valueStep) > 0.0)) {
         return std::numeric_limits<double>::quiet_NaN();
     }

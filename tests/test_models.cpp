@@ -18,6 +18,7 @@
 #include "gui/DatasetStringListModel.hpp"
 #include "gui/PostprocessModel.hpp"
 #include "gui/TableSetupModel.hpp"
+#include "gui/NameIndex.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "h5scope/Version.hpp"
 
@@ -36,6 +37,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QString>
 #include <QVariantList>
@@ -3703,4 +3705,205 @@ TEST_CASE_METHOD(ControllerFixture, "a picture stops being one while a pipeline 
                               gui::TableSetupModel::ModeRole).toInt()
                 == gui::TableSetupModel::All);
     }
+}
+
+// --- the search index ------------------------------------------------------
+
+TEST_CASE("the wildcard grammar is the one it replaced", "[tree][filter]")
+{
+    // gui::matchesWildcard was written to stop spending a PCRE2 match per name
+    // in the file per keystroke. What it must not do is change what the box
+    // means, so it is held against the thing it replaced rather than against a
+    // table somebody wrote down: every pattern here is compiled by
+    // QRegularExpression::fromWildcard with the same flags the filter used, and
+    // the two have to agree on every name.
+    const QStringList patterns{
+        QStringLiteral("temp"),      QStringLiteral("temp*"),
+        QStringLiteral("*temp"),     QStringLiteral("*temp*"),
+        QStringLiteral("t?mp"),      QStringLiteral("?"),
+        QStringLiteral("*"),         QStringLiteral("**"),
+        QStringLiteral("[tT]emp"),   QStringLiteral("[!t]emp"),
+        QStringLiteral("[a-z]*"),    QStringLiteral("[A-Z]*"),
+        QStringLiteral("/run/*/t*"), QStringLiteral("*/temp"),
+        QStringLiteral("a*b*c"),     QStringLiteral("*_0?"),
+        QStringLiteral("temp*rat*"), QStringLiteral("[]]x"),
+    };
+    const QStringList names{
+        QStringLiteral("temp"),      QStringLiteral("Temp"),
+        QStringLiteral("temperature"), QStringLiteral("tmp"),
+        QStringLiteral("t_mp"),      QStringLiteral("abc"),
+        QStringLiteral("aXbYc"),     QStringLiteral("channel_01"),
+        QStringLiteral("/run/3/temp"), QStringLiteral("/run/temp"),
+        QStringLiteral("/a/b/temp"), QStringLiteral(""),
+        QStringLiteral("]x"),        QStringLiteral("[x"),
+    };
+
+    for (const QString& pattern : patterns) {
+        const QRegularExpression compiled = QRegularExpression::fromWildcard(
+            pattern, Qt::CaseInsensitive,
+            QRegularExpression::NonPathWildcardConversion);
+        REQUIRE(compiled.isValid());
+        for (const QString& name : names) {
+            INFO("pattern " << pattern.toStdString() << " against "
+                            << name.toStdString());
+            CHECK(gui::matchesWildcard(pattern, name)
+                  == compiled.match(name).hasMatch());
+        }
+    }
+}
+
+TEST_CASE("which grammar a line is written in", "[tree][filter]")
+{
+    CHECK_FALSE(gui::NameQuery(QStringLiteral("temp")).isWildcard());
+    CHECK(gui::NameQuery(QStringLiteral("temp*")).isWildcard());
+    CHECK(gui::NameQuery(QStringLiteral("te?p")).isWildcard());
+    CHECK(gui::NameQuery(QStringLiteral("[t]emp")).isWildcard());
+    // A class halfway to being typed is not a pattern that matches nothing, it
+    // is a substring search that goes on answering while the rest is written.
+    CHECK_FALSE(gui::NameQuery(QStringLiteral("[temp")).isWildcard());
+    CHECK(gui::NameQuery(QStringLiteral("[temp]")).isWildcard());
+}
+
+TEST_CASE_METHOD(ControllerFixture, "every name in the file is in the index",
+                 "[tree][filter]")
+{
+    auto* filtered =
+        qobject_cast<gui::TreeFilterProxyModel*>(controller.filteredTreeModel());
+    REQUIRE(filtered != nullptr);
+
+    /// The names of the top-level rows that survived the filter.
+    const auto visible = [&] {
+        QStringList names;
+        for (int row = 0; row < h5test::settledRowCount(filtered); ++row) {
+            names << filtered->index(row, 0, {})
+                         .data(gui::H5TreeModel::NameRole)
+                         .toString();
+        }
+        return names;
+    };
+
+    SECTION("a name nobody has expanded the way to is still found")
+    {
+        // The whole point of the index. `leaf` is `/group/nested/leaf`, three
+        // levels down, and nothing in this test has opened a single branch --
+        // before the index the filter matched what the reader had expanded, so
+        // this found nothing at all.
+        controller.setFilterText(QStringLiteral("leaf"));
+        CHECK(visible().contains(QStringLiteral("group")));
+        CHECK(filtered->matchCount() == 1);
+    }
+
+    SECTION("...and the tree is opened to it, which is a listing per level")
+    {
+        controller.setFilterText(QStringLiteral("leaf"));
+        // Settled rather than immediate: opening the way down is one round trip
+        // per level and is deliberately not done per keystroke.
+        REQUIRE(h5test::settleFor(400));
+        const QModelIndex leaf =
+            filtered->indexForPath(QStringLiteral("/group/nested/leaf"));
+        CHECK(leaf.isValid());
+    }
+
+    SECTION("a search that matched nothing says so, and empties the pane")
+    {
+        controller.setFilterText(QStringLiteral("no_such_object_anywhere"));
+        CHECK(visible().isEmpty());
+        CHECK(filtered->matchCount() == 0);
+    }
+
+    SECTION("a pattern is counted over the file and not over what is on screen")
+    {
+        controller.setFilterText(QStringLiteral("str_*"));
+        // str_fixed, str_vlen, str_scalar, str_grid -- all four, though the
+        // reader has expanded nothing and the pane shows what it shows.
+        CHECK(filtered->matchCount() == 4);
+    }
+
+    SECTION("nothing typed counts nothing")
+    {
+        controller.setFilterText(QString{});
+        CHECK(filtered->matchCount() == 0);
+    }
+}
+
+TEST_CASE("the index walks the file once and answers out of memory",
+          "[tree][filter]")
+{
+    h5test::TempFile temp{"nameindex"};
+    h5test::onH5([&] { h5test::writeFixture(temp.path()); });
+
+    auto& h5 = gui::H5Thread::instance();
+    h5.invoke([&](gui::H5Session& session) {
+        session.open(temp.path());
+        return 0;
+    });
+
+    gui::NameIndex index;
+    index.open();
+    REQUIRE(h5test::settle());
+    REQUIRE(index.complete());
+    CHECK_FALSE(index.truncated());
+    CHECK(index.count() > 20);
+
+    SECTION("it holds the root, the groups and the leaves alike")
+    {
+        index.select(gui::NameQuery(QStringLiteral("leaf")));
+        CHECK(index.answer(QStringLiteral("/group/nested/leaf"))
+              == gui::NameIndex::Answer::Yes);
+        // ...and every branch above it, which is what puts the row on screen.
+        CHECK(index.answer(QStringLiteral("/group/nested"))
+              == gui::NameIndex::Answer::Yes);
+        CHECK(index.answer(QStringLiteral("/group")) == gui::NameIndex::Answer::Yes);
+        CHECK(index.answer(QStringLiteral("/matrix")) == gui::NameIndex::Answer::No);
+    }
+
+    SECTION("a path it has never heard of is Unknown, not No")
+    {
+        // Which is the whole of how the filter stays right where the index
+        // cannot speak: Unknown puts it back on walking what the model read.
+        index.select(gui::NameQuery(QStringLiteral("leaf")));
+        CHECK(index.answer(QStringLiteral("/nowhere"))
+              == gui::NameIndex::Answer::Unknown);
+    }
+
+    SECTION("the results are the topmost hits, and it says when there are too many")
+    {
+        index.select(gui::NameQuery(QStringLiteral("leaf")));
+        CHECK(index.topHits(16) == QStringList{QStringLiteral("/group/nested/leaf")});
+        CHECK(index.hits() == 1);
+
+        // Everything under a hit is a hit as well, because a plain-text filter
+        // reads paths -- and the result is the group, not its contents.
+        index.select(gui::NameQuery(QStringLiteral("group")));
+        CHECK(index.topHits(16) == QStringList{QStringLiteral("/group")});
+
+        // A bound of zero is what "more results than results" looks like: one
+        // past it comes back, so the caller can tell the two apart.
+        index.select(gui::NameQuery(QStringLiteral("str_*")));
+        CHECK(index.topHits(2).size() == 3);
+    }
+
+    SECTION("a hard link to an object already indexed is indexed again")
+    {
+        // /link_to_matrix and /matrix are one object under two names, which is
+        // not a loop: the tree shows both and so must this. Only an ancestor
+        // repeating itself stops the walk.
+        index.select(gui::NameQuery(QStringLiteral("matrix")));
+        CHECK(index.answer(QStringLiteral("/link_to_matrix"))
+              == gui::NameIndex::Answer::Yes);
+        CHECK(index.hits() == 3); // matrix, link_to_matrix, soft_to_matrix
+    }
+
+    SECTION("closing it empties it, and a closed index answers nothing")
+    {
+        index.close();
+        CHECK(index.count() == 0);
+        CHECK(index.answer(QStringLiteral("/matrix"))
+              == gui::NameIndex::Answer::Unknown);
+    }
+
+    h5.invoke([](gui::H5Session& session) {
+        session.close();
+        return 0;
+    });
 }

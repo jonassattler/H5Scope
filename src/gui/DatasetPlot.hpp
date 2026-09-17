@@ -452,6 +452,24 @@ private:
     void buildPyramids() const;
     /// Doubles one line's pyramid may spend. See gui::baseBucketFor.
     [[nodiscard]] long long pyramidBudget() const;
+
+public:
+    /// What the pyramids actually cost, in doubles. Measured rather than
+    /// assumed: see heldLevels(). Public so tests can weigh what is held
+    /// against the budget that is supposed to bound it.
+    [[nodiscard]] long long heldDoubles() const;
+
+    /// Doubles waiting in the retired store, for tests.
+    ///
+    /// Each frame of a zoom trims a level and retires its vectors, and fill()
+    /// is the only thing that empties them -- so several refreshes inside one
+    /// turn of the event loop accumulate several levels' worth before the
+    /// renderer is next handed anything. It is bounded by heldLevels() per
+    /// line, and that bound was reasoned about and never measured;
+    /// tests/test_cost.cpp measures it.
+    [[nodiscard]] long long retiredDoubles() const;
+
+private:
     /// Install an answer, if it is still the answer that was wanted.
     void takeDetail(const PlotWindow& detail, const std::vector<int>& series,
                     std::vector<DatasetTableModel::NumericGrid> grids);
@@ -493,6 +511,18 @@ private:
     /// these can be replaced without the retire dance -- and must be, because a
     /// pyramid is the one thing here large enough that keeping two would matter.
     mutable std::map<int, LinePyramid> pyramids_;
+
+    // The borrow rule for these is prose above, and prose is what Detail had
+    // before MSVC's std::map move took the copy path and segfaulted Windows
+    // CI. The compiler cannot be told "nothing hands a pointer into this to
+    // PlotLine", but it can be told the half that would bite if something one
+    // day did: a LinePyramid must relocate by moving wherever it is kept, and a
+    // copyable element whose move can throw is deep-copied by std::vector on
+    // reallocation and the original freed. CustomPlot::Entry already holds one
+    // in a std::vector, so this is a live constraint rather than a hypothetical.
+    static_assert(std::is_nothrow_move_constructible_v<LinePyramid>,
+                  "a held pyramid must relocate by moving, or a vector of them "
+                  "frees the elements a renderer may be reading");
 
     mutable int points_ = 0;
     /// Table positions between one drawn point and the next. A double because

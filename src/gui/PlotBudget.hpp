@@ -69,6 +69,18 @@ public:
     /// Doubles every plot may hold between them, at the current appetite.
     [[nodiscard]] long long total() const;
 
+    /// Pin the budget to `bytes` whatever the machine has, or to 0 to go back
+    /// to reading the machine.
+    ///
+    /// The same lever `H5SCOPE_PLOT_BUDGET_MB` pulls, which is where this
+    /// started -- an override for tools/bench-zoom, read once into a static.
+    /// It is a setter as well now because a *test* of what is held has to be
+    /// able to move it between two assertions, and because a suite whose cache
+    /// size depended on the machine it ran on would be measuring the machine,
+    /// which is the thing tests/test_cost.cpp exists not to do.
+    void setPinnedTotal(long long bytes);
+    [[nodiscard]] long long pinnedTotal() const { return pinned_; }
+
     /// ...and the share one of them may hold on its own.
     ///
     /// The total divided by how many are alive. Blunt, and deliberately so: a
@@ -92,10 +104,12 @@ signals:
     void changed();
 
 private:
-    PlotBudget() = default;
+    PlotBudget();
 
     Appetite appetite_ = Appetite::Medium;
     int plots_ = 0;
+    /// Bytes, or 0 for "ask the machine". Seeded from the environment.
+    long long pinned_ = 0;
 };
 
 } // namespace gui

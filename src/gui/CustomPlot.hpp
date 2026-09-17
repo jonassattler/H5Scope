@@ -161,8 +161,8 @@ public:
     void setXMode(XMode mode);
     [[nodiscard]] QString xExpression() const { return xExpression_; }
     void setXExpression(const QString& text);
-    [[nodiscard]] QString xError() const { return xProblem_; }
-    [[nodiscard]] bool xReady() const { return !xValues_.empty(); }
+    [[nodiscard]] QString xError() const { return axis_.problem; }
+    [[nodiscard]] bool xReady() const { return !axis_.values.empty(); }
     [[nodiscard]] double xMinimum() const { return xMinimum_; }
     [[nodiscard]] double xMaximum() const { return xMaximum_; }
 
@@ -241,9 +241,15 @@ public:
     /// whose lines come from all over the file: which of them are worth reading
     /// again over the run that is on screen, at a bucket fine enough for
     /// zooming in to mean something. Resolved per entry, because entries have
-    /// their own lengths and their own scaling, and refused outright in Dataset
-    /// mode -- a time base need not be monotonic, so a range of x is not a range
-    /// of indices and there is nothing to narrow a read to.
+    /// their own lengths and their own scaling.
+    ///
+    /// In Dataset mode a range of x is a range of *x*, and turning it into a
+    /// range of positions is the time base's own job -- see axisPositionOf().
+    /// This used to refuse there, on the grounds that a time base need not be
+    /// monotonic. True, and beside the point: one that only ever goes one way
+    /// is a map that can be run backwards, every time base a reader reaches for
+    /// is one, and refusing all of them left a time series as the one axis of
+    /// the three that could not be zoomed at all.
     Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
 
     /// Where the reader is zooming, and which way. The plot tab's, for the plot
@@ -396,19 +402,48 @@ private:
 
     // --- the closer look ---------------------------------------------------
     /// The run of its own elements `entry` would be read over, or nothing when
-    /// there is no point: no window pushed, a time base, a line already drawn
-    /// sample for sample, or a reader zoomed out far enough that the whole-line
-    /// summary is as fine.
+    /// there is no point: no window pushed, a time base that doubles back, a
+    /// line already drawn sample for sample, or a reader zoomed out far enough
+    /// that the whole-line summary is as fine.
     [[nodiscard]] std::optional<PlotWindow> closerFor(const Entry& entry, int buckets) const;
     /// How many axis positions one element of `entry` covers: one under Align,
     /// and the axis divided by the line under Stretch.
     [[nodiscard]] double stretchScale(const Entry& entry) const;
     /// Where the visible range falls in `entry`'s own element indices,
     /// ascending. This is the inverse of the map lineOf() draws with -- point
-    /// for point under Align, and spread over the whole axis under Stretch --
-    /// and it is why Dataset mode has no closer look: that map is a lookup
-    /// table which need not be monotonic and cannot be run backwards.
+    /// for point under Align, and spread over the whole axis under Stretch.
+    ///
+    /// The view is inverted once for the whole tab, into axis positions, and
+    /// this divides that answer by the entry's own scaling. See recomputeView():
+    /// under Index and Range the inversion is one division, and under Dataset it
+    /// is a bisection of the time base.
     [[nodiscard]] bool lineRange(const Entry& entry, double& first, double& last) const;
+    /// Where `x` falls in the time base's own element positions, and how finely
+    /// that could be said.
+    ///
+    /// The one piece of arithmetic a time series needs and the other two axes
+    /// do not. A time base is a lookup table rather than an affine map, so the
+    /// way back is a bisection -- of the whole-line summary first, because that
+    /// is the one reading that answers for every position, and then again in
+    /// whatever finer run of it covers that answer. Each pass closes the bracket
+    /// by a factor of the bucket, which is what lets a reader zoomed onto twenty
+    /// elements be told about twenty elements rather than about the five
+    /// thousand one drawn point of the summary stands for.
+    ///
+    /// `resolution` is the step of the reading it settled on: the bracket is
+    /// good to within one of those, and recomputeView() opens it by that much
+    /// so a run never stops short of what is drawn.
+    ///
+    /// False when there is no time base, or when the reading is not sorted --
+    /// see positionOfX, which is where the monotonicity rule is stated.
+    [[nodiscard]] bool axisPositionOf(double x, double& position, double& resolution) const;
+    /// Work out where the view and the focus fall in axis positions, once, for
+    /// every entry to divide by its own scaling.
+    ///
+    /// Cached rather than answered per question, because in Dataset mode the
+    /// answer is a bisection and lineRange() is asked it dozens of times a
+    /// frame -- once per entry per level per policy call.
+    void recomputeView();
     /// What the reader is looking at of `entry`, as the policy in
     /// PlotLevels.hpp wants it. An unusable view -- an entry not drawn, one
     /// that would not read, or one already drawn sample for sample -- is how
@@ -431,6 +466,18 @@ private:
     [[nodiscard]] std::optional<PlotWindow> closerWanted(const Entry& entry) const;
     /// Doubles one entry's pyramid may spend. See gui::baseBucketFor.
     [[nodiscard]] long long pyramidBudget() const;
+
+public:
+    /// What the pyramids actually cost, in doubles. Measured rather than
+    /// assumed: see heldLevels(). Public so tests can weigh what is held
+    /// against the budget that is supposed to bound it.
+    [[nodiscard]] long long heldDoubles() const;
+
+    /// Doubles waiting in the retired store, for tests. See
+    /// DatasetPlot::retiredDoubles, which carries the argument.
+    [[nodiscard]] long long retiredDoubles() const;
+
+private:
     /// Fill `window` for `entry` out of its pyramid, if it can.
     ///
     /// What refreshCloser() tries before anything is submitted. False when the
@@ -538,13 +585,31 @@ private:
 
     XMode xMode_ = Index;
     QString xExpression_;
-    QString xProblem_;
-    std::vector<double> xValues_;
-    /// Axis positions between one of those values and the next: the time base
-    /// is thinned like every other line, and this is by how much. See
-    /// PlotAxis::valueStep -- without it a thinned axis is read past its end.
-    double xValueStep_ = 1.0;
-    int xSourceLength_ = 0;
+
+    /// The time base, held exactly as an entry is.
+    ///
+    /// It is a line out of the same file, read by the same job, thinned against
+    /// the same pane and folded out of the same kind of pyramid -- so it is an
+    /// `Entry`, and every one of the closer-look helpers below works on it
+    /// unchanged. That is the point: the axis used to be four loose members
+    /// with no pyramid and no runs, which is exactly why it was the one of the
+    /// three x modes that could not be zoomed.
+    ///
+    /// `alias` and `scaling` mean nothing here and are left alone; `drawn` is
+    /// true because the policy's question is "is this line being looked at",
+    /// and the axis always is. `expression` is not used either -- what the
+    /// reader typed is `xExpression_`, which outlives a switch away from
+    /// Dataset mode and this does not.
+    Entry axis_;
+    /// Where the view falls in axis positions, and whether that could be said.
+    /// See recomputeView().
+    double viewLow_ = 0.0;
+    double viewHigh_ = 0.0;
+    bool viewUsable_ = false;
+    /// ...and the focus, in the same positions.
+    double focusPosition_ = 0.0;
+    bool focusUsable_ = false;
+
     double xMinimum_ = 0.0;
     double xMaximum_ = 1.0;
     double xStart_ = 0.0;

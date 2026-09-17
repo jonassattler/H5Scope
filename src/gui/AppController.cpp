@@ -10,6 +10,7 @@
 #include "DatasetStringListModel.hpp"
 #include "DatasetTableModel.hpp"
 #include "H5TreeModel.hpp"
+#include "NameIndex.hpp"
 #include "ObjectInfoModel.hpp"
 #include "PostprocessModel.hpp"
 #include "PlotBudget.hpp"
@@ -22,6 +23,7 @@
 #include "h5scope/Version.hpp"
 #include "postproc/ComputedDataset.hpp"
 #include "postproc/MemberPath.hpp"
+#include "postproc/Subscripts.hpp"
 #include "postproc/Pipeline.hpp"
 
 #include <QCoreApplication>
@@ -60,6 +62,57 @@ Appetite appetiteOf(AppController::RamBudget budget)
     return Appetite::Medium;
 }
 
+/// Split `[subscript].chain` into its two halves.
+///
+/// The path is not in this box, so there is nothing here to disambiguate: what
+/// stands between the outermost brackets is the subscript, and everything after
+/// the one that closes them is the chain. (A custom plot's entry line has to
+/// see a `]` before it will read a `.` as a member, because a link name holds a
+/// dot as freely as it holds a bracket -- `/data/run.3` is a dataset. There is
+/// no link name in this box.)
+///
+/// Matched rather than found, because both halves may carry brackets of their
+/// own: `[:, [0,3]].samples[2]` has three of them and only the second closes
+/// the subscript.
+///
+/// A line with no leading bracket is all chain, and the subscript it leaves off
+/// is the whole of the dataset -- which is what an empty subscript already
+/// means to the grammar below, so nothing has to spell it out.
+[[nodiscard]] bool splitSelection(const QString& text, QString& subscript, QString& chain,
+                                  QString& error)
+{
+    const QString line = text.trimmed();
+    subscript.clear();
+    chain.clear();
+    if (line.isEmpty()) {
+        return true;
+    }
+    if (!line.startsWith(QLatin1Char('['))) {
+        chain = line;
+        return true;
+    }
+    int depth = 0;
+    for (qsizetype i = 0; i < line.size(); ++i) {
+        const QChar at = line.at(i);
+        if (at == QLatin1Char('[')) {
+            ++depth;
+            continue;
+        }
+        if (at != QLatin1Char(']')) {
+            continue;
+        }
+        --depth;
+        if (depth > 0) {
+            continue;
+        }
+        subscript = line.mid(1, i - 1).trimmed();
+        chain = line.mid(i + 1).trimmed();
+        return true;
+    }
+    error = AppController::tr("the subscript is missing its closing bracket");
+    return false;
+}
+
 } // namespace
 
 AppController::AppController(QObject* parent)
@@ -68,6 +121,7 @@ AppController::AppController(QObject* parent)
       // whatever order they are written here.
       treeModel_(new H5TreeModel(this)),
       filteredTreeModel_(new TreeFilterProxyModel(this)),
+      nameIndex_(new NameIndex(this)),
       datasetModel_(new DatasetTableModel(this)),
       attributeModel_(new AttributeTableModel(this)),
       infoModel_(new ObjectInfoModel(this)),
@@ -75,6 +129,15 @@ AppController::AppController(QObject* parent)
       postprocessModel_(new PostprocessModel(this))
 {
     filteredTreeModel_->setSourceModel(treeModel_);
+    filteredTreeModel_->setNameIndex(nameIndex_);
+    // A result in a branch the walk had not reached when the filter was typed
+    // is still a result. The index says so as soon as it gets there, and this
+    // is what opens the tree to it.
+    connect(nameIndex_, &NameIndex::grew, this, [this] {
+        if (nameIndex_->complete() && !filterText().isEmpty()) {
+            revealMatches();
+        }
+    });
     datasetStringModel_ = new DatasetStringListModel(datasetModel_, this);
 
     // What was opened last time. Read once, here, rather than on every binding
@@ -394,6 +457,33 @@ void AppController::setFilterText(const QString& text)
     }
     filteredTreeModel_->setFilterText(text);
     emit filterTextChanged();
+    // The tree opens itself to the results, and opening a branch nobody has
+    // expanded is a listing per level. Settled rather than done per keystroke:
+    // a reader typing `temperature` would otherwise have the file listed its
+    // way down to the results of `t`, `te`, `tem` and nine more prefixes, every
+    // one of them abandoned by the next character.
+    revealSettle_.start(kRevealMilliseconds, this);
+}
+
+void AppController::timerEvent(QTimerEvent* event)
+{
+    if (event->timerId() != revealSettle_.timerId()) {
+        QObject::timerEvent(event);
+        return;
+    }
+    revealSettle_.stop();
+    revealMatches();
+}
+
+void AppController::revealMatches()
+{
+    // Bounded by TreeFilterProxyModel::kRevealLimit, which answers with nothing
+    // at all rather than with a prefix of the results -- see the note there.
+    // So this is at most a couple of hundred walks of a handful of levels, and
+    // every level already listed costs nothing at all.
+    for (const QString& path : filteredTreeModel_->revealPaths()) {
+        treeModel_->revealPath(path);
+    }
 }
 
 QVariantMap AppController::rememberedSettings(const QString& group) const
@@ -789,6 +879,125 @@ QString AppController::sliceError(const QString& text) const
     return tableSetupModel_->sliceError(text);
 }
 
+QString AppController::selectionText() const
+{
+    if (!datasetTabVisible_) {
+        return {};
+    }
+    const QString body = tableSetupModel_->sliceText();
+    const QString brackets =
+        body.isEmpty() ? QString() : QStringLiteral("[") + body + QStringLiteral("]");
+    return brackets + memberText_;
+}
+
+QString AppController::readSelection(const QString& text, QString& chainText,
+                                    postproc::MemberChain& chain, QString& line) const
+{
+    // Both halves, in the order they depend on one another: the chain decides
+    // the shape, and the subscript is a statement about that shape. Whichever
+    // of them is wrong is the answer, and the chain is asked first because a
+    // chain that does not resolve is the reason the shape is not the one the
+    // reader thinks it is.
+    if (!datasetTabVisible_ || !hasDataset_) {
+        return tr("no dataset is selected");
+    }
+    QString subscript;
+    QString problem;
+    if (!splitSelection(text, subscript, chainText, problem)) {
+        return problem;
+    }
+    chain = postproc::resolveMemberChain(chainText, originInfo_.type);
+    if (!chain.valid()) {
+        return chain.error;
+    }
+    // The shape the chain produces, which is the dataset's own followed by the
+    // axes the chain appends -- the same derivation projectedInfo() makes, done
+    // here without moving the selection to make it.
+    std::vector<hsize_t> shape = originInfo_.shape;
+    shape.insert(shape.end(), chain.selection.dims.begin(), chain.selection.dims.end());
+
+    if (subscript.isEmpty() && !shape.empty()) {
+        // A subscript left off is the whole of the dataset -- `.energy` on its
+        // own says nothing about which records and so means all of them. The
+        // ellipsis is what the grammar already spells that with, so this is
+        // writing down what was left off rather than inventing a reading of it.
+        subscript = QStringLiteral("...");
+    }
+    line = postproc::sliceLineFor(subscript, chain.folded, originInfo_.shape.size());
+    if (shape.empty()) {
+        // A scalar through a scalar member: one cell, and nothing to subscript.
+        return line.trimmed().isEmpty()
+                   ? QString()
+                   : tr("%1 has no dimensions to subscript").arg(currentPath_);
+    }
+
+    std::vector<postproc::IndexExpression> chosen;
+    QStringList written;
+    QString bad;
+    if (!postproc::readSubscripts(line, shape, chosen, written, bad)) {
+        return bad;
+    }
+    return {};
+}
+
+QString AppController::selectionError(const QString& text) const
+{
+    QString chainText;
+    postproc::MemberChain chain;
+    QString line;
+    return readSelection(text, chainText, chain, line);
+}
+
+QString AppController::applySelection(const QString& text)
+{
+    // Read whole before anything moves. A selection is one statement about the
+    // dataset, so a line the second half of which will not do must leave the
+    // views showing what they were showing -- not the member applied and the
+    // subscript refused, which is a selection nobody asked for.
+    QString chainText;
+    postproc::MemberChain chain;
+    QString line;
+    if (const QString problem = readSelection(text, chainText, chain, line);
+        !problem.isEmpty()) {
+        return problem;
+    }
+
+    // The chain first: it is what decides the shape, and applyMember() rewrites
+    // the slice line against it. The subscript the reader wrote then goes on
+    // over the top of that, which is the one thing applyMember() cannot know.
+    const auto canonical = QString::fromStdString(chain.selection.text);
+    if (canonical != memberText_) {
+        if (const QString problem = applyMember(chainText); !problem.isEmpty()) {
+            return problem;
+        }
+    }
+    if (line.trimmed().isEmpty()) {
+        return {}; // a scalar: there was never anything to subscript
+    }
+    return applySlice(line);
+}
+
+QStringList AppController::selectionCompletions(const QString& text) const
+{
+    // The chains, each written back onto whatever subscript is already in front
+    // of it -- whole lines, as every completer here answers in, because what
+    // the box would hold is the only thing a box can be handed.
+    QString subscript;
+    QString chain;
+    QString problem;
+    if (!splitSelection(text, subscript, chain, problem)) {
+        return {};
+    }
+    const QString head = text.trimmed().startsWith(QLatin1Char('['))
+                             ? QStringLiteral("[") + subscript + QStringLiteral("]")
+                             : QString();
+    QStringList out;
+    for (const QString& offered : memberCompletions(chain)) {
+        out.append(head + offered);
+    }
+    return out;
+}
+
 QStringList AppController::statusLeft() const
 {
     if (!hasFile()) {
@@ -939,6 +1148,7 @@ bool AppController::openFile(const QString& path)
     filePath_.clear();
     currentPath_.clear();
     treeModel_->close();
+    nameIndex_->close();
     setErrorText(QString{});
     emit fileChanged();
     refreshSelection();
@@ -993,6 +1203,11 @@ bool AppController::openFile(const QString& path)
             // something to offer the reader again from a menu.
             remember(path);
             treeModel_->open();
+            // Behind the tree rather than in front of it. The queue is ordered
+            // and there is one HDF5 thread, so the index walks in bounded
+            // passes that re-arm at the back of it: every listing the reader
+            // asks for is served before the next of them.
+            nameIndex_->open();
             emit fileChanged();
 
             currentPath_ = opened.firstChild.isEmpty() ? QStringLiteral("/")
@@ -1028,6 +1243,7 @@ void AppController::closeFile()
     currentPath_.clear();
     setErrorText(QString{});
     treeModel_->close();
+    nameIndex_->close();
     // The close itself is a job like any other: H5Fclose is an HDF5 call and
     // belongs on the thread that owns the library, and the session is where the
     // file has been all along.
