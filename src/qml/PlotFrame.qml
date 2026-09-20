@@ -73,10 +73,46 @@ Item {
     /// `{ valid, line, x, y, px, py }`, or an invalid reading when the pointer
     /// is elsewhere. Read by whoever wants to say what it is a reading *of* --
     /// this file knows the numbers and not the names.
-    readonly property var reading: (frame.showCursor && pointer.hovered)
-        ? plotLines.nearestSample(pointer.point.position.x,
-                                  pointer.point.position.y)
-        : ({ valid: false })
+    readonly property var reading: {
+        if (!frame.showCursor)
+            return ({ valid: false })
+        if (frame.givenReading !== null)
+            return frame.givenReading.valid ? frame.placeReading(frame.givenReading)
+                                            : ({ valid: false })
+        return pointer.hovered
+            ? plotLines.nearestSample(pointer.point.position.x,
+                                      pointer.point.position.y)
+            : ({ valid: false })
+    }
+
+    /// A reading handed to this frame rather than taken from its own pointer.
+    ///
+    /// Null for the frame on screen, which has a pointer over it. The picture
+    /// that leaves this application is drawn by a second frame, off screen and
+    /// very possibly of another size (PlotPicture.qml), and nobody is pointing
+    /// at that one -- so a crosshair asked for under Settings would never be
+    /// drawn at all. It is given the reading instead.
+    ///
+    /// The *sample* is what crosses over, not the place it was drawn: where
+    /// that sample lands in pixels is this frame's own arithmetic, and a
+    /// picture at twice the width puts it somewhere else.
+    property var givenReading: null
+
+    /// That reading with `px` and `py` worked out against this pane.
+    ///
+    /// Through the item's own xFraction/yFraction, which is the same rule the
+    /// ticks go through -- a crosshair drawn where the curve is not would be
+    /// the tick lie in another form.
+    function placeReading(taken) {
+        return ({
+            valid: true,
+            line: taken.line,
+            x: taken.x,
+            y: taken.y,
+            px: plotLines.xFraction(taken.x) * plotLines.width,
+            py: plotLines.height - plotLines.yFraction(taken.y) * plotLines.height
+        })
+    }
 
 
     /// Whether the crosshair is offered at all.
@@ -87,6 +123,40 @@ Item {
     /// produces, which is a line of numbers in the bar below the plot and is
     /// therefore something a reader may reasonably want to stop changing.
     property bool showCursor: true
+
+    // --- the colours this frame draws in ---------------------------------
+    // Properties with Theme defaults rather than direct reads of Theme, and
+    // the defaults below are exactly what was written in place before -- so
+    // nothing on screen changes by their existing.
+    //
+    // What they buy is the *other* frame. A plot exported for publication is
+    // drawn on paper: a white or transparent ground, black ink, the light
+    // scope's rules -- while the reader who asked for it is very likely
+    // sitting in the dark theme. `Theme.dark` is a singleton the whole window
+    // is bound to and cannot be flipped for the length of a grab without
+    // buying the picture with a frame of the application in the wrong colours,
+    // so the picture is drawn by a second frame, off screen, with these set
+    // (see PlotPicture.qml). A frame that read Theme directly could not be
+    // told to do that.
+    /// The ground the whole picture stands on. `"transparent"` is a legal
+    /// answer and is what a publication export gives, so that the page's own
+    /// colour shows through.
+    property color ground: Theme.surfaceInset
+    /// Everything written on that ground: the tick numbers, the axis names and
+    /// the title. One property for all three because they are one thing --
+    /// what this picture says about itself -- and a picture whose title and
+    /// numbers are different colours is a picture with a design in it.
+    property color ink: Theme.plotInk
+    /// The grid: a rule between two numbered ticks, and a rule at one.
+    property color ruleMinor: Theme.border
+    property color ruleMajor: Theme.borderStrong
+    /// The two axes themselves, and the crosshair drawn against them.
+    property color axisRule: Theme.borderGuide
+    /// The ring around the sample the crosshair has snapped to. The accent,
+    /// which is what this application says "this is the one" in -- except on
+    /// paper, where there is no rest of the application for it to mean it
+    /// against and it is simply ink.
+    property color cursorInk: Theme.accent
 
     /// Whether the pointer is over the pane -- the lines themselves, not the
     /// gutters the labels live in.
@@ -100,6 +170,10 @@ Item {
     /// The item the lines are drawn on. Handed out so that whoever owns the
     /// data can fill it; this file knows nothing about what is in it.
     readonly property alias lines: plotLines
+
+    /// What that item is called, so that a second frame built for the picture
+    /// does not answer to the name the one on screen is found by.
+    property string linesObjectName: "plotLines"
 
     /// The plot area, in this item's coordinates: the frame minus the gutters
     /// the labels live in. Every gesture is measured against it, because a
@@ -381,7 +455,7 @@ Item {
     // which is what lands in the clipboard and what a reader pastes.
     Rectangle {
         anchors.fill: parent
-        color: Theme.surfaceInset
+        color: frame.ground
     }
 
     // A step stronger than a table's rules, for the same reason the table's own
@@ -403,7 +477,7 @@ Item {
             y: Math.round(frame.area.y + (1 - modelData.at) * frame.area.height)
             width: frame.area.width
             height: Theme.hairline
-            color: modelData.major ? Theme.borderStrong : Theme.border
+            color: modelData.major ? frame.ruleMajor : frame.ruleMinor
         }
     }
 
@@ -417,7 +491,7 @@ Item {
             y: frame.area.y
             width: Theme.hairline
             height: frame.area.height
-            color: modelData.major ? Theme.borderStrong : Theme.border
+            color: modelData.major ? frame.ruleMajor : frame.ruleMinor
         }
     }
 
@@ -427,7 +501,7 @@ Item {
         y: frame.area.y
         width: Theme.hairline
         height: frame.area.height
-        color: Theme.borderGuide
+        color: frame.axisRule
     }
 
     Rectangle {
@@ -435,7 +509,7 @@ Item {
         y: frame.area.y + frame.area.height
         width: frame.area.width
         height: Theme.hairline
-        color: Theme.borderGuide
+        color: frame.axisRule
     }
 
     /// The lines. Clipped, so a zoomed-in stroke stops at the frame rather
@@ -443,7 +517,7 @@ Item {
     PlotItem {
         id: plotLines
 
-        objectName: "plotLines"
+        objectName: frame.linesObjectName
 
         x: frame.area.x
         y: frame.area.y
@@ -495,14 +569,14 @@ Item {
             y: Math.round(frame.reading.py)
             width: parent.width
             height: Theme.hairline
-            color: Theme.borderGuide
+            color: frame.axisRule
         }
 
         Rectangle {
             x: Math.round(frame.reading.px)
             width: Theme.hairline
             height: parent.height
-            color: Theme.borderGuide
+            color: frame.axisRule
         }
 
         /// The sample itself, so the reader can see which one was taken.
@@ -514,7 +588,7 @@ Item {
             y: frame.reading.py - height / 2
             color: "transparent"
             border.width: Theme.borderWidthAccent
-            border.color: Theme.accent
+            border.color: frame.cursorInk
         }
     }
 
@@ -533,7 +607,7 @@ Item {
                - height / 2
             text: modelData.text
             font: Theme.readout
-            color: Theme.textSecondary
+            color: frame.ink
             horizontalAlignment: Text.AlignRight
         }
     }
@@ -548,7 +622,7 @@ Item {
             y: frame.area.y + frame.area.height + Theme.s3
             text: modelData.text
             font: Theme.readout
-            color: Theme.textSecondary
+            color: frame.ink
             horizontalAlignment: Text.AlignHCenter
         }
     }
@@ -571,7 +645,7 @@ Item {
         visible: frame.title !== ""
         text: frame.title
         font: Theme.bodyStrong
-        color: Theme.textPrimary
+        color: frame.ink
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
 
@@ -594,7 +668,7 @@ Item {
         visible: frame.xLabel !== ""
         text: frame.xLabel
         font: Theme.bodySmall
-        color: Theme.textSecondary
+        color: frame.ink
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
 
@@ -623,7 +697,7 @@ Item {
         visible: frame.yLabel !== ""
         text: frame.yLabel
         font: Theme.bodySmall
-        color: Theme.textSecondary
+        color: frame.ink
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
 

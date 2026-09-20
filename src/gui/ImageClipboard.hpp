@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QColor>
 #include <QObject>
 #include <QSharedPointer>
 #include <QSize>
@@ -29,7 +30,10 @@ namespace gui {
 /// Deliberately about an *item* rather than about a plot. Nothing here knows
 /// what it is copying; PlotSurface decides that the thing worth copying is the
 /// frame -- the ground, the rules, the ticks, their labels and the strokes --
-/// and not the panel of controls beside it.
+/// and not the panel of controls beside it. Since 0.6.3 the item it hands over
+/// is usually not the one on screen at all but a twin of it drawn for the
+/// picture; that decision is PlotSurface's too, and nothing here changes for
+/// it beyond the size argument below.
 class ImageClipboard : public QObject
 {
     Q_OBJECT
@@ -52,7 +56,38 @@ public:
     /// logical size: what a reader pastes should be the resolution they are
     /// looking at, and on a HiDPI display those differ by a factor of two or
     /// three in each direction.
-    Q_INVOKABLE bool copyItem(QQuickItem* item);
+    ///
+    /// `target` overrides that, in pixels, for a reader who asked for a size.
+    /// It does **not** scale the on-screen plot to fit: the caller is expected
+    /// to have laid an item out at that size already, and this is only how the
+    /// grab is told to come back with exactly the pixels that were asked for
+    /// rather than with the item's logical size times whatever ratio the
+    /// window happens to have. Handing a mismatched size to an item laid out
+    /// for another is a stretched picture, which is why nothing in this
+    /// application does it.
+    ///
+    /// `composited` is how a picture with no ground at all is taken, and it is
+    /// here rather than in the caller because it is arithmetic over pixels.
+    /// **A grab has no alpha channel to rely on**: under Qt Quick's software
+    /// renderer -- which is what runs wherever there is no graphics API, and
+    /// what the whole test suite runs under -- an item grab comes back as
+    /// Format_RGB32 with the untouched pixels at opaque black, so a frame that
+    /// draws no ground grabs as a black slab rather than as a picture on
+    /// nothing.
+    ///
+    /// What is passed instead is an item holding the *same picture twice*, the
+    /// upper half drawn on white and the lower half on black, and the alpha is
+    /// recovered from the pair. That is exact rather than approximate, which a
+    /// colour key over a single grab would not be: source-over compositing
+    /// says a pixel of colour C at coverage a lands at `C*a + (1-a)` on white
+    /// and at `C*a` on black, so their difference **is** `1-a` and what is
+    /// left is already the premultiplied colour. Antialiased type and the
+    /// feathered edge of a stroke come out with the coverage they were drawn
+    /// with, and it answers the same way on both renderers.
+    ///
+    /// `target` is the size of the *result*, so the item handed over is twice
+    /// that tall.
+    Q_INVOKABLE bool copyItem(QQuickItem* item, const QSize& target = {}, bool composited = false);
 
     /// The size of the image on the clipboard now, or an empty size when there
     /// is none.
@@ -63,6 +98,14 @@ public:
     /// reach -- and a feature whose only witness is a paste into some other
     /// program is a feature no test can hold.
     [[nodiscard]] Q_INVOKABLE QSize imageOnClipboard() const;
+
+    /// One pixel of it, and an invalid colour where there is no such pixel.
+    ///
+    /// Here for the reason imageOnClipboard() is, and for a stricter question:
+    /// a publication export differs from the picture on screen in its
+    /// *colours* -- a transparent ground, a black stroke -- and a size is no
+    /// witness to either. Nothing in the application reads this one either.
+    [[nodiscard]] Q_INVOKABLE QColor pixelOnClipboard(int x, int y) const;
 
 Q_SIGNALS:
     /// The picture is on the clipboard.

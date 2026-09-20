@@ -37,6 +37,8 @@ Rectangle {
     signal collapseRequested()
     signal treeTagsRequested()
     signal aboutRequested()
+    /// Settings -> Plot Settings, which is a form and so a dialog.
+    signal plotSettingsRequested()
     signal tabRequested(string id)
     /// Make a custom plot, and show it.
     signal newCustomPlotRequested()
@@ -201,6 +203,12 @@ Rectangle {
         id: greedyRamAction
         text: qsTr("Greedy")
         onTriggered: AppController.ramBudget = AppController.GreedyRam
+    }
+
+    Action {
+        id: plotSettingsAction
+        text: qsTr("Plot Settings…")
+        onTriggered: bar.plotSettingsRequested()
     }
 
     Action {
@@ -424,6 +432,12 @@ Rectangle {
                     marked: AppController.ramBudget === AppController.GreedyRam
                 }
             }
+
+            // What a copied plot looks like: publication colours, whether the
+            // crosshair is in it, and how big it is. A row and not a submenu,
+            // because two of those are a number the reader types and a drawer
+            // has nowhere to type into -- see PlotSettingsDialog.
+            AppMenuItem { action: plotSettingsAction }
         }
 
         AppMenu {

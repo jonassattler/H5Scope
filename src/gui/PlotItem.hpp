@@ -96,6 +96,34 @@ public:
     /// before the owner of those vectors modifies or frees them.
     Q_INVOKABLE void clear();
 
+    /// Take a copy of what `source` is drawing -- owned, rather than borrowed.
+    ///
+    /// This is how the picture that leaves this application is drawn: a second
+    /// frame, off screen, at whatever size the reader asked for and in
+    /// whatever colours they asked for, over the same values (see
+    /// PlotPicture.qml). Everything else about that frame is ordinary QML; the
+    /// lines are the part that cannot be.
+    ///
+    /// A copy and not a second borrow, and that is the whole of why this
+    /// exists. Asking the *model* to fill a second item would work for a frame
+    /// and then not: fill() records which item it last handed the lines to
+    /// (`drawing_`), so a second fill moves that record, and a
+    /// releaseDrawing() arriving between the grab being started and the frame
+    /// it renders on would empty the wrong item and free values the other one
+    /// is still pointing at. Copying here means the model never learns that
+    /// this item exists, and the picture cannot be caught by anything the
+    /// reader does to the plot while it is being taken.
+    ///
+    /// Cheap, for a reason that is structural rather than lucky: what a
+    /// PlotItem holds is already bounded by kDrawBudget -- a pane's worth of
+    /// points, not a file's worth -- so this copies a few thousand doubles per
+    /// line however large the dataset under them is.
+    ///
+    /// The axis is copied too, and that half is easy to miss: PlotAxis borrows
+    /// on exactly the same terms, both for the whole time base and for the
+    /// finer run of it the reader has zoomed into.
+    Q_INVOKABLE void adopt(gui::PlotItem* source);
+
     /// How many lines were handed over. QML needs it to drive the loops below
     /// without holding a second copy of the drawn set.
     [[nodiscard]] Q_INVOKABLE int lineCount() const;
@@ -196,6 +224,15 @@ private:
     QSGNode* buildPainted(QSGNode* root);
 
     std::vector<PlotLine> lines_;
+    /// Values this item owns rather than borrows, and the only case in which
+    /// it owns any: see adopt(). Empty for every item the models fill, which
+    /// is every item on screen.
+    ///
+    /// One vector per line plus up to two for the axis, in the order adopt()
+    /// fills them; nothing indexes into this after the PlotLines are pointed
+    /// at it, so its only job is to outlive them. Cleared by clear() and by
+    /// setLines(), which are the two places lines_ stops referring to it.
+    std::vector<std::vector<double>> owned_;
     PlotAxis axis_;
     PlotView view_;
     Drawn drawn_ = Drawn::Nothing;

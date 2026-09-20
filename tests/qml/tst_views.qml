@@ -550,7 +550,7 @@ TestCase {
         compare(plot.resolved.start, 0)
         compare(plot.resolved.step, 1)
         compare(plot.gridMode, "loose")
-        compare(plot.colorMode, "spectrum")
+        compare(plot.colorMode, "okabe-ito")
 
         // ...and coming back finds what was left there.
         verify(select("/matrix"))
@@ -3043,6 +3043,276 @@ TestCase {
         mouseMove(lines, -20, -20)
     }
 
+    // --- what a copied plot looks like ------------------------------------
+    // Three settings under Settings > Plot Settings ask the picture to differ
+    // from the pane, and every one of them is invisible on screen by
+    // construction: what they change lands in another application's clipboard.
+    // ImageClipboard can be asked what is there, which is the only reason any
+    // of this can be held at all.
+
+    /// Put the settings back, whatever the test did with them.
+    ///
+    /// They are AppController's and so outlive the window a test builds. In a
+    /// suite they are also never written anywhere -- the organisation name is
+    /// unset, which is what keeps every one of this application's settings off
+    /// the reader's disk -- so this is about the tests that run next and not
+    /// about the machine.
+    function restoreExportSettings() {
+        AppController.plotExportPublication = false
+        AppController.plotExportCursor = false
+        AppController.plotExportCustomSize = false
+    }
+
+    /// Copy `plot` and wait for the grab to land. Returns the failure, or "".
+    function copyAndWait(plot) {
+        copySpy.clear()
+        copyFailedSpy.clear()
+        if (!plot.copyImage())
+            return "the request was refused"
+        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
+                  "the grab must answer one way or the other")
+        return copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : ""
+    }
+
+    /// A drawn plot in a window of its own.
+    function plotWindow() {
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        return win
+    }
+
+    /// A picture asked for at a size is that size, to the pixel.
+    ///
+    /// Which is the assertion that says the picture was *laid out* at that
+    /// size rather than the pane scaled up to it: a scaled grab of a pane
+    /// whose shape is not the shape asked for comes back stretched, and the
+    /// window this suite opens is 900 by 600 against the 400 by 300 below.
+    function test_a_plot_copied_at_a_chosen_size_is_that_size() {
+        verify(select("/compressed"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot && plot.drawable, "there must be a plot to copy")
+
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 400
+        AppController.plotExportHeight = 300
+
+        compare(copyAndWait(plot), "")
+        const copied = ImageClipboard.imageOnClipboard()
+        compare(copied.width, 400)
+        compare(copied.height, 300)
+
+        // ...and the picture is gone once the grab has landed. It is a second
+        // copy of every drawn line, so a picture that outlived its answer
+        // would be this application holding two of everything for as long as
+        // the tab stayed open.
+        compare(plot.picture, null)
+
+        restoreExportSettings()
+    }
+
+    /// The numbers are clamped rather than trusted.
+    ///
+    /// A grab is rendered into one texture and every graphics API has a
+    /// largest one, so past the ceiling the picture does not come back small
+    /// -- it does not come back at all.
+    function test_a_chosen_size_is_held_inside_what_can_be_drawn() {
+        AppController.plotExportWidth = 1
+        compare(AppController.plotExportWidth, AppController.minExportPixels)
+        AppController.plotExportWidth = 999999
+        compare(AppController.plotExportWidth, AppController.maxExportPixels)
+
+        AppController.plotExportHeight = -4
+        compare(AppController.plotExportHeight, AppController.minExportPixels)
+        AppController.plotExportHeight = 999999
+        compare(AppController.plotExportHeight, AppController.maxExportPixels)
+
+        AppController.plotExportWidth = 1920
+        AppController.plotExportHeight = 1080
+        restoreExportSettings()
+    }
+
+    /// Publication mode: no ground at all, and every stroke in one black ink.
+    ///
+    /// The ground is the half that cannot be faked. A picture drawn on this
+    /// application's own black and then inverted somewhere else is not a
+    /// picture that stands on the page it is pasted into; what has to be true
+    /// is that the corner of the image has *no colour*, which is what an alpha
+    /// of zero means.
+    function test_a_publication_copy_has_no_ground_and_black_strokes() {
+        verify(select("/compressed"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot && lines && plot.drawable)
+
+        const onScreen = String(lines.seriesColor(0))
+
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 240
+        AppController.plotExportHeight = 180
+        AppController.plotExportPublication = true
+
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, 240)
+
+        // The corner is outside the pane -- it is the gutter the y labels live
+        // in -- so if anything at all were drawn as a ground it would be there.
+        compare(ImageClipboard.pixelOnClipboard(0, 0).a, 0,
+                "a publication picture stands on the page and not on a slab")
+
+        // ...and somewhere in it there is black ink that is actually opaque.
+        let blackInk = 0
+        for (let x = 0; x < 240; x += 3) {
+            for (let y = 0; y < 180; y += 3) {
+                const pixel = ImageClipboard.pixelOnClipboard(x, y)
+                if (pixel.a > 0.9 && pixel.r < 0.05 && pixel.g < 0.05
+                    && pixel.b < 0.05)
+                    ++blackInk
+            }
+        }
+        verify(blackInk > 10, "the picture must carry black ink: " + blackInk)
+
+        // And the pane the reader is looking at was never touched. This is the
+        // whole reason the picture is a second frame: re-styling this one for
+        // the grab would buy the picture with a frame of the application in
+        // the wrong colours.
+        compare(String(lines.seriesColor(0)), onScreen)
+
+        restoreExportSettings()
+    }
+
+    /// The crosshair is in the picture when it was asked for, and not when it
+    /// was not.
+    ///
+    /// It settles an inconsistency rather than adding a setting: the copy
+    /// button is pressed with the pointer over the rail and so never caught
+    /// one, and Ctrl+C is armed by the pointer being over the pane and so
+    /// always did.
+    function test_the_cursor_is_in_the_picture_only_when_it_was_asked_for() {
+        // One line over a mostly empty pane, so that two rules the width and
+        // the height of it are unmistakable. A dense bundle would hide them:
+        // the crosshair would be drawn over pixels that already carry ink and
+        // the count would not move.
+        verify(select("/series/a"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot && lines && plot.drawable)
+
+        // Somewhere over the pane, so there is a reading to draw.
+        mouseMove(lines, Math.round(lines.width / 2),
+                  Math.round(lines.height / 2))
+        waitForRendering(win.view)
+        verify(plot.reading.valid, "there must be a reading to include")
+
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 160
+        AppController.plotExportHeight = 120
+
+        // How much of the picture is not its own ground. Every pixel and not a
+        // sample of them: the crosshair's rules are one pixel wide, so a grid
+        // of every third pixel can miss both of them entirely.
+        const inkPixels = () => {
+            const ground = Theme.surfaceInset
+            let found = 0
+            for (let x = 0; x < 160; ++x) {
+                for (let y = 0; y < 120; ++y) {
+                    const pixel = ImageClipboard.pixelOnClipboard(x, y)
+                    if (Math.abs(pixel.r - ground.r) + Math.abs(pixel.g - ground.g)
+                        + Math.abs(pixel.b - ground.b) > 0.05)
+                        ++found
+                }
+            }
+            return found
+        }
+
+        AppController.plotExportCursor = false
+        compare(copyAndWait(plot), "")
+        const without = inkPixels()
+        verify(without > 0, "the picture must have something in it")
+
+        AppController.plotExportCursor = true
+        compare(copyAndWait(plot), "")
+        const including = inkPixels()
+
+        // A rule across and a rule down, so the difference is on the order of
+        // the pane's own width plus its height rather than a few pixels.
+        verify(including > without + 100,
+               "the crosshair must add ink: " + without + " -> " + including)
+
+        mouseMove(lines, -20, -20)
+        restoreExportSettings()
+    }
+
+    /// The plot stands on the pure end of the neutral ramp, in both themes.
+    ///
+    /// Every other surface in this application is a step off it -- that is what
+    /// separates a card from the window behind it -- and the plot is the one
+    /// that must not be: it is a picture of measurements, it is the thing a
+    /// reader takes away, and a stroke's contrast against it is the whole of
+    /// how legible the picture is. So this is asserted in pixels rather than
+    /// trusted to the token, because a ground is drawn by a Rectangle whose
+    /// colour anything above it could cover.
+    ///
+    /// Read through an item grab rather than through `grabImage()`, and that
+    /// is the trap this test exists to stay out of. Qt Quick Test's grabImage()
+    /// hands back an image of the item's *size* taken from the **window's**
+    /// origin, so a grab of the plot surface -- which sits 38 pixels down,
+    /// under the slice bar -- begins with 38 rows of `surfaceRaised` that
+    /// belong to the bar and not to the plot. That is why colouredPixels()
+    /// above takes a `firstRow`, and it is what makes a plot look as though it
+    /// were standing on a raised surface when it is not.
+    function test_the_plot_stands_on_black_or_on_white() {
+        verify(select("/series/a"))
+        const win = plotWindow()
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+        const frame = lines.parent
+
+        const was = Theme.dark
+        const groundOf = (what) => {
+            copySpy.clear()
+            copyFailedSpy.clear()
+            verify(ImageClipboard.copyItem(frame, Qt.size(0, 0)),
+                   "the frame must accept a grab")
+            tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000)
+            compare(copyFailedSpy.count, 0,
+                    copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+            const size = ImageClipboard.imageOnClipboard()
+            verify(size.width > 0 && size.height > 0)
+            // The four corners and the middle of the left gutter: five places
+            // nothing is ever drawn, so whatever is there is the ground.
+            const seen = []
+            const at = [[0, 0], [size.width - 1, 0], [0, size.height - 1],
+                        [size.width - 1, size.height - 1],
+                        [2, Math.round(size.height / 2)]]
+            for (let i = 0; i < at.length; ++i) {
+                const pixel = ImageClipboard.pixelOnClipboard(at[i][0], at[i][1])
+                compare(String(pixel), what,
+                        "the " + (Theme.dark ? "dark" : "light")
+                        + " theme's plot ground at " + at[i][0] + "," + at[i][1])
+                seen.push(String(pixel))
+            }
+            return seen
+        }
+
+        Theme.dark = true
+        waitForRendering(win.view)
+        compare(String(Theme.surfaceInset), "#000000")
+        groundOf("#000000")
+
+        Theme.dark = false
+        waitForRendering(win.view)
+        compare(String(Theme.surfaceInset), "#ffffff")
+        groundOf("#ffffff")
+
+        Theme.dark = was
+        waitForRendering(win.view)
+    }
+
     /// The ticks are drawn where the curve is.
     ///
     /// The chrome and the renderer each map a value to a place on the pane,
@@ -3251,6 +3521,14 @@ TestCase {
         win.view.show("plot")
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
+
+        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
+        // whose first entry is black -- drawn at signal white on the dark
+        // theme, because black is the ground there -- and colouredPixels()
+        // below finds the stroke by looking for a *saturated* pixel. Nothing
+        // here is about which cycle is in use; the line simply has to be one
+        // this counting can see.
+        plot.colorMode = "spectrum"
         const backing = AppController.datasetPlot
 
         // Let the pane's own width land before anything is counted. The surface
@@ -3324,6 +3602,14 @@ TestCase {
         win.view.show("plot")
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
+
+        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
+        // whose first entry is black -- drawn at signal white on the dark
+        // theme, because black is the ground there -- and colouredPixels()
+        // below finds the stroke by looking for a *saturated* pixel. Nothing
+        // here is about which cycle is in use; the line simply has to be one
+        // this counting can see.
+        plot.colorMode = "spectrum"
         verify(plot.drawable)
         const before = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
         verify(before > 20, "the line must be drawn to begin with: " + before)
@@ -3456,6 +3742,14 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
+
+        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
+        // whose first entry is black -- drawn at signal white on the dark
+        // theme, because black is the ground there -- and colouredPixels()
+        // below finds the stroke by looking for a *saturated* pixel. Nothing
+        // here is about which cycle is in use; the line simply has to be one
+        // this counting can see.
+        plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         compare(AppController.datasetPlot.seriesCount, 1)
 
@@ -3491,6 +3785,14 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
+
+        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
+        // whose first entry is black -- drawn at signal white on the dark
+        // theme, because black is the ground there -- and colouredPixels()
+        // below finds the stroke by looking for a *saturated* pixel. Nothing
+        // here is about which cycle is in use; the line simply has to be one
+        // this counting can see.
+        plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
 
         verify(!plot.showMarkers)
@@ -3528,6 +3830,14 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
+
+        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
+        // whose first entry is black -- drawn at signal white on the dark
+        // theme, because black is the ground there -- and colouredPixels()
+        // below finds the stroke by looking for a *saturated* pixel. Nothing
+        // here is about which cycle is in use; the line simply has to be one
+        // this counting can see.
+        plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
         verify(bare > 20, "the line must be drawn at all: " + bare)
@@ -3887,7 +4197,7 @@ TestCase {
 
         // The default gives every line a colour of its own; "same" is still
         // there for a reader who wants the bundle back.
-        compare(plot.colorMode, "spectrum")
+        compare(plot.colorMode, "okabe-ito")
         verify(String(plot.seriesColor(0, 0, 6)) !== String(plot.seriesColor(5, 5, 6)))
 
         plot.colorMode = "same"
@@ -4031,7 +4341,7 @@ TestCase {
         const plot = findChild(win.view, "plotSurface")
         const lines = findChild(win.view, "plotLines")
         const backing = AppController.datasetPlot
-        compare(plot.colorMode, "spectrum")
+        compare(plot.colorMode, "okabe-ito")
         tryVerify(() => lines.lineCount() === 6, 5000, "six lines are drawn")
 
         const before = []
@@ -4093,8 +4403,18 @@ TestCase {
     /// worth keeping as one: a colour edited by eye into either list is
     /// exactly the kind of change that looks fine on the theme its author had
     /// open and disappears on the other.
-    function test_every_palette_colour_reads_against_its_own_ground() {
-        const names = Theme.categoricalPaletteNames
+    function test_every_generated_palette_colour_reads_against_its_own_ground() {
+        // The two solved here, and not the three published ones.
+        //
+        // `spectrum` and `safe` were generated against this application's two
+        // grounds, so 3:1 on both is a promise they can be held to and the
+        // only thing that can break it is somebody editing a stop. The
+        // published cycles were designed for ink on paper and do not clear it
+        // -- Okabe-Ito's yellow is about 1.25:1 on white, Tol muted's indigo
+        // about 1.73:1 on black -- and that is the stated cost of their being
+        // the published values rather than our versions of them. What holds
+        // them instead is the test below, which pins them stop for stop.
+        const names = ["spectrum", "safe"]
         const was = Theme.dark
 
         for (let t = 0; t < 2; ++t) {
@@ -4109,6 +4429,62 @@ TestCase {
                            + (Theme.dark ? "dark" : "light") + " theme's plot ground")
                 }
             }
+        }
+
+        Theme.dark = was
+    }
+
+    /// ...and the three published cycles are the published values.
+    ///
+    /// The whole argument for carrying Okabe-Ito and Paul Tol's sets is that a
+    /// figure drawn here and a figure drawn by somebody else in matplotlib or
+    /// R are the same picture. That is a promise about exact numbers, so it is
+    /// asserted as exact numbers: a well-meant deepening of the pale ones --
+    /// which the test above would otherwise invite -- breaks this and says so.
+    ///
+    /// The one substitution is Okabe-Ito's black, which is the plot's own
+    /// ground in the dark theme and is drawn at signal white there instead.
+    function test_the_published_palettes_are_the_published_values() {
+        const was = Theme.dark
+
+        const okabeIto = ["#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2",
+                          "#d55e00", "#cc79a7"]
+        const tolBright = ["#4477aa", "#ee6677", "#228833", "#ccbb44", "#66ccee",
+                           "#aa3377", "#bbbbbb"]
+        const tolMuted = ["#cc6677", "#332288", "#ddcc77", "#117733", "#88ccee",
+                          "#882255", "#44aa99", "#999933", "#aa4499"]
+
+        // Lower-cased on both sides. An entry written as a literal in
+        // Theme.qml comes back as the string it was written as, and the one
+        // that is a token -- Okabe-Ito's black -- comes back as a colour,
+        // which stringifies lower case. The palette is the same either way and
+        // the test should not be about which of the two an entry happens to be.
+        const same = (got, want, what) =>
+              compare(String(got).toLowerCase(), want, what)
+
+        for (let t = 0; t < 2; ++t) {
+            Theme.dark = (t === 0)
+            const scope = Theme.dark ? "dark" : "light"
+
+            const okabe = Theme.categoricalPalettes["okabe-ito"]
+            compare(okabe.length, 8)
+            same(okabe[0], Theme.dark ? "#ffffff" : "#000000",
+                 "Okabe-Ito's black is the ground in the " + scope + " theme")
+            for (let i = 0; i < okabeIto.length; ++i)
+                same(okabe[i + 1], okabeIto[i],
+                     "okabe-ito " + (i + 1) + " in the " + scope + " theme")
+
+            const bright = Theme.categoricalPalettes["tol bright"]
+            compare(bright.length, tolBright.length)
+            for (let i = 0; i < tolBright.length; ++i)
+                same(bright[i], tolBright[i],
+                     "tol bright " + i + " in the " + scope + " theme")
+
+            const muted = Theme.categoricalPalettes["tol muted"]
+            compare(muted.length, tolMuted.length)
+            for (let i = 0; i < tolMuted.length; ++i)
+                same(muted[i], tolMuted[i],
+                     "tol muted " + i + " in the " + scope + " theme")
         }
 
         Theme.dark = was
@@ -5077,11 +5453,11 @@ TestCase {
 
         // Settings is its own drawer rather than more of View, because it is
         // the one that is not about the file or about what is drawn from it.
-        // Its single submenu says how much of the machine the plots may spend
-        // holding what they have read, and the bullet follows the controller's
+        // Its submenu says how much of the machine the plots may spend holding
+        // what they have read, and the bullet follows the controller's
         // property rather than the row's own `checked`.
         const settings = bar.menus.menuAt(2)
-        compare(settings.count, 1)
+        compare(settings.count, 2)
         const budget = settings.menuAt(0)
         verify(budget, "RAM Budget must be a real submenu")
         compare(budget.title, "RAM Budget")
@@ -5089,6 +5465,12 @@ TestCase {
         compare(budget.itemAt(0).text, "Low")
         compare(budget.itemAt(1).text, "Medium")
         compare(budget.itemAt(2).text, "Greedy")
+
+        // ...and the second row is a dialog rather than a submenu, because two
+        // of what it carries are a number the reader types and a drawer has
+        // nowhere to type into. The ellipsis is the design system's promise
+        // that pressing it opens something.
+        compare(settings.itemAt(1).text, "Plot Settings\u2026")
 
         // Open, Open Recent, Reload, Close, a rule, Quit.
         const file = bar.menus.menuAt(0)

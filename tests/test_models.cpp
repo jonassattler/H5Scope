@@ -38,8 +38,11 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QRegularExpression>
+#include <QScopeGuard>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QString>
+#include <QTemporaryDir>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -3045,6 +3048,88 @@ TEST_CASE("the build says what it is", "[controller]")
             == QFileInfo(QCoreApplication::applicationFilePath()).fileName());
     if (QCoreApplication::instance() != nullptr) {
         REQUIRE_FALSE(gui::AppController::binaryName().isEmpty());
+    }
+}
+
+TEST_CASE("what a copied plot looks like is remembered", "[controller]")
+{
+    // The fourth thing this application keeps between runs, after the files
+    // that were opened, the RAM budget and the saved views.
+
+    SECTION("a size is held inside what can actually be drawn")
+    {
+        // No organisation name, so nothing here touches the reader's own
+        // settings -- which is the point of the guard in AppController.
+        REQUIRE(QCoreApplication::organizationName().isEmpty());
+
+        gui::AppController controller;
+        CHECK_FALSE(controller.plotExportPublication());
+        CHECK_FALSE(controller.plotExportCursor());
+        CHECK_FALSE(controller.plotExportCustomSize());
+        CHECK(controller.plotExportWidth() == 1920);
+        CHECK(controller.plotExportHeight() == 1080);
+
+        // Clamped rather than refused: a grab is rendered into one texture and
+        // past the largest one there is, the picture does not come back small
+        // -- it does not come back at all.
+        controller.setPlotExportWidth(1);
+        CHECK(controller.plotExportWidth() == gui::AppController::kMinExportPixels);
+        controller.setPlotExportWidth(1 << 20);
+        CHECK(controller.plotExportWidth() == gui::AppController::kMaxExportPixels);
+        controller.setPlotExportHeight(-17);
+        CHECK(controller.plotExportHeight() == gui::AppController::kMinExportPixels);
+
+        QSignalSpy sizes(&controller, &gui::AppController::plotExportSizeChanged);
+        controller.setPlotExportHeight(controller.plotExportHeight());
+        CHECK(sizes.count() == 0);
+    }
+
+    SECTION("and all of it is still there next session")
+    {
+        // Nothing is read or written until a host application has named
+        // itself, so this section names one, points QSettings at a directory
+        // of its own and puts both back afterwards -- the same harness the
+        // saved views are tested through.
+        QTemporaryDir home;
+        REQUIRE(home.isValid());
+        const QSettings::Format wasFormat = QSettings::defaultFormat();
+        const QString wasOrganization = QCoreApplication::organizationName();
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, home.path());
+        QCoreApplication::setOrganizationName(QStringLiteral("H5ScopeExportTest"));
+        const QScopeGuard restore([&] {
+            QCoreApplication::setOrganizationName(wasOrganization);
+            QSettings::setDefaultFormat(wasFormat);
+        });
+
+        {
+            gui::AppController writing;
+            writing.setPlotExportPublication(true);
+            writing.setPlotExportCursor(true);
+            writing.setPlotExportCustomSize(true);
+            writing.setPlotExportWidth(2400);
+            writing.setPlotExportHeight(1600);
+        }
+
+        gui::AppController reading;
+        CHECK(reading.plotExportPublication());
+        CHECK(reading.plotExportCursor());
+        CHECK(reading.plotExportCustomSize());
+        CHECK(reading.plotExportWidth() == 2400);
+        CHECK(reading.plotExportHeight() == 1600);
+
+        // A stored size out of range is not trusted either. Written straight
+        // into the settings, because the setter would have clamped it -- the
+        // question is what happens when the file says something the setter
+        // never would have.
+        {
+            QSettings settings;
+            settings.setValue(QStringLiteral("plotExportWidth"), 1 << 20);
+            settings.setValue(QStringLiteral("plotExportHeight"), 0);
+        }
+        gui::AppController again;
+        CHECK(again.plotExportWidth() == gui::AppController::kMaxExportPixels);
+        CHECK(again.plotExportHeight() == gui::AppController::kMinExportPixels);
     }
 }
 

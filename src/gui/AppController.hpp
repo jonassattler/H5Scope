@@ -105,6 +105,55 @@ private:
     Q_PROPERTY(gui::AppController::RamBudget ramBudget READ ramBudget WRITE setRamBudget
                    NOTIFY ramBudgetChanged)
 
+    // --- what a copied plot looks like -----------------------------------
+    // Settings > Plot Settings, and the second group in this application that
+    // is about the reader rather than about the file -- so, like the budget
+    // above, they are remembered between runs.
+    //
+    // They live here rather than on either plot object deliberately. There is
+    // one Plot tab and any number of custom ones, and "what a picture out of
+    // this program looks like" is not a property of which tab you happened to
+    // press the button on; a reader who sets up a publication export and then
+    // opens a second tab has set it up for that one too.
+
+    /// Draw the exported picture for print rather than for this screen.
+    ///
+    /// Black strokes, the light scope's chrome, and no ground at all -- so
+    /// what the picture stands on is the page it is pasted into. It is a
+    /// property of the *export* and not of the plot: the reader goes on
+    /// looking at the plot they were looking at.
+    Q_PROPERTY(bool plotExportPublication READ plotExportPublication WRITE setPlotExportPublication
+                   NOTIFY plotExportPublicationChanged)
+
+    /// Whether the crosshair is part of the picture.
+    ///
+    /// Off by default, which settles an inconsistency rather than introducing
+    /// one: the copy *button* is pressed with the pointer over the rail, so it
+    /// never caught a crosshair, and Ctrl+C is armed by the pointer being over
+    /// the pane, so it always did. The picture now says the same thing
+    /// whichever way it was asked for, and a reader who is pointing at a
+    /// sample because that sample is the point can say so.
+    Q_PROPERTY(bool plotExportCursor READ plotExportCursor WRITE setPlotExportCursor NOTIFY
+                   plotExportCursorChanged)
+
+    /// Whether the picture is the size of the pane or a size the reader chose.
+    Q_PROPERTY(bool plotExportCustomSize READ plotExportCustomSize WRITE setPlotExportCustomSize
+                   NOTIFY plotExportCustomSizeChanged)
+
+    /// That size, in pixels.
+    ///
+    /// Clamped rather than trusted, on the way in from QML and again on the
+    /// way in from QSettings; see kMaxExportPixels for what bounds it.
+    Q_PROPERTY(int plotExportWidth READ plotExportWidth WRITE setPlotExportWidth NOTIFY
+                   plotExportSizeChanged)
+    Q_PROPERTY(int plotExportHeight READ plotExportHeight WRITE setPlotExportHeight NOTIFY
+                   plotExportSizeChanged)
+    /// ...and the bounds those two are clamped to, so the dialog's own fields
+    /// carry them: a box that lets a number be typed and then silently changes
+    /// it is a box arguing with the reader.
+    Q_PROPERTY(int minExportPixels READ minExportPixels CONSTANT)
+    Q_PROPERTY(int maxExportPixels READ maxExportPixels CONSTANT)
+
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
 
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -217,6 +266,36 @@ public:
 
     [[nodiscard]] RamBudget ramBudget() const { return ramBudget_; }
     void setRamBudget(RamBudget budget);
+
+    [[nodiscard]] bool plotExportPublication() const { return plotExportPublication_; }
+    void setPlotExportPublication(bool on);
+    [[nodiscard]] bool plotExportCursor() const { return plotExportCursor_; }
+    void setPlotExportCursor(bool on);
+    [[nodiscard]] bool plotExportCustomSize() const { return plotExportCustomSize_; }
+    void setPlotExportCustomSize(bool on);
+    [[nodiscard]] int plotExportWidth() const { return plotExportWidth_; }
+    void setPlotExportWidth(int pixels);
+    [[nodiscard]] int plotExportHeight() const { return plotExportHeight_; }
+    void setPlotExportHeight(int pixels);
+
+    /// The narrowest and the widest a picture may be asked for, in pixels.
+    ///
+    /// The ceiling is a real limit rather than a taste: a grab is rendered
+    /// into one texture and every graphics API has a maximum texture size --
+    /// 16384 on anything recent, less on older hardware. Past it the grab does
+    /// not come back small, it comes back not at all.
+    ///
+    /// Half of that, because a publication picture is drawn *twice* into one
+    /// grab -- once on white and once on black, which is how it comes back
+    /// with no ground; see ImageClipboard::copyItem. So the tallest picture
+    /// this may ask for is the tallest texture there is, halved. Eight
+    /// thousand pixels is a figure at 27 inches and 300 dpi, which is a poster
+    /// rather than a plate.
+    static constexpr int kMinExportPixels = 64;
+    static constexpr int kMaxExportPixels = 8192;
+
+    [[nodiscard]] int minExportPixels() const { return kMinExportPixels; }
+    [[nodiscard]] int maxExportPixels() const { return kMaxExportPixels; }
 
     [[nodiscard]] bool hasFile() const { return fileOpen_; }
     /// Whether the file is being read right now.
@@ -386,6 +465,12 @@ public:
 
 signals:
     void ramBudgetChanged();
+    void plotExportPublicationChanged();
+    void plotExportCursorChanged();
+    void plotExportCustomSizeChanged();
+    /// One signal for both numbers: they are one setting, and nothing binds to
+    /// either of them without binding to the size they make together.
+    void plotExportSizeChanged();
     void fileChanged();
     void busyChanged();
     /// The answer to openFile(), which only says that an open was started.
@@ -450,6 +535,13 @@ private:
     /// Whether the session has a file open. The file itself lives on the HDF5
     /// thread and is deliberately not reachable from here -- see H5Session.
     RamBudget ramBudget_ = MediumRam;
+    bool plotExportPublication_ = false;
+    bool plotExportCursor_ = false;
+    bool plotExportCustomSize_ = false;
+    /// 1920 by 1080, which is a figure at a size somebody can use without
+    /// having thought about it, and a shape most panes are already close to.
+    int plotExportWidth_ = 1920;
+    int plotExportHeight_ = 1080;
     bool fileOpen_ = false;
     QString filePath_;
     QString currentPath_;

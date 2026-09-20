@@ -83,6 +83,41 @@ button now answers the pointer — its hover ground and its rim were the same
 colour as a hovered tree row, so the plus that puts a dataset into a custom plot
 had nothing to say when you pointed at it.
 
+**A copied plot is a figure rather than a screenshot.** Settings > Plot
+Settings says what one looks like, and it is remembered between runs.
+*Publication mode* draws it for print: every stroke in black, the light
+theme's chrome whichever theme you are in, and no ground at all, so the picture
+stands on the page it is pasted into rather than on a slab of this
+application's own colour. *Include cursor* decides whether the crosshair and
+the sample it has snapped to are part of it, which also settles an old
+inconsistency — the button never caught one and Ctrl+C always did. And a
+*custom size* in pixels draws the picture again at that size, with its own
+ticks and its type set for it, over exactly the x and y range on screen. None
+of it touches the pane you are looking at: the picture is a second frame drawn
+where nobody can see it.
+
+**A line in a custom plot can be given a colour of its own.** Right-click its
+name in the legend, or use the swatch on its card in the data rail: either way
+that one line takes the colour and every other line stays where it was.
+*Clear colour* gives it back to the cycle rather than freezing whatever the
+cycle last said. A colour travels with a saved view, and views saved before
+this read back exactly as they did.
+
+**Three published colour cycles, and plots open on Okabe-Ito.** Okabe-Ito,
+Paul Tol bright and Paul Tol muted, at the values they are published at, so a
+figure drawn here sits beside one a colleague drew in matplotlib or R and the
+two agree about which line is which. Okabe-Ito's black is drawn at signal
+white on the dark theme, where black is the ground. `spectrum` and `safe` are
+still there and are still the two solved for this application's own two
+grounds — these three were designed for ink on paper, and their palest entries
+are faint on the light theme.
+
+**The plot's numbers are drawn at full contrast.** The ground under a plot is
+already pure black or pure white; the ticks, the axis names and the title were
+set a step off the ink, as a label is everywhere else in the application. They
+are the readings rather than labels for one, and they are now the exact
+inverse of what they are drawn on.
+
 ## 0.6.2
 
 **Drag a region with the right button and the plot goes there.** The wheel

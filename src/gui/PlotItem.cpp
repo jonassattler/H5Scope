@@ -78,6 +78,11 @@ PlotItem::~PlotItem() = default;
 void PlotItem::setLines(std::vector<PlotLine> lines, const PlotAxis& axis)
 {
     lines_ = std::move(lines);
+    // Whatever this item owned, it no longer draws. Unconditional and safe:
+    // every caller of this is a model handing over values it owns itself, so
+    // the lines just installed cannot be pointing into the storage below.
+    // adopt(), which is the one case where they can, sets the members itself.
+    owned_.clear();
     axis_ = axis;
     update();
 }
@@ -85,8 +90,69 @@ void PlotItem::setLines(std::vector<PlotLine> lines, const PlotAxis& axis)
 void PlotItem::clear()
 {
     lines_.clear();
+    owned_.clear();
     axis_ = PlotAxis{};
     update();
+}
+
+void PlotItem::adopt(PlotItem* source)
+{
+    if (source == nullptr || source == this) {
+        return;
+    }
+
+    // Built beside the old storage rather than into it, so that a second
+    // adopt() over the same item cannot free what the lines being copied are
+    // still pointing at -- which is exactly what happens when the source *is*
+    // an item this one adopted from before.
+    std::vector<std::vector<double>> owned;
+    owned.reserve(source->lines_.size() + 2);
+
+    std::vector<PlotLine> lines = source->lines_;
+    for (PlotLine& line : lines) {
+        if (line.values == nullptr || line.count <= 0) {
+            line.values = nullptr;
+            line.count = 0;
+            continue;
+        }
+        owned.emplace_back(line.values, line.values + line.count);
+        line.values = owned.back().data();
+    }
+
+    // The axis borrows twice: the whole time base, and the run of it the
+    // reader has zoomed into. A picture drawn against only the first would be
+    // the staircase of vertical treads that the closer look exists to fix.
+    PlotAxis axis = source->axis_;
+    if (axis.values != nullptr && axis.count > 0) {
+        owned.emplace_back(axis.values, axis.values + axis.count);
+        axis.values = owned.back().data();
+    }
+    else {
+        axis.values = nullptr;
+        axis.count = 0;
+    }
+    if (axis.closerValues != nullptr && axis.closerCount > 0) {
+        owned.emplace_back(axis.closerValues, axis.closerValues + axis.closerCount);
+        axis.closerValues = owned.back().data();
+    }
+    else {
+        axis.closerValues = nullptr;
+        axis.closerCount = 0;
+    }
+
+    // Markers travel with the lines. They are a statement about the data --
+    // "this dot is a measurement somebody took" -- so a picture of the plot
+    // that dropped them would be saying less than the plot does.
+    markers_ = source->markers_;
+    markerSize_ = source->markerSize_;
+
+    // Assigned here rather than through setLines(), which frees `owned_` --
+    // correctly, for every other caller, and fatally for this one.
+    owned_ = std::move(owned);
+    lines_ = std::move(lines);
+    axis_ = axis;
+    update();
+    emit markersChanged();
 }
 
 int PlotItem::lineCount() const

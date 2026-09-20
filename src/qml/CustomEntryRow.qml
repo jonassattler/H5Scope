@@ -10,6 +10,7 @@ import H5Scope.Backend
 ///     +--------------------------------------------------+
 ///     | [x] SLICE   [ /series/half[:]              ]  [x] |
 ///     |     ALIAS   [ morning                      ]     |
+///     |     COLOUR  [#]  clear                           |
 ///     |     SCALING ( ) align   (o) stretch              |
 ///     +--------------------------------------------------+
 ///
@@ -45,6 +46,9 @@ Rectangle {
     /// The CustomPlot this row belongs to, and which row of it this is.
     property var plot
     property int rowIndex: -1
+    /// The surface it is drawn on, so that the swatch below can show what the
+    /// line actually looks like and not only what the reader has said about it.
+    property var surface
 
     // The roles, handed down rather than required here: a required property
     // cannot also be one the component already declares, and the delegate that
@@ -55,6 +59,34 @@ Rectangle {
     property int scaling: CustomPlot.Align
     property bool scalable: false
     property bool drawn: true
+    /// The colour the reader gave this line, or `undefined` where they have
+    /// not. Undefined and not a colour, because "none" has to be a different
+    /// answer from "transparent"; see CustomPlot::seriesOverride.
+    property var colour: undefined
+
+    /// What this line is drawn in: the colour the reader gave it, or the
+    /// cycle's answer for it where they have given none.
+    ///
+    /// Asked of the surface rather than worked out here, for the reason the
+    /// legend's swatch is: a colour this file decided for itself would be a
+    /// second rule about which line is which, and the swatch would be wrong
+    /// the moment the two disagreed.
+    readonly property color drawnColour: {
+        if (row.colour !== undefined && row.colour !== null)
+            return row.colour
+        if (!row.surface || !row.plot)
+            return Theme.accent
+        // Named so that this binding depends on them. seriesColor() is a
+        // function, and a call creates no dependency on what it reads, so a
+        // reader changing the cycle would leave the swatch showing the colour
+        // the line used to be.
+        const cycle = row.surface.colorMode
+        const reversed = row.surface.colorsReversed
+        const drawn = row.plot.drawnSeries
+        const at = drawn.indexOf(row.rowIndex)
+        return row.surface.seriesColor(row.rowIndex, Math.max(at, 0),
+                                       drawn.length)
+    }
 
     /// Why what is *in the box* will not read, as opposed to why the applied
     /// line did not. Two channels, as the pipeline has: one about the text and
@@ -298,6 +330,66 @@ Rectangle {
                     aliasBox.focus = false
                 }
             }
+        }
+
+        // --- the colour it is drawn in ------------------------------------
+        // Beside the alias, because it is the same kind of thing: something
+        // the reader says about this one line that costs no read and changes
+        // nothing about what is drawn, only how. The legend's own right-click
+        // offers the same two things, and this is the half that is *found*
+        // rather than the half that is reached for -- a reader setting a line
+        // up is already here.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.rightMargin: Theme.smallControlHeight + Theme.gapS
+            spacing: Theme.gapS
+
+            Item { Layout.preferredWidth: Theme.indicatorSize }
+
+            Text {
+                Layout.preferredWidth: labels.width
+                text: qsTr("colour")
+                font: Theme.microLabel
+                color: Theme.textDisabled
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            // The swatch shows what the line is actually drawn in, whether or
+            // not that is a colour the reader chose. A swatch that went blank
+            // for a line taking the cycle would be a control saying the line
+            // has no colour, which is the one thing that is never true.
+            ColorSwatchButton {
+                objectName: "entryColour"
+
+                label: qsTr("colour for this line")
+                value: row.drawnColour
+                onPicked: chosen => {
+                    if (row.plot)
+                        row.plot.setEntryColor(row.rowIndex, chosen)
+                }
+            }
+
+            AppToolButton {
+                objectName: "entryColourClear"
+
+                text: qsTr("clear")
+                size: "sm"
+                // Absent rather than disabled would move the swatch's
+                // neighbours about every time a colour was set or cleared;
+                // this is one control whose presence is not news.
+                enabled: row.colour !== undefined && row.colour !== null
+                onClicked: {
+                    if (row.plot)
+                        row.plot.clearEntryColor(row.rowIndex)
+                }
+
+                AppToolTip {
+                    shown: parent.hovered
+                    text: qsTr("Give this line back to the colour cycle.")
+                }
+            }
+
+            Item { Layout.fillWidth: true }
         }
 
         // --- where it goes when it is not the axis's length ---------------

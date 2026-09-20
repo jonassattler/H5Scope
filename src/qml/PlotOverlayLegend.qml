@@ -36,6 +36,24 @@ Rectangle {
     /// The pane to sit in, in the parent's coordinates -- PlotFrame.area.
     property rect area: Qt.rect(0, 0, 0, 0)
 
+    // --- the colours this caption draws in -------------------------------
+    // Properties with Theme defaults, for the reason PlotFrame's are: the
+    // caption is inside the frame and so inside the picture, and a picture
+    // drawn for publication is drawn in the light scope whatever the reader is
+    // looking at.
+    property color ink: Theme.textPrimary
+    property color ground: Theme.plotLegendGround
+    property color rule: Theme.border
+    property color faint: Theme.textDisabled
+    /// One ink for every swatch, or `null` to ask the target line by line.
+    ///
+    /// Publication mode is what this is for, and it is the honest answer
+    /// there: every stroke in that picture is drawn in one ink, so a caption
+    /// showing the palette would be a caption about a different picture. The
+    /// one thing a legend may never be is wrong, and it is wrong about a black
+    /// plot exactly as it would be about a recoloured line.
+    property var strokeInk: null
+
     /// Whether this asks the plot object anything at all.
     ///
     /// Nothing here may touch that object until the reader has asked for the
@@ -123,9 +141,9 @@ Rectangle {
     y: legend.atTop ? legend.area.y + Theme.gapM
                     : legend.area.y + legend.area.height - height - Theme.gapM
     radius: Theme.radiusS
-    color: Theme.plotLegendGround
+    color: legend.ground
     border.width: Theme.borderWidth
-    border.color: Theme.border
+    border.color: legend.rule
 
     Column {
         id: rowsColumn
@@ -160,11 +178,15 @@ Rectangle {
                     width: Theme.plotLegendSwatch
                     height: Theme.borderWidthAccent
                     radius: Theme.radiusS
-                    color: legend.target
-                           ? legend.target.seriesColor(row.modelData.series,
-                                                       row.modelData.position,
-                                                       legend.drawn.length)
-                           : Theme.accent
+                    color: {
+                        if (legend.strokeInk !== null)
+                            return legend.strokeInk
+                        return legend.target
+                               ? legend.target.seriesColor(row.modelData.series,
+                                                           row.modelData.position,
+                                                           legend.drawn.length)
+                               : Theme.accent
+                    }
                 }
 
                 Text {
@@ -176,7 +198,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: row.modelData.label
                     font: Theme.monoSmall
-                    color: Theme.textPrimary
+                    color: legend.ink
                     elide: Text.ElideMiddle
                     verticalAlignment: Text.AlignVCenter
 
@@ -198,7 +220,7 @@ Rectangle {
             visible: legend.unnamed > 0
             text: qsTr("+%1 more").arg(legend.unnamed)
             font: Theme.micro
-            color: Theme.textDisabled
+            color: legend.faint
             verticalAlignment: Text.AlignVCenter
         }
     }
