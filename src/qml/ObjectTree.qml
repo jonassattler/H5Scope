@@ -559,13 +559,28 @@ Rectangle {
                     }
 
                     // --- the tags ---------------------------------------
-                    // Directly after the name, because that is what they are
-                    // about. They had been three fixed slots at the pane's
-                    // right edge, which lined them up into a column at the
-                    // price of standing a tag two hundred pixels away from the
-                    // name it qualifies -- and of spending that width on every
-                    // row whether or not it had a tag to put there. A tag is
-                    // an adjective; it goes next to its noun.
+                    // Against the readout, on its left, rather than against
+                    // the name on its right.
+                    //
+                    // Two arrangements have been tried and this is the third.
+                    // They began as three fixed slots at the pane's right
+                    // edge, which lined them up into a column at the price of
+                    // standing a tag two hundred pixels from the name it
+                    // qualifies *and* of spending that width on every row
+                    // whether or not it had a tag to put there. They then went
+                    // directly after the name, on the argument that a tag is
+                    // an adjective and goes next to its noun -- which is true
+                    // of one row read on its own and wrong of a pane full of
+                    // them: the name is the one thing on the row whose length
+                    // is arbitrary, so anything pinned to its end is at a
+                    // different place on every line, and three columns of
+                    // letters wandering down the pane read as noise rather
+                    // than as a column of facts.
+                    //
+                    // Here they are pinned to the readout instead, which is
+                    // short, right-aligned and the other fact on the row. A
+                    // row with no tags still spends nothing on them -- that is
+                    // what the fixed slots got wrong and this keeps.
                     //
                     // One letter each, because three of them have to fit
                     // between a name and a shape on a 26px row. A letter is
@@ -576,8 +591,14 @@ Rectangle {
                     Row {
                         id: tags
 
-                        x: Math.min(nameMetrics.advanceWidth, nameLabel.width)
-                           + Theme.gapS
+                        anchors.right: parent.right
+                        // Clear of the readout when there is one, and against
+                        // the cell's own edge when there is not. Taken off
+                        // metaWidth rather than off metaLabel, so this reads
+                        // the width the row's arithmetic settled on rather
+                        // than waiting for an item to be laid out at it.
+                        anchors.rightMargin: textCell.metaWidth
+                            + (textCell.metaWidth > 0 ? Theme.gapS : 0)
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.tagsVisible
                         spacing: Theme.gapXS

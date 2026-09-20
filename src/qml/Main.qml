@@ -145,7 +145,20 @@ ApplicationWindow {
         // fail to offer it. That is the whole of why these tabs exist.
         if (id.startsWith("custom:"))
             return true
-        return id === "info" || id === "table" || AppController.datasetIsNumeric
+        // Information is the one view that describes a *thing* rather than
+        // values, so it is the one a group has anything to put in.
+        if (id === "info")
+            return true
+        // ...and all three of the others need a dataset before anything else
+        // is asked. The table used to be offered unconditionally, on the true
+        // half of the thought that it serves every datatype -- which is about
+        // *which* dataset and says nothing about whether there is one. So a
+        // reader who clicked a group was handed a Data Viewer with its slice
+        // bar gone and a sentence where the grid should be: a tab that opens
+        // onto its own explanation for why it should not have.
+        if (!AppController.datasetTabVisible)
+            return false
+        return id === "table" || AppController.datasetIsNumeric
     }
 
     function selectTab(id) {

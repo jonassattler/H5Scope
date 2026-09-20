@@ -115,6 +115,11 @@ Rectangle {
         id: tableTabAction
         text: qsTr("Table")
         shortcut: "Ctrl+2"
+        // A dataset, and any datatype: the table is the view that serves them
+        // all, which is about *which* dataset and not about whether there is
+        // one. The two below want a dataset as well and say so by asking
+        // whether its values are numbers, which nothing but a dataset has.
+        enabled: AppController.datasetTabVisible
         onTriggered: bar.tabRequested("table")
     }
 

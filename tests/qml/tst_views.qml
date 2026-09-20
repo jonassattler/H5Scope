@@ -1168,6 +1168,30 @@ TestCase {
         // And asking for one anyway does nothing.
         win.selectTab("image")
         compare(win.currentTabId, "table")
+
+        // ...and with no dataset at all, none of the three. The table used to
+        // be offered here, on the true half of the thought that it serves
+        // every datatype -- which is about *which* dataset and says nothing
+        // about whether there is one, so a reader who clicked a group was
+        // handed a Data Viewer with its slice bar gone and a sentence where
+        // the grid should be.
+        verify(select("/group"))
+        waitForRendering(win.contentItem)
+        verify(!AppController.datasetTabVisible, "a group is not a dataset")
+        verify(win.tabAvailable("info"), "a group is what Information is for")
+        verify(!win.tabAvailable("table"))
+        verify(!win.tabAvailable("plot"))
+        verify(!win.tabAvailable("image"))
+        // A custom plot is about no dataset, so a group cannot take it away.
+        win.addCustomTab()
+        verify(win.tabAvailable("custom:0"))
+        win.closeCustomTab(0)
+
+        // Asking for the table anyway does nothing, whichever way it is asked
+        // -- the strip, the View menu and Ctrl+2 all come through here.
+        const wasTab = win.currentTabId
+        win.selectTab("table")
+        compare(win.currentTabId, wasTab)
     }
 
     /// The slice line is the fastest way to say which elements to show, and
@@ -4767,12 +4791,20 @@ TestCase {
 
     }
 
-    /// The tags belong to the name, so they stand beside it. They used to be
-    /// three fixed slots at the pane's right edge -- which lined them up into
-    /// a column, at the price of putting a tag two hundred pixels from the
-    /// thing it qualifies and spending that width on every row that had no tag
-    /// to put there.
-    function test_the_tree_s_tags_stand_beside_the_name() {
+    /// The tags stand against the readout, on its left.
+    ///
+    /// Two arrangements came before this one and both are worth remembering.
+    /// They began as three fixed slots at the pane's right edge, which lined
+    /// them up but spent that width on every row whether or not it had a tag;
+    /// they then went directly after the name, on the argument that a tag is
+    /// an adjective and belongs next to its noun. That is true of one row and
+    /// wrong of a pane full of them -- the name is the one thing on the row
+    /// whose length is arbitrary, so tags pinned to its end land somewhere
+    /// different on every line.
+    ///
+    /// Pinned to the readout they line up, and a row with no tags still
+    /// spends nothing, which is the part the fixed slots got wrong.
+    function test_the_tree_s_tags_stand_against_the_readout() {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
         waitForRendering(win.tree)
@@ -4786,17 +4818,28 @@ TestCase {
         compare(marks.length, 1)
         compare(marks[0].text, "A")
 
-        // Beside the name, not off at the edge: the tag starts where the name
-        // stops, give or take the gap between them.
+        // Its readout is the word "scalar", which is the thing the tag has to
+        // sit to the left of.
+        const meta = findText(row, "scalar")
+        verify(meta, "the row must draw its readout")
+        const metaStart = meta.mapToItem(row, 0, 0).x
+        const tagEnd = marks[0].mapToItem(row, marks[0].width, 0).x
+        verify(tagEnd <= metaStart,
+               "a tag must not sit on top of the readout: tag ends at "
+               + Math.round(tagEnd) + ", readout starts at "
+               + Math.round(metaStart))
+        verify(metaStart - tagEnd <= Theme.gapM,
+               "a tag " + Math.round(metaStart - tagEnd)
+               + "px clear of the readout is not against it")
+
+        // ...and still not on top of the name, which is the constraint the
+        // arrangement before this one was keeping and this one must keep too.
         const name = findText(row, "scalar_int")
         verify(name, "the row must draw its name")
         const nameEnd = name.mapToItem(row, name.contentWidth, 0).x
         const tagStart = marks[0].mapToItem(row, 0, 0).x
-        verify(tagStart >= nameEnd - Theme.gapM,
+        verify(tagStart >= nameEnd,
                "a tag must not sit on top of the name it qualifies")
-        verify(tagStart - nameEnd < Theme.s10,
-               "a tag " + Math.round(tagStart - nameEnd)
-               + "px past the name is a column, not a tag")
 
         // A row with nothing to say about itself has no tags at all, rather
         // than empty slots holding width open.
@@ -5590,6 +5633,29 @@ TestCase {
         compare(view.itemAt(2).text, "Plot")
         compare(view.itemAt(3).text, "Image")
         compare(view.itemAt(5).text, "New Custom Plot")
+
+        // The three data views are greyed when the selection has nothing for
+        // them, and the drawer is the second way to each of them -- the strip
+        // is the first and Ctrl+2/3/4 the third, and all three go through
+        // these Actions. Table was the one that was never greyed: it serves
+        // every datatype, which is about *which* dataset and not about whether
+        // there is one.
+        verify(select("/matrix"))
+        verify(view.itemAt(1).enabled, "a matrix has a table")
+        verify(view.itemAt(2).enabled)
+        verify(view.itemAt(3).enabled)
+
+        verify(select("/str_vlen"))
+        verify(view.itemAt(1).enabled, "text has a table")
+        verify(!view.itemAt(2).enabled, "text has no plot")
+        verify(!view.itemAt(3).enabled)
+
+        verify(select("/group"))
+        verify(view.itemAt(0).enabled, "a group is what Information is for")
+        verify(!view.itemAt(1).enabled, "a group has no table")
+        verify(!view.itemAt(2).enabled)
+        verify(!view.itemAt(3).enabled)
+        verify(select("/matrix"))
 
         // The mark is a bullet the system draws in place of a checkmark, and
         // it follows the window rather than the row's own checked state --

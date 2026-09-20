@@ -112,6 +112,21 @@ still there and are still the two solved for this application's own two
 grounds — these three were designed for ink on paper, and their palest entries
 are faint on the light theme.
 
+**A group is not a dataset, and the Table tab now says so.** Plot and Image
+were already greyed when the selection had nothing for them; Table never was,
+on the true half of the thought that it serves every datatype — which is about
+*which* dataset and says nothing about whether there is one. Clicking a group
+handed you a Data Viewer with its slice bar gone and a sentence where the grid
+should be. All three are greyed together now, in the tab strip, in the View
+menu and under Ctrl+2.
+
+**The tree's tags stand against the readout.** The letters marking a link, an
+image and a count of attributes sat directly after the name, which put them
+somewhere different on every row — the name is the one thing on a row whose
+length is arbitrary. They are pinned to the readout's left edge instead, so
+they line up down the pane, and a row with no tags still spends no width on
+them.
+
 **The plot's numbers are drawn at full contrast.** The ground under a plot is
 already pure black or pure white; the ticks, the axis names and the title were
 set a step off the ink, as a label is everywhere else in the application. They
