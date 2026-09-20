@@ -574,6 +574,13 @@ QtObject {
     /// veils eighteen pixels of a scale; this one has text standing on it.
     readonly property color plotLegendGround: dark ? Qt.rgba(0, 0, 0, 0.78)
                                                    : Qt.rgba(1, 1, 1, 0.84)
+    /// The ground under the numbers a region drag writes beside its band.
+    ///
+    /// The legend's veil, and the same one on purpose: what both have to hold
+    /// up is a line of type standing on the picture, over a stroke as often as
+    /// over the ground. Two veils at two weights would read as two different
+    /// kinds of thing being said about one plot.
+    readonly property color plotReadoutGround: theme.plotLegendGround
     /// How many lines a legend drawn on the plot names before it stops and
     /// says how many are left.
     ///

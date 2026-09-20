@@ -2346,6 +2346,212 @@ TestCase {
         plot.resetView()
     }
 
+    /// Nothing a band writes may be drawn off the pane or over another number,
+    /// and no length may be drawn over the band.
+    ///
+    /// Here rather than in each test below because it is the one rule the
+    /// whole layout exists to keep -- and because a rule asserted in one place
+    /// is a rule a new label cannot be added past. The coordinates are held to
+    /// it too, everywhere there is room for them: what they are allowed is a
+    /// band drawn into the corner of the pane, which leaves the corner nowhere
+    /// outside itself to stand.
+    function verifyBandNumbersAreClear(readout, clearOfBand) {
+        const boxes = readout.labels
+        for (let i = 0; i < boxes.length; ++i) {
+            verify(readout.inside(boxes[i]),
+                   boxes[i].key + " must be drawn inside the pane")
+            if (clearOfBand || boxes[i].key !== "start" && boxes[i].key !== "end") {
+                verify(readout.clears(boxes[i], readout.bandRect),
+                       boxes[i].key + " must stand clear of the band")
+            }
+            for (let j = i + 1; j < boxes.length; ++j) {
+                verify(readout.clears(boxes[i], boxes[j]),
+                       boxes[i].key + " must stand clear of " + boxes[j].key)
+            }
+        }
+    }
+
+    /// A band being drawn says what it is, in the axes' own numbers.
+    ///
+    /// The rectangle on its own says where the reader is about to look and
+    /// nothing about what they are about to see, which is the half a reader
+    /// selecting an interval actually wants: the corner they started at, the
+    /// corner they have reached, and how wide and how tall it has become.
+    ///
+    /// Asserted against the surface's own pixel-to-data mapping -- the one
+    /// zoomToRegion resolves the band with -- because that identity is the
+    /// point of the numbers. A readout worked out a second way would be a
+    /// promise the zoom that follows it does not have to keep.
+    function test_a_region_drag_writes_its_corners_and_its_lengths() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const gestures = findChild(win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the lines must be reachable")
+        const readout = findChild(win.view, "plotBand")
+        verify(readout, "the band must be reachable")
+
+        verify(!plot.selecting, "nothing is being selected yet")
+        compare(readout.labels.length, 0, "so nothing is written")
+
+        // The crosshair is reading, which is what the band is about to take
+        // away: two readouts of two different things over one pane is a
+        // picture the reader has to take apart before they can read either.
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid, "the crosshair must be reading to begin with")
+
+        const area = plot.plotRect
+        verify(area.width > 0 && area.height > 0)
+        const fromX = Math.round(area.x + area.width * 0.3)
+        const fromY = Math.round(area.y + area.height * 0.3)
+        const toX = Math.round(area.x + area.width * 0.7)
+        const toY = Math.round(area.y + area.height * 0.7)
+
+        mousePress(gestures, fromX, fromY, Qt.RightButton)
+        mouseMove(gestures, toX, toY, -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        verify(!plot.reading.valid, "the crosshair must be off under a band")
+        compare(plot.readingFacts.length, 0, "and the footer must stop reading")
+
+        const labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+
+        // Both corners, as the axes read them.
+        verify(labels.start, "the corner the drag started at must be written")
+        verify(labels.end, "the corner it has reached must be written")
+        compare(labels.start.text,
+                plot.readingNumber(plot.dataXAt(fromX)) + ", "
+                + plot.readingNumber(plot.dataYAt(fromY)))
+        compare(labels.end.text,
+                plot.readingNumber(plot.dataXAt(toX)) + ", "
+                + plot.readingNumber(plot.dataYAt(toY)))
+
+        // ...and the lengths on both x lines and both y lines, which two
+        // fifths of the pane in each direction has room for.
+        verify(labels.widthAbove && labels.widthBelow,
+               "a band this wide must have its width on both x lines")
+        verify(labels.heightLeft && labels.heightRight,
+               "a band this tall must have its height on both y lines")
+        compare(labels.widthAbove.text, labels.widthBelow.text)
+        compare(labels.heightLeft.text, labels.heightRight.text)
+        compare(labels.widthAbove.text,
+                "∆" + plot.readingNumber(
+                    Math.abs(plot.dataXAt(toX) - plot.dataXAt(fromX))))
+        compare(labels.heightLeft.text,
+                "∆" + plot.readingNumber(
+                    Math.abs(plot.dataYAt(toY) - plot.dataYAt(fromY))))
+
+        verifyBandNumbersAreClear(readout, true)
+
+        // The band goes with the button, and so do its numbers -- and the
+        // crosshair comes back.
+        mouseRelease(gestures, toX, toY, Qt.RightButton)
+        waitForRendering(win.view)
+        verify(!plot.selecting, "the band must end with the gesture")
+        compare(readout.labels.length, 0, "and take its numbers with it")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid, "the crosshair must come back")
+
+        mouseMove(lines, -20, -20)
+        plot.resetView()
+    }
+
+    /// A length is written where there is room for one, and left out where
+    /// there is not.
+    ///
+    /// The corners are the reading and the lengths are the subtraction between
+    /// them, so the lengths are what a crowded band can afford to lose. Two
+    /// ways it gets crowded: a band narrower than the number that would
+    /// measure it, and a band dragged off the edge of the pane -- where the
+    /// numbers have to come back inside without landing on the band or on each
+    /// other.
+    function test_a_length_is_written_only_where_there_is_room_for_one() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const gestures = findChild(win.view, "plotGestures")
+        const readout = findChild(win.view, "plotBand")
+        verify(plot && gestures && readout, "the plot and its band must be reachable")
+
+        const area = plot.plotRect
+        const midX = Math.round(area.x + area.width * 0.5)
+
+        // A few pixels wide and most of the pane tall. Its width does not fit
+        // between the two corners that measure it, so it is not written at
+        // all; its height has the whole side of the pane to stand in.
+        mousePress(gestures, midX, Math.round(area.y + area.height * 0.2),
+                   Qt.RightButton)
+        mouseMove(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
+                  -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        let labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+        verify(labels.start && labels.end, "both corners are always written")
+        verify(!labels.widthAbove && !labels.widthBelow,
+               "a band narrower than its own width must not be given one")
+        verify(labels.heightLeft && labels.heightRight,
+               "and its height must still be on both y lines")
+        verifyBandNumbersAreClear(readout, true)
+
+        mouseRelease(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
+                     Qt.RightButton)
+        waitForRendering(win.view)
+        plot.resetView()
+        waitForRendering(win.view)
+
+        // ...and a drag that runs off the pane. The band stops at the edge --
+        // which is where the zoom stops too -- so the numbers stop there with
+        // it rather than being drawn over the axis labels or clipped in half.
+        const startX = Math.round(area.x + area.width * 0.4)
+        const startY = Math.round(area.y + area.height * 0.4)
+        const offY = Math.round(area.y + area.height * 0.9)
+        mousePress(gestures, startX, startY, Qt.RightButton)
+        // Left of the pane but inside the window, which is the drag a reader
+        // makes when the interval they want runs to the edge of the picture.
+        mouseMove(gestures, 0, offY, -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+        verify(labels.start && labels.end,
+               "both corners are written even off the edge")
+        compare(labels.end.text,
+                plot.readingNumber(plot.viewMinX) + ", "
+                + plot.readingNumber(plot.dataYAt(offY)),
+                "the corner off the pane reads as the edge it stopped at")
+        verifyBandNumbersAreClear(readout, true)
+
+        mouseRelease(gestures, 0, offY, Qt.RightButton)
+        waitForRendering(win.view)
+        plot.resetView()
+    }
+
     /// The four boxes under View are the window, both ways round.
     ///
     /// They are a readout as well as a control, and that is the half worth

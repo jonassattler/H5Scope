@@ -25,6 +25,18 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.3
+
+**A region drag says what it is selecting, in numbers.** The band said where
+you were about to look and nothing about what you would see. It now writes the
+corner the drag started at, the corner it has reached and how wide and how tall
+it has become — in the axes' own units, out of the same arithmetic the zoom
+resolves the band with, so the numbers you read while deciding are the window
+you get. The lengths are written against all four edges where there is room for
+one and left out where there is not; nothing is drawn over the band, over
+another number, or off the pane. The crosshair goes off while a band is being
+drawn: it answers a different question, in the same face, over the same picture.
+
 ## 0.6.2
 
 **Drag a region with the right button and the plot goes there.** The wheel

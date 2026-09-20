@@ -27,6 +27,7 @@ qt_add_qml_module(appqml
     PlotSurface.qml
     PlotFrame.qml
     PlotOverlayLegend.qml
+    PlotBand.qml
     PlotRangeSetting.qml
     RangeAxis.qml
     RangeAxisSetting.qml
