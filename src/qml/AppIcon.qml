@@ -31,8 +31,22 @@ Item {
 
     readonly property real unit: Math.min(width, height) / 24
 
+    // The grid is a square and the item it is given need not be.
+    //
+    // Every path below is written in `unit` from this item's own origin, so a
+    // box that is wider than it is tall -- or taller than it is wide -- scaled
+    // the drawing by the shorter side and then drew it in the *corner*. That
+    // is not hypothetical: a Control hands its content whatever the padding
+    // leaves, and the Basic style's horizontalPadding is `padding + 2`, so an
+    // eighteen-pixel icon button gave this an eighteen-by-fourteen box and
+    // every cross in this application sat two pixels above the middle of the
+    // button it was in. AppIconButton squares its own padding now; this makes
+    // the geometry right for any box rather than for the ones that were
+    // noticed.
     Loader {
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: icon.unit * 24
+        height: icon.unit * 24
         sourceComponent: {
             switch (icon.name) {
             case "rotateLeft":     return rotateLeftIcon

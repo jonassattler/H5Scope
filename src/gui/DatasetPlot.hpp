@@ -529,6 +529,13 @@ private:
     /// an envelope puts two points in each bucket, so they sit half a bucket
     /// apart and half of an odd bucket is not a whole number of elements.
     mutable double step_ = 1.0;
+    /// Whether the whole-line summary is an envelope rather than the elements.
+    ///
+    /// Not `step_ > 1.0`, which is the same question only most of the time: a
+    /// fold at bucket two puts its two values one position apart, so the step
+    /// is 1 and the values are still a pair of extremes. What the renderer
+    /// needs to know is what a point *is* -- see PlotLine::summarised.
+    mutable bool summarised_ = false;
     /// Points per line for what is currently held. Recomputed when the size of
     /// the drawn set changes in bulk -- see selectFirst -- and not when a
     /// single line is ticked, so the legend stays cheap.

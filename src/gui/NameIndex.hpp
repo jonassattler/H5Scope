@@ -87,10 +87,46 @@ public:
     }
 
 private:
+    /// One string against the pattern, whichever way it is matched.
+    [[nodiscard]] bool matches(QStringView text) const;
+
     QString text_;
     /// `text_`, case-folded, so that only the side that changes has to be.
     QString folded_;
     bool wildcard_ = false;
+
+    // --- the fast reading of a pattern ------------------------------------
+    // A glob of nothing but stars and letters is not a walk over characters at
+    // all: it is "these pieces, in this order", with the ends pinned wherever
+    // the pattern has no star. Every piece is then one scan of the folded text
+    // -- the same scan plain text already gets -- instead of a back-tracking
+    // walk that starts again at every offset of every name.
+    //
+    // It is worth the members because of what it measured. On a file of
+    // 188,000 names a plain substring took 19 ms a keystroke and *any* pattern
+    // opening with a star took 210-260 ms, whether it matched everything or
+    // nothing: `*item*zz*` matches not one name in that file and cost 256 ms,
+    // because the cost is the back-tracking and not the hits. A reader typing
+    // an eight-character wildcard paid that eight times.
+    //
+    // `?` and `[...]` still need the general matcher, and still have it.
+    /// The longest run of plain letters anywhere in the pattern, folded.
+    ///
+    /// A necessary condition, for the patterns the fast reading below cannot
+    /// take: whatever `?` and `[...]` do, the letters around them have to be in
+    /// the text somewhere. One scan of the folded text answers it, and a name
+    /// that fails never reaches the back-tracking walk at all.
+    QString required_;
+    /// The literal runs between the stars, folded, in order. Empty unless
+    /// `simple_`.
+    std::vector<QString> pieces_;
+    /// Whether the pattern is stars and literals alone, so `pieces_` is the
+    /// whole of it.
+    bool simple_ = false;
+    /// Whether the pattern pins that end: `temp*` pins the start, `*.raw` the
+    /// end, `temp` -- were it a pattern -- both.
+    bool anchoredStart_ = false;
+    bool anchoredEnd_ = false;
 };
 
 /// Every name in the open file, held in one block of memory so that the filter

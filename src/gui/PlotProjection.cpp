@@ -268,7 +268,13 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
             place(toX(x), toY(value));
         }
         closeRun();
-        return added(false);
+        // Every point here was drawn, so nothing was summarised *by this* --
+        // but a time base does not make a line of summaries into a line of
+        // samples. A custom tab's entry is folded on the way out of the file
+        // like every other line, and the axis it is drawn against has no
+        // bearing on what its values are. This said `false` outright, which is
+        // how an entry drawn against a time base kept its dots at every zoom.
+        return added(line.summarised);
     }
 
     // x is affine in the sample index, so the window can be turned back into a
@@ -326,12 +332,16 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         }
         closeRun();
         // ...and they are samples only if the model did not summarise them on
-        // the way here. A step of one is one drawn point per element; anything
-        // wider means each of these is the extreme of a bucket, and a marker on
-        // it would be punctuation on a reading nobody took. This is not the
-        // same question as whether the loop above ran: a summary fine enough to
-        // fit four points in a column is still a summary.
-        return added(line.positionStep > 1.0);
+        // the way here. Each value of an envelope is the extreme of a bucket,
+        // and a marker on it would be punctuation on a reading nobody took.
+        // This is not the same question as whether the loop above ran: a
+        // summary fine enough to fit four points in a column is still a
+        // summary.
+        //
+        // The line says so itself rather than being guessed at from its step,
+        // which is where this was read from and which is wrong at both ends --
+        // see PlotLine::summarised.
+        return added(line.summarised);
     }
 
     // The envelope, over buckets that are a power of two wide and aligned to

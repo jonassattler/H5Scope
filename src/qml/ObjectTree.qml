@@ -95,6 +95,23 @@ Rectangle {
         return paths
     }
 
+    /// Put the pane back the way the reader had it before they started typing.
+    ///
+    /// Called from two places, and the second is the one that is easy to miss:
+    /// a box emptied *before* the search it armed ever ran leaves the
+    /// controller's filter exactly as it was -- empty -- so there is no change
+    /// and no signal to answer, while the tree has been closed since the first
+    /// character arrived. Without this it stayed closed, and the reader's
+    /// branches were lost to a search that never happened.
+    function endSearch() {
+        if (!root.filtering) {
+            return
+        }
+        root.restoreBranches(root.branchesBeforeFilter)
+        root.branchesBeforeFilter = []
+        root.filtering = false
+    }
+
     /// Close everything and open `paths` again.
     ///
     /// Shallowest first, which is the order openBranches() collected them in:
@@ -229,6 +246,20 @@ Rectangle {
             /// marker of its own that does not need the guides' help.
             readonly property color guideColor: Theme.borderGuide
 
+            /// The air between the caret and the name, and the one number the
+            /// selection's left edge is measured from as well.
+            ///
+            /// It was a single pixel, and the mark then started four pixels in
+            /// front of the name -- which is to say *behind* the caret's own
+            /// ink, because the chevron is drawn inset in its slot. So the two
+            /// touched: a lit slab ran up to the arm of the arrow and left it
+            /// standing in the selection it was not part of.
+            ///
+            /// One number rather than two, halved: the mark starts in the
+            /// middle of the gap, which is the only place that is clear of the
+            /// caret behind it and of the name in front of it at once.
+            readonly property int caretGap: Theme.gapS
+
             implicitWidth: tree.width
             implicitHeight: Theme.treeRowHeight
 
@@ -246,10 +277,9 @@ Rectangle {
             // Positioned rather than anchored: the name's x is the layout's
             // answer, and it moves with the depth of the row.
             Rectangle {
-                // A hair in front of the name: the marker's own width and a
-                // step of air after it, which is as far back as this can
-                // reach without crossing the caret and the elbow behind it.
-                x: line.x + textCell.x - Theme.s3
+                // Halfway back across the gap the name sits behind -- see
+                // caretGap, which is the whole of this arithmetic.
+                x: line.x + textCell.x - node.caretGap / 2
                 width: Math.max(0, node.width - x)
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
@@ -410,7 +440,7 @@ Rectangle {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.leftMargin: Theme.s1
+                    Layout.leftMargin: node.caretGap
 
                     /// What the tags take, and the gap in front of them. They
                     /// come out of the name's share rather than the readout's:
@@ -784,6 +814,8 @@ Rectangle {
         }
 
         FilterInput {
+            id: filterBox
+
             objectName: "treeFilter"
 
             anchors.fill: parent
@@ -804,16 +836,68 @@ Rectangle {
                     return ""
                 return found === 1 ? qsTr("1 match") : qsTr("%1 matches").arg(found)
             }
-            // Written down here rather than in onFilterTextChanged, because by
-            // the time that runs the filter has been applied and half the
-            // branches this is asking about are no longer on screen to ask.
+            // A keystroke is not a search. A pause is.
+            //
+            // Every character used to go straight at the filter, which made a
+            // reader typing `temperature` pay for twelve searches, eleven of
+            // them for a prefix they were in the middle of abandoning. On a
+            // large file that is a window that stops answering the keyboard
+            // while somebody is typing into it -- and the character they are
+            // waiting to see is the one thing they know they want. So the box
+            // settles: each keystroke restarts the clock, and what is searched
+            // for is what stands in the box when the typing stops.
+            //
+            // Clearing is not settled. A box the reader has just emptied is not
+            // a search to be abandoned, it is a file they want back, and
+            // putting the whole tree back is the one direction that was never
+            // slow.
             onTextEdited: {
                 if (!root.filtering) {
+                    // Written down here rather than in onFilterTextChanged,
+                    // because by the time that runs the filter has been applied
+                    // and half the branches this is asking about are no longer
+                    // on screen to ask.
                     root.branchesBeforeFilter = root.openBranches()
+                    // ...and closed here rather than there, for the same
+                    // reason turned round: a tree collapsed after the first
+                    // search has been applied has saved nothing on the search
+                    // that was the expensive one. See collapseAll's note below.
+                    root.collapseAll()
+                    root.filtering = true
                 }
-                AppController.filterText = text
+                if (text === "") {
+                    filterSettle.stop()
+                    if (AppController.filterText === "") {
+                        // Typed and taken back before the search ran. See
+                        // endSearch: nothing was filtered, so nothing will
+                        // report that it has stopped being.
+                        root.endSearch()
+                    }
+                    else {
+                        AppController.filterText = ""
+                    }
+                    return
+                }
+                filterSettle.restart()
             }
         }
+    }
+
+    /// How long the box waits before searching for what is in it.
+    ///
+    /// Long enough that a word typed at speed is one search and not twelve,
+    /// short enough that a reader who has stopped typing does not notice it
+    /// happening. The pending search is abandoned rather than queued: there is
+    /// only ever one, and it is for the text now in the box.
+    readonly property int filterSettleMilliseconds: 150
+
+    Timer {
+        id: filterSettle
+
+        objectName: "filterSettle"
+
+        interval: root.filterSettleMilliseconds
+        onTriggered: AppController.filterText = filterBox.text
     }
 
     // --- opening the tree to what the filter found -------------------------
@@ -823,23 +907,28 @@ Rectangle {
         function onFilterTextChanged() {
             const searching = AppController.filterText !== ""
             if (root.filtering && !searching) {
-                root.restoreBranches(root.branchesBeforeFilter)
-                root.branchesBeforeFilter = []
+                root.endSearch()
             }
             if (searching && !root.filtering) {
                 // A search starts from a closed tree and opens to its results.
                 //
-                // What the reader had open is written down a line above this
-                // and put back when the box is cleared, so nothing of theirs is
-                // lost. What it buys is the difference between a filter box and
-                // a stopwatch: every row on screen when the filter changes has
-                // to be taken out of the view one run of adjacent losers at a
-                // time, and QQuickTreeView pays for each of those over the whole
-                // of its flattened row list. A reader who had opened a group of
-                // sixty-five thousand members and then typed `item*7` waited
-                // twenty-two seconds for one keystroke. Closed, the same
-                // keystroke is a few milliseconds, because the rows being
-                // filtered are not on screen to be taken out of it.
+                // What the reader had open is written down when the first
+                // character is typed and put back when the box is cleared, so
+                // nothing of theirs is lost. What it buys is the difference
+                // between a filter box and a stopwatch: every row on screen
+                // when the filter changes has to be taken out of the view one
+                // run of adjacent losers at a time, and QQuickTreeView pays for
+                // each of those over the whole of its flattened row list. A
+                // reader who had opened a group of sixty-five thousand members
+                // and then typed `item*7` waited twenty-two seconds for one
+                // keystroke. Closed, the same keystroke is a few milliseconds,
+                // because the rows being filtered are not on screen to be taken
+                // out of it.
+                //
+                // The box does this itself now, on the keystroke rather than on
+                // the search -- so the *first* search is closed too, which is
+                // the one this was written for. Still here for a filter set
+                // from somewhere other than the box.
                 root.collapseAll()
             }
             root.filtering = searching
@@ -856,6 +945,15 @@ Rectangle {
         enabled: root.filtering
 
         function onRowsInserted(parent, first, last) {
+            reveal.restart()
+        }
+
+        // ...and so does a search that has just been applied. The box settles
+        // before it searches, so by the time the rows change the text has long
+        // since stopped changing -- and this is the moment the results exist to
+        // be opened to. Every applied search says how many it found, whether it
+        // found more or fewer than the last one.
+        function onMatchCountChanged() {
             reveal.restart()
         }
     }

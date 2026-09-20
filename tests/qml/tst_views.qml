@@ -3420,12 +3420,11 @@ TestCase {
 
     /// Markers are punctuation on a line, and they mark samples.
     ///
-    /// Only where the line is drawn sample for sample: once the envelope is
-    /// summarising, a drawn point stands for a whole bucket and a dot on it
-    /// marks nothing. A thousand points on a pane a thousand wide is drawn
-    /// whole, so this is the case where they appear.
+    /// Only where the line is drawn sample for sample. Sixty-four points on a
+    /// pane several hundred columns wide is nothing to fold, so this is the
+    /// case where they appear; the one below is the case where they must not.
     function test_markers_put_a_dot_on_every_sample() {
-        verify(select("/long_vec"))
+        verify(select("/series/a")) // 64 elements, drawn as they were measured
         const win = createTemporaryObject(viewWindowComponent, testCase)
         waitForRendering(win.view)
         win.view.show("plot")
@@ -3447,6 +3446,45 @@ TestCase {
         plot.showMarkers = false
         waitForRendering(win.view)
         compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare)
+    }
+
+    /// ...and no dot at all on a line the model summarised.
+    ///
+    /// A thousand elements on a pane of a few hundred columns is folded on the
+    /// way out of the file, and a drawn point is then the largest or the
+    /// smallest of its bucket -- a value the instrument took, at an x it was
+    /// not taken at, or one of two that were. A dot there marks a reading
+    /// nobody took.
+    ///
+    /// The fold is what decides it and not how coarse the fold is: at two
+    /// elements a bucket the pair sits one position apart, which is exactly
+    /// what a line of elements looks like, and that is the zoom where dots used
+    /// to reappear on points nobody had measured.
+    function test_a_summarised_line_carries_no_markers() {
+        verify(select("/long_vec")) // 1000 elements, and a pane narrower than that
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(bare > 20, "the line must be drawn at all: " + bare)
+
+        plot.showMarkers = true
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare,
+                "a folded line must carry no markers, however the setting is set")
+
+        // ...and zooming in until a bucket is one element brings them back,
+        // because that is the moment a drawn point becomes a sample again.
+        plot.setViewRange(0, 100, plot.viewMinY, plot.viewMaxY)
+        tryVerify(() => colouredPixels(grabImage(plot), Theme.sliceBarHeight) > bare,
+                  5000, "the samples themselves must carry their dots")
+
+        plot.showMarkers = false
+        plot.resetView()
     }
 
     /// The crosshair reads a sample, not a position.
@@ -5205,6 +5243,89 @@ TestCase {
         win.tree.collapseAll()
         waitForRendering(win.tree)
         return win
+    }
+
+    /// Typing is never a search, and a search that has been overtaken never
+    /// happens at all.
+    ///
+    /// What it costs is the whole of the reason. A pattern is answered out of
+    /// the name index, but answering it means the proxy taking every row that
+    /// no longer belongs out of the view, one run of adjacent losers at a time
+    /// -- so on a large file a character was a wait, and a reader typing a word
+    /// paid for every prefix of it on the way to the one they wanted. The box
+    /// waits for them to stop instead, and each character abandons the search
+    /// the one before it armed.
+    function test_a_keystroke_arms_a_search_rather_than_running_one() {
+        const win = treeWithGroupRead()
+        const filter = findChild(win.tree, "treeFilter")
+        verify(filter, "the tree must carry its own filter")
+        const settle = findChild(win.tree, "filterSettle")
+        verify(settle, "the box must have a settle to arm")
+        compare(AppController.filterText, "")
+        verify(!settle.running, "nothing is armed before anything is typed")
+
+        filter.forceActiveFocus()
+        keyClick("l")
+        // Armed, and not searched: the character is in the box and the tree is
+        // still the tree.
+        verify(settle.running, "a keystroke must arm the search")
+        compare(AppController.filterText, "",
+                "and must not be a search of its own")
+        compare(filter.text, "l", "what was typed is in the box at once")
+
+        keyClick("e")
+        keyClick("a")
+        verify(settle.running, "each character re-arms it")
+        compare(AppController.filterText, "",
+                "and abandons the one the character before it armed")
+
+        keyClick("f")
+        tryVerify(() => AppController.filterText === "leaf", 5000,
+                  "the search that runs is the one that was left standing")
+        verify(!settle.running, "and nothing is left armed behind it")
+
+        // Clearing is not a search to be settled -- it is the file being asked
+        // for back, and it happens in the keystroke that asks.
+        for (let i = 0; i < 4; ++i) {
+            keyClick(Qt.Key_Backspace)
+        }
+        compare(filter.text, "")
+        compare(AppController.filterText, "",
+                "an emptied box puts the tree back at once")
+        verify(!settle.running, "with nothing left armed")
+    }
+
+    /// A search taken back before it ran still ends.
+    ///
+    /// The pane closes the tree on the first character rather than on the first
+    /// search -- that is what makes the first search cheap -- so a reader who
+    /// types one and takes it back has had their branches closed by a search
+    /// that never happened. Nothing filtered, so nothing reports that it has
+    /// stopped filtering, and the tree stayed shut.
+    function test_a_search_taken_back_before_it_ran_puts_the_tree_back() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        const opened = view.rowAtIndex(model.indexForPath("/group"))
+        verify(opened >= 0, "the branch must be on screen to open")
+        view.expand(opened)
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "the reader's branch must start open")
+
+        const filter = findChild(win.tree, "treeFilter")
+        filter.forceActiveFocus()
+        keyClick("l")
+        verify(win.tree.filtering, "the pane must be searching")
+        compare(AppController.filterText, "", "and not yet have searched")
+
+        keyClick(Qt.Key_Backspace)
+        compare(filter.text, "")
+        verify(!win.tree.filtering, "the search must be over")
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "and the branch must be back")
     }
 
     function test_the_filter_opens_the_tree_to_what_it_found() {

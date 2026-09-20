@@ -312,9 +312,33 @@ Four things hold it up, and each is a failure it was built out of:
   fold under it: `QChar::toCaseFolded` is an out-of-line call into QtCore, and
   doing ASCII inline first is what takes a keystroke from 23 ns a character to
   under two.
+- **...and most patterns never reach it.** A back-tracking glob is cheap when it
+  fails on the first character and expensive when it does not, and a leading `*`
+  is how it never does: the rest of the pattern is then tried at every offset of
+  every name. Measured over 188,000 names, *every* pattern opening with a star
+  cost 14–22 ms against 3 ms for a plain substring — `*item*zz*` among them,
+  which matches nothing at all in that file, so the cost is the walk and not the
+  hits. (In a debug build, which is where a reader's own slow keystroke is
+  easiest to reproduce, the same patterns are 210–260 ms against 19 ms.)
 
-Two costs live above the index rather than in it, and both are about the *view*
-rather than about the search:
+  > **A glob of stars and letters is a sequence of `indexOf`s.** Back-tracking
+  > is there for `?` and `[...]`; a pattern with neither is "these pieces, in
+  > this order", each end pinned only where the pattern has no star to eat what
+  > is outside it.
+
+  So `NameQuery` cuts such a pattern into its literal runs once and answers with
+  one folded scan per run — the scan plain text already got, and within a
+  whisker of its cost: 5.5–6 ms for every pattern above. The answers are the
+  same ones: `test_models` holds `NameQuery` itself against
+  `QRegularExpression::fromWildcard` through both of the questions the filter
+  asks. Two more things fall out of it. A pattern that opens with a star is
+  asked only about the *path*, because a name it matches is a path it matches;
+  and one that still needs the walk rejects on its longest literal run first,
+  which is a necessary condition and one scan.
+
+Three things live above the index rather than in it, and none of them is about
+the matching: two are what the *view* costs, and the third is when the search
+runs at all.
 
 - **A search starts from a closed tree.** Every row on screen when the filter
   changes has to be taken out of the view one run of adjacent losers at a time,
@@ -331,6 +355,20 @@ rather than about the search:
   mappings away under every `QModelIndex` already handed out, which
   `QQmlTreeModelToTableModel` answers with "Invalid index" warnings and an
   intermittent use-after-free. Do not reach for it.
+
+  It collapses on the *keystroke* rather than on the search, which is the half
+  that was missing: a tree closed after the first search has been applied saves
+  every search except the one that was expensive. A box emptied before the
+  search it armed ever ran is therefore a search the box itself has to end
+  (`endSearch`), because nothing filtered and nothing will report that it has
+  stopped.
+- **A keystroke arms a search rather than running one.** The box settles
+  (`filterSettleMilliseconds`) and each character abandons the search the one
+  before it armed, so `temperature` is one search and not eleven — the ten in
+  between are for prefixes the reader is already abandoning, and on a large file
+  each of them is a pause in the middle of their typing. Clearing is not
+  settled: an empty box is the file being asked for back, and putting it back
+  was never the slow direction.
 - **Opening the tree to the results is bounded** (`kRevealLimit`). A result in a
   branch nobody has expanded is still a result, and `H5TreeModel::revealPath`
   will list the way down to it — but a search that matched more rows than a pane

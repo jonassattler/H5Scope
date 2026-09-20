@@ -56,6 +56,15 @@ Button {
     // Whatever is left over after the icon is the rim around it. Button's own
     // default padding would leave the glyph two-thirds of this size again.
     padding: (Theme.smallControlHeight - Theme.iconSize) / 2
+    // ...and the same rim on all four sides, which is not what it says by
+    // itself. The Basic style sets `horizontalPadding: padding + 2`, for a
+    // button whose content is a word and wants air either side of it; the
+    // content here is a square glyph on a square grid, and two pixels taken
+    // off each side made it four pixels narrower than it is tall. The glyph
+    // was then drawn at that smaller scale -- and, until AppIcon centred its
+    // own square, in the top-left corner of the box, which is why the cross
+    // on a tab and the cross on a card both sat high.
+    horizontalPadding: control.padding
     hoverEnabled: true
     opacity: control.enabled ? 1.0 : 0.4
 
@@ -75,7 +84,23 @@ Button {
              : control.hovered ? Theme.surfaceHover
                                : Theme.clear(Theme.surfaceHover)
         border.width: Theme.borderWidth
-        border.color: control.active ? Theme.accent : Theme.border
+        // A rim that steps up under the pointer, because the fill alone
+        // cannot be relied on to say anything.
+        //
+        // `Theme.border` and `Theme.surfaceHover` are one colour -- n4 -- so a
+        // hovered button drew an n4 slab with an n4 rim, which is invisible on
+        // any ground that is itself n4. The tree's plus is exactly that case:
+        // it sits on a row whose own hover ground is surfaceHover, so pointing
+        // at the plus lit the row and the button answered in the colour it was
+        // already standing on. There was no hover state to see.
+        //
+        // borderStrong is n6, which reads against the panel grounds and
+        // against a hovered row; on a *selected* row, which is n6 itself, the
+        // n4 fill is what shows instead. Between the two there is no ground in
+        // this application where this button can be pointed at and say nothing.
+        border.color: control.active ? Theme.accent
+                    : (control.hovered || control.down) ? Theme.borderStrong
+                                                        : Theme.border
     }
 
     contentItem: AppIcon {

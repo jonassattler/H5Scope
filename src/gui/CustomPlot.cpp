@@ -105,6 +105,10 @@ struct Answer
     /// Axis positions between one drawn point and the next. Half a bucket when
     /// the line was read as an envelope, because a bucket answers with two.
     double step = 1.0;
+    /// Whether it *was* read as an envelope. Carried rather than derived from
+    /// the step above, which cannot tell a bucket of two from the elements
+    /// themselves -- see PlotLine::summarised.
+    bool summarised = false;
     int sourceLength = 0;
     /// The line itself, kept at every resolution, when one was asked for.
     LinePyramid pyramid;
@@ -268,6 +272,7 @@ struct Reply
             answer.problem = QStringLiteral("could not summarise %1").arg(ask.expression);
             return answer;
         }
+        answer.summarised = stride > 1;
         answer.pyramid = std::move(pyramid);
         return answer;
     }
@@ -283,6 +288,7 @@ struct Reply
         const postproc::Array& array = read.array;
         const hsize_t count = array.size();
         answer.step = 1.0;
+        answer.summarised = false;
         answer.values.reserve(static_cast<std::size_t>(count));
         for (hsize_t i = 0; i < count; ++i) {
             answer.values.push_back(array.at({i}));
@@ -314,6 +320,7 @@ struct Reply
     const std::vector<hsize_t> line = std::move(indices[along]);
     const long long taken = (length + bucket - 1) / bucket;
     answer.step = static_cast<double>(bucket) / 2.0;
+    answer.summarised = true;
     answer.values.reserve(static_cast<std::size_t>(taken) * 2);
 
     long long done = 0;
@@ -681,6 +688,7 @@ void CustomPlot::setExpression(int row, const QString& text)
     entry.values.clear();
     entry.sourceLength = 0;
     entry.step = 1.0;
+    entry.summarised = false;
     touch(row, {ExpressionRole, PointsRole, SourcePointsRole, ScalableRole});
     discard();
 }
@@ -1684,11 +1692,15 @@ PlotLine CustomPlot::lineOf(int series) const
         line.values = level.values.data();
         line.count = static_cast<qsizetype>(level.values.size());
         line.positionStep = level.step * scale;
+        // A run at bucket one is that run's own elements; anything coarser is
+        // an envelope of them, whatever the stretch does to the step.
+        line.summarised = level.window.bucket > 1;
         return line;
     }
 
     line.values = entry.values.data();
     line.count = static_cast<qsizetype>(entry.values.size());
+    line.summarised = entry.summarised;
     // The same affine map positionOf() applies, written once as a start and a
     // step. Stretch spreads the line over the whole axis -- its first sample at
     // the start and its last at the end, whatever is in between -- and align
@@ -1967,6 +1979,7 @@ void CustomPlot::refresh()
                 retire(entry.values);
                 entry.values = std::move(answer.values);
                 entry.step = answer.step;
+                entry.summarised = answer.summarised;
                 entry.sourceLength = answer.sourceLength;
                 // The elements the summary above was folded out of. Every
                 // closer look at this entry from here on is a fold of these

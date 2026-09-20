@@ -345,6 +345,10 @@ private:
         QString problem;
         std::vector<double> values;
         double step = 1.0;    ///< axis positions between drawn points
+        /// Whether those values are an envelope rather than the elements. See
+        /// PlotLine::summarised, which is what this is read into: a dot on a
+        /// bucket marks a reading nobody took.
+        bool summarised = false;
         int sourceLength = 0; ///< elements the slice has in the file
 
         /// The closer look: the same line over an aligned run of itself, read
