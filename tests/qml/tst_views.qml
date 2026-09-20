@@ -2371,6 +2371,22 @@ TestCase {
         }
     }
 
+    /// The corner the pointer is on is written beside the cursor, not under it.
+    ///
+    /// An arrow is drawn from its hotspot down and to the right, so a number in
+    /// that quadrant is one the reader is covering with their own hand -- and
+    /// it is the corner that follows the pointer, which is the reading that is
+    /// changing as they drag. A band pulled downwards hid it every time.
+    function verifyBandNumbersClearThePointer(readout) {
+        const pointer = { x: readout.endX, y: readout.endY,
+                          width: Theme.pointerSize, height: Theme.pointerSize }
+        const boxes = readout.labels
+        for (let i = 0; i < boxes.length; ++i) {
+            verify(readout.clears(boxes[i], pointer),
+                   boxes[i].key + " must stand clear of the pointer")
+        }
+    }
+
     /// A band being drawn says what it is, in the axes' own numbers.
     ///
     /// The rectangle on its own says where the reader is about to look and
@@ -2432,12 +2448,14 @@ TestCase {
         // Both corners, as the axes read them.
         verify(labels.start, "the corner the drag started at must be written")
         verify(labels.end, "the corner it has reached must be written")
+        // Written the way the axis writes its own ticks -- see xNumber, which
+        // takes its decimals off the span on screen.
         compare(labels.start.text,
-                plot.readingNumber(plot.dataXAt(fromX)) + ", "
-                + plot.readingNumber(plot.dataYAt(fromY)))
+                plot.xNumber(plot.dataXAt(fromX)) + ", "
+                + plot.yNumber(plot.dataYAt(fromY)))
         compare(labels.end.text,
-                plot.readingNumber(plot.dataXAt(toX)) + ", "
-                + plot.readingNumber(plot.dataYAt(toY)))
+                plot.xNumber(plot.dataXAt(toX)) + ", "
+                + plot.yNumber(plot.dataYAt(toY)))
 
         // ...and the lengths on both x lines and both y lines, which two
         // fifths of the pane in each direction has room for.
@@ -2448,13 +2466,35 @@ TestCase {
         compare(labels.widthAbove.text, labels.widthBelow.text)
         compare(labels.heightLeft.text, labels.heightRight.text)
         compare(labels.widthAbove.text,
-                "∆" + plot.readingNumber(
+                "∆" + plot.xNumber(
                     Math.abs(plot.dataXAt(toX) - plot.dataXAt(fromX))))
         compare(labels.heightLeft.text,
-                "∆" + plot.readingNumber(
+                "∆" + plot.yNumber(
                     Math.abs(plot.dataYAt(toY) - plot.dataYAt(fromY))))
 
+        // The two that measure the sides read along them, which is a box as
+        // tall as the number is long -- and they are turned opposite ways, so
+        // the pair reads as one measurement said on either side of the band
+        // rather than as one of them written back to front.
+        compare(labels.heightLeft.turn, -90, "the left height reads up the page")
+        compare(labels.heightRight.turn, 90, "and the right one down it")
+        verify(labels.heightLeft.height > labels.heightLeft.width,
+               "so its box stands on end: " + labels.heightLeft.width + " x "
+               + labels.heightLeft.height)
+        compare(labels.widthAbove.turn, 0, "a width reads along its own edge")
+
         verifyBandNumbersAreClear(readout, true)
+        verifyBandNumbersClearThePointer(readout)
+
+        // The digits follow the view. Over the whole of this dataset the axis
+        // prints whole numbers -- x runs 0 to 99 and y over thousands -- so the
+        // band prints whole numbers too, where it used to print six significant
+        // figures of a position nobody can point at that precisely.
+        verify(labels.start.text.indexOf(".") < 0,
+               "a coordinate over the whole view wants no decimals: "
+               + labels.start.text)
+        verify(labels.widthAbove.text.indexOf(".") < 0,
+               "nor does a length: " + labels.widthAbove.text)
 
         // The band goes with the button, and so do its numbers -- and the
         // crosshair comes back.
@@ -2468,7 +2508,26 @@ TestCase {
         waitForRendering(win.view)
         verify(plot.reading.valid, "the crosshair must come back")
 
+        // ...and the view has just become two fifths of what it was, which is
+        // an axis that has started printing a decimal. The band follows it,
+        // which is the whole of what "as many digits as the view has" means.
         mouseMove(lines, -20, -20)
+        const closeFrom = Math.round(area.x + area.width * 0.4)
+        const closeTo = Math.round(area.x + area.width * 0.6)
+        const closeY = Math.round(area.y + area.height * 0.4)
+        mousePress(gestures, closeFrom, closeY, Qt.RightButton)
+        mouseMove(gestures, closeTo, Math.round(area.y + area.height * 0.6),
+                  -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the second band must be drawn")
+        waitForRendering(win.view)
+        const zoomed = readout.labels.filter((box) => box.key === "start")[0]
+        verify(zoomed, "the corner must still be written")
+        verify(zoomed.text.indexOf(".") >= 0,
+               "a closer view must be given the digits it can resolve: "
+               + zoomed.text)
+        mouseRelease(gestures, closeTo, Math.round(area.y + area.height * 0.6),
+                     Qt.RightButton)
+
         plot.resetView()
     }
 
@@ -2516,6 +2575,7 @@ TestCase {
         verify(labels.heightLeft && labels.heightRight,
                "and its height must still be on both y lines")
         verifyBandNumbersAreClear(readout, true)
+        verifyBandNumbersClearThePointer(readout)
 
         mouseRelease(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
                      Qt.RightButton)
@@ -2542,8 +2602,8 @@ TestCase {
         verify(labels.start && labels.end,
                "both corners are written even off the edge")
         compare(labels.end.text,
-                plot.readingNumber(plot.viewMinX) + ", "
-                + plot.readingNumber(plot.dataYAt(offY)),
+                plot.xNumber(plot.viewMinX) + ", "
+                + plot.yNumber(plot.dataYAt(offY)),
                 "the corner off the pane reads as the edge it stopped at")
         verifyBandNumbersAreClear(readout, true)
 

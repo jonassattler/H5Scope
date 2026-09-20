@@ -25,12 +25,16 @@ import QtQuick
 /// either half of it.
 ///
 /// Where the numbers go is the rest of this file, and one rule carries it:
-/// **nothing is drawn over the band, over the pane's edge, or over another
-/// number.** A coordinate is drawn at the corner it names, pushed away from
-/// the band; a length is drawn against its own edge only where there is room
-/// for one. A length that does not fit is left out rather than squeezed in:
-/// the two corners are the reading, the lengths are the subtraction between
-/// them, and the subtraction is what a crowded pane can afford to lose.
+/// **nothing is drawn over the band, over the pane's edge, over another
+/// number, or under the pointer.** A coordinate is drawn at the corner it
+/// names, pushed away from the band -- and past the cursor where that push
+/// would go under it, because the corner that follows the pointer is the one
+/// the reader is covering with their own hand. A length is drawn against its
+/// own edge only where there is room for one, and the two that measure the
+/// sides read along them. A length that does not fit is left out rather than
+/// squeezed in: the two corners are the reading, the lengths are the
+/// subtraction between them, and the subtraction is what a crowded pane can
+/// afford to lose.
 Item {
     id: readout
 
@@ -104,11 +108,17 @@ Item {
     /// is written everywhere else -- which axis is which is said by where the
     /// number is rather than by a letter in front of it, and a pair is already
     /// as much as a corner of the pane can hold.
+    ///
+    /// Each number is written by the axis it is on (`xNumber`, `yNumber`),
+    /// which takes its decimals off the span on screen. So these say what the
+    /// ticks beneath them say, to the same precision, and a reader zooming in
+    /// is given digits as the ticks close up rather than six of them whatever
+    /// they are looking at.
     function coordinateText(x, y) {
         if (!readout.target)
             return ""
-        return qsTr("%1, %2").arg(readout.target.readingNumber(x))
-                             .arg(readout.target.readingNumber(y))
+        return qsTr("%1, %2").arg(readout.target.xNumber(x))
+                             .arg(readout.target.yNumber(y))
     }
 
     /// A length, written. With a sign in front of it, because a lone number
@@ -118,10 +128,10 @@ Item {
     /// DELTA: they draw the same triangle and the mono face this application
     /// ships carries only the first of them, so the Greek one would come out a
     /// box on the one machine whose fonts are this program's own.
-    function lengthText(span) {
+    function lengthText(span, written) {
         if (!readout.target)
             return ""
-        return qsTr("∆%1").arg(readout.target.readingNumber(span))
+        return qsTr("∆%1").arg(written(span))
     }
 
     readonly property string startText:
@@ -129,9 +139,15 @@ Item {
     readonly property string endText:
         readout.coordinateText(readout.endValueX, readout.endValueY)
     readonly property string widthText:
-        readout.lengthText(Math.abs(readout.endValueX - readout.startValueX))
+        readout.target ? readout.lengthText(
+                             Math.abs(readout.endValueX - readout.startValueX),
+                             readout.target.xNumber)
+                       : ""
     readonly property string heightText:
-        readout.lengthText(Math.abs(readout.endValueY - readout.startValueY))
+        readout.target ? readout.lengthText(
+                             Math.abs(readout.endValueY - readout.startValueY),
+                             readout.target.yNumber)
+                       : ""
 
     // The four of them measured before any of them is placed: where a number
     // goes depends on how big it is, and a box laid out first and measured
@@ -197,7 +213,8 @@ Item {
     }
 
     /// The numbers and where each of them goes: `{ key, text, x, y, width,
-    /// height }`, in this item's own pixels.
+    /// height, turn }`, in this item's own pixels -- `turn` being the quarter
+    /// a length against a vertical side is read through, and zero for the rest.
     ///
     /// One list rather than six separately placed items, for two reasons. A
     /// delegate then depends on its own entry and on nothing else, which is
@@ -216,33 +233,70 @@ Item {
         const paneW = readout.width
         const paneH = readout.height
         const clamp = (v, size, extent) => Math.max(0, Math.min(extent - size, v))
-        const room = (v, size, extent) => v >= 0 && v + size <= extent
+
+        // What a corner readout has to stay off. The band, always -- and for
+        // the corner the pointer is on, the pointer.
+        //
+        // A cursor is drawn *from* its hotspot down and to the right, which is
+        // what an arrow is, so a number placed in that quadrant is a number the
+        // reader is covering with the thing they are pointing with. It is the
+        // end corner every time, because that corner is where the pointer is,
+        // and it showed up the moment a band was dragged downwards: the reading
+        // that changes as you drag was the one under your own cursor.
+        const pointerBox = { x: readout.endX, y: readout.endY,
+                             width: Theme.pointerSize, height: Theme.pointerSize }
+
+        const stands = (box, avoid) => {
+            if (!readout.inside(box)) {
+                return false
+            }
+            for (let i = 0; i < avoid.length; ++i) {
+                if (!readout.clears(box, avoid[i])) {
+                    return false
+                }
+            }
+            return true
+        }
 
         // --- the two corners, which are always drawn ---------------------
         // Each is pushed away from the band on both axes, so away from the
         // edges of the pane it stands clear of the rectangle diagonally, at
-        // the corner it is a reading of.
+        // the corner it is a reading of. Where that push is into the quadrant
+        // the pointer is drawn in, it is a pointer's width rather than a gap.
         //
-        // At the pane's edge one of those two pushes has nowhere to go, and
-        // then the other is the one that clears the band while the crowded
-        // axis slides along the edge: a number that slid is still a number
-        // beside the corner it names. The vertical push is preferred because
-        // sliding sideways costs nothing -- a number at the right height
-        // against the top of the pane is still legible as this corner's.
-        const place = (cx, cy, awayX, awayY, size) => {
-            const wantX = awayX < 0 ? cx - gap - size.width : cx + gap
+        // Four placements are tried in order, and the first that stands clear
+        // of everything is taken: the preferred one, the same sliding the other
+        // way, and the two that fold back over the corner -- which are worth
+        // trying because at the pane's edge one of the two pushes has nowhere
+        // to go. A number that slid is still a number beside the corner it
+        // names.
+        const place = (cx, cy, awayX, awayY, size, avoid) => {
+            // A pointer's width *and* the gap: the clearance a number keeps
+            // from the cursor is the clearance it keeps from everything else,
+            // measured from the far side of it.
+            const outX = awayX > 0 && awayY > 0 ? Theme.pointerSize + gap : gap
+            const wantX = awayX < 0 ? cx - gap - size.width : cx + outX
             const wantY = awayY < 0 ? cy - gap - size.height : cy + gap
-            if (room(wantY, size.height, paneH))
-                return { x: clamp(wantX, size.width, paneW), y: wantY }
-            if (room(wantX, size.width, paneW))
-                return { x: wantX, y: clamp(wantY, size.height, paneH) }
+            const backX = awayX < 0 ? cx + gap : cx - gap - size.width
+            const backY = awayY < 0 ? cy + gap : cy - gap - size.height
+            const at = (x, y) => ({ x: x, y: y,
+                                    width: size.width, height: size.height })
+            const tries = [at(clamp(wantX, size.width, paneW), wantY),
+                           at(wantX, clamp(wantY, size.height, paneH)),
+                           at(clamp(wantX, size.width, paneW), backY),
+                           at(backX, clamp(wantY, size.height, paneH))]
+            for (let i = 0; i < tries.length; ++i) {
+                if (stands(tries[i], avoid)) {
+                    return tries[i]
+                }
+            }
             // A band drawn into the corner of the pane, which leaves its own
             // corner nowhere outside it to stand. It stands on the band
             // instead: that fill is a veil and not a cover, and a corner with
             // no number at all would be the readout failing exactly where the
             // reader is looking.
-            return { x: clamp(wantX, size.width, paneW),
-                     y: clamp(wantY, size.height, paneH) }
+            return at(clamp(wantX, size.width, paneW),
+                      clamp(wantY, size.height, paneH))
         }
 
         // Diagonally opposite corners, so the two pushes are exact opposites
@@ -253,9 +307,11 @@ Item {
         const startSize = readout.boxFor(startMetrics)
         const endSize = readout.boxFor(endMetrics)
         const startAt = place(readout.startX, readout.startY,
-                              -runsRight, -runsDown, startSize)
+                              -runsRight, -runsDown, startSize,
+                              [readout.bandRect, pointerBox])
         const endAt = place(readout.endX, readout.endY,
-                            runsRight, runsDown, endSize)
+                            runsRight, runsDown, endSize,
+                            [readout.bandRect, pointerBox])
         const startBox = { key: "start", text: readout.startText,
                            x: startAt.x, y: startAt.y,
                            width: startSize.width, height: startSize.height }
@@ -279,28 +335,52 @@ Item {
         // coordinates, which are placed first and never give way.
         const candidates = []
         const widthSize = readout.boxFor(widthMetrics)
-        const heightSize = readout.boxFor(heightMetrics)
+        const written = readout.boxFor(heightMetrics)
+        // The height reads *along* the side it measures, turned the same
+        // quarter the y axis's own name is turned by -- and for the same
+        // reason: a number lying across the side of a tall band is a number the
+        // reader has to hold at an angle to the thing it is about.
+        //
+        // Turning it swaps what it costs in each direction, which is the other
+        // half of why it is worth doing: what it now needs beside the band is a
+        // line's height rather than a number's length, so a tall narrow band
+        // near the edge of the pane can carry its height where it could not
+        // before -- and what it needs *along* the band is the length, which a
+        // band tall enough to be worth measuring has.
+        //
+        // The two are turned opposite ways, not the same way. They are a pair
+        // on either side of one rectangle, and a pair reads as one when each is
+        // the other reflected: every letter's top faces away from the band it
+        // is measuring, so the left-hand one runs up the page and the
+        // right-hand one runs down it. Turned alike, the right-hand number
+        // reads with its back to the band and the two stop looking like the
+        // same measurement said twice.
+        const heightSize = { width: written.height, height: written.width }
         const midX = (readout.bandLeft + readout.bandRight) / 2
         const midY = (readout.bandTop + readout.bandBottom) / 2
         if (widthSize.width <= readout.bandRect.width) {
             candidates.push({ key: "widthAbove", text: readout.widthText,
                               x: midX - widthSize.width / 2,
                               y: readout.bandTop - gap - widthSize.height,
-                              width: widthSize.width, height: widthSize.height })
+                              width: widthSize.width, height: widthSize.height,
+                              turn: 0 })
             candidates.push({ key: "widthBelow", text: readout.widthText,
                               x: midX - widthSize.width / 2,
                               y: readout.bandBottom + gap,
-                              width: widthSize.width, height: widthSize.height })
+                              width: widthSize.width, height: widthSize.height,
+                              turn: 0 })
         }
         if (heightSize.height <= readout.bandRect.height) {
             candidates.push({ key: "heightLeft", text: readout.heightText,
                               x: readout.bandLeft - gap - heightSize.width,
                               y: midY - heightSize.height / 2,
-                              width: heightSize.width, height: heightSize.height })
+                              width: heightSize.width, height: heightSize.height,
+                              turn: -90 })
             candidates.push({ key: "heightRight", text: readout.heightText,
                               x: readout.bandRight + gap,
                               y: midY - heightSize.height / 2,
-                              width: heightSize.width, height: heightSize.height })
+                              width: heightSize.width, height: heightSize.height,
+                              turn: 90 })
         }
         for (let i = 0; i < candidates.length; ++i) {
             const box = candidates[i]
@@ -339,8 +419,13 @@ Item {
             radius: Theme.radiusS
             color: Theme.plotReadoutGround
 
+            // Turned about its own centre inside a box whose sides were
+            // swapped for it, which is how PlotFrame hangs the y axis's name
+            // as well: a rotation is a painter's transform and leaves the
+            // item's own width and height alone, so the box has to be told.
             Text {
                 anchors.centerIn: parent
+                rotation: labelGround.modelData.turn
                 text: labelGround.modelData.text
                 font: Theme.readout
                 color: Theme.textPrimary

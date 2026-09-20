@@ -32,10 +32,16 @@ you were about to look and nothing about what you would see. It now writes the
 corner the drag started at, the corner it has reached and how wide and how tall
 it has become — in the axes' own units, out of the same arithmetic the zoom
 resolves the band with, so the numbers you read while deciding are the window
-you get. The lengths are written against all four edges where there is room for
-one and left out where there is not; nothing is drawn over the band, over
-another number, or off the pane. The crosshair goes off while a band is being
-drawn: it answers a different question, in the same face, over the same picture.
+you get, to as many digits as the view can resolve — the axis's own rule for
+its ticks, so the numbers beside the band and the numbers under it agree and
+grow digits together as you zoom. The lengths are written against all four
+edges where there is room for one and left out where there is not, and the two
+that measure the sides read along them. Nothing is drawn over the band, over
+another number, off the pane, or under the pointer: the corner that follows the
+cursor is written beside it, because an arrow is drawn down and to the right of
+its own hotspot and that is exactly where the reading you are dragging used to
+be. The crosshair goes off while a band is being drawn: it answers a different
+question, in the same face, over the same picture.
 
 **A wildcard search costs what a plain one does.** Any pattern that opened with
 a star paid a back-tracking walk over every name in the file, whether it matched

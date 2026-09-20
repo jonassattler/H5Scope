@@ -574,6 +574,16 @@ QtObject {
     /// veils eighteen pixels of a scale; this one has text standing on it.
     readonly property color plotLegendGround: dark ? Qt.rgba(0, 0, 0, 0.78)
                                                    : Qt.rgba(1, 1, 1, 0.84)
+    /// How much of the screen a pointer covers, from its own hotspot down and
+    /// to the right.
+    ///
+    /// Not a measurement this program can make: the cursor belongs to the
+    /// window system and its size is the reader's own setting. This is the
+    /// common one -- a 24-pixel arrow whose hotspot is its tip -- and it exists
+    /// so that a readout which follows the pointer can be drawn beside it
+    /// rather than underneath it. Wrong by a few pixels on a reader who has
+    /// scaled their cursor up; wrong by the whole of it if nothing tries.
+    readonly property int pointerSize: 24
     /// The ground under the numbers a region drag writes beside its band.
     ///
     /// The legend's veil, and the same one on purpose: what both have to hold
