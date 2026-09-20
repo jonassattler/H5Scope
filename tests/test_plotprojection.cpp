@@ -983,10 +983,50 @@ TEST_CASE("the projection says whether a point is a sample or a summary", "[plot
     CHECK(close.runs == 1);
 }
 
-TEST_CASE("a line drawn against a time base is never a summary", "[plot]")
+TEST_CASE("a line says whether its own values are samples", "[plot]")
 {
-    // It is drawn sample for sample by construction, so every point on it is a
-    // sample and every one of them can carry a marker.
+    // The projection summarises what it is given; whether what it was given was
+    // already a summary is the model's to say, and it is the other half of the
+    // same question. A line of two hundred points fits a pane of a thousand
+    // columns whether those points are two hundred elements or the extremes of
+    // a hundred buckets, and only one of the two may carry markers.
+    std::vector<double> values(200);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sin(static_cast<double>(i) / 10.0);
+    }
+
+    std::vector<QPointF> points;
+    std::vector<gui::PlotRun> runs;
+
+    gui::PlotLine drawnLine = lineOver(values);
+    const gui::PlotProjected samples = gui::projectLine(
+        drawnLine, gui::PlotAxis{}, paneOver(0.0, 200.0, -1.0, 1.0), points, runs);
+    CHECK_FALSE(samples.decimated);
+
+    // The same points, said to be a fold of a longer line. Nothing about the
+    // projection changes and everything about what a dot would mean does.
+    points.clear();
+    runs.clear();
+    gui::PlotLine folded = lineOver(values);
+    folded.summarised = true;
+    // A bucket of two: its pair sits one position apart, so the step is exactly
+    // what a line of elements has. This is the case the step could not tell
+    // apart, and it is the one a reader meets by zooming to the edge of the
+    // budget.
+    folded.positionStep = 1.0;
+    const gui::PlotProjected summary = gui::projectLine(
+        folded, gui::PlotAxis{}, paneOver(0.0, 200.0, -1.0, 1.0), points, runs);
+    CHECK(summary.decimated);
+    CHECK(summary.runs == samples.runs);
+}
+
+TEST_CASE("a time base does not turn a summary into samples", "[plot]")
+{
+    // A line drawn against a time base is drawn sample for sample -- the x of
+    // each point is looked up rather than computed -- so this path summarises
+    // nothing itself. That says nothing at all about what it was handed: a
+    // custom tab's entry is folded on the way out of the file whatever it is
+    // drawn against, and this reported every one of them as samples.
     const std::vector<double> times{0.0, 1.0, 2.0, 3.0};
     const std::vector<double> values{1.0, 2.0, 3.0, 4.0};
 
@@ -999,6 +1039,15 @@ TEST_CASE("a line drawn against a time base is never a summary", "[plot]")
     const gui::PlotProjected drawn =
         gui::projectLine(lineOver(values), axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
     CHECK_FALSE(drawn.decimated);
+
+    points.clear();
+    runs.clear();
+    gui::PlotLine folded = lineOver(values);
+    folded.summarised = true;
+    const gui::PlotProjected summary =
+        gui::projectLine(folded, axis, paneOver(0.0, 3.0, 0.0, 5.0), points, runs);
+    CHECK(summary.decimated);
+    CHECK(summary.runs == drawn.runs);
 }
 
 // --- the envelope holds still -----------------------------------------------

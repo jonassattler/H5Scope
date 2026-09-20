@@ -1014,6 +1014,9 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
     REQUIRE(whole.count == 2000); // 1000 buckets of twenty, two values each
     CHECK(whole.positionStart == 0.0);
     CHECK(whole.positionStep == Approx(10.0));
+    // ...and every one of those is the extreme of a bucket rather than a
+    // sample, which is what says whether a marker may be drawn on it.
+    CHECK(whole.summarised);
     const double high = plot->maximum();
     CHECK(high == Approx(9.0));
 
@@ -1024,6 +1027,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
         settleAll();
 
         const gui::PlotLine closer = plot->lineOf(0);
+        CHECK(closer.summarised);
         CHECK(closer.positionStart == 0.0);
         // Twice the visible span, in twice the buckets the pane has columns --
         // the prefetch octave, which reads the same elements and has the next
@@ -1041,6 +1045,22 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
         CHECK(plot->maximum() == high);
     }
 
+    SECTION("a run one position apart is still a summary")
+    {
+        // The case a step cannot answer. An envelope at bucket two puts its
+        // pair of extremes one position apart, so the step is exactly what a
+        // line of elements has -- and until the line said so itself, that is
+        // the zoom where markers appeared on points nobody measured.
+        plot->setVisibleRange(0.0, 2000.0);
+        h5test::settleFor(300);
+        settleAll();
+
+        const gui::PlotLine closer = plot->lineOf(0);
+        INFO("step " << closer.positionStep << " count " << closer.count);
+        CHECK(closer.positionStep == Approx(1.0));
+        CHECK(closer.summarised);
+    }
+
     SECTION("and at the closest look, the file's own samples")
     {
         plot->setVisibleRange(12000.0, 12400.0);
@@ -1049,6 +1069,7 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
 
         const gui::PlotLine closest = plot->lineOf(0);
         CHECK(closest.positionStep == Approx(1.0));
+        CHECK_FALSE(closest.summarised);
         CHECK(closest.positionStart == Approx(11776.0)); // aligned, not the view's edge
         REQUIRE(closest.count == 2048);
 

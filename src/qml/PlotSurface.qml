@@ -504,6 +504,35 @@ Item {
         surface.panY = y.pan
     }
 
+    /// What a pixel on the pane stands for, on each axis.
+    ///
+    /// Out here rather than inside zoomToRegion because the band's own readout
+    /// needs exactly these two answers: a number written beside a rectangle
+    /// and the window that rectangle resolves to must be one reading of one
+    /// pixel, or the numbers are a promise the zoom does not keep. See
+    /// PlotBand, which asks rather than reimplements.
+    ///
+    /// Clamped to the pane, because a drag that runs off the edge says "to the
+    /// edge" -- which is what the band draws and what the zoom then takes.
+    function dataXAt(px) {
+        const area = surface.plotRect
+        if (area.width <= 0)
+            return surface.viewMinX
+        const at = Math.max(0, Math.min(1, (px - area.x) / area.width))
+        return surface.viewMinX + at * (surface.viewMaxX - surface.viewMinX)
+    }
+
+    /// The same, down the other axis. y grows downward on screen and upward on
+    /// the axis, so the top of the pane is the larger value.
+    function dataYAt(py) {
+        const area = surface.plotRect
+        if (area.height <= 0)
+            return surface.viewMinY
+        const at = Math.max(0, Math.min(1, (py - area.y) / area.height))
+        return surface.viewMinY
+               + (1.0 - at) * (surface.viewMaxY - surface.viewMinY)
+    }
+
     /// Go to the region a right-drag has just drawn, in this item's pixels.
     ///
     /// Two things happen here and the order of them is the whole feature. The
@@ -531,19 +560,11 @@ Item {
                 || bottom - top < surface.minimumBand)
             return false
 
-        const at = (px) => surface.viewMinX
-            + Math.max(0, Math.min(1, (px - area.x) / area.width))
-              * (surface.viewMaxX - surface.viewMinX)
-        // y grows downward on screen and upward on the axis, so the band's top
-        // edge is the larger value.
-        const up = (py) => surface.viewMinY
-            + (1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height)))
-              * (surface.viewMaxY - surface.viewMinY)
-
-        const x0 = at(left)
-        const x1 = at(right)
-        const y0 = up(bottom)
-        const y1 = up(top)
+        // The band's top edge is the axis's larger value -- see dataYAt.
+        const x0 = surface.dataXAt(left)
+        const x1 = surface.dataXAt(right)
+        const y0 = surface.dataYAt(bottom)
+        const y1 = surface.dataYAt(top)
 
         const span = surface.viewMaxX - surface.viewMinX
         if (span > 0 && x1 > x0)
@@ -554,6 +575,16 @@ Item {
 
     /// The smallest band that counts as one. See zoomToRegion.
     readonly property int minimumBand: Theme.gapL
+
+    /// Whether a region is being drawn right now.
+    ///
+    /// The crosshair goes off while it is. What the reader is doing during a
+    /// band is choosing an interval; the band writes that interval out in the
+    /// axes' own numbers, and a second readout snapped to whichever sample
+    /// happens to be nearest the pointer is a second answer to a question
+    /// nobody asked twice -- drawn over the first one, in the same pane, in
+    /// the same face. It comes back the moment the button does.
+    readonly property bool selecting: band.active
 
     /// Which axes a wheel event with these modifiers zooms.
     ///
@@ -664,7 +695,7 @@ Item {
 
         markers: surface.showMarkers
         markerSize: Theme.plotMarkerSize
-        showCursor: surface.showCursor
+        showCursor: surface.showCursor && !surface.selecting
 
         // Declared in here rather than beside the frame, which is what makes
         // it part of the picture: copyImage() grabs this item, and a caption
@@ -717,9 +748,33 @@ Item {
         return facts
     }
 
+    /// A value on an axis, written the way that axis writes its own ticks.
+    ///
+    /// Asked of the frame rather than worked out again: `labelFor` takes its
+    /// decimals off the span on screen -- enough to tell two ticks apart and no
+    /// more -- so a number drawn beside the band and the numbers printed under
+    /// the axis it is drawn over are one rule, and they agree as the reader
+    /// zooms. Six significant figures everywhere was the other thing it could
+    /// be, and on an axis running 0 to 100 that is "30.0119" against ticks
+    /// reading 20, 40, 60: four digits of noise about a position nobody can
+    /// point at that precisely.
+    function xNumber(value) {
+        return frame.labelFor(value, surface.viewMaxX - surface.viewMinX)
+    }
+
+    function yNumber(value) {
+        return frame.labelFor(value, surface.viewMaxY - surface.viewMinY)
+    }
+
     /// One reading, written. Six significant figures, except for a whole
     /// number: the default x axis is the element's own index, and "12.0000" is
     /// four digits of decoration on a count.
+    ///
+    /// Not the same question as xNumber above, and deliberately not answered
+    /// the same way: the crosshair reads a *sample*, whose value is a
+    /// measurement and is worth all the digits it was taken with, while a band
+    /// reads positions in the view, where a digit finer than the pane can
+    /// resolve is a digit nobody asked for.
     function readingNumber(value) {
         if (!isFinite(value))
             return String(value)
@@ -902,7 +957,38 @@ Item {
     }
 
     Component.onCompleted: surface.refill()
-    onActiveChanged: Qt.callLater(surface.refill)
+    onActiveChanged: refillSoon.restart()
+
+    /// Refill at the end of the turn, once, however many things have asked.
+    ///
+    /// `Qt.callLater(surface.refill)` did this, and it is the wrong tool here:
+    /// the delayed queue holds the *function*, not the object it came from, so
+    /// a refill armed in the turn a custom tab is closed runs after the surface
+    /// has been destroyed. Every run of the QML suite printed two of them --
+    /// "QQmlVMEMetaObject: Internal error - attempted to evaluate a function in
+    /// an invalid context", followed by a TypeError on the first property
+    /// refill() touches. Closing a tab is the case, and there are two of them
+    /// because two surfaces are torn down: the plot object says `changed` as it
+    /// is dismantled and the tab's `active` goes false, and each of those arms
+    /// a call whose object is gone before it runs.
+    ///
+    /// What kept that from being a crash rather than a warning is that *every*
+    /// property of a destroyed surface fails to resolve, so the function threw
+    /// on its first line instead of reaching `plot.fill(frame.lines)` with an
+    /// item that no longer exists. That is luck, not a design, and it is the
+    /// kind of luck that reads as noise in the log until the day it does not
+    /// hold.
+    ///
+    /// A Timer is a child of this item: it is destroyed with the surface and
+    /// its pending fire goes with it. Interval zero and `restart()` coalesce
+    /// exactly as callLater did -- the same idiom ObjectTree's `reveal` uses,
+    /// for the same reason.
+    Timer {
+        id: refillSoon
+
+        interval: 0
+        onTriggered: surface.refill()
+    }
 
     // Colour and emphasis are assigned to the lines rather than bound, because
     // a line belongs to a C++ item and not to the QML object tree; but which
@@ -932,11 +1018,11 @@ Item {
     Connections {
         target: surface.plot
         enabled: surface.active
-        function onChanged() { Qt.callLater(surface.refill) }
+        function onChanged() { refillSoon.restart() }
         // The same lines, moved along x. Nothing has to be re-read and no line
         // has appeared or gone away -- but where a point sits along x is the
         // axis the item was handed, so it has to be handed the new one.
-        function onXAxisChanged() { Qt.callLater(surface.refill) }
+        function onXAxisChanged() { refillSoon.restart() }
     }
 
     /// The properties a saved view keeps.
@@ -1129,7 +1215,16 @@ Item {
             onActiveChanged: {
                 if (band.active) {
                     band.from = centroid.pressPosition
-                    band.to = centroid.pressPosition
+                    // Where the pointer is now, and not where it was pressed.
+                    // A drag handler takes the gesture once the pointer has
+                    // travelled the drag threshold, and the move that carried
+                    // it there is the same event this is answering -- the
+                    // centroid had already moved when `active` turned true, so
+                    // reading the press position here opened every band as a
+                    // rectangle of nothing that the next move corrected.
+                    // Nobody saw that while a band was only a shape; a band
+                    // that writes its own width said "0" for a frame.
+                    band.to = centroid.position
                     return
                 }
                 // Released. A band too small to have been meant is dropped
@@ -1144,28 +1239,19 @@ Item {
             }
         }
 
-        // What the reader is about to ask for, drawn while they are deciding.
-        // Clipped to the pane, so a drag that runs off the edge says "to the
-        // edge" rather than drawing over the axis labels -- and the zoom that
-        // follows clamps to exactly the same place, so the band is a promise
-        // the result keeps.
-        Item {
-            x: surface.plotRect.x
-            y: surface.plotRect.y
-            width: surface.plotRect.width
-            height: surface.plotRect.height
-            clip: true
-            visible: band.active
+        // What the reader is about to ask for, drawn while they are deciding,
+        // with the numbers that say what it is. In this layer rather than in
+        // the frame: a band exists only during a gesture, so it is never part
+        // of the picture that leaves this application -- see copyImage, which
+        // grabs the frame.
+        PlotBand {
+            objectName: "plotBand"
 
-            Rectangle {
-                x: Math.min(band.from.x, band.to.x) - parent.x
-                y: Math.min(band.from.y, band.to.y) - parent.y
-                width: Math.abs(band.to.x - band.from.x)
-                height: Math.abs(band.to.y - band.from.y)
-                color: Theme.plotBandFill
-                border.width: Theme.borderWidthAccent
-                border.color: Theme.accent
-            }
+            target: surface
+            area: surface.plotRect
+            active: band.active
+            from: band.from
+            to: band.to
         }
     }
 

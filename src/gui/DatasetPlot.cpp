@@ -472,6 +472,9 @@ void DatasetPlot::readMissing() const
         // number rather than one per line.
         points_ = static_cast<int>(summary.size());
         step_ = step;
+        // A stride of one is the elements themselves; anything wider is a pair
+        // of extremes per bucket, whatever the step works out to.
+        summarised_ = stride > 1;
         lines_.emplace(series, std::move(summary));
     }
 }
@@ -685,6 +688,9 @@ PlotLine DatasetPlot::lineOf(int series) const
             line.values = closer->second.data();
             line.count = static_cast<qsizetype>(closer->second.size());
             line.positionStep = level.step;
+            // A run at bucket one is the elements of that run, read again and
+            // drawn one for one; anything coarser is an envelope of them.
+            line.summarised = level.window.bucket > 1;
             return line;
         }
     }
@@ -706,6 +712,7 @@ PlotLine DatasetPlot::lineOf(int series) const
     // that costs nothing to say. A bucket is about a pixel wide, so the error
     // is half of one.
     line.positionStep = step_;
+    line.summarised = summarised_;
     return line;
 }
 

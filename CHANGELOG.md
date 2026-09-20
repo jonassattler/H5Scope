@@ -25,6 +25,64 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.3
+
+**A region drag says what it is selecting, in numbers.** The band said where
+you were about to look and nothing about what you would see. It now writes the
+corner the drag started at, the corner it has reached and how wide and how tall
+it has become — in the axes' own units, out of the same arithmetic the zoom
+resolves the band with, so the numbers you read while deciding are the window
+you get, to as many digits as the view can resolve — the axis's own rule for
+its ticks, so the numbers beside the band and the numbers under it agree and
+grow digits together as you zoom. The lengths are written against all four
+edges where there is room for one and left out where there is not, and the two
+that measure the sides read along them. Nothing is drawn over the band, over
+another number, off the pane, or under the pointer: the corner that follows the
+cursor is written beside it, because an arrow is drawn down and to the right of
+its own hotspot and that is exactly where the reading you are dragging used to
+be. The crosshair goes off while a band is being drawn: it answers a different
+question, in the same face, over the same picture.
+
+**A wildcard search costs what a plain one does.** Any pattern that opened with
+a star paid a back-tracking walk over every name in the file, whether it matched
+anything or not — `*item*zz*` matches nothing at all in a file of 188,000 names
+and still cost five times what a plain substring did, for every character typed.
+A pattern of stars and letters is now the literal pieces between the stars,
+found with the same scan a plain substring already got: 6 ms a keystroke on that
+file against 17, and the same answers, held against
+`QRegularExpression::fromWildcard` over a table of patterns and paths. Patterns
+with `?` or `[…]` still take the walk, and now reject on a literal before
+starting it.
+
+**The filter box waits for you to stop typing.** A keystroke used to be a
+search, so typing `temperature` bought eleven searches for prefixes you were
+already abandoning — and on a large file each of them was a pause. A character
+now arms the search and abandons the one before it; what runs is what stands in
+the box when the typing stops. Clearing is not settled, because an empty box is
+the file being asked for back. The tree also closes on the first character
+rather than after the first search, so the search that used to be the expensive
+one is cheap too.
+
+**A point marker marks a measurement.** A dot is drawn at every sample, and it
+was being drawn on summarised points as well — where a drawn point is the
+largest or the smallest of a bucket, which is a reading nobody took. A line the
+model folded on the way out of the file now carries no markers however the
+setting is set and whatever it is drawn against; zooming in until a bucket is
+one element brings them back.
+
+**The tree's names stand clear of the caret.** The selection began four pixels
+in front of the name, which is behind the arrow's own ink, so a lit slab ran up
+to the arm of the chevron. There is a gap between them now and the mark starts
+in the middle of it.
+
+**Icons sit in the middle of their buttons.** Every glyph was drawn in the
+top-left corner of a box two pixels taller than it was wide: the cross that
+closes a custom tab, the cross on a data-settings card, all of them two pixels
+high and four pixels narrower than they were meant to be. And a bare icon
+button now answers the pointer — its hover ground and its rim were the same
+colour as a hovered tree row, so the plus that puts a dataset into a custom plot
+had nothing to say when you pointed at it.
+
 ## 0.6.2
 
 **Drag a region with the right button and the plot goes there.** The wheel

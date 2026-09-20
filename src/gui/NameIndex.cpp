@@ -253,6 +253,112 @@ NameQuery::NameQuery(QString text) : text_(std::move(text))
     for (qsizetype i = 0; i < text_.size(); ++i) {
         folded_[i] = QChar(fold(text_.at(i).unicode()));
     }
+
+    // ...and cut into pieces, when there is nothing in it but stars and
+    // letters. See the members: this is what makes a wildcard cost what a
+    // substring costs. A `?` or a `[` anywhere leaves `simple_` false and the
+    // general matcher answers, exactly as it did.
+    if (!wildcard_) {
+        return;
+    }
+    // Both ends first: which of the two questions acceptsPath has to ask is
+    // decided by the opening star and by nothing else, so this is true of every
+    // pattern and not only of the ones cut into pieces below. It was set after
+    // the return a line later once, which left `[cm]*` and `?ube` claiming to
+    // open with a star -- and a pattern that opens with a star is asked only
+    // about the path, where `/types/cube` does not begin with `?ube`.
+    anchoredStart_ = !text_.startsWith(u'*');
+    anchoredEnd_ = !text_.endsWith(u'*');
+    simple_ = !text_.contains(u'?') && !text_.contains(u'[');
+    if (!simple_) {
+        // The back-tracking matcher answers this one, and the most that can be
+        // done for it here is to keep names away from it: every letter written
+        // outside a class has to appear in the text, whatever the `?` and the
+        // classes do between them, so the longest such run is a test that
+        // rejects without walking anything.
+        QString run;
+        const auto keep = [this, &run] {
+            if (run.size() > required_.size()) {
+                required_ = run;
+            }
+            run.clear();
+        };
+        for (qsizetype i = 0; i < folded_.size(); ++i) {
+            const char16_t letter = text_.at(i).unicode();
+            if (letter == u'*' || letter == u'?') {
+                keep();
+                continue;
+            }
+            if (letter == u'[') {
+                keep();
+                qsizetype after = 0;
+                bool closed = false;
+                (void)classMatches(text_, i, u'x', after, closed);
+                // Every class closes -- `wildcard_` is false otherwise, and
+                // this is only reached for a pattern -- so `after` is past the
+                // `]`. The loop's own increment takes the last step.
+                i = after - 1;
+                continue;
+            }
+            run.append(folded_.at(i));
+        }
+        keep();
+        return;
+    }
+    QString piece;
+    for (qsizetype i = 0; i < folded_.size(); ++i) {
+        if (folded_.at(i) == u'*') {
+            if (!piece.isEmpty()) {
+                pieces_.push_back(piece);
+                piece.clear();
+            }
+            continue;
+        }
+        piece.append(folded_.at(i));
+    }
+    if (!piece.isEmpty()) {
+        pieces_.push_back(piece);
+    }
+}
+
+bool NameQuery::matches(QStringView text) const
+{
+    if (!simple_) {
+        // The cheap no first. See required_.
+        if (!required_.isEmpty() && !foldedContains(text, required_)) {
+            return false;
+        }
+        return matchesWildcard(text_, text);
+    }
+    // Stars and letters only, so the whole question is whether the pieces
+    // appear in order -- each as early as it can, which is what leaves the most
+    // room for the ones after it and is why a greedy scan is not merely a
+    // heuristic here. The two ends are pinned only where the pattern has no
+    // star to eat what is outside them.
+    if (pieces_.empty()) {
+        // All stars, or nothing but them: `*` takes everything.
+        return true;
+    }
+    const auto last = pieces_.size() - 1;
+    qsizetype at = 0;
+    for (std::size_t i = 0; i < pieces_.size(); ++i) {
+        const QStringView piece{pieces_[i]};
+        if (i == last && anchoredEnd_) {
+            // The tail has to land on the end rather than merely somewhere
+            // after everything else.
+            const qsizetype start = text.size() - piece.size();
+            return start >= at && foldedIndexOf(text.sliced(start), piece) == 0;
+        }
+        const qsizetype found = foldedIndexOf(text.sliced(at), piece);
+        if (found < 0) {
+            return false;
+        }
+        if (i == 0 && anchoredStart_ && found != 0) {
+            return false;
+        }
+        at += found + piece.size();
+    }
+    return true;
 }
 
 bool NameQuery::acceptsPath(QStringView path) const
@@ -269,7 +375,16 @@ bool NameQuery::acceptsPath(QStringView path) const
     }
     // The pattern is anchored, so the name is tried on its own: `temp*` is
     // about names, and `/run/?/temp*` is about the path it is written as.
-    return matchesWildcard(text_, lastSegment(path)) || matchesWildcard(text_, path);
+    //
+    // Only where the anchoring makes the two different questions, though. A
+    // pattern that opens with a star matches the name only if it matches the
+    // path -- the path is that name with more in front of it, and the opening
+    // star eats whatever that is -- so trying both was asking the same question
+    // twice on exactly the patterns that cost the most to answer.
+    if (!anchoredStart_) {
+        return matches(path);
+    }
+    return matches(lastSegment(path)) || matches(path);
 }
 
 bool NameQuery::accepts(QStringView name, QStringView path) const
@@ -280,7 +395,10 @@ bool NameQuery::accepts(QStringView name, QStringView path) const
     if (!wildcard_) {
         return foldedContains(path, folded_);
     }
-    return matchesWildcard(text_, name) || matchesWildcard(text_, path);
+    if (!anchoredStart_) {
+        return matches(path);
+    }
+    return matches(name) || matches(path);
 }
 
 std::pair<int, int> NameQuery::markIn(QStringView name) const
@@ -289,8 +407,12 @@ std::pair<int, int> NameQuery::markIn(QStringView name) const
         return {-1, 0};
     }
     if (wildcard_) {
-        return matchesWildcard(text_, name) ? std::pair{0, static_cast<int>(name.size())}
-                                            : std::pair{-1, 0};
+        // Through matches() like every other question about this pattern, so
+        // that a name the proxy showed is a name this marks. Two readings of
+        // one pattern is a row lit up where nothing was found, or found and not
+        // lit.
+        return matches(name) ? std::pair{0, static_cast<int>(name.size())}
+                             : std::pair{-1, 0};
     }
     const qsizetype at = foldedIndexOf(name, folded_);
     if (at < 0) {

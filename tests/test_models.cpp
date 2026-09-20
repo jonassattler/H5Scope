@@ -2460,6 +2460,11 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
     CHECK(whole.positionStart == 0.0);
     CHECK(whole.positionStep == Catch::Approx(10.0));
     CHECK(plot->thinned());
+    // ...and each of those values is the extreme of a bucket rather than a
+    // sample, which is what decides whether a marker may be drawn on it. Said
+    // by the line itself: the step is the same number for an envelope at
+    // bucket two and for the elements themselves, so it cannot answer this.
+    CHECK(whole.summarised);
     const double low = plot->minimum();
     const double high = plot->maximum();
     CHECK(high == Catch::Approx(9.0)); // the spike is in the envelope, not thinned away
@@ -2478,6 +2483,7 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         // DatasetPlot::detailBuckets.
         CHECK(closer.positionStart == 0.0);
         CHECK(closer.positionStep == Catch::Approx(2.0));
+        CHECK(closer.summarised);
         CHECK(closer.count == 4096);
         CHECK(closer.values != whole.values);
 
@@ -2501,6 +2507,21 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         CHECK(plot->maximum() == high);
     }
 
+    SECTION("a run of buckets of two is a summary with a step of one")
+    {
+        // The reading a step cannot tell from the elements themselves: two
+        // extremes half a bucket apart, and half of two is one. Markers are
+        // drawn off this, so before the line carried the answer a reader who
+        // zoomed this far was given a dot on every point of an envelope.
+        plot->setVisibleRange(0.0, 2000.0);
+        h5test::settleFor(300);
+
+        const gui::PlotLine closer = plot->lineOf(0);
+        INFO("step " << closer.positionStep << " count " << closer.count);
+        CHECK(closer.positionStep == Catch::Approx(1.0));
+        CHECK(closer.summarised);
+    }
+
     SECTION("the closest look is the file's own samples")
     {
         // Around the spike, and close enough that a bucket is one element: what
@@ -2510,6 +2531,7 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
 
         const gui::PlotLine closest = plot->lineOf(0);
         CHECK(closest.positionStep == Catch::Approx(1.0));
+        CHECK_FALSE(closest.summarised);
         REQUIRE(closest.count == 2048);
         CHECK(closest.positionStart == Catch::Approx(11776.0)); // aligned, not the view's edge
 
@@ -3748,6 +3770,69 @@ TEST_CASE("the wildcard grammar is the one it replaced", "[tree][filter]")
                             << name.toStdString());
             CHECK(gui::matchesWildcard(pattern, name)
                   == compiled.match(name).hasMatch());
+        }
+    }
+}
+
+TEST_CASE("a pattern of stars and letters answers the same as the walk", "[tree][filter]")
+{
+    // NameQuery is where the answer comes from, and it no longer always asks
+    // matchesWildcard: a pattern with no `?` and no `[` is cut into the literal
+    // runs between its stars and answered with one scan of the text per run,
+    // which is what a plain substring already cost. Over 188,000 names that
+    // took a wildcard keystroke from 240 ms to 34 ms -- and it was worth doing
+    // because *any* pattern opening with a star paid the back-tracking,
+    // matching or not: `*item*zz*` matches nothing in that file and cost
+    // 256 ms of it.
+    //
+    // The one thing it may not do is change an answer, so this holds it against
+    // the same reference the walk is held against, through the two questions
+    // the filter actually asks.
+    const QStringList patterns{
+        QStringLiteral("temp*"),      QStringLiteral("*temp"),
+        QStringLiteral("*temp*"),     QStringLiteral("*"),
+        QStringLiteral("**"),         QStringLiteral("*a*a"),
+        QStringLiteral("a*b*c"),      QStringLiteral("*item*7*"),
+        QStringLiteral("*item*zz*"),  QStringLiteral("item*7"),
+        QStringLiteral("*/temp"),     QStringLiteral("/run/*/t*"),
+        QStringLiteral("temp*rat*"),  QStringLiteral("*temp*rature"),
+        // ...and the ones that still take the walk, which now has a literal to
+        // reject on before it starts.
+        QStringLiteral("t?mp"),       QStringLiteral("*?item*"),
+        QStringLiteral("[tT]emp*"),   QStringLiteral("[cm]*"),
+        QStringLiteral("*_0?"),       QStringLiteral("[]]x*"),
+    };
+    // Paths, and their own last segments: the filter asks about both, so the
+    // pair has to be a real one.
+    const QStringList paths{
+        QStringLiteral("/temp"),          QStringLiteral("/run/3/temp"),
+        QStringLiteral("/run/3/Temp"),    QStringLiteral("/a/b/temperature"),
+        QStringLiteral("/flat/item_00007"), QStringLiteral("/flat/item_00070"),
+        QStringLiteral("/flat/item_10007"), QStringLiteral("/types/cube"),
+        QStringLiteral("/types/compound"), QStringLiteral("/types/matrix"),
+        QStringLiteral("/channel_01"),    QStringLiteral("/aXbYc"),
+        QStringLiteral("/aa"),            QStringLiteral("/a"),
+        QStringLiteral("/]x"),            QStringLiteral("/tmp/t_mp"),
+    };
+
+    for (const QString& pattern : patterns) {
+        const QRegularExpression compiled = QRegularExpression::fromWildcard(
+            pattern, Qt::CaseInsensitive,
+            QRegularExpression::NonPathWildcardConversion);
+        REQUIRE(compiled.isValid());
+        const gui::NameQuery query{pattern};
+        REQUIRE(query.isWildcard());
+        for (const QString& path : paths) {
+            const QString name = path.mid(path.lastIndexOf(u'/') + 1);
+            const bool wanted = compiled.match(name).hasMatch()
+                                || compiled.match(path).hasMatch();
+            INFO("pattern " << pattern.toStdString() << " against "
+                            << path.toStdString());
+            CHECK(query.accepts(name, path) == wanted);
+            // The same answer from the path alone, which is what the index
+            // walks with: a row the proxy shows and the index does not collect
+            // is a row the reader cannot reach.
+            CHECK(query.acceptsPath(path) == wanted);
         }
     }
 }

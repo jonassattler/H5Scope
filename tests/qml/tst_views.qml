@@ -2346,6 +2346,272 @@ TestCase {
         plot.resetView()
     }
 
+    /// Nothing a band writes may be drawn off the pane or over another number,
+    /// and no length may be drawn over the band.
+    ///
+    /// Here rather than in each test below because it is the one rule the
+    /// whole layout exists to keep -- and because a rule asserted in one place
+    /// is a rule a new label cannot be added past. The coordinates are held to
+    /// it too, everywhere there is room for them: what they are allowed is a
+    /// band drawn into the corner of the pane, which leaves the corner nowhere
+    /// outside itself to stand.
+    function verifyBandNumbersAreClear(readout, clearOfBand) {
+        const boxes = readout.labels
+        for (let i = 0; i < boxes.length; ++i) {
+            verify(readout.inside(boxes[i]),
+                   boxes[i].key + " must be drawn inside the pane")
+            if (clearOfBand || boxes[i].key !== "start" && boxes[i].key !== "end") {
+                verify(readout.clears(boxes[i], readout.bandRect),
+                       boxes[i].key + " must stand clear of the band")
+            }
+            for (let j = i + 1; j < boxes.length; ++j) {
+                verify(readout.clears(boxes[i], boxes[j]),
+                       boxes[i].key + " must stand clear of " + boxes[j].key)
+            }
+        }
+    }
+
+    /// The corner the pointer is on is written beside the cursor, not under it.
+    ///
+    /// An arrow is drawn from its hotspot down and to the right, so a number in
+    /// that quadrant is one the reader is covering with their own hand -- and
+    /// it is the corner that follows the pointer, which is the reading that is
+    /// changing as they drag. A band pulled downwards hid it every time.
+    function verifyBandNumbersClearThePointer(readout) {
+        const pointer = { x: readout.endX, y: readout.endY,
+                          width: Theme.pointerSize, height: Theme.pointerSize }
+        const boxes = readout.labels
+        for (let i = 0; i < boxes.length; ++i) {
+            verify(readout.clears(boxes[i], pointer),
+                   boxes[i].key + " must stand clear of the pointer")
+        }
+    }
+
+    /// A band being drawn says what it is, in the axes' own numbers.
+    ///
+    /// The rectangle on its own says where the reader is about to look and
+    /// nothing about what they are about to see, which is the half a reader
+    /// selecting an interval actually wants: the corner they started at, the
+    /// corner they have reached, and how wide and how tall it has become.
+    ///
+    /// Asserted against the surface's own pixel-to-data mapping -- the one
+    /// zoomToRegion resolves the band with -- because that identity is the
+    /// point of the numbers. A readout worked out a second way would be a
+    /// promise the zoom that follows it does not have to keep.
+    function test_a_region_drag_writes_its_corners_and_its_lengths() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const gestures = findChild(win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the lines must be reachable")
+        const readout = findChild(win.view, "plotBand")
+        verify(readout, "the band must be reachable")
+
+        verify(!plot.selecting, "nothing is being selected yet")
+        compare(readout.labels.length, 0, "so nothing is written")
+
+        // The crosshair is reading, which is what the band is about to take
+        // away: two readouts of two different things over one pane is a
+        // picture the reader has to take apart before they can read either.
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid, "the crosshair must be reading to begin with")
+
+        const area = plot.plotRect
+        verify(area.width > 0 && area.height > 0)
+        const fromX = Math.round(area.x + area.width * 0.3)
+        const fromY = Math.round(area.y + area.height * 0.3)
+        const toX = Math.round(area.x + area.width * 0.7)
+        const toY = Math.round(area.y + area.height * 0.7)
+
+        mousePress(gestures, fromX, fromY, Qt.RightButton)
+        mouseMove(gestures, toX, toY, -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        verify(!plot.reading.valid, "the crosshair must be off under a band")
+        compare(plot.readingFacts.length, 0, "and the footer must stop reading")
+
+        const labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+
+        // Both corners, as the axes read them.
+        verify(labels.start, "the corner the drag started at must be written")
+        verify(labels.end, "the corner it has reached must be written")
+        // Written the way the axis writes its own ticks -- see xNumber, which
+        // takes its decimals off the span on screen.
+        compare(labels.start.text,
+                plot.xNumber(plot.dataXAt(fromX)) + ", "
+                + plot.yNumber(plot.dataYAt(fromY)))
+        compare(labels.end.text,
+                plot.xNumber(plot.dataXAt(toX)) + ", "
+                + plot.yNumber(plot.dataYAt(toY)))
+
+        // ...and the lengths on both x lines and both y lines, which two
+        // fifths of the pane in each direction has room for.
+        verify(labels.widthAbove && labels.widthBelow,
+               "a band this wide must have its width on both x lines")
+        verify(labels.heightLeft && labels.heightRight,
+               "a band this tall must have its height on both y lines")
+        compare(labels.widthAbove.text, labels.widthBelow.text)
+        compare(labels.heightLeft.text, labels.heightRight.text)
+        compare(labels.widthAbove.text,
+                "∆" + plot.xNumber(
+                    Math.abs(plot.dataXAt(toX) - plot.dataXAt(fromX))))
+        compare(labels.heightLeft.text,
+                "∆" + plot.yNumber(
+                    Math.abs(plot.dataYAt(toY) - plot.dataYAt(fromY))))
+
+        // The two that measure the sides read along them, which is a box as
+        // tall as the number is long -- and they are turned opposite ways, so
+        // the pair reads as one measurement said on either side of the band
+        // rather than as one of them written back to front.
+        compare(labels.heightLeft.turn, -90, "the left height reads up the page")
+        compare(labels.heightRight.turn, 90, "and the right one down it")
+        verify(labels.heightLeft.height > labels.heightLeft.width,
+               "so its box stands on end: " + labels.heightLeft.width + " x "
+               + labels.heightLeft.height)
+        compare(labels.widthAbove.turn, 0, "a width reads along its own edge")
+
+        verifyBandNumbersAreClear(readout, true)
+        verifyBandNumbersClearThePointer(readout)
+
+        // The digits follow the view. Over the whole of this dataset the axis
+        // prints whole numbers -- x runs 0 to 99 and y over thousands -- so the
+        // band prints whole numbers too, where it used to print six significant
+        // figures of a position nobody can point at that precisely.
+        verify(labels.start.text.indexOf(".") < 0,
+               "a coordinate over the whole view wants no decimals: "
+               + labels.start.text)
+        verify(labels.widthAbove.text.indexOf(".") < 0,
+               "nor does a length: " + labels.widthAbove.text)
+
+        // The band goes with the button, and so do its numbers -- and the
+        // crosshair comes back.
+        mouseRelease(gestures, toX, toY, Qt.RightButton)
+        waitForRendering(win.view)
+        verify(!plot.selecting, "the band must end with the gesture")
+        compare(readout.labels.length, 0, "and take its numbers with it")
+
+        mouseMove(lines, Math.round(lines.width * 0.4),
+                  Math.round(lines.height * 0.5))
+        waitForRendering(win.view)
+        verify(plot.reading.valid, "the crosshair must come back")
+
+        // ...and the view has just become two fifths of what it was, which is
+        // an axis that has started printing a decimal. The band follows it,
+        // which is the whole of what "as many digits as the view has" means.
+        mouseMove(lines, -20, -20)
+        const closeFrom = Math.round(area.x + area.width * 0.4)
+        const closeTo = Math.round(area.x + area.width * 0.6)
+        const closeY = Math.round(area.y + area.height * 0.4)
+        mousePress(gestures, closeFrom, closeY, Qt.RightButton)
+        mouseMove(gestures, closeTo, Math.round(area.y + area.height * 0.6),
+                  -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the second band must be drawn")
+        waitForRendering(win.view)
+        const zoomed = readout.labels.filter((box) => box.key === "start")[0]
+        verify(zoomed, "the corner must still be written")
+        verify(zoomed.text.indexOf(".") >= 0,
+               "a closer view must be given the digits it can resolve: "
+               + zoomed.text)
+        mouseRelease(gestures, closeTo, Math.round(area.y + area.height * 0.6),
+                     Qt.RightButton)
+
+        plot.resetView()
+    }
+
+    /// A length is written where there is room for one, and left out where
+    /// there is not.
+    ///
+    /// The corners are the reading and the lengths are the subtraction between
+    /// them, so the lengths are what a crowded band can afford to lose. Two
+    /// ways it gets crowded: a band narrower than the number that would
+    /// measure it, and a band dragged off the edge of the pane -- where the
+    /// numbers have to come back inside without landing on the band or on each
+    /// other.
+    function test_a_length_is_written_only_where_there_is_room_for_one() {
+        verify(select("/compressed"))
+
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const gestures = findChild(win.view, "plotGestures")
+        const readout = findChild(win.view, "plotBand")
+        verify(plot && gestures && readout, "the plot and its band must be reachable")
+
+        const area = plot.plotRect
+        const midX = Math.round(area.x + area.width * 0.5)
+
+        // A few pixels wide and most of the pane tall. Its width does not fit
+        // between the two corners that measure it, so it is not written at
+        // all; its height has the whole side of the pane to stand in.
+        mousePress(gestures, midX, Math.round(area.y + area.height * 0.2),
+                   Qt.RightButton)
+        mouseMove(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
+                  -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        let labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+        verify(labels.start && labels.end, "both corners are always written")
+        verify(!labels.widthAbove && !labels.widthBelow,
+               "a band narrower than its own width must not be given one")
+        verify(labels.heightLeft && labels.heightRight,
+               "and its height must still be on both y lines")
+        verifyBandNumbersAreClear(readout, true)
+        verifyBandNumbersClearThePointer(readout)
+
+        mouseRelease(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
+                     Qt.RightButton)
+        waitForRendering(win.view)
+        plot.resetView()
+        waitForRendering(win.view)
+
+        // ...and a drag that runs off the pane. The band stops at the edge --
+        // which is where the zoom stops too -- so the numbers stop there with
+        // it rather than being drawn over the axis labels or clipped in half.
+        const startX = Math.round(area.x + area.width * 0.4)
+        const startY = Math.round(area.y + area.height * 0.4)
+        const offY = Math.round(area.y + area.height * 0.9)
+        mousePress(gestures, startX, startY, Qt.RightButton)
+        // Left of the pane but inside the window, which is the drag a reader
+        // makes when the interval they want runs to the edge of the picture.
+        mouseMove(gestures, 0, offY, -1, Qt.RightButton)
+        tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
+        waitForRendering(win.view)
+
+        labels = {}
+        for (let i = 0; i < readout.labels.length; ++i)
+            labels[readout.labels[i].key] = readout.labels[i]
+        verify(labels.start && labels.end,
+               "both corners are written even off the edge")
+        compare(labels.end.text,
+                plot.xNumber(plot.viewMinX) + ", "
+                + plot.yNumber(plot.dataYAt(offY)),
+                "the corner off the pane reads as the edge it stopped at")
+        verifyBandNumbersAreClear(readout, true)
+
+        mouseRelease(gestures, 0, offY, Qt.RightButton)
+        waitForRendering(win.view)
+        plot.resetView()
+    }
+
     /// The four boxes under View are the window, both ways round.
     ///
     /// They are a readout as well as a control, and that is the half worth
@@ -3214,12 +3480,11 @@ TestCase {
 
     /// Markers are punctuation on a line, and they mark samples.
     ///
-    /// Only where the line is drawn sample for sample: once the envelope is
-    /// summarising, a drawn point stands for a whole bucket and a dot on it
-    /// marks nothing. A thousand points on a pane a thousand wide is drawn
-    /// whole, so this is the case where they appear.
+    /// Only where the line is drawn sample for sample. Sixty-four points on a
+    /// pane several hundred columns wide is nothing to fold, so this is the
+    /// case where they appear; the one below is the case where they must not.
     function test_markers_put_a_dot_on_every_sample() {
-        verify(select("/long_vec"))
+        verify(select("/series/a")) // 64 elements, drawn as they were measured
         const win = createTemporaryObject(viewWindowComponent, testCase)
         waitForRendering(win.view)
         win.view.show("plot")
@@ -3241,6 +3506,45 @@ TestCase {
         plot.showMarkers = false
         waitForRendering(win.view)
         compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare)
+    }
+
+    /// ...and no dot at all on a line the model summarised.
+    ///
+    /// A thousand elements on a pane of a few hundred columns is folded on the
+    /// way out of the file, and a drawn point is then the largest or the
+    /// smallest of its bucket -- a value the instrument took, at an x it was
+    /// not taken at, or one of two that were. A dot there marks a reading
+    /// nobody took.
+    ///
+    /// The fold is what decides it and not how coarse the fold is: at two
+    /// elements a bucket the pair sits one position apart, which is exactly
+    /// what a line of elements looks like, and that is the zoom where dots used
+    /// to reappear on points nobody had measured.
+    function test_a_summarised_line_carries_no_markers() {
+        verify(select("/long_vec")) // 1000 elements, and a pane narrower than that
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
+        verify(bare > 20, "the line must be drawn at all: " + bare)
+
+        plot.showMarkers = true
+        waitForRendering(win.view)
+        compare(colouredPixels(grabImage(plot), Theme.sliceBarHeight), bare,
+                "a folded line must carry no markers, however the setting is set")
+
+        // ...and zooming in until a bucket is one element brings them back,
+        // because that is the moment a drawn point becomes a sample again.
+        plot.setViewRange(0, 100, plot.viewMinY, plot.viewMaxY)
+        tryVerify(() => colouredPixels(grabImage(plot), Theme.sliceBarHeight) > bare,
+                  5000, "the samples themselves must carry their dots")
+
+        plot.showMarkers = false
+        plot.resetView()
     }
 
     /// The crosshair reads a sample, not a position.
@@ -4999,6 +5303,89 @@ TestCase {
         win.tree.collapseAll()
         waitForRendering(win.tree)
         return win
+    }
+
+    /// Typing is never a search, and a search that has been overtaken never
+    /// happens at all.
+    ///
+    /// What it costs is the whole of the reason. A pattern is answered out of
+    /// the name index, but answering it means the proxy taking every row that
+    /// no longer belongs out of the view, one run of adjacent losers at a time
+    /// -- so on a large file a character was a wait, and a reader typing a word
+    /// paid for every prefix of it on the way to the one they wanted. The box
+    /// waits for them to stop instead, and each character abandons the search
+    /// the one before it armed.
+    function test_a_keystroke_arms_a_search_rather_than_running_one() {
+        const win = treeWithGroupRead()
+        const filter = findChild(win.tree, "treeFilter")
+        verify(filter, "the tree must carry its own filter")
+        const settle = findChild(win.tree, "filterSettle")
+        verify(settle, "the box must have a settle to arm")
+        compare(AppController.filterText, "")
+        verify(!settle.running, "nothing is armed before anything is typed")
+
+        filter.forceActiveFocus()
+        keyClick("l")
+        // Armed, and not searched: the character is in the box and the tree is
+        // still the tree.
+        verify(settle.running, "a keystroke must arm the search")
+        compare(AppController.filterText, "",
+                "and must not be a search of its own")
+        compare(filter.text, "l", "what was typed is in the box at once")
+
+        keyClick("e")
+        keyClick("a")
+        verify(settle.running, "each character re-arms it")
+        compare(AppController.filterText, "",
+                "and abandons the one the character before it armed")
+
+        keyClick("f")
+        tryVerify(() => AppController.filterText === "leaf", 5000,
+                  "the search that runs is the one that was left standing")
+        verify(!settle.running, "and nothing is left armed behind it")
+
+        // Clearing is not a search to be settled -- it is the file being asked
+        // for back, and it happens in the keystroke that asks.
+        for (let i = 0; i < 4; ++i) {
+            keyClick(Qt.Key_Backspace)
+        }
+        compare(filter.text, "")
+        compare(AppController.filterText, "",
+                "an emptied box puts the tree back at once")
+        verify(!settle.running, "with nothing left armed")
+    }
+
+    /// A search taken back before it ran still ends.
+    ///
+    /// The pane closes the tree on the first character rather than on the first
+    /// search -- that is what makes the first search cheap -- so a reader who
+    /// types one and takes it back has had their branches closed by a search
+    /// that never happened. Nothing filtered, so nothing reports that it has
+    /// stopped filtering, and the tree stayed shut.
+    function test_a_search_taken_back_before_it_ran_puts_the_tree_back() {
+        const win = treeWithGroupRead()
+        const view = findChild(win.tree, "objectTreeView")
+        const model = AppController.filteredTreeModel
+
+        const opened = view.rowAtIndex(model.indexForPath("/group"))
+        verify(opened >= 0, "the branch must be on screen to open")
+        view.expand(opened)
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "the reader's branch must start open")
+
+        const filter = findChild(win.tree, "treeFilter")
+        filter.forceActiveFocus()
+        keyClick("l")
+        verify(win.tree.filtering, "the pane must be searching")
+        compare(AppController.filterText, "", "and not yet have searched")
+
+        keyClick(Qt.Key_Backspace)
+        compare(filter.text, "")
+        verify(!win.tree.filtering, "the search must be over")
+        waitForRendering(win.tree)
+        verify(view.isExpanded(view.rowAtIndex(model.indexForPath("/group"))),
+               "and the branch must be back")
     }
 
     function test_the_filter_opens_the_tree_to_what_it_found() {

@@ -77,6 +77,24 @@ struct PlotLine
     double positionStart = 0.0;
     double positionStep = 1.0;
 
+    /// Whether these values are a *summary* of the line rather than the line.
+    ///
+    /// Set by whoever read them. A model that folded the file into an envelope
+    /// hands over two values per bucket, and neither of them is a sample taken
+    /// at the x it is drawn at -- they are the largest and the smallest of
+    /// everything that bucket covered. Markers are why this is here: a dot
+    /// marks a measurement, and a dot on a bucket marks a reading nobody took.
+    ///
+    /// It cannot be worked out from `positionStep`, which is what was tried and
+    /// is wrong in both directions. The step says where a drawn point *sits*,
+    /// not what it is: an envelope at bucket two puts its pair one position
+    /// apart, so the step is exactly 1 and every value is still a summary --
+    /// which is how a plot zoomed to the edge of its budget grew a dot on every
+    /// envelope point. And a custom tab's Stretch spreads a line of real
+    /// samples over a longer axis, where the step is above one and every value
+    /// is a measurement that deserves its dot.
+    bool summarised = false;
+
     /// Supplied by the caller rather than chosen here: every colour in this
     /// application resolves through Theme.qml, and a renderer that picked its
     /// own would be the one place that did not.
