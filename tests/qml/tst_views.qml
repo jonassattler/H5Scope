@@ -3166,7 +3166,11 @@ TestCase {
     /// is that the corner of the image has *no colour*, which is what an alpha
     /// of zero means.
     function test_a_publication_copy_has_no_ground_and_black_strokes() {
-        verify(select("/compressed"))
+        // One line over a mostly empty pane. The claim being made is about the
+        // *ground*, so the picture has to be mostly ground: a dense bundle
+        // covers the pane with ink it is entitled to draw, and there would be
+        // nothing left to say about what is underneath it.
+        verify(select("/series/a"))
         const win = plotWindow()
         const plot = findChild(win.view, "plotSurface")
         const lines = findChild(win.view, "plotLines")
@@ -3182,21 +3186,33 @@ TestCase {
         compare(copyAndWait(plot), "")
         compare(ImageClipboard.imageOnClipboard().width, 240)
 
-        // The corner is outside the pane -- it is the gutter the y labels live
-        // in -- so if anything at all were drawn as a ground it would be there.
-        compare(ImageClipboard.pixelOnClipboard(0, 0).a, 0,
-                "a publication picture stands on the page and not on a slab")
-
-        // ...and somewhere in it there is black ink that is actually opaque.
+        // Most of the picture is nothing at all, and some of it is opaque
+        // black. Counted rather than probed at named points, for the reason
+        // spelled out over test_the_plot_stands_on_black_or_on_white: a fixed
+        // point in a gutter is a measurement of where the type happened to
+        // land on the machine that wrote the test.
+        let clear = 0
         let blackInk = 0
-        for (let x = 0; x < 240; x += 3) {
-            for (let y = 0; y < 180; y += 3) {
+        let samples = 0
+        for (let x = 0; x < 240; x += 2) {
+            for (let y = 0; y < 180; y += 2) {
                 const pixel = ImageClipboard.pixelOnClipboard(x, y)
-                if (pixel.a > 0.9 && pixel.r < 0.05 && pixel.g < 0.05
-                    && pixel.b < 0.05)
+                if (pixel.a < 0.02)
+                    ++clear
+                // Partly covered counts, and it has to: a hairline drawn
+                // across a picture is antialiased, so the pixels that are
+                // fully covered are the few where it happens to run square.
+                // The colour is read back un-premultiplied, so a stroke at any
+                // coverage is still pure black -- only its alpha is less.
+                else if (pixel.a > 0.25 && pixel.r < 0.05 && pixel.g < 0.05
+                         && pixel.b < 0.05)
                     ++blackInk
+                ++samples
             }
         }
+        verify(clear > samples * 2 / 3,
+               "a publication picture stands on the page and not on a slab: "
+               + clear + " of " + samples + " samples carry no ink at all")
         verify(blackInk > 10, "the picture must carry black ink: " + blackInk)
 
         // And the pane the reader is looking at was never touched. This is the
@@ -3297,6 +3313,21 @@ TestCase {
         const frame = lines.parent
 
         const was = Theme.dark
+
+        /// The colour most of the picture is, and how much of it that is.
+        ///
+        /// A tally over a grid rather than a handful of named points, and that
+        /// is the whole difference between a test and a coincidence. The first
+        /// version of this read five places nothing is "ever" drawn -- four
+        /// corners and the middle of the left gutter -- and the gutter one sat
+        /// two pixels clear of the nearest y tick label on this machine. Two
+        /// pixels is font metrics, not a rule: on CI's AlmaLinux 8 the same
+        /// label renders a shade wider, reached the probe, and failed a test
+        /// that was measuring freetype rather than the plot.
+        ///
+        /// What is actually being claimed is that the plot *stands on* black
+        /// or on white, and a ground is what most of a picture is. That cannot
+        /// be moved by where a label lands.
         const groundOf = (what) => {
             copySpy.clear()
             copyFailedSpy.clear()
@@ -3307,20 +3338,35 @@ TestCase {
                     copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
             const size = ImageClipboard.imageOnClipboard()
             verify(size.width > 0 && size.height > 0)
-            // The four corners and the middle of the left gutter: five places
-            // nothing is ever drawn, so whatever is there is the ground.
-            const seen = []
-            const at = [[0, 0], [size.width - 1, 0], [0, size.height - 1],
-                        [size.width - 1, size.height - 1],
-                        [2, Math.round(size.height / 2)]]
-            for (let i = 0; i < at.length; ++i) {
-                const pixel = ImageClipboard.pixelOnClipboard(at[i][0], at[i][1])
-                compare(String(pixel), what,
-                        "the " + (Theme.dark ? "dark" : "light")
-                        + " theme's plot ground at " + at[i][0] + "," + at[i][1])
-                seen.push(String(pixel))
+
+            const tally = ({})
+            let samples = 0
+            for (let x = 0; x < size.width; x += 8) {
+                for (let y = 0; y < size.height; y += 8) {
+                    const seen = String(ImageClipboard.pixelOnClipboard(x, y))
+                    tally[seen] = (tally[seen] || 0) + 1
+                    ++samples
+                }
             }
-            return seen
+            let best = ""
+            for (const colour in tally) {
+                if (best === "" || tally[colour] > tally[best])
+                    best = colour
+            }
+            const scope = Theme.dark ? "dark" : "light"
+            // Exactly the ground, and not a step off it. A plot standing on
+            // `surfaceRaised` would pass any test that allowed a near miss,
+            // and standing on it is precisely the thing to catch.
+            compare(best, what,
+                    "most of the " + scope + " theme's plot is " + best
+                    + " (" + tally[best] + " of " + samples + " samples), and "
+                    + what + " is what it should stand on")
+            // Two thirds is a long way clear of what a trace and its chrome
+            // take -- measured at over nine tenths -- and a long way clear of
+            // any run-off from antialiasing.
+            verify(tally[best] > samples * 2 / 3,
+                   "the " + scope + " theme's ground covers only "
+                   + tally[best] + " of " + samples + " samples")
         }
 
         Theme.dark = true
