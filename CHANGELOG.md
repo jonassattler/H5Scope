@@ -25,6 +25,20 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.5
+
+**Dots per inch now means what it says.** 0.6.4 read the setting as a
+supersample: a figure asked for at 1920 × 1080 and 300 dpi came back at
+6000 × 3375, with the type exactly as small against the picture as it had
+been. That is not what a resolution is for. The size and the density are two
+settings and both of them change the figure — the size is how many pixels
+come back, and the density is how big those pixels are, which is what decides
+how large the type, the rules and the ticks are *against* the plot. A
+1920 × 1080 export at 300 dpi is now a 6.4 × 3.6 inch figure with its type at
+its true point size, and it is 1920 × 1080 pixels at every density, as asked.
+The dialog says the inches it comes to. Nothing changes at the default, and a
+size asked for in pixels is still exactly those pixels.
+
 ## 0.6.4
 
 **Publication mode keeps the colours.** It drew every stroke in one black ink,

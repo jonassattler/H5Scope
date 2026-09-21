@@ -1218,45 +1218,64 @@ void AppController::setPlotExportDpi(int dpi)
     emit plotExportDpiChanged();
 }
 
-double AppController::plotExportScale(double pageWidth, double pageHeight,
-                                      double displayRatio) const
+double AppController::plotExportScale(double displayRatio) const
 {
-    double scale = 1.0;
     if (plotExportCustomDpi_) {
-        scale = plotExportDpi_ / kExportBaseDpi;
-    } else if (!plotExportCustomSize_) {
-        // Never below one. A display reporting a fractional ratio is
-        // reporting how it lays out text, not how few pixels it has, and a
-        // picture smaller than the pane it was taken of is nobody's copy.
-        scale = std::max(1.0, displayRatio);
+        return plotExportDpi_ / kExportBaseDpi;
     }
-
-    // What a texture can hold, which is the one bound here that is not a
-    // taste. Taken over the longer side, so the picture keeps its shape
-    // rather than being squared off by the clamp -- a stretched figure is a
-    // wrong figure, and a smaller one is only a smaller one.
-    const double longest = std::max(pageWidth, pageHeight);
-    if (longest > 0.0) {
-        scale = std::min(scale, kMaxExportPixels / longest);
+    if (plotExportCustomSize_) {
+        // A size stated in pixels is a composition as well, because nothing
+        // has said otherwise: one point, one pixel.
+        return 1.0;
     }
-    // ...and a scale that rounds a side away to nothing is not a picture
-    // either.
-    const double shortest = std::min(pageWidth, pageHeight);
-    if (shortest > 0.0) {
-        scale = std::max(scale, 1.0 / shortest);
-    }
-    return scale;
+    // Never below one. A display reporting a fractional ratio is reporting
+    // how it lays out text, not how few pixels it has, and a picture smaller
+    // than the pane it was taken of is nobody's copy.
+    return std::max(1.0, displayRatio);
 }
 
-QSize AppController::plotExportPixels(double pageWidth, double pageHeight,
+QSize AppController::plotExportPixels(double paneWidth, double paneHeight,
                                       double displayRatio) const
 {
-    if (pageWidth <= 0.0 || pageHeight <= 0.0) {
+    if (plotExportCustomSize_) {
+        return {plotExportWidth_, plotExportHeight_};
+    }
+    if (paneWidth <= 0.0 || paneHeight <= 0.0) {
         return {};
     }
-    const double scale = plotExportScale(pageWidth, pageHeight, displayRatio);
-    return {static_cast<int>(std::lround(pageWidth * scale)),
-            static_cast<int>(std::lround(pageHeight * scale))};
+    // The pane as it stands, at this display's own resolution -- which is the
+    // picture this application has always copied, down to the pixel.
+    const double ratio = std::max(1.0, displayRatio);
+    const double longest = std::max(paneWidth, paneHeight) * ratio;
+    const double held = longest > kMaxExportPixels ? kMaxExportPixels / longest : 1.0;
+    return {static_cast<int>(std::lround(paneWidth * ratio * held)),
+            static_cast<int>(std::lround(paneHeight * ratio * held))};
+}
+
+QSize AppController::plotExportLayout(double paneWidth, double paneHeight,
+                                      double displayRatio) const
+{
+    const QSize out = plotExportPixels(paneWidth, paneHeight, displayRatio);
+    if (out.isEmpty()) {
+        return {};
+    }
+    double scale = plotExportScale(displayRatio);
+
+    // A composition too small to draw is not a composition. PlotFrame spends
+    // a fixed number of points on its gutters before it has drawn anything,
+    // so past some point the picture is all margin and no plot. The floor is
+    // the same one a chosen size is held to, and it is worth knowing how far
+    // out of the way it is: at 300 dpi it starts to bite below a 200-pixel
+    // side, which is a figure two thirds of an inch across.
+    const double shortest = std::min(out.width(), out.height());
+    if (scale > 0.0 && shortest / scale < kMinExportPixels) {
+        scale = shortest / kMinExportPixels;
+    }
+    if (scale <= 0.0) {
+        return out;
+    }
+    return {static_cast<int>(std::lround(out.width() / scale)),
+            static_cast<int>(std::lround(out.height() / scale))};
 }
 
 double AppController::plotExportTaggedDpi() const

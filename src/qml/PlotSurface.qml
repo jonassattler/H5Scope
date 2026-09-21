@@ -844,11 +844,12 @@ Item {
     /// What is grabbed is no longer this window's own frame but a second one
     /// built for the purpose (PlotPicture.qml), because four things under
     /// Settings > Plot Settings ask the picture to differ from the pane --
-    /// publication colours, a size of the reader's choosing, a resolution of
+    /// publication colours, a size of the reader's choosing, a density of
     /// their choosing, the crosshair in or out -- and none of the first three
     /// can be had by re-styling the frame on screen: a grab renders the scene
     /// as it stands, so the picture would be bought with a frame of the
-    /// application in the wrong colours and at the wrong size.
+    /// application in the wrong colours, at the wrong size and with its type
+    /// at the wrong one.
     function copyImage() {
         if (!surface.drawable)
             return false
@@ -858,21 +859,29 @@ Item {
         // with it rather than waiting for a `copied` that will never come.
         surface.dropPicture()
 
-        // Rounded once, here, because these two are used twice: they are the
-        // size the picture is laid out at and they are what the resolution is
-        // applied to. A frame whose width is a fraction of a logical pixel
-        // would otherwise be truncated into the layout and rounded into the
-        // grab, and the picture would be asked for at a size it was not.
-        const custom = AppController.plotExportCustomSize
-        const wide = Math.round(custom ? AppController.plotExportWidth
-                                       : frame.width)
-        const tall = Math.round(custom ? AppController.plotExportHeight
-                                       : frame.height)
+        // Two sizes and not one, which is the whole of what Settings > Plot
+        // Settings offers here: `page` is what the picture is *composed* at,
+        // in logical units, and `asked` is the pixels it is *rendered* into.
+        // The dpi is the ratio between them, so a figure stated at 1920 by
+        // 1080 comes back at 1920 by 1080 whatever the density -- composed in
+        // fewer units as the density rises, which is what makes the type on
+        // it grow to its true point size.
+        //
+        // Both answered by AppController rather than worked out here: which
+        // of the two the reader stated is its question, and a second reading
+        // of it in QML is a second answer waiting to disagree with the one
+        // the dialog prints.
+        const page = AppController.plotExportLayout(frame.width, frame.height,
+                                                    surface.pixelRatio)
+        const asked = AppController.plotExportPixels(frame.width, frame.height,
+                                                     surface.pixelRatio)
+        if (page.width <= 0 || page.height <= 0)
+            return false
 
         const publication = AppController.plotExportPublication
         picture = pictureComponent.createObject(surface, {
-            pageWidth: wide,
-            pageHeight: tall,
+            pageWidth: page.width,
+            pageHeight: page.height,
             surface: surface,
             sourceLines: frame.lines,
             publication: publication,
@@ -885,15 +894,12 @@ Item {
             return false
         }
 
-        // The picture is *composed* at `wide` by `tall` and *rendered* at
-        // however many pixels the resolution asks for; AppController is where
-        // those two meet, and it is asked rather than reimplemented here so
-        // that the number the dialog shows the reader and the number the grab
-        // is asked for cannot differ. At the default resolution a point is a
-        // pixel and a chosen size is given exactly, which is the picture this
-        // application has always copied.
-        const asked = AppController.plotExportPixels(wide, tall,
-                                                     surface.pixelRatio)
+        // The grab is told the pixels, and the item it is given was laid out
+        // in units -- so this is where the two meet and the density is
+        // applied. Rounding the composition to whole units leaves the ratio a
+        // fraction of a percent off the density asked for, which is a
+        // sub-pixel stretch nobody can see; the alternative is handing the
+        // reader a pixel count that is not the one they typed.
         const started = ImageClipboard.copyItem(
             picture, asked, publication, AppController.plotExportTaggedDpi())
         if (!started)

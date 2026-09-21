@@ -3160,65 +3160,81 @@ TestCase {
         restoreExportSettings()
     }
 
-    /// A resolution the reader states is the resolution the picture comes
-    /// back at, and the display is not consulted.
+    /// The density decides how large the type is, not how many pixels there
+    /// are.
     ///
-    /// The point of the setting, stated as the thing it fixes: two readers
-    /// with the same plot and different laptops used to get different
-    /// pictures, because "as many dots as this screen has" is what a grab is
-    /// by default. A figure for a page cannot be that.
+    /// Two settings and both of them change the picture, which is the thing
+    /// 0.6.4 got wrong: it read the density as a supersample, so a figure
+    /// stated at 1920 by 1080 came back at 6000 by 3375 with the type exactly
+    /// as small against it as before. That is not what a resolution is for. A
+    /// journal asks for a pixel count *and* a density, and the second is what
+    /// makes the first an inch count -- which is the whole of what decides
+    /// whether the labels on the figure can be read.
     ///
-    /// It is a resolution and not a size, which is the other half: the
-    /// picture is *composed* at the size in the row above and *rendered* at
-    /// this, so 96 dpi is the composition pixel for pixel and 192 is the same
-    /// composition with twice the dots in each direction -- not a bigger
-    /// plot, the same plot drawn finer.
-    function test_a_picture_is_rendered_at_the_resolution_that_was_asked_for() {
+    /// So the claim is two-sided and both sides are asserted here: the pixel
+    /// count does not move, and what is drawn into it does.
+    function test_the_density_decides_the_type_size_and_not_the_pixel_count() {
+        // One line over a mostly empty pane, so that what ink there is is
+        // the chrome -- the type, the rules, the ticks -- which is exactly
+        // what the density is claimed to resize.
         verify(select("/series/a"))
         const win = plotWindow()
         const plot = findChild(win.view, "plotSurface")
         verify(plot && plot.drawable, "there must be a plot to copy")
 
+        const wide = 480
+        const tall = 360
         AppController.plotExportCustomSize = true
-        AppController.plotExportWidth = 200
-        AppController.plotExportHeight = 150
-
-        // The base: a point is a pixel, so the size asked for is the size
-        // that lands -- which is what this application has always done and
-        // what the reader who never opens this row goes on getting.
+        AppController.plotExportWidth = wide
+        AppController.plotExportHeight = tall
+        // Publication, because its ground is nothing at all: every pixel
+        // carrying any alpha is drawing, and there is no other way to ask a
+        // picture how much of it is ink.
+        AppController.plotExportPublication = true
         AppController.plotExportCustomDpi = true
-        AppController.plotExportDpi = 96
-        compare(copyAndWait(plot), "")
-        compare(ImageClipboard.imageOnClipboard().width, 200)
-        compare(ImageClipboard.imageOnClipboard().height, 150)
 
-        // Twice the resolution, the same composition.
-        AppController.plotExportDpi = 192
-        compare(copyAndWait(plot), "")
-        compare(ImageClipboard.imageOnClipboard().width, 400)
-        compare(ImageClipboard.imageOnClipboard().height, 300)
+        /// Copy at `dpi` and count what was drawn.
+        ///
+        /// Every third pixel. The question is a ratio between two pictures
+        /// of the same thing, so a grid samples it as well as a full scan
+        /// and reads the clipboard a ninth as many times.
+        const inkAt = (dpi) => {
+            AppController.plotExportDpi = dpi
 
-        // ...and below the base as well, because a smaller file for a slide
-        // is as legitimate a request as a larger one for a plate.
-        AppController.plotExportDpi = 48
-        compare(copyAndWait(plot), "")
-        compare(ImageClipboard.imageOnClipboard().width, 100)
-        compare(ImageClipboard.imageOnClipboard().height, 75)
+            // What must move: the composition is the pixel count over the
+            // density, so three times the density composes the same picture
+            // in a third of the units -- and the type, the rules and the
+            // gutters, which are a fixed number of units, are three times
+            // the size against it.
+            compare(AppController.plotExportLayout(plot.width, plot.height, 1).width,
+                    Math.round(wide / (dpi / 96)),
+                    "the composition at " + dpi + " dpi")
 
-        // Turned off again, the display decides -- which offscreen is one to
-        // one, so this is the size asked for.
-        AppController.plotExportCustomDpi = false
-        compare(copyAndWait(plot), "")
-        compare(ImageClipboard.imageOnClipboard().width, 200)
+            compare(copyAndWait(plot), "")
 
-        // The dialog prints what will come out, and prints it through the
-        // same function the grab is asked for -- so the number the reader
-        // reads and the number they get cannot be two numbers.
-        AppController.plotExportCustomDpi = true
-        AppController.plotExportDpi = 192
-        const shown = AppController.plotExportPixels(200, 150, 1)
-        compare(shown.width, 400)
-        compare(shown.height, 300)
+            // The half that must not move. A reader who typed 480 by 360 is
+            // handed 480 by 360, at every density there is.
+            const size = ImageClipboard.imageOnClipboard()
+            compare(size.width, wide, "the pixel count is the reader's, at " + dpi + " dpi")
+            compare(size.height, tall, "the pixel count is the reader's, at " + dpi + " dpi")
+
+            let found = 0
+            for (let x = 0; x < wide; x += 3) {
+                for (let y = 0; y < tall; y += 3) {
+                    if (ImageClipboard.pixelOnClipboard(x, y).a > 0.02)
+                        ++found
+                }
+            }
+            return found
+        }
+
+        const atScreen = inkAt(96)
+        const atPrint = inkAt(288)
+
+        verify(atScreen > 0, "the picture must have something in it")
+        verify(atPrint > atScreen * 1.5,
+               "type set for 288 dpi must cover far more of the same picture "
+               + "than type set for 96: " + atScreen + " -> " + atPrint)
 
         restoreExportSettings()
     }

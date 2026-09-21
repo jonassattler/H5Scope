@@ -162,33 +162,44 @@ private:
     Q_PROPERTY(int minExportPixels READ minExportPixels CONSTANT)
     Q_PROPERTY(int maxExportPixels READ maxExportPixels CONSTANT)
 
-    // --- and at what resolution -------------------------------------------
+    // --- and how large its pixels are --------------------------------------
     //
-    // A picture is *composed* in points and *rendered* in pixels, and the
-    // resolution is the exchange rate between them. The composition is what
-    // the size above decides: how large the type is against the pane, how
-    // many numbered ticks there is room for, how heavy a hairline is. The
-    // resolution decides only how many dots that same composition is drawn
-    // with -- which is exactly matplotlib's figsize and dpi, and is the model
-    // a reader exporting a figure already has.
+    // **The size says how many pixels. The dpi says how big they are.** Those
+    // are two settings and not one, and both of them change what the picture
+    // looks like.
     //
-    // kExportBaseDpi is where the two meet: at 96 dpi a point is a pixel, so
-    // the two boxes above are a size in pixels as well as a composition, and
-    // nothing about them has changed.
+    // The second is the one that is easy to get wrong, and 0.6.4 got it
+    // wrong: it read dpi as a supersample, so 1920 by 1080 at 300 dpi came
+    // back as 6000 by 3375 with the type exactly as small against the figure
+    // as it had been. That is not what a resolution is for. A figure for a
+    // page is a stated number of pixels -- what the journal asks for -- and
+    // the dpi is what makes those pixels an *inch count*, which is the whole
+    // of what decides whether the type on it can be read.
+    //
+    // So a logical unit is 1/96 inch (kExportBaseDpi); the type, the rules,
+    // the gutters and the markers are all a fixed number of those; and the
+    // dpi says how many device pixels one unit is. A 1920 by 1080 picture at
+    // 300 dpi is 6.4 by 3.6 inches: it is composed at 614 by 346 units, so
+    // the 10-unit type on it is 10/96 inch -- 7.5 pt, its true point size --
+    // where the same picture at 96 dpi is 20 inches across and that type is
+    // a third the size against it.
+    //
+    // Nothing about the two boxes above changed: at 96 dpi a unit is a pixel,
+    // so a stated size is exactly the pixels it says -- and it is exactly the
+    // pixels it says at every other dpi too. The dpi never moves the pixel
+    // count. It moves everything inside it.
 
-    /// Whether the picture is rendered at a resolution the reader chose
-    /// rather than at whatever this display draws at.
+    /// Whether the picture's pixels are a size the reader stated rather than
+    /// whatever this display draws with.
     ///
     /// The default is the display, because that is what this application has
     /// always copied and what a reader pasting into a chat window wants. A
-    /// chosen dpi is the other case entirely -- a figure for a page -- and it
-    /// is *independent of the display*: the same plot copied on a HiDPI
-    /// laptop and on a plain monitor comes back as the same picture, which
-    /// the display-scaled one does not.
+    /// chosen dpi is the other case entirely -- a figure for a page, where
+    /// what the type has to be legible against is an inch and not a screen.
     Q_PROPERTY(bool plotExportCustomDpi READ plotExportCustomDpi WRITE setPlotExportCustomDpi NOTIFY
                    plotExportCustomDpiChanged)
 
-    /// That resolution, in dots per inch.
+    /// That density, in dots per inch.
     ///
     /// Three hundred by default, which is what journals ask for. Clamped the
     /// same way the two sizes are, and on the same two paths in.
@@ -325,32 +336,42 @@ public:
     [[nodiscard]] int plotExportDpi() const { return plotExportDpi_; }
     void setPlotExportDpi(int dpi);
 
-    /// How many device pixels one point of a picture `pageWidth` by
-    /// `pageHeight` points becomes.
+    /// How many device pixels one logical unit of the picture becomes.
     ///
-    /// The one place the three settings above are turned into a number, so
-    /// that the dialog showing the reader what they will get and the surface
-    /// asking for it cannot disagree. Three answers, and they are the three
-    /// the settings spell out:
+    /// The one place the settings above are turned into a number, so that the
+    /// dialog showing the reader what they will get and the surface asking
+    /// for it cannot disagree. Three answers, and they are the three the
+    /// settings spell out:
     ///
     ///   - a chosen dpi -> that dpi over kExportBaseDpi, and the display is
     ///     not consulted at all, which is the whole of what the setting is
     ///     for;
-    ///   - a chosen size -> one, because a size asked for in pixels is given
-    ///     in pixels;
+    ///   - a chosen size and no dpi -> one, because nothing has said that a
+    ///     pixel is anything other than a unit;
     ///   - the pane's own size -> `displayRatio`, because that is the picture
     ///     this application has always copied, down to the pixel.
+    [[nodiscard]] Q_INVOKABLE double plotExportScale(double displayRatio) const;
+
+    /// The size the grab comes back at, in pixels, for a pane `paneWidth` by
+    /// `paneHeight` logical units.
     ///
-    /// Then bounded by what a texture can hold. That bound is on the rendered
-    /// pixels and not on the composition, which is why it lives here rather
-    /// than in the setters: 1920 by 1080 is a legal size and 1200 dpi is a
-    /// legal resolution, and the two together are not a picture any graphics
-    /// API will hand back.
-    [[nodiscard]] Q_INVOKABLE double plotExportScale(double pageWidth, double pageHeight,
+    /// A stated size, exactly -- at every dpi, because the dpi is not in this
+    /// answer at all. Otherwise the pane at the display's own scale, which is
+    /// what "same as window" has always meant, held inside what a texture can
+    /// hold.
+    [[nodiscard]] Q_INVOKABLE QSize plotExportPixels(double paneWidth, double paneHeight,
                                                      double displayRatio) const;
 
-    /// ...and that scale applied, which is the size the grab is asked for.
-    [[nodiscard]] Q_INVOKABLE QSize plotExportPixels(double pageWidth, double pageHeight,
+    /// ...and the size the picture is *laid out* at to fill those pixels, in
+    /// logical units.
+    ///
+    /// This is where the dpi lands, and it is the whole of what makes a
+    /// density mean something: the type, the rules, the ticks and the gutters
+    /// are a fixed number of logical units, so composing the same pixel count
+    /// in fewer units makes every one of them larger against the picture. At
+    /// 96 dpi the division is by one and the composition *is* the pixel
+    /// count, which is the picture 0.6.3 drew.
+    [[nodiscard]] Q_INVOKABLE QSize plotExportLayout(double paneWidth, double paneHeight,
                                                      double displayRatio) const;
 
     /// The resolution a picture rendered at that scale is tagged with, or 0
@@ -384,16 +405,17 @@ public:
     [[nodiscard]] int minExportPixels() const { return kMinExportPixels; }
     [[nodiscard]] int maxExportPixels() const { return kMaxExportPixels; }
 
-    /// One point is one pixel at this resolution, which is what makes the two
-    /// sizes above a composition and a pixel count at the same time. Ninety-
+    /// One logical unit is one pixel at this density, which is what makes a
+    /// stated size a composition and a pixel count at the same time. Ninety-
     /// six and not seventy-two: it is what every desktop this runs on calls
-    /// its own unscaled density, so "same as window" at 96 dpi on an unscaled
-    /// display is the picture that was already being copied.
+    /// its own unscaled density, and it is the unit Theme's type is already
+    /// written in -- so a 10-unit face is 10/96 inch, 7.5 pt, at whatever dpi
+    /// the picture is asked for.
     static constexpr double kExportBaseDpi = 96.0;
     /// What a reader may ask for. The floor is below the base on purpose -- a
-    /// smaller file for a slide is as legitimate a request as a larger one for
-    /// a plate -- and the ceiling is where dpi stops describing print and
-    /// starts describing a typesetter.
+    /// figure whose type should read smaller than a screen sets it is as
+    /// legitimate a request as one for a plate -- and the ceiling is where
+    /// dpi stops describing print and starts describing a typesetter.
     static constexpr int kMinExportDpi = 36;
     static constexpr int kMaxExportDpi = 1200;
 
