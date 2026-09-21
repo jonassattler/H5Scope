@@ -466,10 +466,15 @@ round trip per element would draw exactly the right picture.
    palest entries do **not** clear 3:1 on the light theme's white; that is the
    stated cost of exactness, `tst_views` pins them stop for stop so a
    well-meant deepening fails rather than passing quietly, and a reader who
-   wants a cycle solved for a screen has the other two one pick away. A plot
-   opens on `okabe-ito`, so *the first line of a new plot is achromatic* —
-   which is what that cycle is, and what a pixel-counting test looking for a
-   saturated stroke has to be told.
+   wants a cycle solved for a screen has the other two one pick away.
+
+   There is one departure from a published *order*, and it is Okabe-Ito's:
+   that achromatic entry is drawn **last** rather than first. A plot opens on
+   this cycle and usually has one line in it, and published order made that
+   line black — an ink the reader cannot tell from the chrome, and one a
+   pixel-counting test looking for a saturated stroke could not see either.
+   So the cycle opens on the orange and closes on the black; the colours and
+   the cycle are still the published ones, offset by one.
 6. **The views stream.** The table reads the block it is about to paint; the
    plot reads a line. Postprocessing is the exception — it must materialise, and
    is capped at `postproc::kMaxElements` (2^24 doubles, 128 MB).

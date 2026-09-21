@@ -3256,12 +3256,12 @@ TestCase {
     /// is that the corner of the image has *no colour*, which is what an alpha
     /// of zero means.
     ///
-    /// The ink is black here because the line is *drawn* black on paper and
-    /// not because the picture is flattened: one line on the default cycle is
-    /// okabe-ito's first entry, which is the ground in whichever scope it is
-    /// drawn in -- signal white on the dark theme, black on the page. The test
-    /// below is the one that says a picture of six lines still has six
-    /// colours in it.
+    /// The ink is the *chrome's*: the ticks, the axis names and the rules are
+    /// drawn in paper ink, which is black, and that is what the count below
+    /// finds. It is deliberately not the line -- the default cycle opens on
+    /// Okabe-Ito's orange, and a picture whose strokes came back black would
+    /// be the flattening this mode stopped doing. The test below is the one
+    /// that says a picture of six lines still has six colours in it.
     function test_a_publication_copy_has_no_ground_and_black_strokes() {
         // One line over a mostly empty pane. The claim being made is about the
         // *ground*, so the picture has to be mostly ground: a dense bundle
@@ -3310,7 +3310,8 @@ TestCase {
         verify(clear > samples * 2 / 3,
                "a publication picture stands on the page and not on a slab: "
                + clear + " of " + samples + " samples carry no ink at all")
-        verify(blackInk > 10, "the picture must carry black ink: " + blackInk)
+        verify(blackInk > 10,
+               "the picture's chrome must be drawn in paper ink: " + blackInk)
 
         // And the pane the reader is looking at was never touched. This is the
         // whole reason the picture is a second frame: re-styling this one for
@@ -3394,28 +3395,30 @@ TestCase {
             return false
         }
 
-        // The five chromatic entries of the cycle the six lines were drawn
-        // with. Black is left out of the count on purpose: it is okabe-ito's
-        // first entry *and* the colour of every tick label on the page, so
-        // finding it would say nothing about the strokes.
+        // The six chromatic entries the six lines were drawn with -- which is
+        // all six of them now that okabe-ito's black is at the end of the
+        // cycle rather than at the head of it. Black would have to be left
+        // out of any such count: it is the colour of every tick label on the
+        // page, so finding it would say nothing about the strokes.
         const paper = Theme.paperPalettes["okabe-ito"]
         let carried = 0
-        for (let i = 1; i < 6; ++i) {
+        for (let i = 0; i < 6; ++i) {
             if (carries(paper[i]))
                 ++carried
         }
         verify(carried >= 3,
                "a publication picture of six lines must carry the light "
-               + "theme's palette, and " + carried + " of its five chromatic "
+               + "theme's palette, and " + carried + " of its six chromatic "
                + "entries reached the clipboard")
 
         // ...and not the dark theme's. The two cycles share their seven
-        // published entries and differ in the first, which is the ground:
+        // published entries and differ in the last, which is the ground:
         // signal white on screen, black on the page. A picture carrying a
         // white stroke is a picture drawn in the wrong scope -- and it would
         // be invisible on the page, which is the reason the substitution
         // exists at all.
-        verify(!carries(Theme.categoricalPalettes["okabe-ito"][0]),
+        const cycle = Theme.categoricalPalettes["okabe-ito"]
+        verify(!carries(cycle[cycle.length - 1]),
                "nothing in a picture drawn for paper may be signal white")
 
         // And the pane is untouched, as ever.
@@ -3860,12 +3863,14 @@ TestCase {
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         const backing = AppController.datasetPlot
 
@@ -3941,12 +3946,14 @@ TestCase {
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot.drawable)
         const before = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
@@ -4081,12 +4088,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         compare(AppController.datasetPlot.seriesCount, 1)
@@ -4124,12 +4133,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
 
@@ -4169,12 +4180,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
@@ -4782,6 +4795,11 @@ TestCase {
     ///
     /// The one substitution is Okabe-Ito's black, which is the plot's own
     /// ground in the dark theme and is drawn at signal white there instead.
+    ///
+    /// The one reordering is where that entry sits: last rather than first,
+    /// so that a plot of one line opens on a colour. The colours are the
+    /// published colours and the cycle is the published cycle; a figure from
+    /// here and a figure from matplotlib name the same eight, offset by one.
     function test_the_published_palettes_are_the_published_values() {
         const was = Theme.dark
 
@@ -4806,11 +4824,11 @@ TestCase {
 
             const okabe = Theme.categoricalPalettes["okabe-ito"]
             compare(okabe.length, 8)
-            same(okabe[0], Theme.dark ? "#ffffff" : "#000000",
-                 "Okabe-Ito's black is the ground in the " + scope + " theme")
             for (let i = 0; i < okabeIto.length; ++i)
-                same(okabe[i + 1], okabeIto[i],
-                     "okabe-ito " + (i + 1) + " in the " + scope + " theme")
+                same(okabe[i], okabeIto[i],
+                     "okabe-ito " + i + " in the " + scope + " theme")
+            same(okabe[okabeIto.length], Theme.dark ? "#ffffff" : "#000000",
+                 "Okabe-Ito's black is the ground in the " + scope + " theme")
 
             const bright = Theme.categoricalPalettes["tol bright"]
             compare(bright.length, tolBright.length)

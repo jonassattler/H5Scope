@@ -992,8 +992,21 @@ QtObject {
             // other seven are identical in both scopes: they were chosen to hold
             // apart under all three dichromacies, and re-solving them for a black
             // ground would be a different palette wearing this one's name.
-            "okabe-ito": [onDark ? n11 : n0, "#E69F00", "#56B4E9", "#009E73",
-                          "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+            //
+            // The achromatic entry is drawn *last* rather than first, and that
+            // is the one departure from the published order in this table. Its
+            // colours are the published colours and its cycle is the published
+            // cycle; what moved is where the set starts. Published, it starts
+            // on black -- which is fine in a figure of eight lines and is the
+            // wrong opening for a plot that usually has one, because the first
+            // thing this application draws is then the only line on the pane
+            // and it is drawn in an ink the reader cannot tell from the
+            // chrome. So the cycle opens on the orange and closes on the
+            // black. A reader comparing a figure from here with one from
+            // matplotlib still finds the same eight colours saying the same
+            // eight things; they are offset by one.
+            "okabe-ito": ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+                          "#0072B2", "#D55E00", "#CC79A7", onDark ? n11 : n0],
             // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
             // often reached for where a handful of lines need naming.
             "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
@@ -1047,7 +1060,7 @@ QtObject {
     /// because that is the scope the picture is drawn in: see the paper block
     /// above, which makes the same argument about the chrome.
     ///
-    /// Only three of the five move. Okabe-Ito's first entry is the ground in
+    /// Only three of the five move. Okabe-Ito's last entry is the ground in
     /// whichever scope it is drawn in -- black on paper, signal white on the
     /// dark theme -- and `spectrum` and `safe` were solved against both
     /// grounds. Tol's two are published values and are the same everywhere.
