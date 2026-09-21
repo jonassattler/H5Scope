@@ -431,13 +431,38 @@ QtObject {
     /// variant the tree's tag column needs to fit three of them in a 26px row.
     readonly property int badgeHeight:        18
     readonly property int badgeHeightCompact: 16
-    /// Narrowest the tree's right-hand readout may be drawn at. Below this it
-    /// is an ellipsis and nothing else, so it is dropped instead -- the name
-    /// is what the reader came for, and it takes the space back.
+    /// The tree's right-hand readout: its column, and the narrowest that
+    /// column may be squeezed to before it is dropped.
+    ///
+    /// A constant and not the width of whatever this row's readout happens
+    /// to be, because it is a *column*: the shape, the count or the link
+    /// target starts at the same x on every line, and so therefore do the
+    /// tags beside it and the end of every name. Ninety-six is what the
+    /// readouts this application writes actually measure -- the face is
+    /// monospaced, so this is about sixteen characters, and a three-axis
+    /// shape of four-digit extents is the longest of them at ninety. A link
+    /// target is longer than any column worth spending and elides from the
+    /// left, which is where its uninformative end is; the row's tooltip
+    /// carries it whole.
+    ///
+    /// Below the minimum what is left is an ellipsis and nothing else, so the
+    /// readout is dropped instead -- the name is what the reader came for,
+    /// and it takes the space back.
+    readonly property int treeMetaWidth:     96
     readonly property int treeMetaMinWidth:  40
     /// Narrowest an Information panel may get before the layout reflows to one
     /// fewer column.
     readonly property int panelMinWidth:   340
+    /// A dialog that is a form: Plot Settings, and whatever follows it.
+    ///
+    /// Wider than a panel, because a panel's rows are one control each and a
+    /// form's are a labelled box beside a labelled box. The density row is
+    /// three of them -- the dots per inch and the two sides the figure comes
+    /// to -- and they are three readings of one number, so a wrap that puts
+    /// one of them on a line of its own is a wrap in the middle of a
+    /// sentence. This is what that line measures, with air for a translation
+    /// that needs more of it; past that the row wraps rather than clipping.
+    readonly property int formDialogWidth: 440
     /// Shortest a body inside one may be squeezed to before the panel stops
     /// giving room back -- three rows of it.
     ///
@@ -939,7 +964,10 @@ QtObject {
     // journals ask for and what every plotting library ships -- so a plot
     // exported from here lands in a paper beside plots that match it. That is
     // worth more than a contrast figure, so they are kept at their published
-    // values, entry for entry, and are what this plot opens on.
+    // values, entry for entry, and are what this plot opens on. Okabe-Ito's
+    // order has one departure, argued where it is made: its achromatic entry
+    // is drawn last rather than first, so that a plot of one line opens on a
+    // colour.
     //
     // What it costs, stated plainly so that nobody "fixes" it later: these
     // were designed for ink on paper, and it shows in the light scope. Okabe-
@@ -967,8 +995,21 @@ QtObject {
             // other seven are identical in both scopes: they were chosen to hold
             // apart under all three dichromacies, and re-solving them for a black
             // ground would be a different palette wearing this one's name.
-            "okabe-ito": [onDark ? n11 : n0, "#E69F00", "#56B4E9", "#009E73",
-                          "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+            //
+            // The achromatic entry is drawn *last* rather than first, and that
+            // is the one departure from the published order in this table. Its
+            // colours are the published colours and its cycle is the published
+            // cycle; what moved is where the set starts. Published, it starts
+            // on black -- which is fine in a figure of eight lines and is the
+            // wrong opening for a plot that usually has one, because the first
+            // thing this application draws is then the only line on the pane
+            // and it is drawn in an ink the reader cannot tell from the
+            // chrome. So the cycle opens on the orange and closes on the
+            // black. A reader comparing a figure from here with one from
+            // matplotlib still finds the same eight colours saying the same
+            // eight things; they are offset by one.
+            "okabe-ito": ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+                          "#0072B2", "#D55E00", "#CC79A7", onDark ? n11 : n0],
             // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
             // often reached for where a handful of lines need naming.
             "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
@@ -1022,7 +1063,7 @@ QtObject {
     /// because that is the scope the picture is drawn in: see the paper block
     /// above, which makes the same argument about the chrome.
     ///
-    /// Only three of the five move. Okabe-Ito's first entry is the ground in
+    /// Only three of the five move. Okabe-Ito's last entry is the ground in
     /// whichever scope it is drawn in -- black on paper, signal white on the
     /// dark theme -- and `spectrum` and `safe` were solved against both
     /// grounds. Tol's two are published values and are the same everywhere.

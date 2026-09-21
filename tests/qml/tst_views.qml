@@ -153,6 +153,11 @@ TestCase {
         PlotSettingsPanel {}
     }
 
+    Component {
+        id: plotSettingsDialogComponent
+        PlotSettingsDialog {}
+    }
+
     /// The tree in a window of its own, for the filter test: an item parented
     /// into the test case is never effectively visible, and an invisible item
     /// takes no focus and is delivered no key events.
@@ -2382,6 +2387,15 @@ TestCase {
     function verifyBandNumbersAreClear(readout, clearOfBand) {
         const boxes = readout.labels
         for (let i = 0; i < boxes.length; ++i) {
+            // Every key the delegate reads, on every entry. The quarter is
+            // the one that is easy to leave off -- only two of the six are
+            // turned -- and leaving it off is not a label drawn straight, it
+            // is `rotation: undefined` and two warnings a frame for as long
+            // as the reader holds the drag.
+            compare(typeof boxes[i].turn, "number",
+                    boxes[i].key + " must say which quarter it is read at")
+            compare(typeof boxes[i].text, "string",
+                    boxes[i].key + " must carry its own text")
             verify(readout.inside(boxes[i]),
                    boxes[i].key + " must be drawn inside the pane")
             if (clearOfBand || boxes[i].key !== "start" && boxes[i].key !== "end") {
@@ -3160,6 +3174,117 @@ TestCase {
         restoreExportSettings()
     }
 
+    /// The density and the figure's two sides are one number said three ways.
+    ///
+    /// The pixel count is stated a row above and no density may move it, so
+    /// at a stated size a density *is* a physical size. Plot Settings offers
+    /// all three as boxes and writing any one of them moves the other two;
+    /// what is asserted here is the arithmetic under that, which lives on
+    /// AppController so that the dialog's boxes and the picture that leaves
+    /// cannot be two answers.
+    function test_a_figure_s_size_in_centimetres_is_its_density() {
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 1920
+        AppController.plotExportHeight = 1080
+        AppController.plotExportDpi = 300
+
+        // 1920 px at 300 dpi is 6.4 inches, which is 16.256 cm.
+        fuzzyCompare(AppController.plotExportCentimetres(1920, 300), 16.256, 0.001)
+        fuzzyCompare(AppController.plotExportCentimetres(1080, 300), 9.144, 0.001)
+        compare(AppController.plotExportDpiFor(1920, 16.256), 300)
+
+        // A width typed in centimetres is a density, and it is the *only*
+        // thing that moves: the pixels are the reader's and the shape of the
+        // figure is theirs too, so the other side follows rather than being
+        // set.
+        AppController.plotExportDpi =
+            AppController.plotExportDpiFor(AppController.plotExportWidth, 8.5)
+        compare(AppController.plotExportWidth, 1920)
+        compare(AppController.plotExportHeight, 1080)
+        compare(AppController.plotExportDpi, 574)
+        fuzzyCompare(AppController.plotExportCentimetres(1080, 574), 4.78, 0.01)
+
+        // Clamped where every other density is, and at the same two bounds.
+        compare(AppController.plotExportDpiFor(1920, 0.01),
+                AppController.maxExportDpi)
+        compare(AppController.plotExportDpiFor(1920, 10000),
+                AppController.minExportDpi)
+
+        // A box holding nothing is a box being typed in, not a figure of no
+        // width: the density stands until there is a number in it.
+        AppController.plotExportDpi = 300
+        compare(AppController.plotExportDpiFor(1920, 0), 300)
+        compare(AppController.plotExportDpiFor(1920, -5), 300)
+
+        restoreExportSettings()
+    }
+
+    /// ...and the three boxes over it are wired to it, all three ways.
+    ///
+    /// The arithmetic above is one thing and the form is another. What is
+    /// caught here is the wiring trap this dialog has already been bitten by
+    /// once: a QML binding depends on the properties it *names*, and a call
+    /// names nothing it reads -- so a box that asked AppController for the
+    /// figure's width without naming the density would go on showing the
+    /// width the density before it gave. Every one of the three is written
+    /// into and the other two are read back.
+    function test_the_export_boxes_are_three_readings_of_one_number() {
+        AppController.plotExportCustomSize = true
+        AppController.plotExportCustomDpi = true
+        AppController.plotExportWidth = 1920
+        AppController.plotExportHeight = 1080
+        AppController.plotExportDpi = 300
+
+        const dialog = createTemporaryObject(plotSettingsDialogComponent,
+                                             testCase)
+        verify(dialog, "the plot settings dialog must instantiate")
+        dialog.open()
+        waitForRendering(testCase)
+
+        const dpi = findChild(dialog.contentItem, "exportDpiField")
+        const across = findChild(dialog.contentItem, "exportWidthCmField")
+        const down = findChild(dialog.contentItem, "exportHeightCmField")
+        verify(dpi && across && down, "all three boxes must be reachable")
+
+        // 1920 by 1080 at 300 dpi is 16.26 by 9.14 cm.
+        compare(dpi.text, "300")
+        compare(across.text, "16.26")
+        compare(down.text, "9.14")
+
+        /// Write `what` into `box` the way a reader does: the text, and then
+        /// the key that commits it.
+        const write = (box, what) => {
+            box.forceActiveFocus()
+            box.text = what
+            keyClick(Qt.Key_Return)
+            waitForRendering(testCase)
+        }
+
+        // A journal's single-column width. The density is what moves, the
+        // other side follows it, and the pixel count -- which the reader
+        // stated a row above -- does not move at all.
+        write(across, "8.5")
+        compare(AppController.plotExportDpi, 574)
+        compare(across.text, "8.5")
+        compare(down.text, "4.78")
+        compare(AppController.plotExportWidth, 1920)
+        compare(AppController.plotExportHeight, 1080)
+
+        // The density, written directly: both sides follow.
+        write(dpi, "600")
+        compare(across.text, "8.13")
+        compare(down.text, "4.57")
+
+        // ...and the other side, which is the same relationship the other way
+        // round.
+        write(down, "6")
+        compare(AppController.plotExportDpi, 457)
+        compare(across.text, "10.67")
+        compare(AppController.plotExportWidth, 1920)
+
+        restoreExportSettings()
+    }
+
     /// The density decides how large the type is, not how many pixels there
     /// are.
     ///
@@ -3247,12 +3372,12 @@ TestCase {
     /// is that the corner of the image has *no colour*, which is what an alpha
     /// of zero means.
     ///
-    /// The ink is black here because the line is *drawn* black on paper and
-    /// not because the picture is flattened: one line on the default cycle is
-    /// okabe-ito's first entry, which is the ground in whichever scope it is
-    /// drawn in -- signal white on the dark theme, black on the page. The test
-    /// below is the one that says a picture of six lines still has six
-    /// colours in it.
+    /// The ink is the *chrome's*: the ticks, the axis names and the rules are
+    /// drawn in paper ink, which is black, and that is what the count below
+    /// finds. It is deliberately not the line -- the default cycle opens on
+    /// Okabe-Ito's orange, and a picture whose strokes came back black would
+    /// be the flattening this mode stopped doing. The test below is the one
+    /// that says a picture of six lines still has six colours in it.
     function test_a_publication_copy_has_no_ground_and_black_strokes() {
         // One line over a mostly empty pane. The claim being made is about the
         // *ground*, so the picture has to be mostly ground: a dense bundle
@@ -3301,7 +3426,8 @@ TestCase {
         verify(clear > samples * 2 / 3,
                "a publication picture stands on the page and not on a slab: "
                + clear + " of " + samples + " samples carry no ink at all")
-        verify(blackInk > 10, "the picture must carry black ink: " + blackInk)
+        verify(blackInk > 10,
+               "the picture's chrome must be drawn in paper ink: " + blackInk)
 
         // And the pane the reader is looking at was never touched. This is the
         // whole reason the picture is a second frame: re-styling this one for
@@ -3385,28 +3511,30 @@ TestCase {
             return false
         }
 
-        // The five chromatic entries of the cycle the six lines were drawn
-        // with. Black is left out of the count on purpose: it is okabe-ito's
-        // first entry *and* the colour of every tick label on the page, so
-        // finding it would say nothing about the strokes.
+        // The six chromatic entries the six lines were drawn with -- which is
+        // all six of them now that okabe-ito's black is at the end of the
+        // cycle rather than at the head of it. Black would have to be left
+        // out of any such count: it is the colour of every tick label on the
+        // page, so finding it would say nothing about the strokes.
         const paper = Theme.paperPalettes["okabe-ito"]
         let carried = 0
-        for (let i = 1; i < 6; ++i) {
+        for (let i = 0; i < 6; ++i) {
             if (carries(paper[i]))
                 ++carried
         }
         verify(carried >= 3,
                "a publication picture of six lines must carry the light "
-               + "theme's palette, and " + carried + " of its five chromatic "
+               + "theme's palette, and " + carried + " of its six chromatic "
                + "entries reached the clipboard")
 
         // ...and not the dark theme's. The two cycles share their seven
-        // published entries and differ in the first, which is the ground:
+        // published entries and differ in the last, which is the ground:
         // signal white on screen, black on the page. A picture carrying a
         // white stroke is a picture drawn in the wrong scope -- and it would
         // be invisible on the page, which is the reason the substitution
         // exists at all.
-        verify(!carries(Theme.categoricalPalettes["okabe-ito"][0]),
+        const cycle = Theme.categoricalPalettes["okabe-ito"]
+        verify(!carries(cycle[cycle.length - 1]),
                "nothing in a picture drawn for paper may be signal white")
 
         // And the pane is untouched, as ever.
@@ -3851,12 +3979,14 @@ TestCase {
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         const backing = AppController.datasetPlot
 
@@ -3932,12 +4062,14 @@ TestCase {
         waitForRendering(win.view)
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot.drawable)
         const before = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
@@ -4072,12 +4204,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         compare(AppController.datasetPlot.seriesCount, 1)
@@ -4115,12 +4249,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
 
@@ -4160,12 +4296,14 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
 
-        // A cycle whose first entry is a colour. The plot opens on Okabe-Ito,
-        // whose first entry is black -- drawn at signal white on the dark
-        // theme, because black is the ground there -- and colouredPixels()
-        // below finds the stroke by looking for a *saturated* pixel. Nothing
-        // here is about which cycle is in use; the line simply has to be one
-        // this counting can see.
+        // A cycle whose first entry is a colour, pinned rather than assumed:
+        // colouredPixels() below finds the stroke by looking for a
+        // *saturated* pixel, and what the plot opens on is a setting. It
+        // would answer either way now -- Okabe-Ito opens on its orange --
+        // but it did not always: until the achromatic entry was moved to the
+        // end of that cycle, the first line of a new plot was black, drawn at
+        // signal white on the dark theme because black is the ground there,
+        // and this counting saw nothing at all.
         plot.colorMode = "spectrum"
         verify(plot, "the plot surface must be reachable")
         const bare = colouredPixels(grabImage(plot), Theme.sliceBarHeight)
@@ -4773,6 +4911,11 @@ TestCase {
     ///
     /// The one substitution is Okabe-Ito's black, which is the plot's own
     /// ground in the dark theme and is drawn at signal white there instead.
+    ///
+    /// The one reordering is where that entry sits: last rather than first,
+    /// so that a plot of one line opens on a colour. The colours are the
+    /// published colours and the cycle is the published cycle; a figure from
+    /// here and a figure from matplotlib name the same eight, offset by one.
     function test_the_published_palettes_are_the_published_values() {
         const was = Theme.dark
 
@@ -4797,11 +4940,11 @@ TestCase {
 
             const okabe = Theme.categoricalPalettes["okabe-ito"]
             compare(okabe.length, 8)
-            same(okabe[0], Theme.dark ? "#ffffff" : "#000000",
-                 "Okabe-Ito's black is the ground in the " + scope + " theme")
             for (let i = 0; i < okabeIto.length; ++i)
-                same(okabe[i + 1], okabeIto[i],
-                     "okabe-ito " + (i + 1) + " in the " + scope + " theme")
+                same(okabe[i], okabeIto[i],
+                     "okabe-ito " + i + " in the " + scope + " theme")
+            same(okabe[okabeIto.length], Theme.dark ? "#ffffff" : "#000000",
+                 "Okabe-Ito's black is the ground in the " + scope + " theme")
 
             const bright = Theme.categoricalPalettes["tol bright"]
             compare(bright.length, tolBright.length)
@@ -5096,19 +5239,22 @@ TestCase {
 
     }
 
-    /// The tags stand against the readout, on its left.
+    /// The tags stand in a column of their own, against the readout.
     ///
-    /// Two arrangements came before this one and both are worth remembering.
-    /// They began as three fixed slots at the pane's right edge, which lined
-    /// them up but spent that width on every row whether or not it had a tag;
-    /// they then went directly after the name, on the argument that a tag is
-    /// an adjective and belongs next to its noun. That is true of one row and
-    /// wrong of a pane full of them -- the name is the one thing on the row
-    /// whose length is arbitrary, so tags pinned to its end land somewhere
-    /// different on every line.
+    /// Three arrangements came before this one and all of them are worth
+    /// remembering. They began as three fixed slots at the pane's right edge,
+    /// which lined them up but stood a tag two hundred pixels from the name
+    /// it qualifies; they then went directly after the name, on the argument
+    /// that a tag is an adjective and belongs next to its noun. That is true
+    /// of one row and wrong of a pane full of them -- the name is the one
+    /// thing on the row whose length is arbitrary, so tags pinned to its end
+    /// land somewhere different on every line. They were then pinned to the
+    /// readout, which is short and right-aligned; better, and still not a
+    /// column, because the width they took was however many tags that row had.
     ///
-    /// Pinned to the readout they line up, and a row with no tags still
-    /// spends nothing, which is the part the fixed slots got wrong.
+    /// So what is asserted here is the column: the same width on every row,
+    /// whatever it carries, with the tags packed against its right-hand end
+    /// and the readout beyond that.
     function test_the_tree_s_tags_stand_against_the_readout() {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
@@ -5146,9 +5292,78 @@ TestCase {
         verify(tagStart >= nameEnd,
                "a tag must not sit on top of the name it qualifies")
 
-        // A row with nothing to say about itself has no tags at all, rather
-        // than empty slots holding width open.
-        compare(badgesIn(findTreeRow(win.tree, "matrix")).length, 0)
+        // A row with nothing to say about itself draws no tag -- and still
+        // spends the column, which is what makes it one. That is the cost
+        // this arrangement pays and the earlier ones did not.
+        const bare = findTreeRow(win.tree, "matrix")
+        compare(badgesIn(bare).length, 0)
+
+        const slotOf = (which) => {
+            const slot = findChild(which, "treeTags")
+            verify(slot, "every row must carry the tag column")
+            return slot
+        }
+        const oneTag = slotOf(row)
+        compare(slotOf(bare).width, oneTag.width,
+                "the tag column is the same width on a row with a tag and a "
+                + "row without one")
+        // ...and it is the room three tags need rather than the room this
+        // row's one needs. Measured against twice the tag it has and not
+        // three times: the three letters are not the same width, so the
+        // column is the sum of the three and never a multiple of any one of
+        // them. What is being caught here is the column collapsing back onto
+        // whatever the row happens to carry.
+        verify(oneTag.width > marks[0].width * 2,
+               "the column holds three tags, not this row's one: "
+               + Math.round(oneTag.width) + "px against a tag of "
+               + Math.round(marks[0].width))
+
+        // The one tag this row has is packed against the right-hand end of
+        // that column, which is the end the readout is on.
+        const columnEnd = oneTag.mapToItem(row, oneTag.width, 0).x
+        verify(Math.abs(columnEnd - tagEnd) <= 1,
+               "a tag is drawn against the right-hand end of its column: tag "
+               + "ends at " + Math.round(tagEnd) + ", column at "
+               + Math.round(columnEnd))
+
+        // And the claim itself, over every row on screen at once: both
+        // columns start at the same x on all of them. This is the assertion
+        // the arrangement before this one failed. It had the tags against the
+        // readout and the readout as wide as its own text, so "8 items" and
+        // "17 items" put their tags six pixels apart and nothing in the pane
+        // lined up with anything else -- which is exactly what a per-row
+        // measurement cannot see, because each row was perfectly consistent
+        // with itself.
+        // Unfiltered by `visible`, the way findTreeRow walks: a row's
+        // effective visibility is its whole chain's, and a TreeView keeps
+        // its rows under a container that does not report as visible from
+        // out here. A delegate mid-recycle has no width and is not a row
+        // anybody is looking at, which is what that half of the test is.
+        const startsOf = (name) => {
+            const seen = []
+            const visit = (item) => {
+                if (item.objectName === name && item.width > 0)
+                    seen.push(Math.round(item.mapToItem(win.tree, 0, 0).x))
+                for (let i = 0; i < item.children.length; ++i)
+                    visit(item.children[i])
+            }
+            visit(win.tree)
+            return seen
+        }
+
+        const held = (what, name) => {
+            const starts = startsOf(name)
+            verify(starts.length > 4,
+                   "there must be rows to compare: " + starts.length)
+            for (let i = 1; i < starts.length; ++i) {
+                compare(starts[i], starts[0],
+                        "every row must start its " + what + " at the same x, "
+                        + "and row " + i + " starts at " + starts[i]
+                        + " against " + starts[0])
+            }
+        }
+        held("tags", "treeTags")
+        held("readout", "treeMeta")
 
         // View -> Tree Tags still takes them away.
         win.tree.tagsVisible = false

@@ -312,12 +312,22 @@ Item {
         const endAt = place(readout.endX, readout.endY,
                             runsRight, runsDown, endSize,
                             [readout.bandRect, pointerBox])
+        // `turn: 0` and not nothing at all. A coordinate is read straight
+        // and only the two lengths against the vertical sides are turned, so
+        // it is tempting to leave the key off the pair that does not use it
+        // -- and that is what was done, and it put two warnings a frame on
+        // the console for as long as a band was being drawn: the delegate
+        // binds `rotation` to this, and an absent key is `undefined`, which
+        // is not a double. Every entry in this list carries every key the
+        // delegate reads.
         const startBox = { key: "start", text: readout.startText,
                            x: startAt.x, y: startAt.y,
-                           width: startSize.width, height: startSize.height }
+                           width: startSize.width, height: startSize.height,
+                           turn: 0 }
         const endBox = { key: "end", text: readout.endText,
                          x: endAt.x, y: endAt.y,
-                         width: endSize.width, height: endSize.height }
+                         width: endSize.width, height: endSize.height,
+                         turn: 0 }
         out.push(startBox)
         out.push(endBox)
 

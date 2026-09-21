@@ -42,6 +42,12 @@ import H5Scope.Backend
 Dialog {
     id: control
 
+    /// A centimetre to the hundredth of one, which is as fine as a figure
+    /// for a page is ever stated and as fine as a whole dpi can answer.
+    function round2(amount) {
+        return Math.round(amount * 100) / 100
+    }
+
     anchors.centerIn: parent
     modal: true
     padding: Theme.gapXL
@@ -78,7 +84,7 @@ Dialog {
     }
 
     contentItem: Column {
-        width: Theme.panelMinWidth
+        width: Theme.formDialogWidth
         spacing: Theme.gapL
 
         SettingRow {
@@ -288,57 +294,133 @@ Dialog {
                 restoreMode: Binding.RestoreBindingOrValue
             }
 
-            Row {
+            /// The density and the figure it comes to, as three boxes over
+            /// one number.
+            ///
+            /// The pixel count is settled in the row above and no density may
+            /// move it, so at a stated size a density *is* a physical size:
+            /// one degree of freedom, three ways of saying it. Write any one
+            /// of the three and the other two follow. That replaced a readout
+            /// of the inches it came to, which said the same thing and could
+            /// not be typed in -- and a reader preparing a figure for a page
+            /// has the size, not the density, in front of them: journals ask
+            /// for 8.5 cm or 17.8, and working back to the dpi that gives it
+            /// was arithmetic this dialog was leaving to them.
+            ///
+            /// A Flow and not a Row, because three labelled boxes are wider
+            /// than this dialog at some type sizes and a line that has to
+            /// wrap should wrap between two of them rather than clip the
+            /// third. Each label is glued to its own box by a Row inside it.
+            Flow {
+                width: parent.width
                 spacing: Theme.gapS
                 visible: AppController.plotExportCustomDpi
 
-                NumberField {
-                    objectName: "exportDpiField"
+                Row {
+                    spacing: Theme.gapS
 
-                    value: AppController.plotExportDpi
-                    from: AppController.minExportDpi
-                    to: AppController.maxExportDpi
-                    onCommitted: amount => AppController.plotExportDpi = amount
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("dpi")
+                        font: Theme.micro
+                        color: Theme.textSecondary
+                    }
 
-                    AppToolTip {
-                        shown: parent.hovered
-                        text: qsTr("300 is what most journals ask for; 600 "
-                                   + "is line art. Below 96 the type reads "
-                                   + "smaller than it does on screen.")
+                    NumberField {
+                        objectName: "exportDpiField"
+
+                        value: AppController.plotExportDpi
+                        from: AppController.minExportDpi
+                        to: AppController.maxExportDpi
+                        onCommitted: amount => AppController.plotExportDpi = amount
+
+                        AppToolTip {
+                            shown: parent.hovered
+                            text: qsTr("300 is what most journals ask for; 600 "
+                                       + "is line art. Below 96 the type reads "
+                                       + "smaller than it does on screen.")
+                        }
                     }
                 }
 
-                /// What the two rows come to: the figure's size on paper.
+                /// The figure's two sides on paper, in centimetres.
                 ///
-                /// The inches and not the pixels, because the pixels are what
-                /// the reader typed one row up and printing them back would
-                /// say nothing. This is the number the density actually buys
-                /// -- and it is the one that says whether the type will read,
-                /// since the type is a fixed share of it.
-                ///
-                /// Shown only where this dialog knows the pixel count. The
+                /// Shown only where this dialog knows the pixel count: the
                 /// pane's own size is whatever the window is, and that is not
-                /// this dialog's to report.
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                /// this dialog's to report -- nor, therefore, to let anybody
+                /// type a density into the back of.
+                ///
+                /// Both boxes write the *density* and neither touches the
+                /// pixels. So the two sides cannot be set independently: they
+                /// are one figure at one density, and its shape was settled
+                /// by the pixel count above. Typing a width sets the density
+                /// that gives it and the height follows, which is the whole
+                /// of what "changing one changes the other two" means here.
+                Row {
+                    spacing: Theme.gapS
                     visible: AppController.plotExportCustomSize
-                    text: {
-                        // Named so that this binding depends on them, the way
-                        // CustomEntryRow's swatch names its cycle: a call
-                        // creates no dependency on what it reads, so a reader
-                        // typing a new density would go on reading the size
-                        // the one before it gave.
-                        const wide = AppController.plotExportWidth
-                        const tall = AppController.plotExportHeight
-                        const dpi = AppController.plotExportDpi
-                        if (!AppController.plotExportCustomDpi || dpi <= 0)
-                            return ""
-                        const across = (wide / dpi).toFixed(2)
-                        const down = (tall / dpi).toFixed(2)
-                        return qsTr("→ %1 × %2 in").arg(across).arg(down)
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("width (cm)")
+                        font: Theme.micro
+                        color: Theme.textSecondary
                     }
-                    font: Theme.readout
-                    color: Theme.textSecondary
+
+                    RealField {
+                        objectName: "exportWidthCmField"
+
+                        // Both properties named, so the binding depends on
+                        // both: a call creates no dependency on what it
+                        // reads, and a box that did not name the density
+                        // would go on showing the size the one before it
+                        // gave. Rounded to the hundredth it is written at --
+                        // the field prints six significant figures, and
+                        // 15.9934 cm is not a number anybody typed.
+                        value: control.round2(
+                            AppController.plotExportCentimetres(
+                                AppController.plotExportWidth,
+                                AppController.plotExportDpi))
+                        onCommitted: amount => AppController.plotExportDpi =
+                            AppController.plotExportDpiFor(
+                                AppController.plotExportWidth, amount)
+
+                        AppToolTip {
+                            shown: parent.hovered
+                            text: qsTr("How wide the figure lands on the "
+                                       + "page. It sets the density rather "
+                                       + "than the pixels — those are the "
+                                       + "ones asked for above, at every "
+                                       + "size.")
+                        }
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("height (cm)")
+                        font: Theme.micro
+                        color: Theme.textSecondary
+                    }
+
+                    RealField {
+                        objectName: "exportHeightCmField"
+
+                        value: control.round2(
+                            AppController.plotExportCentimetres(
+                                AppController.plotExportHeight,
+                                AppController.plotExportDpi))
+                        onCommitted: amount => AppController.plotExportDpi =
+                            AppController.plotExportDpiFor(
+                                AppController.plotExportHeight, amount)
+
+                        AppToolTip {
+                            shown: parent.hovered
+                            text: qsTr("How tall it lands. The same density "
+                                       + "as the width, because the shape of "
+                                       + "the figure is the pixel count "
+                                       + "asked for above.")
+                        }
+                    }
                 }
             }
         }

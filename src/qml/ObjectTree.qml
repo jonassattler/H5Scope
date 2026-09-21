@@ -415,26 +415,27 @@ Rectangle {
                 }
 
                 // --- the name, and what is measurably true about it -------
-                // Both live in one cell that takes all the slack, and the
-                // split between them is made here rather than left to the
-                // layout: a RowLayout shrinks whatever it likes when a row runs
-                // out of room, and which of these two survives that is the
-                // whole of the question.
+                // Three things share this cell -- the name, the tags and the
+                // readout -- and the split between them is made here rather
+                // than left to the layout: a RowLayout shrinks whatever it
+                // likes when a row runs out of room, and which of the three
+                // survives that is the whole of the question.
                 //
-                // The name is what the reader is looking for; the readout is a
-                // fact about it. So the readout gets only what the name does
-                // not need. A link's target is the longest readout in the pane
-                // and the one with the most competition -- a soft link's name
-                // and its target are two paths on one row -- so it yields
-                // entirely and the name stays whole. Every other readout is a
-                // shape or a count, short and stable, and keeps a third of the
-                // cell as a floor so a matrix does not stop saying what shape
-                // it is the moment it is nested four levels deep.
+                // Two of them are **columns**: constant widths, right-aligned
+                // against the cell's right-hand edge, the readout outermost
+                // and the tags inside it. The name takes everything left over,
+                // which means it ends at the same x on every line too.
                 //
-                // Both are measured with TextMetrics rather than off the Texts
-                // themselves: an item whose visibility is derived from its own
-                // implicit width is a knot, and this way the arithmetic is
-                // settled before anything is laid out at all.
+                // The readout used to take what its own text measured and the
+                // name took the rest, on the argument that the name is what
+                // the reader is looking for and the readout only a fact about
+                // it. That is right about which of them matters and wrong
+                // about what a pane of them looks like: every row put its
+                // readout somewhere else, and the tags pinned to the readout
+                // went with it, so three columns of letters wandered down the
+                // pane. A column costs the rows whose readout is short the
+                // width they were not using, and it buys the reader a place
+                // to look.
                 Item {
                     id: textCell
 
@@ -447,46 +448,43 @@ Rectangle {
                     /// a tag is a fact about the object with the same claim on
                     /// the row as its shape, and the readout has already
                     /// yielded once.
+                    ///
+                    /// The same on every row, because the slot is a column and
+                    /// not a measurement of what this row carries -- see the
+                    /// tags themselves below.
                     readonly property real tagsWidth:
                         tags.visible && tags.width > 0 ? tags.width + Theme.gapS : 0
 
-                    // advanceWidth, not width: TextMetrics.width rounds down
-                    // to whole pixels and a Text elides the moment it is given
-                    // half a pixel less than it needs, which costs a whole
-                    // character and an ellipsis on top of it.
+                    /// The readout's column. Theme.treeMetaWidth, and the
+                    /// same on every row -- including the rows whose readout
+                    /// is shorter than it and the ones with no readout at
+                    /// all, because a column a row can opt out of is not one:
+                    /// the tags beside it would move on exactly those rows.
                     readonly property real metaWidth: {
-                        if (node.meta === "")
-                            return 0
-                        const wanted = metaMetrics.advanceWidth
-                        const spare = width - Theme.gapS - textCell.tagsWidth
-                                      - nameMetrics.advanceWidth
-                        const floor = node.isLink ? 0 : width / 3
-                        const room = Math.max(spare, floor)
-                        // A readout that fits is always drawn, however short.
-                        // The floor below is about how little room is worth
-                        // *eliding into* -- it was being applied to the
-                        // readout's own width instead, so a short one like
-                        // "(4 x 3)" was dropped for being narrower than the
-                        // minimum, which is the opposite of what it is for.
-                        // That is why half the shapes in the pane were missing.
-                        if (wanted <= room)
-                            return wanted
+                        // Half of what is left after the tags, at the very
+                        // most. That is for a pane dragged narrow, where a
+                        // fixed column would otherwise take the row from the
+                        // name -- and a row that has stopped saying what
+                        // object it is about has lost the thing the reader
+                        // came for. It does not bite until the cell is under
+                        // twice the column, which is a pane narrower than the
+                        // filter box beneath it.
+                        const room = Math.min(Theme.treeMetaWidth,
+                                              (width - textCell.tagsWidth) / 2)
                         // Below the floor what is left is an ellipsis and
                         // nothing else, which is worse than giving the space
                         // back -- and the tooltip carries it whole either way.
                         return room >= Theme.treeMetaMinWidth ? room : 0
                     }
 
+                    // The name is measured with TextMetrics rather than off
+                    // the Text itself: an item whose geometry is derived from
+                    // its own implicit width is a knot, and this way the
+                    // arithmetic is settled before anything is laid out.
                     TextMetrics {
                         id: nameMetrics
                         font: nameLabel.font
                         text: node.name
-                    }
-
-                    TextMetrics {
-                        id: metaMetrics
-                        font: metaLabel.font
-                        text: node.meta
                     }
 
                     // The name up to the match, and up to the end of it. Their
@@ -559,28 +557,40 @@ Rectangle {
                     }
 
                     // --- the tags ---------------------------------------
-                    // Against the readout, on its left, rather than against
-                    // the name on its right.
+                    // A column of their own, between the name and the
+                    // readout, with the tags a row has right-aligned in it.
                     //
-                    // Two arrangements have been tried and this is the third.
-                    // They began as three fixed slots at the pane's right
-                    // edge, which lined them up into a column at the price of
-                    // standing a tag two hundred pixels from the name it
-                    // qualifies *and* of spending that width on every row
-                    // whether or not it had a tag to put there. They then went
-                    // directly after the name, on the argument that a tag is
-                    // an adjective and goes next to its noun -- which is true
-                    // of one row read on its own and wrong of a pane full of
-                    // them: the name is the one thing on the row whose length
-                    // is arbitrary, so anything pinned to its end is at a
-                    // different place on every line, and three columns of
-                    // letters wandering down the pane read as noise rather
-                    // than as a column of facts.
+                    // Three arrangements have been tried and this is the
+                    // fourth. They began as three fixed slots at the pane's
+                    // right edge, which lined them up at the price of standing
+                    // a tag two hundred pixels from the name it qualifies.
+                    // They then went directly after the name, on the argument
+                    // that a tag is an adjective and goes next to its noun --
+                    // which is true of one row read on its own and wrong of a
+                    // pane full of them: the name is the one thing on the row
+                    // whose length is arbitrary, so anything pinned to its end
+                    // is at a different place on every line, and three columns
+                    // of letters wandering down the pane read as noise rather
+                    // than as a column of facts. They were then pinned to the
+                    // readout, which is short and right-aligned and the other
+                    // fact on the row -- and that is where the third
+                    // arrangement stopped, one step short of the thing it was
+                    // reaching for.
                     //
-                    // Here they are pinned to the readout instead, which is
-                    // short, right-aligned and the other fact on the row. A
-                    // row with no tags still spends nothing on them -- that is
-                    // what the fixed slots got wrong and this keeps.
+                    // Because two widths have to be constant before a tag has
+                    // a column, and it had neither. The tags took the width of
+                    // however many tags the row had, so a row with one and a
+                    // row with three lined up their last tag and nothing else.
+                    // And the readout they were pinned to took the width of
+                    // its own text, so "8 items" and "17 items" carried the
+                    // whole arrangement six pixels apart. Both are columns
+                    // now: room for all three tags whether or not this row has
+                    // three, with whatever it does have packed against the
+                    // right-hand end of the slot, and Theme.treeMetaWidth for
+                    // the readout outside it. What it costs is the width a
+                    // short row was not using; what it buys is that the tags,
+                    // the readouts and the ends of the names are three
+                    // columns down the pane.
                     //
                     // One letter each, because three of them have to fit
                     // between a name and a shape on a 26px row. A letter is
@@ -588,9 +598,10 @@ Rectangle {
                     // means on hover -- and says the thing the reader would
                     // ask next, which is never "this has attributes" but how
                     // many, not "this is a link" but where to.
-                    Row {
+                    Item {
                         id: tags
 
+                        objectName: "treeTags"
                         anchors.right: parent.right
                         // Clear of the readout when there is one, and against
                         // the cell's own edge when there is not. Taken off
@@ -601,73 +612,88 @@ Rectangle {
                             + (textCell.metaWidth > 0 ? Theme.gapS : 0)
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.tagsVisible
-                        spacing: Theme.gapXS
+                        // Three badges and the two gaps between them, asked of
+                        // the badges themselves rather than stated: they are
+                        // one letter in one face, so this is a constant, and
+                        // it is the constant that makes the slot a column
+                        // instead of a measurement of what this row carries.
+                        width: imageTag.implicitWidth + linkTag.implicitWidth
+                               + attributeTag.implicitWidth + tagList.spacing * 2
+                        height: Theme.badgeHeightCompact
 
-                        Badge {
-                            id: imageTag
+                        Row {
+                            id: tagList
 
-                            visible: node.isImage
-                            compact: true
-                            tone: "info"
-                            text: qsTr("I")
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: Theme.gapXS
 
-                            HoverHandler { id: imageTagHover }
+                            Badge {
+                                id: imageTag
 
-                            AppToolTip {
-                                shown: imageTagHover.hovered
-                                text: node.imageSubclass === ""
-                                      ? qsTr("Declared an image by the file.")
-                                      : qsTr("Declared a %1 image by the file, so the Data Viewer opens on the picture.")
-                                            .arg(node.imageSubclass.toLowerCase())
-                            }
-                        }
+                                visible: node.isImage
+                                compact: true
+                                tone: "info"
+                                text: qsTr("I")
 
-                        // A soft or external link, or a hard one that closes a
-                        // loop. Red when it leads nowhere at all -- that is a
-                        // fault in the file and the one tag state a reader has
-                        // to act on. Amber for a loop, which is legal, means
-                        // the object is already on screen under another name,
-                        // and is only a reason not to expand it.
-                        Badge {
-                            id: linkTag
+                                HoverHandler { id: imageTagHover }
 
-                            visible: node.isLink || node.isCyclic
-                            compact: true
-                            tone: {
-                                if (node.isLink && !node.linkResolves)
-                                    return "crit"
-                                return node.isCyclic ? "warn" : "neutral"
-                            }
-                            text: qsTr("L")
-
-                            HoverHandler { id: linkTagHover }
-
-                            AppToolTip {
-                                shown: linkTagHover.hovered
-                                text: {
-                                    if (node.linkDescription !== "")
-                                        return node.linkDescription
-                                    return qsTr("A second name for an object already above it in the tree, so it is not expanded here.")
+                                AppToolTip {
+                                    shown: imageTagHover.hovered
+                                    text: node.imageSubclass === ""
+                                          ? qsTr("Declared an image by the file.")
+                                          : qsTr("Declared a %1 image by the file, so the Data Viewer opens on the picture.")
+                                                .arg(node.imageSubclass.toLowerCase())
                                 }
                             }
-                        }
 
-                        Badge {
-                            id: attributeTag
+                            // A soft or external link, or a hard one that closes a
+                            // loop. Red when it leads nowhere at all -- that is a
+                            // fault in the file and the one tag state a reader has
+                            // to act on. Amber for a loop, which is legal, means
+                            // the object is already on screen under another name,
+                            // and is only a reason not to expand it.
+                            Badge {
+                                id: linkTag
 
-                            visible: node.hasAttributes
-                            compact: true
-                            tone: "neutral"
-                            text: qsTr("A")
+                                visible: node.isLink || node.isCyclic
+                                compact: true
+                                tone: {
+                                    if (node.isLink && !node.linkResolves)
+                                        return "crit"
+                                    return node.isCyclic ? "warn" : "neutral"
+                                }
+                                text: qsTr("L")
 
-                            HoverHandler { id: attributeTagHover }
+                                HoverHandler { id: linkTagHover }
 
-                            AppToolTip {
-                                shown: attributeTagHover.hovered
-                                text: node.attributeCount === 1
-                                      ? qsTr("1 attribute.")
-                                      : qsTr("%1 attributes.")
-                                            .arg(node.attributeCount)
+                                AppToolTip {
+                                    shown: linkTagHover.hovered
+                                    text: {
+                                        if (node.linkDescription !== "")
+                                            return node.linkDescription
+                                        return qsTr("A second name for an object already above it in the tree, so it is not expanded here.")
+                                    }
+                                }
+                            }
+
+                            Badge {
+                                id: attributeTag
+
+                                visible: node.hasAttributes
+                                compact: true
+                                tone: "neutral"
+                                text: qsTr("A")
+
+                                HoverHandler { id: attributeTagHover }
+
+                                AppToolTip {
+                                    shown: attributeTagHover.hovered
+                                    text: node.attributeCount === 1
+                                          ? qsTr("1 attribute.")
+                                          : qsTr("%1 attributes.")
+                                                .arg(node.attributeCount)
+                                }
                             }
                         }
                     }
@@ -678,6 +704,7 @@ Rectangle {
                     Text {
                         id: metaLabel
 
+                        objectName: "treeMeta"
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom

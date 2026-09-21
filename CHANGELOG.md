@@ -25,6 +25,35 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.6
+
+**A figure's size can be typed in centimetres.** Settings > Plot Settings
+offers the density and both sides of the figure as three boxes over one
+number: the pixel count is settled a row above, so at a stated size a density
+*is* a physical size. Write any one of the three and the other two follow —
+8.5 cm wide at 1920 pixels is 574 dpi, and the height comes to 4.78. The pixel
+count does not move, as ever. It replaces the readout of the inches it came
+to, which said the same thing and could not be typed in.
+
+**The plot's frame is a box.** The two rules the readings are read against are
+now four, so a trace that runs out of the window at the top stops at a rule
+rather than fading into the gutter, and the pane has an edge without a label
+having to say where it is.
+
+**Okabe-Ito opens on its orange.** Its achromatic entry — black on paper,
+signal white on the dark theme — is drawn last rather than first. A plot opens
+on this cycle and usually has one line in it, and that line was being drawn in
+an ink the reader could not tell from the chrome. The colours and the cycle
+are the published ones, offset by one.
+
+**The tree's tags stand in a column of their own.** Room for all three on
+every row, with whatever a row carries packed against its right-hand end, so
+they line up instead of shifting with the number of tags the row happens to
+have.
+
+**Fixed:** dragging a selection band over a plot wrote two *Unable to assign
+[undefined] to double* warnings to the console on every frame of the drag.
+
 ## 0.6.5
 
 **Dots per inch now means what it says.** 0.6.4 read the setting as a
