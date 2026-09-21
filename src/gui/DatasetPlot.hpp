@@ -6,8 +6,11 @@
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
+
 #include "PlotBudget.hpp"
 #include "PlotLevels.hpp"
+#include <QColor>
+#include <QVariant>
 
 #include <QObject>
 #include <QPointer>
@@ -152,6 +155,24 @@ public:
     /// table has spread two dimensions along the axis the lines run down; the
     /// menu offers nothing rather than something close.
     Q_INVOKABLE [[nodiscard]] QString seriesExpression(int series) const;
+
+    /// The colour the reader gave line `series`, which here is never any.
+    ///
+    /// Always invalid, and it is not a stub for something unfinished. A custom
+    /// tab's lines were each put there on purpose and usually mean different
+    /// things, which is what makes a colour per line worth storing; the Plot
+    /// tab's lines are rows or columns of one dataset, so what identifies a
+    /// line there is its place in the table and the cycle already says that.
+    ///
+    /// It exists so that PlotSurface can ask the question of either plot
+    /// without knowing which it has -- see the note at the top of CustomPlot,
+    /// about seventeen hundred lines of drawing that must not be forked to
+    /// serve a second plot.
+    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const
+    {
+        Q_UNUSED(series);
+        return {};
+    }
 
     /// Whether line `series` of the table is drawn.
     Q_INVOKABLE [[nodiscard]] bool seriesVisible(int series) const;

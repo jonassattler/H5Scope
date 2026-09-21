@@ -353,6 +353,7 @@ SettingsPanel {
                     required property int scaling
                     required property bool scalable
                     required property bool drawn
+                    required property var colour
 
                     width: parent ? parent.width : 0
                     implicitHeight: entry.implicitHeight
@@ -362,6 +363,7 @@ SettingsPanel {
 
                         width: holder.width
                         plot: panel.plot
+                        surface: panel.surface
                         rowIndex: holder.index
                         expression: holder.expression
                         alias: holder.alias
@@ -369,6 +371,7 @@ SettingsPanel {
                         scaling: holder.scaling
                         scalable: holder.scalable
                         drawn: holder.drawn
+                        colour: holder.colour
                     }
                 }
             }

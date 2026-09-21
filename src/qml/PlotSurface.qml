@@ -197,15 +197,22 @@ Item {
     /// over when it runs out; a map -- "range", or a named ramp -- spreads the
     /// lines along a continuum and gives each an even share of it.
     ///
-    /// The default is the spectrum palette. This plot used to open on "same",
-    /// one accent for every line, and separate them by overlap alone; that
-    /// stops separating anything at about a dozen lines, and the legend that
-    /// names them is no use when they all look alike. A map was the first
-    /// answer to that and is the wrong shape for the question: it puts its
-    /// neighbours next to each other by construction, so the lines it has to
-    /// tell apart are the ones it draws most alike. A palette is built to do
-    /// exactly this, so it is what a new plot opens on.
-    property string colorMode: "spectrum"
+    /// The default is a palette. This plot used to open on "same", one accent
+    /// for every line, and separate them by overlap alone; that stops
+    /// separating anything at about a dozen lines, and the legend that names
+    /// them is no use when they all look alike. A map was the first answer to
+    /// that and is the wrong shape for the question: it puts its neighbours
+    /// next to each other by construction, so the lines it has to tell apart
+    /// are the ones it draws most alike. A palette is built to do exactly
+    /// this, so it is what a new plot opens on.
+    ///
+    /// Which palette is Okabe-Ito rather than this application's own
+    /// `spectrum`, and the reason is about where the picture ends up: a figure
+    /// drawn here goes into a document beside figures drawn by other people in
+    /// other tools, and Okabe-Ito is the cycle those tools already agree on.
+    /// See the note over Theme.categoricalPalettes, which also states what
+    /// that costs on the light theme.
+    property string colorMode: "okabe-ito"
     property color colorSingle: Theme.accent
     property color colorRangeFrom: Theme.accent
     property color colorRangeTo: Theme.info
@@ -267,6 +274,24 @@ Item {
     /// The reader's own band (colorFrom .. colorTo) still applies on top, so
     /// narrowing the map narrows what these shares are taken out of.
     function seriesColor(series, position, count) {
+        // A colour the reader gave this line beats every cycle, and beats it
+        // first: a cycle answers "which line is this" for lines that are alike,
+        // and the lines of a custom tab were each put there on purpose. The
+        // override is per line and nothing else moves, which is the same
+        // promise a palette makes about its own index and for the same reason
+        // -- a reader watching one stroke must not see it change under them
+        // because they said something about another.
+        //
+        // Asked of the plot rather than held here, because both plots are
+        // drawn by this file and only one of them has any: DatasetPlot answers
+        // "no" for every line. Plot tab lines are rows or columns of one
+        // dataset and their place in the table is what identifies them.
+        if (surface.plot) {
+            const own = surface.plot.seriesOverride(series)
+            if (own !== undefined && own !== null)
+                return own
+        }
+
         if (surface.colorMode === "same")
             return surface.colorSingle
 
@@ -793,10 +818,87 @@ Item {
     ///
     /// The grab is asynchronous and nothing here waits for it; ImageClipboard
     /// says how it went, and the settings panel prints that.
+    ///
+    /// What is grabbed is no longer this window's own frame but a second one
+    /// built for the purpose (PlotPicture.qml), because three things under
+    /// Settings > Plot Settings ask the picture to differ from the pane --
+    /// publication colours, a size of the reader's choosing, the crosshair in
+    /// or out -- and none of them can be had by re-styling the frame on
+    /// screen: a grab renders the scene as it stands, so the picture would be
+    /// bought with a frame of the application in the wrong colours.
     function copyImage() {
         if (!surface.drawable)
             return false
-        return ImageClipboard.copyItem(frame)
+
+        // A second press cancels the first, which is what ImageClipboard does
+        // with the grab itself; the picture the abandoned grab was of goes
+        // with it rather than waiting for a `copied` that will never come.
+        surface.dropPicture()
+
+        const custom = AppController.plotExportCustomSize
+        const wide = custom ? AppController.plotExportWidth : frame.width
+        const tall = custom ? AppController.plotExportHeight : frame.height
+
+        const publication = AppController.plotExportPublication
+        picture = pictureComponent.createObject(surface, {
+            pageWidth: wide,
+            pageHeight: tall,
+            surface: surface,
+            sourceLines: frame.lines,
+            publication: publication,
+            includeCursor: AppController.plotExportCursor
+        })
+        if (!picture)
+            return false
+        if (!picture.take()) {
+            surface.dropPicture()
+            return false
+        }
+
+        // A chosen size is asked for exactly; the pane's own size is left to
+        // ImageClipboard, which multiplies it by the window's device pixel
+        // ratio -- so "same as window" is the picture this application has
+        // always copied, down to the pixel. A publication picture is drawn
+        // twice and composed, which is why the size has to be stated even
+        // then: what is grabbed is not the size of what is wanted.
+        const asked = custom || publication
+            ? Qt.size(Math.round(wide), Math.round(tall)) : Qt.size(0, 0)
+        const started = ImageClipboard.copyItem(picture, asked, publication)
+        if (!started)
+            surface.dropPicture()
+        return started
+    }
+
+    /// The picture waiting for its grab, and nothing the rest of the time.
+    ///
+    /// It has to outlive the call that made it -- a grab is one more frame
+    /// rendered, and there is no frame to render from inside a QML call -- and
+    /// it must not outlive the answer, because it is a second copy of every
+    /// drawn line.
+    property var picture: null
+
+    function dropPicture() {
+        if (picture) {
+            picture.destroy()
+            picture = null
+        }
+    }
+
+    // Whichever way the grab went, the picture has been read from and is done.
+    // Every surface in the window hears this and drops its own, which is
+    // right: a copy started while another was in flight cancels that one, and
+    // the cancelled grab never answers.
+    Connections {
+        target: ImageClipboard
+
+        function onCopied() { surface.dropPicture() }
+        function onFailed(reason) { surface.dropPicture() }
+    }
+
+    Component {
+        id: pictureComponent
+
+        PlotPicture {}
     }
 
     // Ctrl+C with the pointer over the pane, which is the other half of what

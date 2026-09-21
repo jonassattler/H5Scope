@@ -477,6 +477,10 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
         return scalable(entry);
     case DrawnRole:
         return entry.drawn;
+    case ColourRole:
+        // Nothing rather than an invalid colour, for the reason
+        // seriesOverride gives: in QML the two are not the same answer.
+        return entry.colour.isValid() ? QVariant(entry.colour) : QVariant();
     default:
         return {};
     }
@@ -491,7 +495,8 @@ QHash<int, QByteArray> CustomPlot::roleNames() const
             {SourcePointsRole, "sourcePoints"},
             {ScalingRole, "scaling"},
             {ScalableRole, "scalable"},
-            {DrawnRole, "drawn"}};
+            {DrawnRole, "drawn"},
+            {ColourRole, "colour"}};
 }
 
 void CustomPlot::setName(QString name)
@@ -717,6 +722,40 @@ void CustomPlot::setAlias(int row, const QString& text)
     // Nothing is re-read and no point moves; the legend simply calls it
     // something else. `changed` is what the legend listens to.
     announce();
+}
+
+void CustomPlot::setEntryColor(int row, const QColor& colour)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    if (entry.colour == colour) {
+        return;
+    }
+    entry.colour = colour;
+    touch(row, {ColourRole});
+    // Nothing is re-read and no point moves; the same line is drawn in another
+    // colour. `changed` is what the surface and the legend listen to, and the
+    // surface answers it by restyling rather than refilling.
+    announce();
+}
+
+void CustomPlot::clearEntryColor(int row)
+{
+    // An invalid QColor, which is what "no override" is here rather than a
+    // separate flag: one thing to store, one thing to serialise, and no state
+    // in which a line both has a colour and does not.
+    setEntryColor(row, QColor());
+}
+
+QVariant CustomPlot::seriesOverride(int series) const
+{
+    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+        return {};
+    }
+    const QColor& colour = entries_[static_cast<std::size_t>(series)].colour;
+    return colour.isValid() ? QVariant(colour) : QVariant();
 }
 
 void CustomPlot::setScaling(int row, Scaling scaling)
@@ -2004,12 +2043,21 @@ QVariantMap CustomPlot::state() const
     QVariantList rows;
     rows.reserve(static_cast<qsizetype>(entries_.size()));
     for (const Entry& entry : entries_) {
-        rows.append(QVariantMap{{QStringLiteral("expression"), entry.expression},
-                                {QStringLiteral("alias"), entry.alias},
-                                {QStringLiteral("scaling"), entry.scaling == Stretch
-                                                                ? QStringLiteral("stretch")
-                                                                : QStringLiteral("align")},
-                                {QStringLiteral("drawn"), entry.drawn}});
+        QVariantMap fields{{QStringLiteral("expression"), entry.expression},
+                           {QStringLiteral("alias"), entry.alias},
+                           {QStringLiteral("scaling"), entry.scaling == Stretch
+                                                           ? QStringLiteral("stretch")
+                                                           : QStringLiteral("align")},
+                           {QStringLiteral("drawn"), entry.drawn}};
+        // Written only where there is one, so that a view saved before this
+        // existed and a view whose lines take the cycle are the same
+        // document. CustomPlotSet::jsonOf turns a QColor into "#aarrggbb" on
+        // the way out and a QML `color` reads that back without being asked,
+        // so the round trip needs nothing on the way in.
+        if (entry.colour.isValid()) {
+            fields.insert(QStringLiteral("colour"), entry.colour);
+        }
+        rows.append(fields);
     }
 
     QString mode = QStringLiteral("index");
@@ -2049,6 +2097,15 @@ void CustomPlot::setState(const QVariantMap& state)
                 ? Stretch
                 : Align;
         entry.drawn = fields.value(QStringLiteral("drawn"), true).toBool();
+        // Absent means "no colour of its own", which is what every view saved
+        // before 0.6.3 says and is why they migrate for nothing. A value that
+        // is not a colour is absent as well: QColor's string constructor
+        // leaves it invalid, which is exactly the state wanted.
+        const QVariant colour = fields.value(QStringLiteral("colour"));
+        if (colour.isValid()) {
+            entry.colour =
+                colour.canConvert<QColor>() ? colour.value<QColor>() : QColor(colour.toString());
+        }
         entries_.push_back(std::move(entry));
     }
     endResetModel();

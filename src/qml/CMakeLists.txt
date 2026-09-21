@@ -47,6 +47,8 @@ qt_add_qml_module(appqml
     SettingsPanel.qml
     SettingRow.qml
     TableSettingsPanel.qml
+    PlotPicture.qml
+    PlotSettingsDialog.qml
     PlotSettingsPanel.qml
     ImageSettingsPanel.qml
     ValueGrid.qml
@@ -95,10 +97,11 @@ qt_add_qml_module(appqml
 #                            expander chevron, because the design system ships
 #                            no icon font and this binary carries only the four
 #                            text faces it actually sets.
-#   QtQuick.Dialogs          ColorSwatchButton.qml, for the one control this
-#                            application does not draw itself. See the note
-#                            there: picking a colour out of a wheel is a solved
-#                            problem and Qt ships the solution.
+#   QtQuick.Dialogs          ColorSwatchButton.qml and PlotLegend.qml, for the
+#                            one control this application does not draw itself.
+#                            See the note there: picking a colour out of a
+#                            wheel is a solved problem and Qt ships the
+#                            solution.
 target_link_libraries(appqml PRIVATE
   Qt6::Quick
   gui

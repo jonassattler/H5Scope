@@ -1796,6 +1796,7 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session", "[cust
         gui::CustomPlot* plot = writing.plotAt(index);
         REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == 0);
         plot->setAlias(0, QStringLiteral("morning"));
+        plot->setEntryColor(0, QColor(Qt::magenta));
         REQUIRE(writing.setName(index, QStringLiteral("runs")).isEmpty());
         REQUIRE(writing.saveView(QStringLiteral("kept"), index, drawing).isEmpty());
     }
@@ -1813,6 +1814,10 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session", "[cust
     CHECK(back->data(back->index(0, 0), gui::CustomPlot::ExpressionRole).toString() ==
           QStringLiteral("/series/a[:]"));
     CHECK(back->name() == QStringLiteral("runs"));
+    // ...and the colour the reader gave that line, which travels in the plot's
+    // own state rather than in the drawing settings beside it: it is a
+    // property of the line and not of how the tab was being looked at.
+    CHECK(back->seriesOverride(0).value<QColor>() == QColor(Qt::magenta));
 
     SECTION("and so are the drawing settings, colours and all")
     {
@@ -1834,6 +1839,104 @@ TEST_CASE_METHOD(PlotFixture, "a saved view is still there next session", "[cust
         reading.removeView(QStringLiteral("kept"));
         gui::CustomPlotSet third;
         CHECK(third.viewNames().isEmpty());
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a line keeps the colour the reader gave it", "[custom]")
+{
+    gui::CustomPlotSet* plots = set();
+    const int index = plots->addPlot();
+    gui::CustomPlot* plot = plots->plotAt(index);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == 0);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/b[:]")) == 1);
+    settleAll();
+
+    // Nothing given is not the same answer as a colour: in QML the first is
+    // `undefined` and the second is a colour the reader could have chosen.
+    CHECK_FALSE(plot->seriesOverride(0).isValid());
+    CHECK_FALSE(plot->seriesOverride(1).isValid());
+    // ...and neither is a row that does not exist.
+    CHECK_FALSE(plot->seriesOverride(7).isValid());
+
+    SECTION("it is stored, announced, and clears back to nothing")
+    {
+        QSignalSpy changed(plot, &gui::CustomPlot::changed);
+        plot->setEntryColor(0, QColor(Qt::magenta));
+
+        CHECK(plot->seriesOverride(0).value<QColor>() == QColor(Qt::magenta));
+        CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::ColourRole).value<QColor>() ==
+              QColor(Qt::magenta));
+        // Saying it about one line says nothing about the other.
+        CHECK_FALSE(plot->seriesOverride(1).isValid());
+        // The surface restyles on `changed`; without it the line keeps the
+        // colour it had until something else happened to move.
+        CHECK(changed.count() == 1);
+
+        // Said twice is said once: nothing is re-read and nothing is redrawn.
+        plot->setEntryColor(0, QColor(Qt::magenta));
+        CHECK(changed.count() == 1);
+
+        plot->clearEntryColor(0);
+        CHECK_FALSE(plot->seriesOverride(0).isValid());
+        CHECK(changed.count() == 2);
+    }
+
+    SECTION("and travels through the plot's own state")
+    {
+        plot->setEntryColor(1, QColor(Qt::green));
+        const QVariantMap state = plot->state();
+
+        const QVariantList rows = state.value(QStringLiteral("entries")).toList();
+        REQUIRE(rows.size() == 2);
+        // Written only where there is one, so a view whose lines take the
+        // cycle is the same document it was before any of this existed.
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("colour")));
+        CHECK(rows.at(1).toMap().value(QStringLiteral("colour")).value<QColor>() ==
+              QColor(Qt::green));
+
+        const int into = plots->addPlot();
+        plots->plotAt(into)->setState(state);
+        CHECK_FALSE(plots->plotAt(into)->seriesOverride(0).isValid());
+        CHECK(plots->plotAt(into)->seriesOverride(1).value<QColor>() == QColor(Qt::green));
+    }
+
+    SECTION("a view saved before any of this existed reads back unchanged")
+    {
+        // The migration, which is no migration at all: an entry with no colour
+        // in it is an entry whose line takes the cycle, which is what every
+        // view written before 0.6.3 says and what most of them will go on
+        // saying. Written out by hand rather than round-tripped, because what
+        // is being tested is the *old* shape.
+        const QVariantMap old{{QStringLiteral("name"), QStringLiteral("before")},
+                              {QStringLiteral("entries"),
+                               QVariantList{QVariantMap{
+                                   {QStringLiteral("expression"), QStringLiteral("/series/a[:]")},
+                                   {QStringLiteral("alias"), QStringLiteral("morning")},
+                                   {QStringLiteral("scaling"), QStringLiteral("align")},
+                                   {QStringLiteral("drawn"), true}}}},
+                              {QStringLiteral("xMode"), QStringLiteral("index")},
+                              {QStringLiteral("xExpression"), QString()}};
+
+        const int into = plots->addPlot();
+        plots->plotAt(into)->setState(old);
+        CHECK(plots->plotAt(into)->sourceSeriesCount() == 1);
+        CHECK(plots->plotAt(into)->seriesLabel(0) == QStringLiteral("morning"));
+        CHECK_FALSE(plots->plotAt(into)->seriesOverride(0).isValid());
+    }
+
+    SECTION("and a stored colour that is not one is nothing rather than black")
+    {
+        const QVariantMap broken{
+            {QStringLiteral("entries"),
+             QVariantList{
+                 QVariantMap{{QStringLiteral("expression"), QStringLiteral("/series/a[:]")},
+                             {QStringLiteral("colour"), QStringLiteral("not a colour")}}}},
+            {QStringLiteral("xMode"), QStringLiteral("index")}};
+
+        const int into = plots->addPlot();
+        plots->plotAt(into)->setState(broken);
+        REQUIRE(plots->plotAt(into)->sourceSeriesCount() == 1);
+        CHECK_FALSE(plots->plotAt(into)->seriesOverride(0).isValid());
     }
 }
 

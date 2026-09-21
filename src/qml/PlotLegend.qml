@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import H5Scope.Backend
 
@@ -48,6 +49,16 @@ Rectangle {
     /// is describing the plot tab's own plot and not a custom one's.
     readonly property bool offersCustom:
         legend.plot === AppController.datasetPlot
+
+    /// Whether a line here can be given a colour of its own.
+    ///
+    /// The mirror of the line above, and the two are exclusive by nature: the
+    /// plot tab's lines are rows or columns of one dataset, which the cycle
+    /// already tells apart by their place in the table, and a custom tab's
+    /// were each put there on purpose and often mean different things. So the
+    /// menu has exactly one thing to offer in either case.
+    readonly property bool offersColour:
+        !!legend.plot && legend.plot !== AppController.datasetPlot
 
     /// Why line `index` cannot be taken to a custom plot, or empty when it
     /// can be.
@@ -171,7 +182,68 @@ Rectangle {
         AppMenuItem {
             text: lineMenu.refusal
             enabled: false
-            visible: lineMenu.refusal !== ""
+            visible: lineMenu.refusal !== "" && legend.offersCustom
+        }
+
+        // ...and on a custom tab, the colour this one line is drawn in.
+        //
+        // Here as well as in the data rail's card, because they answer at
+        // different moments. The card is where a line is *set up*; this is
+        // where a reader looking at the picture, having just found the one
+        // stroke they care about, says what it should look like -- with the
+        // pointer already on its name.
+        AppMenuItem {
+            objectName: "setLineColour"
+
+            text: qsTr("Set Colour…")
+            visible: legend.offersColour
+            onTriggered: {
+                if (lineMenu.series < 0)
+                    return
+                const own = legend.plot.seriesOverride(lineMenu.series)
+                colourDialog.selectedColor = own !== undefined && own !== null
+                    ? own
+                    : legend.target.seriesColor(lineMenu.series, 0, 1)
+                colourDialog.series = lineMenu.series
+                colourDialog.open()
+            }
+        }
+
+        AppMenuItem {
+            objectName: "clearLineColour"
+
+            text: qsTr("Clear Colour")
+            visible: legend.offersColour
+            // Absent-looking rather than absent: the row keeps its place so
+            // that "Set Colour…" does not move under the pointer between one
+            // opening of this menu and the next.
+            enabled: lineMenu.series >= 0
+                     && legend.plot.seriesOverride(lineMenu.series) !== undefined
+            onTriggered: legend.plot.clearEntryColor(lineMenu.series)
+        }
+    }
+
+    /// The picker, declared once for the whole list.
+    ///
+    /// Qt's own ColorDialog, for the reason ColorSwatchButton gives: a wheel,
+    /// a value ramp and a hex box are a solved problem and a hand-rolled one
+    /// would be worse at the only job it has. One of these rather than one per
+    /// row, for the reason the menu above is one: a legend of ten thousand
+    /// lines building ten thousand dialogs is ten thousand of something the
+    /// reader can only have one of.
+    ColorDialog {
+        id: colourDialog
+
+        /// Which line it was opened over. Held here rather than read back off
+        /// the menu, which may have been opened again over another row by the
+        /// time a modal dialog is answered.
+        property int series: -1
+
+        title: qsTr("line colour")
+        onAccepted: {
+            if (colourDialog.series >= 0 && legend.offersColour)
+                legend.plot.setEntryColor(colourDialog.series,
+                                          colourDialog.selectedColor)
         }
     }
 
@@ -419,14 +491,14 @@ Rectangle {
                     }
                 }
 
-                // ...and the right button offers to take this one line
-                // somewhere else. Only on the plot tab: a custom plot's own
-                // legend has nothing to offer, because the line is already in
-                // a custom plot and the entry row beside it is where it is
-                // edited.
+                // ...and the right button opens what can be done to this one
+                // line: taken to a custom plot, on the plot tab, or given a
+                // colour of its own, on a custom one. Never both -- see
+                // offersColour -- so the menu is never a list of one thing
+                // that works and one that does not.
                 TapHandler {
                     acceptedButtons: Qt.RightButton
-                    enabled: legend.offersCustom
+                    enabled: legend.offersCustom || legend.offersColour
                     onTapped: legend.openRowMenu(row.index)
                 }
             }

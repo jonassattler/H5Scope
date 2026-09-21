@@ -208,7 +208,14 @@ QtObject {
 
     // --- lines -----------------------------------------------------------
     // `1px solid border` does the structural work everywhere.
-    readonly property color border:       dark ? n4 : "#DFE3E5"
+    /// The light scope's hairline, named rather than written in place.
+    ///
+    /// Because the picture that leaves this application needs it while the
+    /// reader is still in the dark theme: a publication export is drawn in the
+    /// light scope whatever is on screen, and `border` resolves to the dark
+    /// value at that moment. See the paper block further down.
+    readonly property color lineLight:    "#DFE3E5"
+    readonly property color border:       dark ? n4 : lineLight
     readonly property color borderStrong: dark ? n6 : n9
     /// --line-strong. Used for the tree's connector guides, for the table's
     /// header rule, and for the menu drawer's edge. Upstream's light scope
@@ -609,6 +616,46 @@ QtObject {
     /// its use site, because it is the one quantity that decides what "dense"
     /// means and it is read by both axes.
     readonly property int plotGridDenseFactor: 4
+
+    /// The ink on the plot: the exact inverse of the ground under it.
+    ///
+    /// Everywhere else in this application a label is `textSecondary` and that
+    /// is right -- a form is mostly chrome, and chrome that reads as loudly as
+    /// the value beside it is chrome competing with the value. A plot is not
+    /// that. Its ground is the one surface in the UI at pure black or pure
+    /// white (`surfaceInset`), and everything written on it -- the numbers on
+    /// the ticks, the names of the axes, the title -- is a *reading* rather
+    /// than a label for one. So it is set at the full step, which on either
+    /// ground is the opposite end of the neutral ramp: 21:1, the most this
+    /// system can spend, on the one picture a reader takes away and looks at
+    /// somewhere else.
+    readonly property color plotInk: dark ? n11 : n0
+
+    // --- the picture that leaves -----------------------------------------
+    // Publication colours: the light scope, named *without* the `dark` switch
+    // in front of them.
+    //
+    // That is the whole of why this block exists. A plot exported for
+    // publication is drawn on paper -- white, or the page's own colour through
+    // a transparent ground -- and the reader who asks for it is usually
+    // sitting in the dark theme, where every token above resolves to its dark
+    // value. `Theme.dark` cannot be flipped for the length of a grab: it is a
+    // singleton the whole window is bound to, so the picture would be bought
+    // with a frame of the application in the wrong colours.
+    //
+    // So the frame drawn for the picture takes these instead. They are not new
+    // colours -- each is the light-scope value of the token it stands in for --
+    // which is what keeps a publication export and the light theme the same
+    // picture.
+    readonly property color paperInk:       n0
+    readonly property color paperRuleMinor: lineLight
+    readonly property color paperRuleMajor: n9
+    readonly property color paperAxisRule:  n6
+    /// A publication line is drawn solid. Translucency is there to show where
+    /// a bundle piles up (see plotSeriesOpacity); a line printed at part
+    /// strength on white is a line somebody will complain about.
+    readonly property real paperSeriesOpacity: 1.0
+
     /// A settings panel's rows are taller than a table's: each carries a
     /// control, not a line of text.
     readonly property int settingRowHeight: 30
@@ -847,7 +894,48 @@ QtObject {
     // Every entry clears WCAG's 3:1 non-text contrast against its own scope's
     // ground -- 3.9:1 at the very worst -- so no line is drawn in something
     // the reader has to hunt for on either theme.
+    //
+    // The three published cycles below are here on a different argument, and
+    // it beats that one. `spectrum` and `safe` are solved for this
+    // application's two grounds and for nothing else, which means a figure
+    // drawn here and the same figure redrawn by a collaborator in matplotlib
+    // or R are two different pictures of one dataset. Okabe-Ito and Paul Tol's
+    // sets are the ones a reader's field already agrees on -- they are what
+    // journals ask for and what every plotting library ships -- so a plot
+    // exported from here lands in a paper beside plots that match it. That is
+    // worth more than a contrast figure, so they are kept at their published
+    // values, entry for entry, and are what this plot opens on.
+    //
+    // What it costs, stated plainly so that nobody "fixes" it later: these
+    // were designed for ink on paper, and it shows in the light scope. Okabe-
+    // Ito's yellow carries about 1.25:1 against white and Tol bright's yellow
+    // and grey are little better. On the dark theme they are all comfortable.
+    // Deepening them would make the light theme easier and would also mean
+    // that "Okabe-Ito" here is not Okabe-Ito, which is the whole of what they
+    // are being taken for. A reader who wants a cycle solved for a screen has
+    // `spectrum` and `safe` one pick away.
     readonly property var categoricalPalettes: ({
+        // Okabe and Ito's Color Universal Design set, the eight of it.
+        //
+        // Black is the one entry that cannot survive the dark scope -- it is
+        // the ground -- so it is drawn at signal white there, which is the
+        // same substitution every dark-theme port of this palette makes. The
+        // other seven are identical in both scopes: they were chosen to hold
+        // apart under all three dichromacies, and re-solving them for a black
+        // ground would be a different palette wearing this one's name.
+        "okabe-ito": [dark ? n11 : n0, "#E69F00", "#56B4E9", "#009E73",
+                      "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+        // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
+        // often reached for where a handful of lines need naming.
+        "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
+                       "#AA3377", "#BBBBBB"],
+        // ...and his muted scheme, nine of them, for the same job where the
+        // bright one is louder than the page wants. Tol's pale grey for "data
+        // that is not a category" is deliberately left out: every entry here
+        // is a line, and a line drawn in the colour reserved for "none of
+        // these" is a line saying something it does not mean.
+        "tol muted": ["#CC6677", "#332288", "#DDCC77", "#117733", "#88CCEE",
+                      "#882255", "#44AA99", "#999933", "#AA4499"],
         // Twenty colours, no two closer than 13.1 dE00 in either scope. For
         // scale: matplotlib's tab20 manages 12.1 across its twenty, and does
         // it against one ground rather than two.
@@ -877,9 +965,18 @@ QtObject {
     })
 
     /// The palettes in the order the plot settings offer them, which is the
-    /// order they are argued in above: the long one first, because it is the
-    /// one that separates the most lines and the one the plot opens on.
-    readonly property var categoricalPaletteNames: ["spectrum", "safe"]
+    /// order they are argued in above: the published cycles first, Okabe-Ito
+    /// at the head of them because it is the one the plot opens on, then the
+    /// two generated for this application's own two grounds -- `spectrum`
+    /// first of those, because it is the one that separates the most lines.
+    ///
+    /// These keys are the labels the dropdown shows, so they are written the
+    /// way they should be read (see PlotSettingsPanel.paletteLabels). They are
+    /// also what a saved view and a dataset's remembered settings store, so a
+    /// key is not renamed once it has been shipped.
+    readonly property var categoricalPaletteNames: ["okabe-ito", "tol bright",
+                                                    "tol muted", "spectrum",
+                                                    "safe"]
 
     /// The state colour for "how much of this still fits", which is the
     /// three-way a saved view reports: 2 is all of it, 1 some of it, 0 none.

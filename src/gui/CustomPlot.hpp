@@ -11,10 +11,12 @@
 #include "PlotPyramid.hpp"
 
 #include <QAbstractListModel>
+#include <QColor>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -144,6 +146,13 @@ public:
         /// shown disabled rather than hidden so the row keeps its shape.
         ScalableRole,
         DrawnRole,
+        /// The colour the reader gave this line, or an invalid colour when
+        /// they have not. Not "the colour it is drawn in": that is the cycle's
+        /// answer for every line that has no colour of its own, and it is
+        /// PlotSurface that knows it. What is stored here is the override and
+        /// only the override, so that clearing one gives the line back to the
+        /// cycle rather than freezing whatever the cycle happened to say.
+        ColourRole,
     };
     Q_ENUM(Roles)
 
@@ -205,6 +214,35 @@ public:
     /// else: the entry box still holds the slice, because that is what is
     /// actually being read and the reader has to be able to edit it.
     Q_INVOKABLE void setAlias(int row, const QString& text);
+
+    /// Give a line a colour of its own, or take it back.
+    ///
+    /// A cycle answers "which line is this" for a plot whose lines are alike.
+    /// A custom tab's are not: they were each put there on purpose, they often
+    /// mean different things, and a reader who is drawing temperature against
+    /// pressure has a colour in mind for each that no cycle is going to guess.
+    /// So an override sits over the cycle, per line, and the lines without one
+    /// go on taking the cycle's answer -- including the cycle's answer for
+    /// *their own* index, so colouring one line never moves another.
+    ///
+    /// Nothing is re-read and no point moves; see setAlias, which is the same
+    /// shape for the same reason.
+    Q_INVOKABLE void setEntryColor(int row, const QColor& colour);
+    Q_INVOKABLE void clearEntryColor(int row);
+
+    /// The colour the reader gave line `series`, and nothing where they have
+    /// given none.
+    ///
+    /// A QVariant rather than a QColor because the two answers have to be told
+    /// apart in QML, and an invalid QColor arrives there as transparent black
+    /// -- a colour, and one a reader could conceivably have chosen. An invalid
+    /// QVariant arrives as `undefined`, which is the question answered rather
+    /// than answered oddly.
+    ///
+    /// Shaped as a question rather than as a property because PlotSurface asks
+    /// it of *either* plot -- see the note at the top of this file about not
+    /// forking those files -- and DatasetPlot answers "none" for every line.
+    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const;
 
     // --- what the surface and the legend ask -------------------------------
     [[nodiscard]] QVariantList drawnSeries() const;
@@ -338,6 +376,15 @@ private:
         QString expression;
         /// What the legend calls it, when the expression will not do.
         QString alias;
+        /// The colour the reader gave it, invalid where they have not.
+        ///
+        /// Beside the alias rather than anywhere else because it is the same
+        /// kind of thing: something the reader says about a line that costs no
+        /// read and changes nothing about what is drawn, only how. A QColor is
+        /// trivially copyable and nothrow-movable, so the static_assert below
+        /// still holds -- which is the gate every new member of this struct
+        /// has to pass.
+        QColor colour;
         Scaling scaling = Align;
         bool drawn = true;
 

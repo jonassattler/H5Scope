@@ -27,10 +27,11 @@
 #include "postproc/Pipeline.hpp"
 
 #include <QCoreApplication>
-#include <QScopeGuard>
 #include <QFileInfo>
 #include <QLocale>
+#include <QScopeGuard>
 #include <QSettings>
+#include <QVariant>
 
 #include <algorithm>
 #include <QVariantMap>
@@ -156,6 +157,21 @@ AppController::AppController(QObject* parent)
         const int stored =
             settings.value(QStringLiteral("ramBudget"), static_cast<int>(MediumRam)).toInt();
         ramBudget_ = static_cast<RamBudget>(std::clamp(stored, 0, 2));
+        // ...and what a copied plot should look like. Nothing here is read
+        // until a picture is asked for, so these are read for the same reason
+        // the two above are: once, where the reading is, rather than on every
+        // binding that asks.
+        plotExportPublication_ =
+            settings.value(QStringLiteral("plotExportPublication"), false).toBool();
+        plotExportCursor_ = settings.value(QStringLiteral("plotExportCursor"), false).toBool();
+        plotExportCustomSize_ =
+            settings.value(QStringLiteral("plotExportCustomSize"), false).toBool();
+        plotExportWidth_ =
+            std::clamp(settings.value(QStringLiteral("plotExportWidth"), plotExportWidth_).toInt(),
+                       kMinExportPixels, kMaxExportPixels);
+        plotExportHeight_ = std::clamp(
+            settings.value(QStringLiteral("plotExportHeight"), plotExportHeight_).toInt(),
+            kMinExportPixels, kMaxExportPixels);
     }
     PlotBudget::instance().setAppetite(appetiteOf(ramBudget_));
     // Three readings of one table. Both of these follow datasetModel_'s resets
@@ -1102,6 +1118,77 @@ void AppController::setRamBudget(RamBudget budget)
         settings.setValue(QStringLiteral("ramBudget"), static_cast<int>(ramBudget_));
     }
     emit ramBudgetChanged();
+}
+
+namespace {
+
+/// Write one setting, or write nowhere at all.
+///
+/// The guard is the same one the recent-files list and the budget carry and is
+/// there for the same reason -- the tests construct controllers freely and must
+/// not leave anything on disk -- and by the fifth setting it was worth having
+/// once rather than five times.
+void store(const QString& key, const QVariant& value)
+{
+    if (QCoreApplication::organizationName().isEmpty()) {
+        return;
+    }
+    QSettings settings;
+    settings.setValue(key, value);
+}
+
+} // namespace
+
+void AppController::setPlotExportPublication(bool on)
+{
+    if (plotExportPublication_ == on) {
+        return;
+    }
+    plotExportPublication_ = on;
+    store(QStringLiteral("plotExportPublication"), on);
+    emit plotExportPublicationChanged();
+}
+
+void AppController::setPlotExportCursor(bool on)
+{
+    if (plotExportCursor_ == on) {
+        return;
+    }
+    plotExportCursor_ = on;
+    store(QStringLiteral("plotExportCursor"), on);
+    emit plotExportCursorChanged();
+}
+
+void AppController::setPlotExportCustomSize(bool on)
+{
+    if (plotExportCustomSize_ == on) {
+        return;
+    }
+    plotExportCustomSize_ = on;
+    store(QStringLiteral("plotExportCustomSize"), on);
+    emit plotExportCustomSizeChanged();
+}
+
+void AppController::setPlotExportWidth(int pixels)
+{
+    const int wanted = std::clamp(pixels, kMinExportPixels, kMaxExportPixels);
+    if (plotExportWidth_ == wanted) {
+        return;
+    }
+    plotExportWidth_ = wanted;
+    store(QStringLiteral("plotExportWidth"), wanted);
+    emit plotExportSizeChanged();
+}
+
+void AppController::setPlotExportHeight(int pixels)
+{
+    const int wanted = std::clamp(pixels, kMinExportPixels, kMaxExportPixels);
+    if (plotExportHeight_ == wanted) {
+        return;
+    }
+    plotExportHeight_ = wanted;
+    store(QStringLiteral("plotExportHeight"), wanted);
+    emit plotExportSizeChanged();
 }
 
 void AppController::clearRecentFiles()

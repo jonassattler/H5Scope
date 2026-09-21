@@ -1001,7 +1001,7 @@ TestCase {
         const surface = findAllOf(view, "customPlotSurface")[0]
         const lines = findAllOf(view, "plotLines")[0]
         verify(lines, "the drawn lines must be reachable")
-        compare(surface.colorMode, "spectrum")
+        compare(surface.colorMode, "okabe-ito")
         tryVerify(() => lines.lineCount() === 3, 5000, "three lines are drawn")
 
         const before = []
@@ -1028,6 +1028,117 @@ TestCase {
         }
     }
 
+    // --- a line the reader colours -----------------------------------------
+
+    /// A colour the reader gives one line beats the cycle, and only for that
+    /// line.
+    ///
+    /// The cycle answers "which line is this" for lines that are alike. A
+    /// custom tab's are not: they were each put there on purpose and often
+    /// mean different things, so a reader drawing temperature against pressure
+    /// has a colour in mind for each that no cycle is going to guess. What has
+    /// to hold is that saying so about one line says nothing about the others
+    /// -- the same promise a palette makes about its own index, and for the
+    /// same reason.
+    function test_a_line_takes_the_colour_the_reader_gave_it() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        plot.addExpression("/series/time[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        verify(surface && lines, "the surface and its lines must be reachable")
+        tryVerify(() => lines.lineCount() === 3, 5000, "three lines are drawn")
+
+        const before = []
+        for (let i = 0; i < 3; ++i)
+            before.push(String(lines.seriesColor(i)))
+        verify(before[0] !== before[1] && before[1] !== before[2])
+
+        // Nothing given yet, which is a different answer from "transparent".
+        compare(plot.seriesOverride(1), undefined)
+
+        plot.setEntryColor(1, "#ff00ff")
+        settleReads()
+        tryVerify(() => String(lines.seriesColor(1)) === "#ff00ff", 5000,
+                  "the line must take the colour it was given")
+        compare(String(lines.seriesColor(0)), before[0],
+                "the line above must be where it was")
+        compare(String(lines.seriesColor(2)), before[2],
+                "and the line below")
+
+        // The legend and the card ask the surface rather than the item, so
+        // that is asserted too: a swatch that disagreed with the stroke beside
+        // it would be the one thing a legend may never be.
+        compare(String(surface.seriesColor(1, 1, 3)), "#ff00ff")
+
+        // A cycle changed under it leaves it alone -- it is an override and
+        // not a seat in the cycle -- and moves the two that have none.
+        plot.clearEntryColor(2)
+        surface.colorMode = "safe"
+        settleReads()
+        tryVerify(() => String(lines.seriesColor(0)) !== before[0], 5000,
+                  "the lines without a colour follow the cycle")
+        compare(String(lines.seriesColor(1)), "#ff00ff")
+
+        surface.colorMode = "okabe-ito"
+        settleReads()
+
+        // ...and clearing gives the line back to the cycle rather than
+        // freezing whatever the cycle happened to say.
+        plot.clearEntryColor(1)
+        settleReads()
+        tryVerify(() => String(lines.seriesColor(1)) === before[1], 5000,
+                  "clearing must give the line back to the cycle")
+        compare(plot.seriesOverride(1), undefined)
+    }
+
+    /// ...and the card in the data rail is one of the two places to say it.
+    function test_the_entry_card_offers_the_line_a_colour() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        const swatch = findAllOf(view, "entryColour")[0]
+        const clear = findAllOf(view, "entryColourClear")[0]
+        verify(swatch && clear, "the card must offer a colour")
+
+        // The swatch shows what the line is drawn in whether or not the reader
+        // chose it, because a blank swatch would say the line has no colour
+        // and that is never true.
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        compare(String(swatch.value), String(surface.seriesColor(0, 0, 1)))
+        verify(!clear.enabled, "there is nothing to clear yet")
+
+        plot.setEntryColor(0, "#00ff88")
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(String(swatch.value), "#00ff88")
+        verify(clear.enabled, "and now there is")
+
+        mouseClick(clear)
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(plot.seriesOverride(0), undefined)
+        verify(!clear.enabled)
+    }
+
     // --- the legend's own menu ---------------------------------------------
 
     function test_the_line_menu_carries_no_blank_row() {
@@ -1052,9 +1163,18 @@ TestCase {
         // height at all. An invisible item is laid out as a full-height blank
         // line otherwise, which is what the drawer was showing.
         compare(legend.customRefusal(0), "")
-        compare(menu.count, 2)
+        compare(menu.count, 4)
         verify(!menu.itemAt(1).visible, "there is nothing to explain")
         compare(menu.itemAt(1).height, 0)
+        // The two colour rows are the other drawer this one menu carries, and
+        // this legend is the plot tab's. The two offers are exclusive by
+        // nature -- a line here is a row of one dataset, which the cycle
+        // already tells apart -- so the drawer is never a list of one thing
+        // that works and two that do not.
+        verify(!menu.itemAt(2).visible, "a plot-tab line takes no colour")
+        verify(!menu.itemAt(3).visible)
+        compare(menu.itemAt(2).height, 0)
+        compare(menu.itemAt(3).height, 0)
         // ...and the drawer is exactly as tall as its one real row.
         compare(menu.contentItem.contentHeight, menu.itemAt(0).height)
         menu.close()

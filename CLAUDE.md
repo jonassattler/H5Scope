@@ -81,10 +81,24 @@ without being forked. The tabs answer to the *file* rather than to the tree, so
 `AppController::openFile`/`closeFile` empty them — but the **saved views do
 not**: they are written to `QSettings` and outlive both the tabs and the file,
 and each reports how much of whatever is open it can still draw. Those, the
-recent-files list and the RAM budget under Settings are the only three things
-this program remembers between runs, and all of them are guarded by
+recent-files list, the RAM budget under Settings and the export settings under
+Settings > Plot Settings are the only four things this program remembers
+between runs, and all of them are guarded by
 `QCoreApplication::organizationName().isEmpty()` so the tests and
-`make-screenshots` never touch the user's settings.
+`make-screenshots` never touch the user's settings. A fifth follows
+`ramBudget`'s shape exactly: clamped on the way in from `QSettings` as well as
+from QML, written in the setter under the guard, one `NOTIFY` of its own.
+
+A line of a custom tab may also carry a **colour of its own**
+(`CustomPlot::Entry::colour`, `seriesOverride`), which sits over whatever
+cycle is in force and moves nothing else. It travels in `CustomPlot::state()`
+and so in a saved view, written only where there is one — which is why every
+view saved before it existed reads back unchanged. `DatasetPlot` answers the
+same question with "none" for every line, and that is not a stub: the Plot
+tab's lines are rows or columns of one dataset, so what identifies a line
+there is its place in the table and the cycle already says that. Both plots
+are drawn by `PlotSurface.qml`, which asks the question without knowing which
+plot it has.
 
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
@@ -438,6 +452,22 @@ round trip per element would draw exactly the right picture.
    anywhere** — this application changes state between one frame and the next.
    Anything that elides needs an `AppToolTip` within ~25 lines so the reader can
    still get at the data.
+
+   The line palettes are two kinds of thing and are held to two different
+   rules. `spectrum` and `safe` were *generated* against this application's two
+   grounds, so every entry clears 3:1 on both and `tst_views` asserts it.
+   `okabe-ito`, `tol bright` and `tol muted` are the *published* cycles, kept
+   at their published values so a figure from here and one drawn in matplotlib
+   or R agree about which line is which — the one substitution being
+   Okabe-Ito's black, which is the plot's own ground in the dark theme and is
+   drawn at signal white there. They were designed for ink on paper and their
+   palest entries do **not** clear 3:1 on the light theme's white; that is the
+   stated cost of exactness, `tst_views` pins them stop for stop so a
+   well-meant deepening fails rather than passing quietly, and a reader who
+   wants a cycle solved for a screen has the other two one pick away. A plot
+   opens on `okabe-ito`, so *the first line of a new plot is achromatic* —
+   which is what that cycle is, and what a pixel-counting test looking for a
+   saturated stroke has to be told.
 6. **The views stream.** The table reads the block it is about to paint; the
    plot reads a line. Postprocessing is the exception — it must materialise, and
    is capped at `postproc::kMaxElements` (2^24 doubles, 128 MB).
@@ -648,6 +678,43 @@ round trip per element would draw exactly the right picture.
    of those, which is what the reader saw when a rail opened. A resize is also
    debounced (`kResizeMilliseconds`), so a drag of the window's edge reads once
    at the end rather than once per sixty-four pixels.
+
+   **The picture that leaves is a second frame, and it owns its values.**
+   Settings > Plot Settings asks a copied plot to differ from the pane —
+   publication colours, a size of the reader's choosing, the crosshair in or
+   out — and none of that can be had by re-styling the frame on screen,
+   because a grab renders the scene as it stands and the picture would be
+   bought with a frame of the application in the wrong colours.
+   `PlotPicture.qml` is therefore a whole `PlotFrame` built off screen, laid
+   out at the size asked for (so its ticks and its type are that size's rather
+   than the pane's, magnified), grabbed, and destroyed when the answer lands.
+   Its colours come from properties with Theme defaults — `PlotFrame.ground`,
+   `ink`, `ruleMinor`, `ruleMajor`, `axisRule`, `cursorInk` — because `Theme`
+   is a singleton and cannot be flipped for the length of a grab.
+
+   What it must **not** do is ask the model to fill it. `fill()` records which
+   item it last handed the lines to (`drawing_`), so a second fill moves that
+   record and a `releaseDrawing()` arriving between the grab starting and the
+   frame it renders on would empty the wrong item and free values the other is
+   still pointing at. `PlotItem::adopt` copies instead — every `PlotLine`'s
+   values *and* both of `PlotAxis`'s borrowed arrays, the whole time base and
+   the finer run of it — into storage the item owns, so the model never learns
+   the picture exists. Cheap for a structural reason: a `PlotItem` holds a
+   pane's worth of points, not a file's worth.
+
+   **A grab carries no alpha to rely on.** Under Qt Quick's software renderer
+   — what runs wherever there is no graphics API, and what the whole suite
+   runs under — an item grab comes back `Format_RGB32` with untouched pixels
+   at opaque black, so a frame drawing no ground grabs as a black slab. A
+   publication picture is therefore drawn *twice* in one item, on white above
+   and on black below, and `ImageClipboard::copyItem(…, composited)` recovers
+   the alpha from the pair: source-over says a pixel of colour C at coverage a
+   lands at `C*a + (1-a)` on white and `C*a` on black, so their difference is
+   `1-a` and the black half is already the premultiplied colour. Exact rather
+   than a colour key, so antialiased type and the feathered edge of a stroke
+   keep the coverage they were drawn with — and the same answer on both
+   renderers. It is also why `kMaxExportPixels` is half a texture ceiling
+   rather than a whole one.
 7. **The version is counted from release tags**, never typed. Major/minor live
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
 8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`
@@ -684,6 +751,16 @@ round trip per element would draw exactly the right picture.
 - `examples/`, `build/`, `dist/`, `instructions/` and `.claude/` are gitignored.
   `instructions/` is the author's working notes — do not resurrect it into the
   repository, and never `git add -A` blindly.
+- **Qt Quick Test's `grabImage(item)` takes the item's *size* from the
+  **window's** origin**, not from the item's own. So a grab of the plot surface
+  — which sits `Theme.sliceBarHeight` down, under the slice bar — opens with 38
+  rows of `surfaceRaised` that belong to the bar, and the plot looks as though
+  it were standing on a raised surface when it is standing on true black. That
+  is why `colouredPixels()` in `tst_views` takes a `firstRow`. When what is
+  being measured is *where* something is drawn, grab through
+  `ImageClipboard.copyItem` + `pixelOnClipboard` instead: that is a real
+  `QQuickItemGrabResult` on the item and its origin is the item's own. The plot
+  ground is asserted that way in *"the plot stands on black or on white"*.
 - Headless anything needs `QT_QPA_PLATFORM=offscreen`. The offscreen platform
   declares no RHI capability, so Qt Quick falls back to the software renderer,
   which draws **no custom `QSGGeometryNode` at all** — it knows rectangles,

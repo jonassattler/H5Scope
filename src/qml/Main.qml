@@ -145,7 +145,20 @@ ApplicationWindow {
         // fail to offer it. That is the whole of why these tabs exist.
         if (id.startsWith("custom:"))
             return true
-        return id === "info" || id === "table" || AppController.datasetIsNumeric
+        // Information is the one view that describes a *thing* rather than
+        // values, so it is the one a group has anything to put in.
+        if (id === "info")
+            return true
+        // ...and all three of the others need a dataset before anything else
+        // is asked. The table used to be offered unconditionally, on the true
+        // half of the thought that it serves every datatype -- which is about
+        // *which* dataset and says nothing about whether there is one. So a
+        // reader who clicked a group was handed a Data Viewer with its slice
+        // bar gone and a sentence where the grid should be: a tab that opens
+        // onto its own explanation for why it should not have.
+        if (!AppController.datasetTabVisible)
+            return false
+        return id === "table" || AppController.datasetIsNumeric
     }
 
     function selectTab(id) {
@@ -291,6 +304,7 @@ ApplicationWindow {
         onCollapseRequested: objectTree.collapseAll()
         onTreeTagsRequested: window.treeTagsVisible = !window.treeTagsVisible
         onAboutRequested: aboutDialog.open()
+        onPlotSettingsRequested: plotSettingsDialog.open()
         onTabRequested: (id) => window.selectTab(id)
         onNewCustomPlotRequested: window.addCustomTab()
     }
@@ -691,6 +705,16 @@ ApplicationWindow {
     AboutDialog {
         id: aboutDialog
     }
+
+    // Settings -> Plot Settings. Here beside the About dialog rather than in
+    // the plot's own rail, because it is about every plot in the window and
+    // outlives all of them: it is remembered between runs.
+    PlotSettingsDialog {
+        id: plotSettingsDialog
+    }
+
+    /// Exposed for the QML suite, which cannot walk to a Popup.
+    readonly property alias plotSettings: plotSettingsDialog
 
     // Asked here rather than in the tab, because what raises it is the tree --
     // a plus beside a row, or its menu -- and the tree is this window's.
