@@ -5105,19 +5105,22 @@ TestCase {
 
     }
 
-    /// The tags stand against the readout, on its left.
+    /// The tags stand in a column of their own, against the readout.
     ///
-    /// Two arrangements came before this one and both are worth remembering.
-    /// They began as three fixed slots at the pane's right edge, which lined
-    /// them up but spent that width on every row whether or not it had a tag;
-    /// they then went directly after the name, on the argument that a tag is
-    /// an adjective and belongs next to its noun. That is true of one row and
-    /// wrong of a pane full of them -- the name is the one thing on the row
-    /// whose length is arbitrary, so tags pinned to its end land somewhere
-    /// different on every line.
+    /// Three arrangements came before this one and all of them are worth
+    /// remembering. They began as three fixed slots at the pane's right edge,
+    /// which lined them up but stood a tag two hundred pixels from the name
+    /// it qualifies; they then went directly after the name, on the argument
+    /// that a tag is an adjective and belongs next to its noun. That is true
+    /// of one row and wrong of a pane full of them -- the name is the one
+    /// thing on the row whose length is arbitrary, so tags pinned to its end
+    /// land somewhere different on every line. They were then pinned to the
+    /// readout, which is short and right-aligned; better, and still not a
+    /// column, because the width they took was however many tags that row had.
     ///
-    /// Pinned to the readout they line up, and a row with no tags still
-    /// spends nothing, which is the part the fixed slots got wrong.
+    /// So what is asserted here is the column: the same width on every row,
+    /// whatever it carries, with the tags packed against its right-hand end
+    /// and the readout beyond that.
     function test_the_tree_s_tags_stand_against_the_readout() {
         const win = createTemporaryObject(treeWindowComponent, testCase)
         verify(win, "the tree window must instantiate")
@@ -5155,9 +5158,78 @@ TestCase {
         verify(tagStart >= nameEnd,
                "a tag must not sit on top of the name it qualifies")
 
-        // A row with nothing to say about itself has no tags at all, rather
-        // than empty slots holding width open.
-        compare(badgesIn(findTreeRow(win.tree, "matrix")).length, 0)
+        // A row with nothing to say about itself draws no tag -- and still
+        // spends the column, which is what makes it one. That is the cost
+        // this arrangement pays and the earlier ones did not.
+        const bare = findTreeRow(win.tree, "matrix")
+        compare(badgesIn(bare).length, 0)
+
+        const slotOf = (which) => {
+            const slot = findChild(which, "treeTags")
+            verify(slot, "every row must carry the tag column")
+            return slot
+        }
+        const oneTag = slotOf(row)
+        compare(slotOf(bare).width, oneTag.width,
+                "the tag column is the same width on a row with a tag and a "
+                + "row without one")
+        // ...and it is the room three tags need rather than the room this
+        // row's one needs. Measured against twice the tag it has and not
+        // three times: the three letters are not the same width, so the
+        // column is the sum of the three and never a multiple of any one of
+        // them. What is being caught here is the column collapsing back onto
+        // whatever the row happens to carry.
+        verify(oneTag.width > marks[0].width * 2,
+               "the column holds three tags, not this row's one: "
+               + Math.round(oneTag.width) + "px against a tag of "
+               + Math.round(marks[0].width))
+
+        // The one tag this row has is packed against the right-hand end of
+        // that column, which is the end the readout is on.
+        const columnEnd = oneTag.mapToItem(row, oneTag.width, 0).x
+        verify(Math.abs(columnEnd - tagEnd) <= 1,
+               "a tag is drawn against the right-hand end of its column: tag "
+               + "ends at " + Math.round(tagEnd) + ", column at "
+               + Math.round(columnEnd))
+
+        // And the claim itself, over every row on screen at once: both
+        // columns start at the same x on all of them. This is the assertion
+        // the arrangement before this one failed. It had the tags against the
+        // readout and the readout as wide as its own text, so "8 items" and
+        // "17 items" put their tags six pixels apart and nothing in the pane
+        // lined up with anything else -- which is exactly what a per-row
+        // measurement cannot see, because each row was perfectly consistent
+        // with itself.
+        // Unfiltered by `visible`, the way findTreeRow walks: a row's
+        // effective visibility is its whole chain's, and a TreeView keeps
+        // its rows under a container that does not report as visible from
+        // out here. A delegate mid-recycle has no width and is not a row
+        // anybody is looking at, which is what that half of the test is.
+        const startsOf = (name) => {
+            const seen = []
+            const visit = (item) => {
+                if (item.objectName === name && item.width > 0)
+                    seen.push(Math.round(item.mapToItem(win.tree, 0, 0).x))
+                for (let i = 0; i < item.children.length; ++i)
+                    visit(item.children[i])
+            }
+            visit(win.tree)
+            return seen
+        }
+
+        const held = (what, name) => {
+            const starts = startsOf(name)
+            verify(starts.length > 4,
+                   "there must be rows to compare: " + starts.length)
+            for (let i = 1; i < starts.length; ++i) {
+                compare(starts[i], starts[0],
+                        "every row must start its " + what + " at the same x, "
+                        + "and row " + i + " starts at " + starts[i]
+                        + " against " + starts[0])
+            }
+        }
+        held("tags", "treeTags")
+        held("readout", "treeMeta")
 
         // View -> Tree Tags still takes them away.
         win.tree.tagsVisible = false

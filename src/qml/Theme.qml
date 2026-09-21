@@ -431,13 +431,38 @@ QtObject {
     /// variant the tree's tag column needs to fit three of them in a 26px row.
     readonly property int badgeHeight:        18
     readonly property int badgeHeightCompact: 16
-    /// Narrowest the tree's right-hand readout may be drawn at. Below this it
-    /// is an ellipsis and nothing else, so it is dropped instead -- the name
-    /// is what the reader came for, and it takes the space back.
+    /// The tree's right-hand readout: its column, and the narrowest that
+    /// column may be squeezed to before it is dropped.
+    ///
+    /// A constant and not the width of whatever this row's readout happens
+    /// to be, because it is a *column*: the shape, the count or the link
+    /// target starts at the same x on every line, and so therefore do the
+    /// tags beside it and the end of every name. Ninety-six is what the
+    /// readouts this application writes actually measure -- the face is
+    /// monospaced, so this is about sixteen characters, and a three-axis
+    /// shape of four-digit extents is the longest of them at ninety. A link
+    /// target is longer than any column worth spending and elides from the
+    /// left, which is where its uninformative end is; the row's tooltip
+    /// carries it whole.
+    ///
+    /// Below the minimum what is left is an ellipsis and nothing else, so the
+    /// readout is dropped instead -- the name is what the reader came for,
+    /// and it takes the space back.
+    readonly property int treeMetaWidth:     96
     readonly property int treeMetaMinWidth:  40
     /// Narrowest an Information panel may get before the layout reflows to one
     /// fewer column.
     readonly property int panelMinWidth:   340
+    /// A dialog that is a form: Plot Settings, and whatever follows it.
+    ///
+    /// Wider than a panel, because a panel's rows are one control each and a
+    /// form's are a labelled box beside a labelled box. The density row is
+    /// three of them -- the dots per inch and the two sides the figure comes
+    /// to -- and they are three readings of one number, so a wrap that puts
+    /// one of them on a line of its own is a wrap in the middle of a
+    /// sentence. This is what that line measures, with air for a translation
+    /// that needs more of it; past that the row wraps rather than clipping.
+    readonly property int formDialogWidth: 440
     /// Shortest a body inside one may be squeezed to before the panel stops
     /// giving room back -- three rows of it.
     ///
