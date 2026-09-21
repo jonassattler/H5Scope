@@ -2382,6 +2382,15 @@ TestCase {
     function verifyBandNumbersAreClear(readout, clearOfBand) {
         const boxes = readout.labels
         for (let i = 0; i < boxes.length; ++i) {
+            // Every key the delegate reads, on every entry. The quarter is
+            // the one that is easy to leave off -- only two of the six are
+            // turned -- and leaving it off is not a label drawn straight, it
+            // is `rotation: undefined` and two warnings a frame for as long
+            // as the reader holds the drag.
+            compare(typeof boxes[i].turn, "number",
+                    boxes[i].key + " must say which quarter it is read at")
+            compare(typeof boxes[i].text, "string",
+                    boxes[i].key + " must carry its own text")
             verify(readout.inside(boxes[i]),
                    boxes[i].key + " must be drawn inside the pane")
             if (clearOfBand || boxes[i].key !== "start" && boxes[i].key !== "end") {
