@@ -495,21 +495,31 @@ Item {
         }
     }
 
-    // The two rules the readings are read against, which are the frame itself.
+    // The rules the readings are read against, which are the frame itself.
+    //
+    // All four sides, and that is the whole of what this is. Two of them --
+    // the left and the bottom -- are the axes the numbers are printed beside,
+    // and for a long time they were the only ones drawn. What the other two
+    // buy is that the pane has an *edge*: a trace that runs out of the window
+    // at the top now stops at a rule instead of fading into the gutter, and a
+    // reader can see where the window ends without reading a label to find
+    // out. It is what every plotting library draws by default and what a
+    // figure on a page looks like.
+    //
+    // One rectangle with a border rather than four hairlines, because four
+    // items is four chances for one of them to be a pixel off the others. Its
+    // border is drawn *inside* its bounds, so it is a hairline wider and
+    // taller than the pane: that puts the left rule on the pane's first
+    // column and the bottom rule on the row just below it, which is exactly
+    // where each of them was drawn when they were two separate items.
     Rectangle {
         x: frame.area.x
         y: frame.area.y
-        width: Theme.hairline
-        height: frame.area.height
-        color: frame.axisRule
-    }
-
-    Rectangle {
-        x: frame.area.x
-        y: frame.area.y + frame.area.height
-        width: frame.area.width
-        height: Theme.hairline
-        color: frame.axisRule
+        width: frame.area.width + Theme.hairline
+        height: frame.area.height + Theme.hairline
+        color: "transparent"
+        border.width: Theme.hairline
+        border.color: frame.axisRule
     }
 
     /// The lines. Clipped, so a zoomed-in stroke stops at the frame rather
