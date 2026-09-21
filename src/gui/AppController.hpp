@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QStringList>
 #include <QQmlEngine>
+#include <QSize>
 #include <QtQml/qqmlregistration.h>
 #include <QString>
 #include <QStringList>
@@ -118,10 +119,17 @@ private:
 
     /// Draw the exported picture for print rather than for this screen.
     ///
-    /// Black strokes, the light scope's chrome, and no ground at all -- so
-    /// what the picture stands on is the page it is pasted into. It is a
-    /// property of the *export* and not of the plot: the reader goes on
-    /// looking at the plot they were looking at.
+    /// The light scope's colours and no ground at all -- so what the picture
+    /// stands on is the page it is pasted into. It is a property of the
+    /// *export* and not of the plot: the reader goes on looking at the plot
+    /// they were looking at.
+    ///
+    /// The *whole* of the light scope, since 0.6.4. It used to mean one black
+    /// ink for every stroke as well as the light chrome, and that threw away
+    /// the one thing a colour cycle is for: six traces pasted into a document
+    /// were six identical strokes with a caption naming colours that were not
+    /// in the picture. What it draws now is the picture a reader would get by
+    /// flipping to the light theme, which is a thing they can check.
     Q_PROPERTY(bool plotExportPublication READ plotExportPublication WRITE setPlotExportPublication
                    NOTIFY plotExportPublicationChanged)
 
@@ -153,6 +161,41 @@ private:
     /// it is a box arguing with the reader.
     Q_PROPERTY(int minExportPixels READ minExportPixels CONSTANT)
     Q_PROPERTY(int maxExportPixels READ maxExportPixels CONSTANT)
+
+    // --- and at what resolution -------------------------------------------
+    //
+    // A picture is *composed* in points and *rendered* in pixels, and the
+    // resolution is the exchange rate between them. The composition is what
+    // the size above decides: how large the type is against the pane, how
+    // many numbered ticks there is room for, how heavy a hairline is. The
+    // resolution decides only how many dots that same composition is drawn
+    // with -- which is exactly matplotlib's figsize and dpi, and is the model
+    // a reader exporting a figure already has.
+    //
+    // kExportBaseDpi is where the two meet: at 96 dpi a point is a pixel, so
+    // the two boxes above are a size in pixels as well as a composition, and
+    // nothing about them has changed.
+
+    /// Whether the picture is rendered at a resolution the reader chose
+    /// rather than at whatever this display draws at.
+    ///
+    /// The default is the display, because that is what this application has
+    /// always copied and what a reader pasting into a chat window wants. A
+    /// chosen dpi is the other case entirely -- a figure for a page -- and it
+    /// is *independent of the display*: the same plot copied on a HiDPI
+    /// laptop and on a plain monitor comes back as the same picture, which
+    /// the display-scaled one does not.
+    Q_PROPERTY(bool plotExportCustomDpi READ plotExportCustomDpi WRITE setPlotExportCustomDpi NOTIFY
+                   plotExportCustomDpiChanged)
+
+    /// That resolution, in dots per inch.
+    ///
+    /// Three hundred by default, which is what journals ask for. Clamped the
+    /// same way the two sizes are, and on the same two paths in.
+    Q_PROPERTY(
+        int plotExportDpi READ plotExportDpi WRITE setPlotExportDpi NOTIFY plotExportDpiChanged)
+    Q_PROPERTY(int minExportDpi READ minExportDpi CONSTANT)
+    Q_PROPERTY(int maxExportDpi READ maxExportDpi CONSTANT)
 
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
 
@@ -277,6 +320,50 @@ public:
     void setPlotExportWidth(int pixels);
     [[nodiscard]] int plotExportHeight() const { return plotExportHeight_; }
     void setPlotExportHeight(int pixels);
+    [[nodiscard]] bool plotExportCustomDpi() const { return plotExportCustomDpi_; }
+    void setPlotExportCustomDpi(bool on);
+    [[nodiscard]] int plotExportDpi() const { return plotExportDpi_; }
+    void setPlotExportDpi(int dpi);
+
+    /// How many device pixels one point of a picture `pageWidth` by
+    /// `pageHeight` points becomes.
+    ///
+    /// The one place the three settings above are turned into a number, so
+    /// that the dialog showing the reader what they will get and the surface
+    /// asking for it cannot disagree. Three answers, and they are the three
+    /// the settings spell out:
+    ///
+    ///   - a chosen dpi -> that dpi over kExportBaseDpi, and the display is
+    ///     not consulted at all, which is the whole of what the setting is
+    ///     for;
+    ///   - a chosen size -> one, because a size asked for in pixels is given
+    ///     in pixels;
+    ///   - the pane's own size -> `displayRatio`, because that is the picture
+    ///     this application has always copied, down to the pixel.
+    ///
+    /// Then bounded by what a texture can hold. That bound is on the rendered
+    /// pixels and not on the composition, which is why it lives here rather
+    /// than in the setters: 1920 by 1080 is a legal size and 1200 dpi is a
+    /// legal resolution, and the two together are not a picture any graphics
+    /// API will hand back.
+    [[nodiscard]] Q_INVOKABLE double plotExportScale(double pageWidth, double pageHeight,
+                                                     double displayRatio) const;
+
+    /// ...and that scale applied, which is the size the grab is asked for.
+    [[nodiscard]] Q_INVOKABLE QSize plotExportPixels(double pageWidth, double pageHeight,
+                                                     double displayRatio) const;
+
+    /// The resolution a picture rendered at that scale is tagged with, or 0
+    /// for "say nothing".
+    ///
+    /// A number of pixels is not a size until something says how densely they
+    /// sit, and a reader who asked for 300 dpi asked for a figure that lands
+    /// on the page at its true physical size rather than at one dot per
+    /// point. So the image carries it (ImageClipboard::copyItem), and carries
+    /// it only where the reader said a number: a picture taken at the
+    /// display's scale is tagged with nothing, exactly as it always was,
+    /// because "as many dots as this screen has" is not a claim about inches.
+    [[nodiscard]] Q_INVOKABLE double plotExportTaggedDpi() const;
 
     /// The narrowest and the widest a picture may be asked for, in pixels.
     ///
@@ -296,6 +383,22 @@ public:
 
     [[nodiscard]] int minExportPixels() const { return kMinExportPixels; }
     [[nodiscard]] int maxExportPixels() const { return kMaxExportPixels; }
+
+    /// One point is one pixel at this resolution, which is what makes the two
+    /// sizes above a composition and a pixel count at the same time. Ninety-
+    /// six and not seventy-two: it is what every desktop this runs on calls
+    /// its own unscaled density, so "same as window" at 96 dpi on an unscaled
+    /// display is the picture that was already being copied.
+    static constexpr double kExportBaseDpi = 96.0;
+    /// What a reader may ask for. The floor is below the base on purpose -- a
+    /// smaller file for a slide is as legitimate a request as a larger one for
+    /// a plate -- and the ceiling is where dpi stops describing print and
+    /// starts describing a typesetter.
+    static constexpr int kMinExportDpi = 36;
+    static constexpr int kMaxExportDpi = 1200;
+
+    [[nodiscard]] int minExportDpi() const { return kMinExportDpi; }
+    [[nodiscard]] int maxExportDpi() const { return kMaxExportDpi; }
 
     [[nodiscard]] bool hasFile() const { return fileOpen_; }
     /// Whether the file is being read right now.
@@ -468,6 +571,8 @@ signals:
     void plotExportPublicationChanged();
     void plotExportCursorChanged();
     void plotExportCustomSizeChanged();
+    void plotExportCustomDpiChanged();
+    void plotExportDpiChanged();
     /// One signal for both numbers: they are one setting, and nothing binds to
     /// either of them without binding to the size they make together.
     void plotExportSizeChanged();
@@ -542,6 +647,8 @@ private:
     /// having thought about it, and a shape most panes are already close to.
     int plotExportWidth_ = 1920;
     int plotExportHeight_ = 1080;
+    bool plotExportCustomDpi_ = false;
+    int plotExportDpi_ = 300;
     bool fileOpen_ = false;
     QString filePath_;
     QString currentPath_;

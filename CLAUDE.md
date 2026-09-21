@@ -87,7 +87,9 @@ between runs, and all of them are guarded by
 `QCoreApplication::organizationName().isEmpty()` so the tests and
 `make-screenshots` never touch the user's settings. A fifth follows
 `ramBudget`'s shape exactly: clamped on the way in from `QSettings` as well as
-from QML, written in the setter under the guard, one `NOTIFY` of its own.
+from QML, written in the setter under the guard, one `NOTIFY` of its own. The
+export group has grown that way twice now — the size, then the resolution —
+and both times without a new mechanism.
 
 A line of a custom tab may also carry a **colour of its own**
 (`CustomPlot::Entry::colour`, `seriesOverride`), which sits over whatever
@@ -681,16 +683,50 @@ round trip per element would draw exactly the right picture.
 
    **The picture that leaves is a second frame, and it owns its values.**
    Settings > Plot Settings asks a copied plot to differ from the pane —
-   publication colours, a size of the reader's choosing, the crosshair in or
-   out — and none of that can be had by re-styling the frame on screen,
-   because a grab renders the scene as it stands and the picture would be
-   bought with a frame of the application in the wrong colours.
-   `PlotPicture.qml` is therefore a whole `PlotFrame` built off screen, laid
-   out at the size asked for (so its ticks and its type are that size's rather
-   than the pane's, magnified), grabbed, and destroyed when the answer lands.
-   Its colours come from properties with Theme defaults — `PlotFrame.ground`,
-   `ink`, `ruleMinor`, `ruleMajor`, `axisRule`, `cursorInk` — because `Theme`
-   is a singleton and cannot be flipped for the length of a grab.
+   publication colours, a size of the reader's choosing, a resolution of their
+   choosing, the crosshair in or out — and none of the first three can be had
+   by re-styling the frame on screen, because a grab renders the scene as it
+   stands and the picture would be bought with a frame of the application in
+   the wrong colours. `PlotPicture.qml` is therefore a whole `PlotFrame` built
+   off screen, laid out at the size asked for (so its ticks and its type are
+   that size's rather than the pane's, magnified), grabbed, and destroyed when
+   the answer lands. Its colours come from properties with Theme defaults —
+   `PlotFrame.ground`, `ink`, `ruleMinor`, `ruleMajor`, `axisRule`,
+   `cursorInk` — because `Theme` is a singleton and cannot be flipped for the
+   length of a grab.
+
+   **Publication is the light scope and not one ink.** It draws the picture
+   the light theme would draw: `Theme.paperInk` and its neighbours for the
+   chrome, and `Theme.paperPalettes` — `palettesFor(false)`, the same table
+   read against the other ground — for the strokes. It was one black stroke
+   for every line until 0.6.4, which is the one thing a colour cycle exists to
+   not be: six traces went out as six identical strokes with a caption naming
+   colours the picture did not contain. `PlotSurface.seriesColor` takes the
+   scope as a fourth argument so that every branch answers it — a palette is a
+   second table, a ramp is the same map in both scopes, and the three colours
+   that are *values* by the time they arrive (`colorSingle`, the ends of a
+   `range`, a line the reader coloured) go through `Theme.paperColor`. That
+   maps signal white to ink, which is not a nicety: the accent is white on the
+   dark theme and a white line on a white page is no line. It is the exact
+   mirror of the substitution okabe-ito already makes the other way.
+
+   **A picture is composed in points and rendered in pixels**, and
+   `AppController::plotExportScale` is the one place the two meet — the dialog
+   printing what the reader will get and the surface asking for it read the
+   same function, so they cannot be two numbers. `kExportBaseDpi` is 96: at
+   that resolution a point is a pixel, which is why the size boxes are a
+   composition and a pixel count at once. Three answers, in order: a dpi the
+   reader stated (and the display is then not consulted at all, which is the
+   whole of what the setting is for), else one for a size asked for in pixels,
+   else the display's own ratio for the pane's own size — the picture this
+   application has always copied. `kMaxExportPixels` bounds the *product*
+   there rather than either setter, because a legal size and a legal
+   resolution multiply into a texture nothing will hand back. The chosen dpi
+   also goes into the image (`ImageClipboard::copyItem`'s `dpi`, from
+   `plotExportTaggedDpi`), because a count of pixels is not a size until
+   something says how densely they sit; a picture taken at the display's scale
+   is tagged with nothing, since "as many dots as this screen has" is not a
+   claim about inches.
 
    What it must **not** do is ask the model to fill it. `fill()` records which
    item it last handed the lines to (`drawing_`), so a second fill moves that

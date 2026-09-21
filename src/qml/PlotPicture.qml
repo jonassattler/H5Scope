@@ -28,6 +28,11 @@ import H5Scope.Backend
 /// no scene graph nodes and grabs as nothing at all. Off the edge it is
 /// rendered like anything else and simply never seen.
 ///
+/// **In publication mode the colours are the light scope's, not one ink.** The
+/// chrome is the light theme's chrome and the strokes are the light theme's
+/// palette -- the picture a reader would see if they flipped the theme, drawn
+/// without flipping it. See Theme's paper block and `paperPalettes`.
+///
 /// **In publication mode it holds the picture twice**, on white above and on
 /// black below, and is grabbed as the pair. A grab carries no alpha channel to
 /// rely on -- under the software renderer it comes back as opaque RGB -- so a
@@ -45,8 +50,8 @@ Item {
     /// (PlotItem::adopt) and is a copy rather than a second borrow; see the
     /// note there, which is about a lifetime rather than about a cost.
     property Item sourceLines: null
-    /// Print rather than screen: black strokes, the light scope's chrome, and
-    /// no ground at all.
+    /// Print rather than screen: the light scope's colours -- its chrome and
+    /// its line palette both -- and no ground at all.
     property bool publication: false
     /// Whether the crosshair and the sample it snapped to are in the picture.
     property bool includeCursor: false
@@ -87,20 +92,26 @@ Item {
             frame.lines.adopt(picture.sourceLines)
             for (let i = 0; i < frame.lines.lineCount(); ++i) {
                 const series = i < drawn.length ? drawn[i] : i
-                if (picture.publication) {
-                    // Every stroke in one ink, which is what was asked for. It
-                    // costs the picture the one thing colour was buying --
-                    // which line is which -- and the caption says the same
-                    // thing rather than going on showing a palette nothing is
-                    // drawn in.
-                    frame.lines.setSeriesColor(i, Theme.paperInk)
-                    frame.lines.setSeriesOpacity(i, Theme.paperSeriesOpacity)
-                } else {
-                    frame.lines.setSeriesColor(
-                        i, picture.surface.seriesColor(series, i, drawn.length))
-                    frame.lines.setSeriesOpacity(
-                        i, picture.surface.seriesOpacity(series, drawn.length))
-                }
+                // The same question in both cases, asked of the other scope
+                // for the picture: `seriesColor` answers with the light
+                // scope's palette, the light scope's accent and the reader's
+                // own per-line colours, which is what "the light theme's
+                // picture" means. Until 0.6.4 this branch drew every stroke
+                // in one black ink instead, and that cost the picture the one
+                // thing colour was buying -- which line is which -- for six
+                // traces that a caption then had to name in colours the
+                // picture did not contain.
+                frame.lines.setSeriesColor(
+                    i, picture.surface.seriesColor(series, i, drawn.length,
+                                                   picture.publication))
+                // The opacity does not follow it, and that is the one place
+                // the picture is deliberately not the light theme. On screen
+                // a bundle separates by piling up; on a page a line drawn at
+                // part strength is a line somebody will complain about.
+                frame.lines.setSeriesOpacity(
+                    i, picture.publication
+                        ? Theme.paperSeriesOpacity
+                        : picture.surface.seriesOpacity(series, drawn.length))
                 frame.lines.setSeriesWidth(i, picture.surface.seriesWidth(series))
             }
         }
@@ -173,7 +184,9 @@ Item {
                 ground: picture.publication ? "transparent" : Theme.plotLegendGround
                 rule: picture.publication ? Theme.paperRuleMajor : Theme.border
                 faint: picture.publication ? Theme.paperAxisRule : Theme.textDisabled
-                strokeInk: picture.publication ? Theme.paperInk : null
+                // The caption is asked the same question the strokes were,
+                // so it names the colours that are actually in the picture.
+                paper: picture.publication
             }
         }
     }

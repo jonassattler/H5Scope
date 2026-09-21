@@ -655,6 +655,41 @@ QtObject {
     /// a bundle piles up (see plotSeriesOpacity); a line printed at part
     /// strength on white is a line somebody will complain about.
     readonly property real paperSeriesOpacity: 1.0
+    /// The two semantic colours a *line* can be drawn in, as paper resolves
+    /// them. `accent` and `info` are the defaults behind the plot's "same" and
+    /// "range" modes, and both of them flip with the scope.
+    readonly property color paperAccent: n0
+    readonly property color paperInfo:   cyan900
+
+    /// One colour the reader's own settings put on a line, as it must be
+    /// drawn on paper.
+    ///
+    /// The plot's colour cycles are answered by `paperPalettes` further down,
+    /// which is a straight second reading of the same table. This is for the
+    /// three colours that are not a cycle at all -- `colorSingle`, the two
+    /// ends of a "range", and a line the reader gave a colour of its own --
+    /// because those are *values* by the time they get here and there is no
+    /// binding left to re-resolve.
+    ///
+    /// So they are mapped by value, and only the two that a token can have
+    /// put there. The first of them is not a nicety: the accent is signal
+    /// white on the dark theme, and a white line on paper is not a faint line
+    /// -- it is no line at all. That substitution is the exact mirror of the
+    /// one okabe-ito already makes in the other direction, and it is stated
+    /// there in the same words: a colour that *is* the ground is not a line.
+    ///
+    /// What it costs is small and worth saying: a reader who picks signal
+    /// white or signal cyan out of the swatch by hand gets paper's version of
+    /// it rather than the colour they pointed at. Which is the same answer
+    /// the light theme would give them for the first of those and a shade
+    /// deeper for the second, and both are legible on a page.
+    function paperColor(c) {
+        if (Qt.colorEqual(c, theme.sig500))
+            return theme.paperAccent
+        if (Qt.colorEqual(c, theme.cyan500))
+            return theme.paperInfo
+        return c
+    }
 
     /// A settings panel's rows are taller than a table's: each carries a
     /// control, not a line of text.
@@ -914,55 +949,84 @@ QtObject {
     // that "Okabe-Ito" here is not Okabe-Ito, which is the whole of what they
     // are being taken for. A reader who wants a cycle solved for a screen has
     // `spectrum` and `safe` one pick away.
-    readonly property var categoricalPalettes: ({
-        // Okabe and Ito's Color Universal Design set, the eight of it.
-        //
-        // Black is the one entry that cannot survive the dark scope -- it is
-        // the ground -- so it is drawn at signal white there, which is the
-        // same substitution every dark-theme port of this palette makes. The
-        // other seven are identical in both scopes: they were chosen to hold
-        // apart under all three dichromacies, and re-solving them for a black
-        // ground would be a different palette wearing this one's name.
-        "okabe-ito": [dark ? n11 : n0, "#E69F00", "#56B4E9", "#009E73",
-                      "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
-        // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
-        // often reached for where a handful of lines need naming.
-        "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
-                       "#AA3377", "#BBBBBB"],
-        // ...and his muted scheme, nine of them, for the same job where the
-        // bright one is louder than the page wants. Tol's pale grey for "data
-        // that is not a category" is deliberately left out: every entry here
-        // is a line, and a line drawn in the colour reserved for "none of
-        // these" is a line saying something it does not mean.
-        "tol muted": ["#CC6677", "#332288", "#DDCC77", "#117733", "#88CCEE",
-                      "#882255", "#44AA99", "#999933", "#AA4499"],
-        // Twenty colours, no two closer than 13.1 dE00 in either scope. For
-        // scale: matplotlib's tab20 manages 12.1 across its twenty, and does
-        // it against one ground rather than two.
-        "spectrum": dark
-            ? ["#B64EF5", "#F6330C", "#009700", "#0089C4", "#C99400",
-               "#FF9DBB", "#00CFC6", "#ACB5FF", "#64F44D", "#FFA379",
-               "#FF005E", "#F09AFF", "#6173FF", "#808700", "#F200AE",
-               "#009276", "#C76700", "#12C8FF", "#00B46A", "#B3C300"]
-            : ["#9C33DB", "#D01F00", "#007C00", "#0089C3", "#6C4E00",
-               "#7D003F", "#006A65", "#003989", "#063A00", "#6F2500",
-               "#D4004C", "#6C0081", "#085AFC", "#696F00", "#C90090",
-               "#009276", "#A55500", "#006684", "#006237", "#444B00"],
-        // Ten that hold apart under protanopia, deuteranopia and tritanopia as
-        // well as under ordinary vision: 7.8 dE00 at the worst, simulated
-        // four ways in both scopes. tab10 falls to 1.9 on the same measure and
-        // Okabe-Ito's seven reach 8.7 -- but Okabe-Ito's yellow carries 1.3:1
-        // against white, which is a line the light theme cannot show at all.
-        //
-        // Shorter than the spectrum on purpose. Colours that survive all three
-        // dichromacies at once are a small set, and padding the list would
-        // only be a longer list of colours some readers cannot tell apart.
-        "safe": dark
-            ? ["#0088CB", "#B37400", "#FFAE7F", "#CCB5FF", "#FB0080",
-               "#00F3BD", "#FF8798", "#00A98C", "#798DFF", "#FC43E7"]
-            : ["#007BB8", "#945F00", "#602800", "#001AB4", "#D00069",
-               "#00523E", "#930036", "#008B73", "#0050C5", "#A20094"]
-    })
+    //
+    // A *function* of which ground rather than a plain object, and that is the
+    // whole of what lets the picture that leaves be drawn in the light scope
+    // while the reader stays in the dark one. Three of these five differ
+    // between the scopes and two do not; writing the light set out a second
+    // time for the picture would be five palettes kept in two places, and the
+    // two that do not differ would be the ones to drift. See `paperPalettes`
+    // below, which is this called with the other answer.
+    function palettesFor(onDark) {
+        return ({
+            // Okabe and Ito's Color Universal Design set, the eight of it.
+            //
+            // Black is the one entry that cannot survive the dark scope -- it is
+            // the ground -- so it is drawn at signal white there, which is the
+            // same substitution every dark-theme port of this palette makes. The
+            // other seven are identical in both scopes: they were chosen to hold
+            // apart under all three dichromacies, and re-solving them for a black
+            // ground would be a different palette wearing this one's name.
+            "okabe-ito": [onDark ? n11 : n0, "#E69F00", "#56B4E9", "#009E73",
+                          "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+            // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
+            // often reached for where a handful of lines need naming.
+            "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
+                           "#AA3377", "#BBBBBB"],
+            // ...and his muted scheme, nine of them, for the same job where the
+            // bright one is louder than the page wants. Tol's pale grey for "data
+            // that is not a category" is deliberately left out: every entry here
+            // is a line, and a line drawn in the colour reserved for "none of
+            // these" is a line saying something it does not mean.
+            "tol muted": ["#CC6677", "#332288", "#DDCC77", "#117733", "#88CCEE",
+                          "#882255", "#44AA99", "#999933", "#AA4499"],
+            // Twenty colours, no two closer than 13.1 dE00 in either scope. For
+            // scale: matplotlib's tab20 manages 12.1 across its twenty, and does
+            // it against one ground rather than two.
+            "spectrum": onDark
+                ? ["#B64EF5", "#F6330C", "#009700", "#0089C4", "#C99400",
+                   "#FF9DBB", "#00CFC6", "#ACB5FF", "#64F44D", "#FFA379",
+                   "#FF005E", "#F09AFF", "#6173FF", "#808700", "#F200AE",
+                   "#009276", "#C76700", "#12C8FF", "#00B46A", "#B3C300"]
+                : ["#9C33DB", "#D01F00", "#007C00", "#0089C3", "#6C4E00",
+                   "#7D003F", "#006A65", "#003989", "#063A00", "#6F2500",
+                   "#D4004C", "#6C0081", "#085AFC", "#696F00", "#C90090",
+                   "#009276", "#A55500", "#006684", "#006237", "#444B00"],
+            // Ten that hold apart under protanopia, deuteranopia and tritanopia as
+            // well as under ordinary vision: 7.8 dE00 at the worst, simulated
+            // four ways in both scopes. tab10 falls to 1.9 on the same measure and
+            // Okabe-Ito's seven reach 8.7 -- but Okabe-Ito's yellow carries 1.3:1
+            // against white, which is a line the light theme cannot show at all.
+            //
+            // Shorter than the spectrum on purpose. Colours that survive all three
+            // dichromacies at once are a small set, and padding the list would
+            // only be a longer list of colours some readers cannot tell apart.
+            "safe": onDark
+                ? ["#0088CB", "#B37400", "#FFAE7F", "#CCB5FF", "#FB0080",
+                   "#00F3BD", "#FF8798", "#00A98C", "#798DFF", "#FC43E7"]
+                : ["#007BB8", "#945F00", "#602800", "#001AB4", "#D00069",
+                   "#00523E", "#930036", "#008B73", "#0050C5", "#A20094"]
+        })
+    }
+
+    /// The palettes as the scope on screen resolves them.
+    readonly property var categoricalPalettes: theme.palettesFor(theme.dark)
+
+    /// ...and as the light scope does, whatever is on screen.
+    ///
+    /// The picture that leaves is drawn on paper, and until 0.6.4 that meant
+    /// every stroke in one black ink -- which threw away the one thing a
+    /// palette is for. A figure of six traces pasted into a document was six
+    /// identical black strokes and a caption that could no longer say which
+    /// was which. The colours are kept now, and they are the light scope's
+    /// because that is the scope the picture is drawn in: see the paper block
+    /// above, which makes the same argument about the chrome.
+    ///
+    /// Only three of the five move. Okabe-Ito's first entry is the ground in
+    /// whichever scope it is drawn in -- black on paper, signal white on the
+    /// dark theme -- and `spectrum` and `safe` were solved against both
+    /// grounds. Tol's two are published values and are the same everywhere.
+    readonly property var paperPalettes: theme.palettesFor(false)
 
     /// The palettes in the order the plot settings offer them, which is the
     /// order they are argued in above: the published cycles first, Okabe-Ito

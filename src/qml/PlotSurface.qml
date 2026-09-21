@@ -273,7 +273,18 @@ Item {
     ///
     /// The reader's own band (colorFrom .. colorTo) still applies on top, so
     /// narrowing the map narrows what these shares are taken out of.
-    function seriesColor(series, position, count) {
+    ///
+    /// `paper` is the fourth number and the only one that is not about which
+    /// line this is: it asks for the colour the *light* scope would draw,
+    /// whatever scope is on screen. That is what a publication export is --
+    /// see the paper block in Theme -- and it is asked here rather than
+    /// substituted afterwards because "the same picture in the other scope"
+    /// is a property of every branch below and not of the answer. Until 0.6.4
+    /// the picture that left was every stroke in one black ink, which is the
+    /// one thing a colour cycle exists to not be: six traces pasted into a
+    /// document were six identical strokes with a caption naming colours that
+    /// were not in the picture.
+    function seriesColor(series, position, count, paper) {
         // A colour the reader gave this line beats every cycle, and beats it
         // first: a cycle answers "which line is this" for lines that are alike,
         // and the lines of a custom tab were each put there on purpose. The
@@ -289,11 +300,12 @@ Item {
         if (surface.plot) {
             const own = surface.plot.seriesOverride(series)
             if (own !== undefined && own !== null)
-                return own
+                return paper ? Theme.paperColor(own) : own
         }
 
         if (surface.colorMode === "same")
-            return surface.colorSingle
+            return paper ? Theme.paperColor(surface.colorSingle)
+                         : surface.colorSingle
 
         // A palette is asked which line this is rather than how far along it
         // sits, so none of the arithmetic below applies to one: not the shares
@@ -309,7 +321,8 @@ Item {
         // of five lines handed the second line the first one's colour, and the
         // reader watching one stroke saw it change under them -- the exact
         // failure a palette is here to not have.
-        const palette = Theme.categoricalPalettes[surface.colorMode]
+        const palette = paper ? Theme.paperPalettes[surface.colorMode]
+                              : Theme.categoricalPalettes[surface.colorMode]
         if (palette) {
             return Theme.categoricalColor(
                 palette,
@@ -323,8 +336,17 @@ Item {
         // whole of it. Untouched that slice is the whole of it, so the
         // arithmetic is a no-op until they say otherwise.
         at = surface.colorFrom + at * (surface.colorTo - surface.colorFrom)
-        if (surface.colorMode === "range")
-            return Theme.mix(surface.colorRangeFrom, surface.colorRangeTo, at)
+        if (surface.colorMode === "range") {
+            return Theme.mix(paper ? Theme.paperColor(surface.colorRangeFrom)
+                                   : surface.colorRangeFrom,
+                             paper ? Theme.paperColor(surface.colorRangeTo)
+                                   : surface.colorRangeTo,
+                             at)
+        }
+        // The ramps are the one part of this that has no second scope: they
+        // are named colour maps kept as they are defined elsewhere, so a
+        // viridis on paper is the viridis a reader in the light theme sees and
+        // the viridis matplotlib draws. See Theme.colorRamps.
         return Theme.rampColor(Theme.colorRamps[surface.colorMode], at)
     }
 
@@ -820,12 +842,13 @@ Item {
     /// says how it went, and the settings panel prints that.
     ///
     /// What is grabbed is no longer this window's own frame but a second one
-    /// built for the purpose (PlotPicture.qml), because three things under
+    /// built for the purpose (PlotPicture.qml), because four things under
     /// Settings > Plot Settings ask the picture to differ from the pane --
-    /// publication colours, a size of the reader's choosing, the crosshair in
-    /// or out -- and none of them can be had by re-styling the frame on
-    /// screen: a grab renders the scene as it stands, so the picture would be
-    /// bought with a frame of the application in the wrong colours.
+    /// publication colours, a size of the reader's choosing, a resolution of
+    /// their choosing, the crosshair in or out -- and none of the first three
+    /// can be had by re-styling the frame on screen: a grab renders the scene
+    /// as it stands, so the picture would be bought with a frame of the
+    /// application in the wrong colours and at the wrong size.
     function copyImage() {
         if (!surface.drawable)
             return false
@@ -835,9 +858,16 @@ Item {
         // with it rather than waiting for a `copied` that will never come.
         surface.dropPicture()
 
+        // Rounded once, here, because these two are used twice: they are the
+        // size the picture is laid out at and they are what the resolution is
+        // applied to. A frame whose width is a fraction of a logical pixel
+        // would otherwise be truncated into the layout and rounded into the
+        // grab, and the picture would be asked for at a size it was not.
         const custom = AppController.plotExportCustomSize
-        const wide = custom ? AppController.plotExportWidth : frame.width
-        const tall = custom ? AppController.plotExportHeight : frame.height
+        const wide = Math.round(custom ? AppController.plotExportWidth
+                                       : frame.width)
+        const tall = Math.round(custom ? AppController.plotExportHeight
+                                       : frame.height)
 
         const publication = AppController.plotExportPublication
         picture = pictureComponent.createObject(surface, {
@@ -855,15 +885,17 @@ Item {
             return false
         }
 
-        // A chosen size is asked for exactly; the pane's own size is left to
-        // ImageClipboard, which multiplies it by the window's device pixel
-        // ratio -- so "same as window" is the picture this application has
-        // always copied, down to the pixel. A publication picture is drawn
-        // twice and composed, which is why the size has to be stated even
-        // then: what is grabbed is not the size of what is wanted.
-        const asked = custom || publication
-            ? Qt.size(Math.round(wide), Math.round(tall)) : Qt.size(0, 0)
-        const started = ImageClipboard.copyItem(picture, asked, publication)
+        // The picture is *composed* at `wide` by `tall` and *rendered* at
+        // however many pixels the resolution asks for; AppController is where
+        // those two meet, and it is asked rather than reimplemented here so
+        // that the number the dialog shows the reader and the number the grab
+        // is asked for cannot differ. At the default resolution a point is a
+        // pixel and a chosen size is given exactly, which is the picture this
+        // application has always copied.
+        const asked = AppController.plotExportPixels(wide, tall,
+                                                     surface.pixelRatio)
+        const started = ImageClipboard.copyItem(
+            picture, asked, publication, AppController.plotExportTaggedDpi())
         if (!started)
             surface.dropPicture()
         return started

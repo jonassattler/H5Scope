@@ -39,6 +39,7 @@
 #include <hdf5.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace gui {
 
@@ -172,6 +173,11 @@ AppController::AppController(QObject* parent)
         plotExportHeight_ = std::clamp(
             settings.value(QStringLiteral("plotExportHeight"), plotExportHeight_).toInt(),
             kMinExportPixels, kMaxExportPixels);
+        plotExportCustomDpi_ =
+            settings.value(QStringLiteral("plotExportCustomDpi"), false).toBool();
+        plotExportDpi_ =
+            std::clamp(settings.value(QStringLiteral("plotExportDpi"), plotExportDpi_).toInt(),
+                       kMinExportDpi, kMaxExportDpi);
     }
     PlotBudget::instance().setAppetite(appetiteOf(ramBudget_));
     // Three readings of one table. Both of these follow datasetModel_'s resets
@@ -1189,6 +1195,73 @@ void AppController::setPlotExportHeight(int pixels)
     plotExportHeight_ = wanted;
     store(QStringLiteral("plotExportHeight"), wanted);
     emit plotExportSizeChanged();
+}
+
+void AppController::setPlotExportCustomDpi(bool on)
+{
+    if (plotExportCustomDpi_ == on) {
+        return;
+    }
+    plotExportCustomDpi_ = on;
+    store(QStringLiteral("plotExportCustomDpi"), on);
+    emit plotExportCustomDpiChanged();
+}
+
+void AppController::setPlotExportDpi(int dpi)
+{
+    const int wanted = std::clamp(dpi, kMinExportDpi, kMaxExportDpi);
+    if (plotExportDpi_ == wanted) {
+        return;
+    }
+    plotExportDpi_ = wanted;
+    store(QStringLiteral("plotExportDpi"), wanted);
+    emit plotExportDpiChanged();
+}
+
+double AppController::plotExportScale(double pageWidth, double pageHeight,
+                                      double displayRatio) const
+{
+    double scale = 1.0;
+    if (plotExportCustomDpi_) {
+        scale = plotExportDpi_ / kExportBaseDpi;
+    } else if (!plotExportCustomSize_) {
+        // Never below one. A display reporting a fractional ratio is
+        // reporting how it lays out text, not how few pixels it has, and a
+        // picture smaller than the pane it was taken of is nobody's copy.
+        scale = std::max(1.0, displayRatio);
+    }
+
+    // What a texture can hold, which is the one bound here that is not a
+    // taste. Taken over the longer side, so the picture keeps its shape
+    // rather than being squared off by the clamp -- a stretched figure is a
+    // wrong figure, and a smaller one is only a smaller one.
+    const double longest = std::max(pageWidth, pageHeight);
+    if (longest > 0.0) {
+        scale = std::min(scale, kMaxExportPixels / longest);
+    }
+    // ...and a scale that rounds a side away to nothing is not a picture
+    // either.
+    const double shortest = std::min(pageWidth, pageHeight);
+    if (shortest > 0.0) {
+        scale = std::max(scale, 1.0 / shortest);
+    }
+    return scale;
+}
+
+QSize AppController::plotExportPixels(double pageWidth, double pageHeight,
+                                      double displayRatio) const
+{
+    if (pageWidth <= 0.0 || pageHeight <= 0.0) {
+        return {};
+    }
+    const double scale = plotExportScale(pageWidth, pageHeight, displayRatio);
+    return {static_cast<int>(std::lround(pageWidth * scale)),
+            static_cast<int>(std::lround(pageHeight * scale))};
+}
+
+double AppController::plotExportTaggedDpi() const
+{
+    return plotExportCustomDpi_ ? static_cast<double>(plotExportDpi_) : 0.0;
 }
 
 void AppController::clearRecentFiles()

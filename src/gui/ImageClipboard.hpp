@@ -87,7 +87,18 @@ public:
     ///
     /// `target` is the size of the *result*, so the item handed over is twice
     /// that tall.
-    Q_INVOKABLE bool copyItem(QQuickItem* item, const QSize& target = {}, bool composited = false);
+    ///
+    /// `dpi` is what the picture is *tagged* with, and it changes not one
+    /// pixel of it. A number of pixels is not a size until something says how
+    /// densely they sit, so a figure asked for at 300 dpi has to carry that
+    /// number or it lands on the page at one dot per point -- three times too
+    /// large, in a word processor that believes it. Zero says nothing, which
+    /// is what a picture taken at the display's own scale should say: "as many
+    /// dots as this screen has" is not a claim about inches. See
+    /// AppController::plotExportTaggedDpi, which is the one place that decides
+    /// which of the two it is.
+    Q_INVOKABLE bool copyItem(QQuickItem* item, const QSize& target = {}, bool composited = false,
+                              double dpi = 0.0);
 
     /// The size of the image on the clipboard now, or an empty size when there
     /// is none.
@@ -103,8 +114,9 @@ public:
     ///
     /// Here for the reason imageOnClipboard() is, and for a stricter question:
     /// a publication export differs from the picture on screen in its
-    /// *colours* -- a transparent ground, a black stroke -- and a size is no
-    /// witness to either. Nothing in the application reads this one either.
+    /// *colours* -- a transparent ground, the light scope's palette -- and a
+    /// size is no witness to either. Nothing in the application reads this one
+    /// either.
     [[nodiscard]] Q_INVOKABLE QColor pixelOnClipboard(int x, int y) const;
 
 Q_SIGNALS:

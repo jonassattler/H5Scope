@@ -439,9 +439,10 @@ Rectangle {
             }
 
             // What a copied plot looks like: publication colours, whether the
-            // crosshair is in it, and how big it is. A row and not a submenu,
-            // because two of those are a number the reader types and a drawer
-            // has nowhere to type into -- see PlotSettingsDialog.
+            // crosshair is in it, how big it is and how densely it is drawn.
+            // A row and not a submenu, because three of those are a number
+            // the reader types and a drawer has nowhere to type into -- see
+            // PlotSettingsDialog.
             AppMenuItem { action: plotSettingsAction }
         }
 

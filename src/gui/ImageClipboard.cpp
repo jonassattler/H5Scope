@@ -65,7 +65,7 @@ namespace {
 
 } // namespace
 
-bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool composited)
+bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool composited, double dpi)
 {
     if (item == nullptr || item->window() == nullptr) {
         emit failed(tr("There is no plot on screen to copy."));
@@ -103,7 +103,7 @@ bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool compos
         return false;
     }
 
-    connect(pending_.data(), &QQuickItemGrabResult::ready, this, [this, composited]() {
+    connect(pending_.data(), &QQuickItemGrabResult::ready, this, [this, composited, dpi]() {
         // Taken out of the member first, so that whatever happens below --
         // including a failure -- leaves nothing in flight behind it.
         const QSharedPointer<QQuickItemGrabResult> result = pending_;
@@ -112,10 +112,24 @@ bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool compos
             return;
         }
 
-        const QImage image = composited ? composeOverNothing(result->image()) : result->image();
+        QImage image = composited ? composeOverNothing(result->image()) : result->image();
         if (image.isNull()) {
             emit failed(tr("The plot could not be drawn into a picture."));
             return;
+        }
+        // What the pixels are worth in inches, where the caller said. QImage
+        // holds it per metre and every format that carries it at all -- PNG's
+        // pHYs among them -- is written out of these two, so this is what
+        // survives the trip through the clipboard into somebody's document.
+        //
+        // Set after the composition rather than before: composeOverNothing
+        // builds a new image out of the pair, and a new QImage carries its own
+        // defaults, so tagging the grab would tag the half that was discarded.
+        if (dpi > 0.0) {
+            constexpr double metresPerInch = 0.0254;
+            const int perMetre = static_cast<int>(std::lround(dpi / metresPerInch));
+            image.setDotsPerMeterX(perMetre);
+            image.setDotsPerMeterY(perMetre);
         }
 
         QClipboard* board = QGuiApplication::clipboard();
