@@ -25,6 +25,28 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.4
+
+**Publication mode keeps the colours.** It drew every stroke in one black ink,
+which threw away the one thing a colour cycle is for: six traces pasted into a
+document were six identical strokes, and the caption in the corner named them
+in colours that were nowhere in the picture. A publication copy is now exactly
+the picture the light theme would draw — its chrome and its line palette both,
+whichever theme you are in — and the caption names what is actually drawn. One
+line on the default cycle is still black, because that is okabe-ito's first
+entry on paper; the accent is too, because signal white on a white page is not
+a faint line but no line.
+
+**A copy can be asked for at a resolution rather than at the display's.**
+Settings > Plot Settings grows a *resolution* row: the picture is composed at
+the size above it and rendered at as many dots per inch as you ask for, so the
+same plot copied on a scaled laptop and on a plain monitor is the same picture.
+The image carries the number as well, so it lands in a document at its true
+physical size instead of at one dot per point. The default is unchanged — the
+display's own scale, which is what has always been copied — and at 96 dpi a
+point is a pixel, so a custom size still means exactly the pixels it says. The
+dialog prints what will come out.
+
 ## 0.6.3
 
 **A region drag says what it is selecting, in numbers.** The band said where

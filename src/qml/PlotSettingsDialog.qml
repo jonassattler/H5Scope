@@ -10,10 +10,17 @@ import H5Scope.Backend
 /// uppercase header bar, and a scrim rather than a blur behind it.
 ///
 /// A dialog rather than more rows under the Settings drawer, and the reason is
-/// that a drawer can only offer rows and bullets. Two of these settings are a
+/// that a drawer can only offer rows and bullets. Three of these settings are a
 /// number the reader types, and a menu with a text field in it is a menu
 /// pretending to be a form. It is modal for the ordinary reason: it asks about
 /// nothing on screen, so there is nothing behind it to consult while answering.
+///
+/// Size and resolution are two rows because they are two questions. The size
+/// is what the picture is *composed* at -- how large the type is against the
+/// pane, how many numbered ticks there is room for -- and the resolution is
+/// how densely that composition is drawn. It is figsize and dpi, which is the
+/// model a reader exporting a figure already has, and it is the one way to
+/// offer "300 dpi" that does not quietly mean "three times the type".
 ///
 /// **What a setting means is a tooltip and not a paragraph under it.** This is
 /// a form and it is going to grow; a sentence of explanation under every
@@ -84,10 +91,11 @@ Dialog {
 
                 AppToolTip {
                     shown: parent.hovered
-                    text: qsTr("Draw the copy for print: black strokes, the "
-                               + "light theme's chrome, and no ground at all, "
-                               + "so it stands on the page it is pasted into. "
-                               + "What is on screen does not change.")
+                    text: qsTr("Draw the copy for print: the light theme's "
+                               + "colours, chrome and line palette both, and "
+                               + "no ground at all, so it stands on the page "
+                               + "it is pasted into. What is on screen does "
+                               + "not change.")
                 }
             }
 
@@ -130,8 +138,8 @@ Dialog {
 
                 AppToolTip {
                     shown: parent.hovered
-                    text: qsTr("The pane as it stands, at this display's own "
-                               + "resolution.")
+                    text: qsTr("The pane as it stands, composed exactly as "
+                               + "it is on screen.")
                 }
             }
 
@@ -145,9 +153,10 @@ Dialog {
 
                 AppToolTip {
                     shown: parent.hovered
-                    text: qsTr("Draw the picture again at a size in pixels — "
-                               + "its own ticks, its own labels — over exactly "
-                               + "the x and y range on screen.")
+                    text: qsTr("Draw the picture again at a size of your own "
+                               + "— its own ticks, its own labels — over "
+                               + "exactly the x and y range on screen. In "
+                               + "pixels, which is what it is at 96 dpi.")
                 }
             }
 
@@ -214,6 +223,123 @@ Dialog {
                         shown: parent.hovered
                         text: qsTr("Height of the picture, in pixels.")
                     }
+                }
+            }
+        }
+
+        // A second pair of radios rather than one more tick, and for the
+        // reason the pair above is a pair: the reader is choosing between two
+        // resolutions, not turning one on. A picture always has one.
+        SettingRow {
+            label: qsTr("resolution")
+
+            ButtonGroup { id: resolutions }
+
+            AppRadioButton {
+                id: displayScale
+                objectName: "displayScaleRadio"
+
+                ButtonGroup.group: resolutions
+                text: qsTr("this display")
+                onToggled: { if (checked) AppController.plotExportCustomDpi = false }
+
+                AppToolTip {
+                    shown: parent.hovered
+                    text: qsTr("As many dots as this screen draws with — "
+                               + "which is what the picture has always been "
+                               + "copied at, and is twice as many on a "
+                               + "scaled display as on a plain one.")
+                }
+            }
+
+            AppRadioButton {
+                id: chosenDpi
+                objectName: "customDpiRadio"
+
+                ButtonGroup.group: resolutions
+                text: qsTr("dots per inch")
+                onToggled: { if (checked) AppController.plotExportCustomDpi = true }
+
+                AppToolTip {
+                    shown: parent.hovered
+                    text: qsTr("The same picture rendered at a resolution "
+                               + "you state, whatever this display is set to "
+                               + "— and tagged with it, so it lands on the "
+                               + "page at its true size.")
+                }
+            }
+
+            Binding {
+                target: displayScale
+                property: "checked"
+                value: !AppController.plotExportCustomDpi
+                restoreMode: Binding.RestoreBindingOrValue
+            }
+
+            Binding {
+                target: chosenDpi
+                property: "checked"
+                value: AppController.plotExportCustomDpi
+                restoreMode: Binding.RestoreBindingOrValue
+            }
+
+            Row {
+                spacing: Theme.gapS
+                visible: AppController.plotExportCustomDpi
+
+                NumberField {
+                    objectName: "exportDpiField"
+
+                    value: AppController.plotExportDpi
+                    from: AppController.minExportDpi
+                    to: AppController.maxExportDpi
+                    onCommitted: amount => AppController.plotExportDpi = amount
+
+                    AppToolTip {
+                        shown: parent.hovered
+                        text: qsTr("Dots per inch. 300 is what most journals "
+                                   + "ask for; 600 is line art.")
+                    }
+                }
+
+                /// What comes out of the two rows together.
+                ///
+                /// The size above is the picture's *composition* and the
+                /// resolution is how densely it is drawn, so at anything but
+                /// 96 dpi the two boxes are no longer the pixel count -- and
+                /// a reader who typed 1920 and pasted 6000 would be right to
+                /// call that a bug. Shown only where this dialog knows both
+                /// numbers: the pane's own size is whatever the window is,
+                /// and it is not this dialog's to report.
+                ///
+                /// It is also where the texture ceiling becomes visible.
+                /// AppController clamps the scale so that a grab comes back
+                /// at all, and this prints what the clamp left rather than
+                /// what was asked for.
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: AppController.plotExportCustomSize
+                    text: {
+                        // Named so that this binding depends on them, the
+                        // way CustomEntryRow's swatch names its cycle:
+                        // plotExportPixels() is a function, and a call
+                        // creates no dependency on what it reads, so a reader
+                        // typing a new resolution would go on reading the
+                        // pixel count of the one before it.
+                        const wide = AppController.plotExportWidth
+                        const tall = AppController.plotExportHeight
+                        const dpi = AppController.plotExportDpi
+                        const chosen = AppController.plotExportCustomDpi
+                        // One, not this display's ratio: the row is about a
+                        // resolution the reader stated, and stating one is
+                        // what takes the display out of the arithmetic.
+                        const out = AppController.plotExportPixels(wide, tall, 1)
+                        return chosen && dpi > 0
+                            ? qsTr("→ %1 × %2 px").arg(out.width).arg(out.height)
+                            : ""
+                    }
+                    font: Theme.readout
+                    color: Theme.textSecondary
                 }
             }
         }

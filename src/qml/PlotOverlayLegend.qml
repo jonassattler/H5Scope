@@ -45,14 +45,17 @@ Rectangle {
     property color ground: Theme.plotLegendGround
     property color rule: Theme.border
     property color faint: Theme.textDisabled
-    /// One ink for every swatch, or `null` to ask the target line by line.
+    /// Whether the swatches are the light scope's colours rather than the
+    /// scope on screen.
     ///
-    /// Publication mode is what this is for, and it is the honest answer
-    /// there: every stroke in that picture is drawn in one ink, so a caption
-    /// showing the palette would be a caption about a different picture. The
-    /// one thing a legend may never be is wrong, and it is wrong about a black
-    /// plot exactly as it would be about a recoloured line.
-    property var strokeInk: null
+    /// Publication mode is what this is for, and it is carried through to
+    /// `seriesColor` rather than answered here: the one thing a legend may
+    /// never be is wrong, and a caption that worked its own colours out would
+    /// be a second rule about which line is which. Until 0.6.4 this was an
+    /// ink instead of a scope, because the picture was one ink -- so the
+    /// caption dropped the palette to stay honest about a picture that had
+    /// none. The picture has one again, and so does the caption.
+    property bool paper: false
 
     /// Whether this asks the plot object anything at all.
     ///
@@ -178,15 +181,12 @@ Rectangle {
                     width: Theme.plotLegendSwatch
                     height: Theme.borderWidthAccent
                     radius: Theme.radiusS
-                    color: {
-                        if (legend.strokeInk !== null)
-                            return legend.strokeInk
-                        return legend.target
-                               ? legend.target.seriesColor(row.modelData.series,
-                                                           row.modelData.position,
-                                                           legend.drawn.length)
-                               : Theme.accent
-                    }
+                    color: legend.target
+                           ? legend.target.seriesColor(row.modelData.series,
+                                                       row.modelData.position,
+                                                       legend.drawn.length,
+                                                       legend.paper)
+                           : Theme.accent
                 }
 
                 Text {

@@ -3055,6 +3055,13 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
 {
     // The fourth thing this application keeps between runs, after the files
     // that were opened, the RAM budget and the saved views.
+    //
+    // Two questions rather than one, and they are kept apart deliberately.
+    // The *size* is what the picture is composed at -- how large the type is
+    // against the pane, how many numbered ticks there is room for -- and the
+    // *resolution* is how densely that composition is drawn. Which is figsize
+    // and dpi, and is the one way to offer "300 dpi" that does not quietly
+    // mean "three times the type".
 
     SECTION("a size is held inside what can actually be drawn")
     {
@@ -3084,6 +3091,64 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
         CHECK(sizes.count() == 0);
     }
 
+    SECTION("a resolution is the display's until the reader says otherwise")
+    {
+        REQUIRE(QCoreApplication::organizationName().isEmpty());
+
+        gui::AppController controller;
+        CHECK_FALSE(controller.plotExportCustomDpi());
+        CHECK(controller.plotExportDpi() == 300);
+
+        // A picture is composed in points and rendered in pixels, and these
+        // are the three answers the settings spell out. The pane's own size
+        // follows the display, which is the picture this application has
+        // always copied.
+        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(2.0));
+        // A fraction of a pixel is how a display describes its type, not how
+        // few pixels it has; a copy smaller than the pane is nobody's copy.
+        CHECK(controller.plotExportScale(800, 600, 0.75) == Catch::Approx(1.0));
+        // ...and a size asked for in pixels is given in pixels.
+        controller.setPlotExportCustomSize(true);
+        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(1.0));
+
+        // A resolution the reader states does not consult the display at all,
+        // which is the whole of what the setting is for: the same plot copied
+        // on two machines is the same picture.
+        controller.setPlotExportCustomDpi(true);
+        controller.setPlotExportDpi(300);
+        const double expected = 300.0 / gui::AppController::kExportBaseDpi;
+        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(expected));
+        CHECK(controller.plotExportScale(800, 600, 1.0) == Catch::Approx(expected));
+
+        controller.setPlotExportDpi(96);
+        CHECK(controller.plotExportScale(800, 600, 3.0) == Catch::Approx(1.0));
+        CHECK(controller.plotExportPixels(800, 600, 3.0) == QSize(800, 600));
+        controller.setPlotExportDpi(192);
+        CHECK(controller.plotExportPixels(800, 600, 1.0) == QSize(1600, 1200));
+
+        // Clamped like the sizes are, and on the same argument.
+        controller.setPlotExportDpi(1);
+        CHECK(controller.plotExportDpi() == gui::AppController::kMinExportDpi);
+        controller.setPlotExportDpi(1 << 20);
+        CHECK(controller.plotExportDpi() == gui::AppController::kMaxExportDpi);
+
+        // The bound that is not a taste. A legal size and a legal resolution
+        // multiply into a texture no graphics API will hand back, so the
+        // *product* is what is held -- and held over the longer side, so the
+        // picture keeps its shape rather than being squared off.
+        const QSize huge = controller.plotExportPixels(
+            gui::AppController::kMaxExportPixels, gui::AppController::kMaxExportPixels / 2, 1.0);
+        CHECK(huge.width() == gui::AppController::kMaxExportPixels);
+        CHECK(huge.height() == gui::AppController::kMaxExportPixels / 2);
+
+        // What the picture is *tagged* with, which is the other half of a
+        // resolution: a count of pixels is not a size until something says how
+        // densely they sit. Said only where the reader said a number.
+        CHECK(controller.plotExportTaggedDpi() == Catch::Approx(1200.0));
+        controller.setPlotExportCustomDpi(false);
+        CHECK(controller.plotExportTaggedDpi() == Catch::Approx(0.0));
+    }
+
     SECTION("and all of it is still there next session")
     {
         // Nothing is read or written until a host application has named
@@ -3109,6 +3174,8 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
             writing.setPlotExportCustomSize(true);
             writing.setPlotExportWidth(2400);
             writing.setPlotExportHeight(1600);
+            writing.setPlotExportCustomDpi(true);
+            writing.setPlotExportDpi(600);
         }
 
         gui::AppController reading;
@@ -3117,6 +3184,8 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
         CHECK(reading.plotExportCustomSize());
         CHECK(reading.plotExportWidth() == 2400);
         CHECK(reading.plotExportHeight() == 1600);
+        CHECK(reading.plotExportCustomDpi());
+        CHECK(reading.plotExportDpi() == 600);
 
         // A stored size out of range is not trusted either. Written straight
         // into the settings, because the setter would have clamped it -- the
@@ -3126,10 +3195,12 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
             QSettings settings;
             settings.setValue(QStringLiteral("plotExportWidth"), 1 << 20);
             settings.setValue(QStringLiteral("plotExportHeight"), 0);
+            settings.setValue(QStringLiteral("plotExportDpi"), -3);
         }
         gui::AppController again;
         CHECK(again.plotExportWidth() == gui::AppController::kMaxExportPixels);
         CHECK(again.plotExportHeight() == gui::AppController::kMinExportPixels);
+        CHECK(again.plotExportDpi() == gui::AppController::kMinExportDpi);
     }
 }
 

@@ -3085,6 +3085,8 @@ TestCase {
         AppController.plotExportPublication = false
         AppController.plotExportCursor = false
         AppController.plotExportCustomSize = false
+        AppController.plotExportCustomDpi = false
+        AppController.plotExportDpi = 300
     }
 
     /// Copy `plot` and wait for the grab to land. Returns the failure, or "".
@@ -3158,13 +3160,83 @@ TestCase {
         restoreExportSettings()
     }
 
-    /// Publication mode: no ground at all, and every stroke in one black ink.
+    /// A resolution the reader states is the resolution the picture comes
+    /// back at, and the display is not consulted.
+    ///
+    /// The point of the setting, stated as the thing it fixes: two readers
+    /// with the same plot and different laptops used to get different
+    /// pictures, because "as many dots as this screen has" is what a grab is
+    /// by default. A figure for a page cannot be that.
+    ///
+    /// It is a resolution and not a size, which is the other half: the
+    /// picture is *composed* at the size in the row above and *rendered* at
+    /// this, so 96 dpi is the composition pixel for pixel and 192 is the same
+    /// composition with twice the dots in each direction -- not a bigger
+    /// plot, the same plot drawn finer.
+    function test_a_picture_is_rendered_at_the_resolution_that_was_asked_for() {
+        verify(select("/series/a"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot && plot.drawable, "there must be a plot to copy")
+
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 200
+        AppController.plotExportHeight = 150
+
+        // The base: a point is a pixel, so the size asked for is the size
+        // that lands -- which is what this application has always done and
+        // what the reader who never opens this row goes on getting.
+        AppController.plotExportCustomDpi = true
+        AppController.plotExportDpi = 96
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, 200)
+        compare(ImageClipboard.imageOnClipboard().height, 150)
+
+        // Twice the resolution, the same composition.
+        AppController.plotExportDpi = 192
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, 400)
+        compare(ImageClipboard.imageOnClipboard().height, 300)
+
+        // ...and below the base as well, because a smaller file for a slide
+        // is as legitimate a request as a larger one for a plate.
+        AppController.plotExportDpi = 48
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, 100)
+        compare(ImageClipboard.imageOnClipboard().height, 75)
+
+        // Turned off again, the display decides -- which offscreen is one to
+        // one, so this is the size asked for.
+        AppController.plotExportCustomDpi = false
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, 200)
+
+        // The dialog prints what will come out, and prints it through the
+        // same function the grab is asked for -- so the number the reader
+        // reads and the number they get cannot be two numbers.
+        AppController.plotExportCustomDpi = true
+        AppController.plotExportDpi = 192
+        const shown = AppController.plotExportPixels(200, 150, 1)
+        compare(shown.width, 400)
+        compare(shown.height, 300)
+
+        restoreExportSettings()
+    }
+
+    /// Publication mode: no ground at all, and black ink on it.
     ///
     /// The ground is the half that cannot be faked. A picture drawn on this
     /// application's own black and then inverted somewhere else is not a
     /// picture that stands on the page it is pasted into; what has to be true
     /// is that the corner of the image has *no colour*, which is what an alpha
     /// of zero means.
+    ///
+    /// The ink is black here because the line is *drawn* black on paper and
+    /// not because the picture is flattened: one line on the default cycle is
+    /// okabe-ito's first entry, which is the ground in whichever scope it is
+    /// drawn in -- signal white on the dark theme, black on the page. The test
+    /// below is the one that says a picture of six lines still has six
+    /// colours in it.
     function test_a_publication_copy_has_no_ground_and_black_strokes() {
         // One line over a mostly empty pane. The claim being made is about the
         // *ground*, so the picture has to be mostly ground: a dense bundle
@@ -3222,6 +3294,177 @@ TestCase {
         compare(String(lines.seriesColor(0)), onScreen)
 
         restoreExportSettings()
+    }
+
+    /// A publication picture keeps the colours -- the light theme's.
+    ///
+    /// Until 0.6.4 it did not: every stroke went out in one black ink, which
+    /// is the one thing a colour cycle exists to not be. Six traces pasted
+    /// into a document were six identical strokes, and the caption in the
+    /// corner named them in colours that were nowhere in the picture. What
+    /// is drawn now is what the light theme would draw, which is a thing a
+    /// reader can check by flipping the theme.
+    ///
+    /// Asserted in the clipboard's own pixels rather than off `seriesColor`,
+    /// because the function answering correctly and the picture carrying the
+    /// answer are two claims and only the second one is the feature. The
+    /// function is held to the palette in
+    /// test_the_picture_s_colours_are_the_light_theme_s below.
+    function test_a_publication_copy_keeps_the_light_theme_s_colours() {
+        verify(select("/cube")) // six lines, each its own band of y
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        verify(plot && lines && plot.drawable)
+
+        // The claim only means something from the dark theme: that is the
+        // scope where what is on screen and what goes on the page differ.
+        const was = Theme.dark
+        Theme.dark = true
+        waitForRendering(win.view)
+        compare(plot.colorMode, "okabe-ito")
+        compare(AppController.datasetPlot.drawnSeries.length, 6)
+
+        const wide = 320
+        const tall = 240
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = wide
+        AppController.plotExportHeight = tall
+        AppController.plotExportPublication = true
+
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, wide)
+
+        // Every pixel, because a stroke is a hairline and a grid of every
+        // third pixel can miss a whole line of a six-line plot.
+        //
+        // Only the pixels a stroke covers outright. A colour is read back
+        // un-premultiplied, so a half-covered pixel is the same colour with a
+        // smaller alpha -- but it is that colour to within the rounding of
+        // two eight-bit divisions, and a stroke crossing another one is a
+        // blend of both. Full coverage is where the question has one answer.
+        const found = ({})
+        for (let x = 0; x < wide; ++x) {
+            for (let y = 0; y < tall; ++y) {
+                const pixel = ImageClipboard.pixelOnClipboard(x, y)
+                if (pixel.a > 0.98)
+                    found[String(pixel)] = (found[String(pixel)] || 0) + 1
+            }
+        }
+
+        /// Is any fully covered pixel this colour, give or take the rounding?
+        ///
+        /// `Qt.color` on both sides, because a palette holds two kinds of
+        /// entry: a published colour is the string it was written as and the
+        /// one that is a token comes back as a colour. The question is about
+        /// neither.
+        const carries = (entry) => {
+            const want = Qt.color(entry)
+            for (const seen in found) {
+                const got = Qt.color(seen)
+                if (Math.abs(got.r - want.r) + Math.abs(got.g - want.g)
+                        + Math.abs(got.b - want.b) < 0.05)
+                    return true
+            }
+            return false
+        }
+
+        // The five chromatic entries of the cycle the six lines were drawn
+        // with. Black is left out of the count on purpose: it is okabe-ito's
+        // first entry *and* the colour of every tick label on the page, so
+        // finding it would say nothing about the strokes.
+        const paper = Theme.paperPalettes["okabe-ito"]
+        let carried = 0
+        for (let i = 1; i < 6; ++i) {
+            if (carries(paper[i]))
+                ++carried
+        }
+        verify(carried >= 3,
+               "a publication picture of six lines must carry the light "
+               + "theme's palette, and " + carried + " of its five chromatic "
+               + "entries reached the clipboard")
+
+        // ...and not the dark theme's. The two cycles share their seven
+        // published entries and differ in the first, which is the ground:
+        // signal white on screen, black on the page. A picture carrying a
+        // white stroke is a picture drawn in the wrong scope -- and it would
+        // be invisible on the page, which is the reason the substitution
+        // exists at all.
+        verify(!carries(Theme.categoricalPalettes["okabe-ito"][0]),
+               "nothing in a picture drawn for paper may be signal white")
+
+        // And the pane is untouched, as ever.
+        compare(String(lines.seriesColor(0)), String(plot.seriesColor(0, 0, 6)))
+
+        Theme.dark = was
+        restoreExportSettings()
+    }
+
+    /// `seriesColor(..., paper)` is the light scope's answer in every branch.
+    ///
+    /// Four branches and they fail differently, which is why all four are
+    /// here: a palette is a second table, "same" and "range" are colours that
+    /// were *values* by the time they arrived and are mapped one at a time, a
+    /// line the reader coloured by hand is one of those too, and a perceptual
+    /// ramp has no second scope at all. The one that matters most is the
+    /// accent: it is signal white in the dark theme, and a white line on a
+    /// white page is not a faint line, it is no line.
+    function test_the_picture_s_colours_are_the_light_theme_s() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+
+        const was = Theme.dark
+        Theme.dark = true
+
+        // A palette, entry for entry, against the light scope's own table.
+        const names = Theme.categoricalPaletteNames
+        for (let p = 0; p < names.length; ++p) {
+            plot.colorMode = names[p]
+            const paper = Theme.paperPalettes[names[p]]
+            for (let i = 0; i < paper.length; ++i) {
+                // Lower-cased on both sides, for the reason
+                // test_the_published_palettes_are_the_published_values gives:
+                // a published entry is the string it was written as and a
+                // token comes back as a colour, which stringifies lower case.
+                compare(String(plot.seriesColor(i, i, paper.length, true)).toLowerCase(),
+                        String(paper[i]).toLowerCase(),
+                        names[p] + " entry " + i + " on paper")
+            }
+        }
+
+        // One colour for every line: the accent, which is the ground it would
+        // be drawn on.
+        plot.colorMode = "same"
+        plot.colorSingle = Theme.accent
+        compare(String(plot.seriesColor(0, 0, 4)).toLowerCase(), String(Theme.n11).toLowerCase(),
+                "the dark theme's accent is signal white")
+        compare(String(plot.seriesColor(0, 0, 4, true)).toLowerCase(),
+                String(Theme.paperAccent).toLowerCase(),
+                "and on paper it is ink")
+
+        // A colour that is nobody's token goes through untouched, which is
+        // the other half of the rule: this maps the two colours a *token* can
+        // have put on a line and nothing else.
+        plot.colorSingle = Theme.categoricalPalettes["tol bright"][1]
+        compare(String(plot.seriesColor(0, 0, 4, true)).toLowerCase(),
+                String(Theme.categoricalPalettes["tol bright"][1]).toLowerCase(),
+                "a colour the reader chose is the colour they chose")
+
+        // A map has one set of stops in both scopes -- it is a published
+        // colour map, and a viridis that differed between here and matplotlib
+        // would not be a viridis.
+        plot.colorMode = "viridis"
+        compare(String(plot.seriesColor(2, 2, 6, true)),
+                String(plot.seriesColor(2, 2, 6)),
+                "a perceptual ramp is the same map on paper")
+
+        plot.colorMode = "okabe-ito"
+        plot.colorSingle = Theme.accent
+        Theme.dark = was
     }
 
     /// The crosshair is in the picture when it was asked for, and not when it
