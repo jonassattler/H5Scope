@@ -964,7 +964,10 @@ QtObject {
     // journals ask for and what every plotting library ships -- so a plot
     // exported from here lands in a paper beside plots that match it. That is
     // worth more than a contrast figure, so they are kept at their published
-    // values, entry for entry, and are what this plot opens on.
+    // values, entry for entry, and are what this plot opens on. Okabe-Ito's
+    // order has one departure, argued where it is made: its achromatic entry
+    // is drawn last rather than first, so that a plot of one line opens on a
+    // colour.
     //
     // What it costs, stated plainly so that nobody "fixes" it later: these
     // were designed for ink on paper, and it shows in the light scope. Okabe-

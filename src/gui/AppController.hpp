@@ -386,6 +386,38 @@ public:
     /// because "as many dots as this screen has" is not a claim about inches.
     [[nodiscard]] Q_INVOKABLE double plotExportTaggedDpi() const;
 
+    /// What `pixels` of the picture come to on paper at `dpi`, in
+    /// centimetres.
+    ///
+    /// The dialog offers the density and the two sides of the figure as three
+    /// boxes over one number, because that is what they are: the pixel count
+    /// is settled a row above, so a density *is* a physical size and a
+    /// physical size *is* a density. Changing any one of the three moves the
+    /// other two and nothing else -- in particular not the pixel count, which
+    /// the reader stated and which no density may touch.
+    ///
+    /// Centimetres and not inches. The figure widths journals state are
+    /// metric nearly everywhere outside the United States -- 8.5 cm for one
+    /// column, 17.8 for two -- and a reader who wants inches has the density
+    /// itself, which is already in them.
+    ///
+    /// Both arguments rather than reading the settings: a QML binding depends
+    /// on the properties it *names*, and a call names nothing it reads. Asked
+    /// for the current dpi from inside, this would answer a box that never
+    /// updated when the density changed -- which is the same trap the inch
+    /// readout this replaced had to be written around.
+    [[nodiscard]] Q_INVOKABLE double plotExportCentimetres(int pixels, int dpi) const;
+
+    /// ...and back: the density at which `pixels` measures `centimetres`,
+    /// clamped to what a reader may ask for.
+    ///
+    /// Whole dots per inch, because that is what the setting holds, so a size
+    /// typed in centimetres lands on the nearest density and the box then
+    /// shows the size that density actually gives. A hundredth of a
+    /// centimetre either way, and it is the honest number rather than the one
+    /// that was typed.
+    [[nodiscard]] Q_INVOKABLE int plotExportDpiFor(int pixels, double centimetres) const;
+
     /// The narrowest and the widest a picture may be asked for, in pixels.
     ///
     /// The ceiling is a real limit rather than a taste: a grab is rendered
@@ -412,6 +444,8 @@ public:
     /// written in -- so a 10-unit face is 10/96 inch, 7.5 pt, at whatever dpi
     /// the picture is asked for.
     static constexpr double kExportBaseDpi = 96.0;
+    /// An inch, in the units the figure's sides are stated in.
+    static constexpr double kCentimetresPerInch = 2.54;
     /// What a reader may ask for. The floor is below the base on purpose -- a
     /// figure whose type should read smaller than a screen sets it is as
     /// legitimate a request as one for a plate -- and the ceiling is where

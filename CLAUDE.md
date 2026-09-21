@@ -736,6 +736,16 @@ round trip per element would draw exactly the right picture.
    scale is tagged with nothing, since "as many dots as this screen has" is
    not a claim about inches.
 
+   The dialog says the same thing three ways and writes one of them.
+   `plotExportCentimetres` and `plotExportDpiFor` are the density and the
+   figure's two sides in either direction, and they are on `AppController`
+   for the reason the three above are: the pixel count is settled a row
+   higher, so a density *is* a physical size and the two must not be two
+   answers. Both take their arguments rather than reading the settings — a
+   QML binding depends on the properties it **names**, and a call names
+   nothing it reads, so a box that asked for the width without naming the
+   density would go on showing the width the density before it gave.
+
    What it must **not** do is ask the model to fill it. `fill()` records which
    item it last handed the lines to (`drawing_`), so a second fill moves that
    record and a `releaseDrawing()` arriving between the grab starting and the

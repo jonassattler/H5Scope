@@ -1283,6 +1283,25 @@ double AppController::plotExportTaggedDpi() const
     return plotExportCustomDpi_ ? static_cast<double>(plotExportDpi_) : 0.0;
 }
 
+double AppController::plotExportCentimetres(int pixels, int dpi) const
+{
+    if (pixels <= 0 || dpi <= 0) {
+        return 0.0;
+    }
+    return pixels * kCentimetresPerInch / dpi;
+}
+
+int AppController::plotExportDpiFor(int pixels, double centimetres) const
+{
+    // A side of nothing is not a size, and it is what a half-typed box holds
+    // for a keystroke or two. The density stands until there is a number.
+    if (pixels <= 0 || !(centimetres > 0.0)) {
+        return plotExportDpi_;
+    }
+    const double wanted = pixels * kCentimetresPerInch / centimetres;
+    return std::clamp(static_cast<int>(std::lround(wanted)), kMinExportDpi, kMaxExportDpi);
+}
+
 void AppController::clearRecentFiles()
 {
     if (recent_.isEmpty()) {

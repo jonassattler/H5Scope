@@ -153,6 +153,11 @@ TestCase {
         PlotSettingsPanel {}
     }
 
+    Component {
+        id: plotSettingsDialogComponent
+        PlotSettingsDialog {}
+    }
+
     /// The tree in a window of its own, for the filter test: an item parented
     /// into the test case is never effectively visible, and an invisible item
     /// takes no focus and is delivered no key events.
@@ -3166,6 +3171,117 @@ TestCase {
 
         AppController.plotExportWidth = 1920
         AppController.plotExportHeight = 1080
+        restoreExportSettings()
+    }
+
+    /// The density and the figure's two sides are one number said three ways.
+    ///
+    /// The pixel count is stated a row above and no density may move it, so
+    /// at a stated size a density *is* a physical size. Plot Settings offers
+    /// all three as boxes and writing any one of them moves the other two;
+    /// what is asserted here is the arithmetic under that, which lives on
+    /// AppController so that the dialog's boxes and the picture that leaves
+    /// cannot be two answers.
+    function test_a_figure_s_size_in_centimetres_is_its_density() {
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = 1920
+        AppController.plotExportHeight = 1080
+        AppController.plotExportDpi = 300
+
+        // 1920 px at 300 dpi is 6.4 inches, which is 16.256 cm.
+        fuzzyCompare(AppController.plotExportCentimetres(1920, 300), 16.256, 0.001)
+        fuzzyCompare(AppController.plotExportCentimetres(1080, 300), 9.144, 0.001)
+        compare(AppController.plotExportDpiFor(1920, 16.256), 300)
+
+        // A width typed in centimetres is a density, and it is the *only*
+        // thing that moves: the pixels are the reader's and the shape of the
+        // figure is theirs too, so the other side follows rather than being
+        // set.
+        AppController.plotExportDpi =
+            AppController.plotExportDpiFor(AppController.plotExportWidth, 8.5)
+        compare(AppController.plotExportWidth, 1920)
+        compare(AppController.plotExportHeight, 1080)
+        compare(AppController.plotExportDpi, 574)
+        fuzzyCompare(AppController.plotExportCentimetres(1080, 574), 4.78, 0.01)
+
+        // Clamped where every other density is, and at the same two bounds.
+        compare(AppController.plotExportDpiFor(1920, 0.01),
+                AppController.maxExportDpi)
+        compare(AppController.plotExportDpiFor(1920, 10000),
+                AppController.minExportDpi)
+
+        // A box holding nothing is a box being typed in, not a figure of no
+        // width: the density stands until there is a number in it.
+        AppController.plotExportDpi = 300
+        compare(AppController.plotExportDpiFor(1920, 0), 300)
+        compare(AppController.plotExportDpiFor(1920, -5), 300)
+
+        restoreExportSettings()
+    }
+
+    /// ...and the three boxes over it are wired to it, all three ways.
+    ///
+    /// The arithmetic above is one thing and the form is another. What is
+    /// caught here is the wiring trap this dialog has already been bitten by
+    /// once: a QML binding depends on the properties it *names*, and a call
+    /// names nothing it reads -- so a box that asked AppController for the
+    /// figure's width without naming the density would go on showing the
+    /// width the density before it gave. Every one of the three is written
+    /// into and the other two are read back.
+    function test_the_export_boxes_are_three_readings_of_one_number() {
+        AppController.plotExportCustomSize = true
+        AppController.plotExportCustomDpi = true
+        AppController.plotExportWidth = 1920
+        AppController.plotExportHeight = 1080
+        AppController.plotExportDpi = 300
+
+        const dialog = createTemporaryObject(plotSettingsDialogComponent,
+                                             testCase)
+        verify(dialog, "the plot settings dialog must instantiate")
+        dialog.open()
+        waitForRendering(testCase)
+
+        const dpi = findChild(dialog.contentItem, "exportDpiField")
+        const across = findChild(dialog.contentItem, "exportWidthCmField")
+        const down = findChild(dialog.contentItem, "exportHeightCmField")
+        verify(dpi && across && down, "all three boxes must be reachable")
+
+        // 1920 by 1080 at 300 dpi is 16.26 by 9.14 cm.
+        compare(dpi.text, "300")
+        compare(across.text, "16.26")
+        compare(down.text, "9.14")
+
+        /// Write `what` into `box` the way a reader does: the text, and then
+        /// the key that commits it.
+        const write = (box, what) => {
+            box.forceActiveFocus()
+            box.text = what
+            keyClick(Qt.Key_Return)
+            waitForRendering(testCase)
+        }
+
+        // A journal's single-column width. The density is what moves, the
+        // other side follows it, and the pixel count -- which the reader
+        // stated a row above -- does not move at all.
+        write(across, "8.5")
+        compare(AppController.plotExportDpi, 574)
+        compare(across.text, "8.5")
+        compare(down.text, "4.78")
+        compare(AppController.plotExportWidth, 1920)
+        compare(AppController.plotExportHeight, 1080)
+
+        // The density, written directly: both sides follow.
+        write(dpi, "600")
+        compare(across.text, "8.13")
+        compare(down.text, "4.57")
+
+        // ...and the other side, which is the same relationship the other way
+        // round.
+        write(down, "6")
+        compare(AppController.plotExportDpi, 457)
+        compare(across.text, "10.67")
+        compare(AppController.plotExportWidth, 1920)
+
         restoreExportSettings()
     }
 
