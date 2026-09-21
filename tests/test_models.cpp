@@ -3056,12 +3056,11 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
     // The fourth thing this application keeps between runs, after the files
     // that were opened, the RAM budget and the saved views.
     //
-    // Two questions rather than one, and they are kept apart deliberately.
-    // The *size* is what the picture is composed at -- how large the type is
-    // against the pane, how many numbered ticks there is room for -- and the
-    // *resolution* is how densely that composition is drawn. Which is figsize
-    // and dpi, and is the one way to offer "300 dpi" that does not quietly
-    // mean "three times the type".
+    // Two questions rather than one, and both change what the picture looks
+    // like. The *size* is how many pixels come back. The *density* is how big
+    // those pixels are -- and since the type, the rules and the gutters are a
+    // fixed number of logical units, that is what decides how large they are
+    // against the figure.
 
     SECTION("a size is held inside what can actually be drawn")
     {
@@ -3091,7 +3090,7 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
         CHECK(sizes.count() == 0);
     }
 
-    SECTION("a resolution is the display's until the reader says otherwise")
+    SECTION("a density is the display's until the reader says otherwise")
     {
         REQUIRE(QCoreApplication::organizationName().isEmpty());
 
@@ -3099,32 +3098,58 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
         CHECK_FALSE(controller.plotExportCustomDpi());
         CHECK(controller.plotExportDpi() == 300);
 
-        // A picture is composed in points and rendered in pixels, and these
-        // are the three answers the settings spell out. The pane's own size
-        // follows the display, which is the picture this application has
-        // always copied.
-        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(2.0));
+        // How large a logical unit is, which is the three answers the
+        // settings spell out. The pane's own size follows the display, which
+        // is the picture this application has always copied.
+        CHECK(controller.plotExportScale(2.0) == Catch::Approx(2.0));
         // A fraction of a pixel is how a display describes its type, not how
         // few pixels it has; a copy smaller than the pane is nobody's copy.
-        CHECK(controller.plotExportScale(800, 600, 0.75) == Catch::Approx(1.0));
-        // ...and a size asked for in pixels is given in pixels.
+        CHECK(controller.plotExportScale(0.75) == Catch::Approx(1.0));
+        // ...and nothing has said a stated pixel is anything but a unit.
         controller.setPlotExportCustomSize(true);
-        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(1.0));
+        controller.setPlotExportWidth(1920);
+        controller.setPlotExportHeight(1080);
+        CHECK(controller.plotExportScale(2.0) == Catch::Approx(1.0));
+        CHECK(controller.plotExportPixels(800, 600, 2.0) == QSize(1920, 1080));
+        CHECK(controller.plotExportLayout(800, 600, 2.0) == QSize(1920, 1080));
 
-        // A resolution the reader states does not consult the display at all,
-        // which is the whole of what the setting is for: the same plot copied
-        // on two machines is the same picture.
+        // A density the reader states does not consult the display at all,
+        // which is the whole of what the setting is for.
         controller.setPlotExportCustomDpi(true);
         controller.setPlotExportDpi(300);
         const double expected = 300.0 / gui::AppController::kExportBaseDpi;
-        CHECK(controller.plotExportScale(800, 600, 2.0) == Catch::Approx(expected));
-        CHECK(controller.plotExportScale(800, 600, 1.0) == Catch::Approx(expected));
+        CHECK(controller.plotExportScale(2.0) == Catch::Approx(expected));
+        CHECK(controller.plotExportScale(1.0) == Catch::Approx(expected));
 
+        // **The density does not move the pixel count.** 1920 by 1080 asked
+        // for is 1920 by 1080 at every density there is -- which is the half
+        // 0.6.4 got wrong, where a stated size was multiplied by the density
+        // and a reader who typed 1920 pasted 6000.
+        for (const int dpi : {36, 96, 150, 300, 600, 1200}) {
+            controller.setPlotExportDpi(dpi);
+            CHECK(controller.plotExportPixels(800, 600, 1.0) == QSize(1920, 1080));
+        }
+
+        // What it moves is the composition, and that is what makes the type
+        // grow: the same pixels over fewer units. 1920 pixels at 300 dpi is
+        // 6.4 inches, composed at 6.4 * 96 = 614 units, so Theme's 10-unit
+        // face on it is 10/96 inch -- its true point size.
+        controller.setPlotExportDpi(300);
+        CHECK(controller.plotExportLayout(800, 600, 1.0) == QSize(614, 346));
         controller.setPlotExportDpi(96);
-        CHECK(controller.plotExportScale(800, 600, 3.0) == Catch::Approx(1.0));
-        CHECK(controller.plotExportPixels(800, 600, 3.0) == QSize(800, 600));
-        controller.setPlotExportDpi(192);
-        CHECK(controller.plotExportPixels(800, 600, 1.0) == QSize(1600, 1200));
+        CHECK(controller.plotExportLayout(800, 600, 1.0) == QSize(1920, 1080));
+        controller.setPlotExportDpi(48);
+        CHECK(controller.plotExportLayout(800, 600, 1.0) == QSize(3840, 2160));
+
+        // The pane's own size, which is the other branch: the pixels are the
+        // pane at this display's scale, and the composition is that divided
+        // by whatever a unit has been said to be. Under the display's own
+        // scale those cancel and the composition is the pane, exactly as it
+        // stands -- which is the picture 0.6.3 copied.
+        controller.setPlotExportCustomSize(false);
+        controller.setPlotExportCustomDpi(false);
+        CHECK(controller.plotExportPixels(800, 600, 2.0) == QSize(1600, 1200));
+        CHECK(controller.plotExportLayout(800, 600, 2.0) == QSize(800, 600));
 
         // Clamped like the sizes are, and on the same argument.
         controller.setPlotExportDpi(1);
@@ -3132,19 +3157,28 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
         controller.setPlotExportDpi(1 << 20);
         CHECK(controller.plotExportDpi() == gui::AppController::kMaxExportDpi);
 
-        // The bound that is not a taste. A legal size and a legal resolution
-        // multiply into a texture no graphics API will hand back, so the
-        // *product* is what is held -- and held over the longer side, so the
-        // picture keeps its shape rather than being squared off.
+        // A pane larger than a texture is held, because a grab past the
+        // ceiling does not come back small -- it does not come back.
         const QSize huge = controller.plotExportPixels(
-            gui::AppController::kMaxExportPixels, gui::AppController::kMaxExportPixels / 2, 1.0);
+            gui::AppController::kMaxExportPixels, gui::AppController::kMaxExportPixels / 2, 4.0);
         CHECK(huge.width() == gui::AppController::kMaxExportPixels);
         CHECK(huge.height() == gui::AppController::kMaxExportPixels / 2);
 
+        // ...and a composition too small to draw is held the other way. At
+        // 1200 dpi a 64-pixel side is a twentieth of an inch, and a frame is
+        // all gutter long before that.
+        controller.setPlotExportCustomSize(true);
+        controller.setPlotExportCustomDpi(true);
+        controller.setPlotExportWidth(gui::AppController::kMinExportPixels);
+        controller.setPlotExportHeight(gui::AppController::kMinExportPixels);
+        controller.setPlotExportDpi(gui::AppController::kMaxExportDpi);
+        CHECK(controller.plotExportLayout(800, 600, 1.0) ==
+              QSize(gui::AppController::kMinExportPixels, gui::AppController::kMinExportPixels));
+
         // What the picture is *tagged* with, which is the other half of a
-        // resolution: a count of pixels is not a size until something says how
+        // density: a count of pixels is not a size until something says how
         // densely they sit. Said only where the reader said a number.
-        CHECK(controller.plotExportTaggedDpi() == Catch::Approx(1200.0));
+        CHECK(controller.plotExportTaggedDpi() == Catch::Approx(gui::AppController::kMaxExportDpi));
         controller.setPlotExportCustomDpi(false);
         CHECK(controller.plotExportTaggedDpi() == Catch::Approx(0.0));
     }

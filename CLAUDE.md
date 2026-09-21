@@ -88,8 +88,8 @@ between runs, and all of them are guarded by
 `make-screenshots` never touch the user's settings. A fifth follows
 `ramBudget`'s shape exactly: clamped on the way in from `QSettings` as well as
 from QML, written in the setter under the guard, one `NOTIFY` of its own. The
-export group has grown that way twice now — the size, then the resolution —
-and both times without a new mechanism.
+export group has grown that way twice now — the size, then the density — and
+both times without a new mechanism.
 
 A line of a custom tab may also carry a **colour of its own**
 (`CustomPlot::Entry::colour`, `seriesOverride`), which sits over whatever
@@ -710,23 +710,26 @@ round trip per element would draw exactly the right picture.
    dark theme and a white line on a white page is no line. It is the exact
    mirror of the substitution okabe-ito already makes the other way.
 
-   **A picture is composed in points and rendered in pixels**, and
-   `AppController::plotExportScale` is the one place the two meet — the dialog
-   printing what the reader will get and the surface asking for it read the
-   same function, so they cannot be two numbers. `kExportBaseDpi` is 96: at
-   that resolution a point is a pixel, which is why the size boxes are a
-   composition and a pixel count at once. Three answers, in order: a dpi the
-   reader stated (and the display is then not consulted at all, which is the
-   whole of what the setting is for), else one for a size asked for in pixels,
-   else the display's own ratio for the pane's own size — the picture this
-   application has always copied. `kMaxExportPixels` bounds the *product*
-   there rather than either setter, because a legal size and a legal
-   resolution multiply into a texture nothing will hand back. The chosen dpi
-   also goes into the image (`ImageClipboard::copyItem`'s `dpi`, from
-   `plotExportTaggedDpi`), because a count of pixels is not a size until
-   something says how densely they sit; a picture taken at the display's scale
-   is tagged with nothing, since "as many dots as this screen has" is not a
-   claim about inches.
+   **The size says how many pixels; the dpi says how big they are.** Two
+   settings, and both change the picture — which is what 0.6.4 got wrong by
+   reading the dpi as a supersample, so 1920×1080 at 300 dpi came back at
+   6000×3375 with the type as small against the figure as ever. A logical
+   unit is 1/96 inch (`kExportBaseDpi`); the type, the rules, the gutters and
+   the markers are a fixed number of units; so the dpi divides the pixel
+   count into *fewer units* and everything in the picture grows against it.
+   Three functions, all on `AppController` so that the dialog's readout and
+   the surface's grab cannot be two answers: `plotExportScale` (device pixels
+   per unit — the stated dpi over 96, else 1 for a stated size, else the
+   display's ratio), `plotExportPixels` (**the dpi is not in this one at
+   all**: a stated size exactly, else the pane at the display's scale, held
+   under `kMaxExportPixels`), and `plotExportLayout` (the pixels over the
+   scale, floored at `kMinExportPixels` units so a frame is never all
+   gutter). `PlotPicture` is laid out at the layout and grabbed at the
+   pixels. The chosen dpi also goes into the image (`ImageClipboard::copyItem`'s
+   `dpi`, from `plotExportTaggedDpi`), because a count of pixels is not a size
+   until something says how densely they sit; a picture taken at the display's
+   scale is tagged with nothing, since "as many dots as this screen has" is
+   not a claim about inches.
 
    What it must **not** do is ask the model to fill it. `fill()` records which
    item it last handed the lines to (`drawing_`), so a second fill moves that
