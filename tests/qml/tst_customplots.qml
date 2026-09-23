@@ -485,6 +485,45 @@ TestCase {
         compare(script.text, "/matrix\n.max(1)")
     }
 
+    function test_the_data_box_completes_a_path_and_writes_its_slice() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "entryPostprocess")[0])
+        waitForRendering(win.contentItem)
+
+        const script = findAllOf(view, "entryScript")[0]
+        verify(script.visible)
+        script.forceEditing()
+        script.text = "/series/ha"
+        script.cursorPosition = script.text.length
+        tryVerify(() => AppController.completions("/series/ha")[0] === "/series/half[:]",
+                  10000, "the group's listing and the dataset's rank must arrive")
+
+        // A dataset completes with the subscript that selects the whole of it,
+        // and in a script that is the slice line under the path.
+        keyClick(Qt.Key_Tab)
+        compare(script.text, "/series/half\n.slice(:)")
+
+        keyClick(Qt.Key_Return)
+        settleReads()
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.pointCount, 32, "and what Tab wrote is a line that reads")
+
+        // A slice the reader has written already is theirs, and stays.
+        script.forceEditing()
+        script.text = "/series/ha\n.slice(0:4)"
+        script.cursorPosition = "/series/ha".length
+        keyClick(Qt.Key_Tab)
+        compare(script.text, "/series/half\n.slice(0:4)")
+    }
+
     function test_a_line_that_will_not_read_says_why_under_its_box() {
         const win = openWindow()
         win.addCustomTab()

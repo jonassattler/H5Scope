@@ -44,6 +44,16 @@ ScrollView {
     signal textEdited()
     /// Escape.
     signal cancelled()
+    /// Tab, just before `completion` is asked to take it: the moment for the
+    /// owner to bring the list up to date with what is in the box.
+    signal completing()
+
+    /// A CompletionPopup this box drives from the keyboard, or null. Tab
+    /// writes as much as every candidate shares and only then chooses; Up and
+    /// Down move through the list while it is showing and the caret otherwise.
+    /// With nothing to take, Tab is let through and moves focus on, as it does
+    /// everywhere else in this window.
+    property var completion: null
 
     function forceEditing() {
         area.forceActiveFocus()
@@ -89,6 +99,18 @@ ScrollView {
         Keys.onReturnPressed: (event) => field.commitKey(event)
         Keys.onEnterPressed: (event) => field.commitKey(event)
         Keys.onEscapePressed: field.cancelled()
+        Keys.onTabPressed: (event) => {
+            field.completing()
+            event.accepted = field.completion !== null && field.completion.take()
+        }
+        Keys.onUpPressed: (event) => field.stepCompletion(event, -1)
+        Keys.onDownPressed: (event) => field.stepCompletion(event, 1)
+    }
+
+    function stepCompletion(event, by) {
+        event.accepted = field.completion !== null && field.completion.visible
+        if (event.accepted)
+            field.completion.move(by)
     }
 
     function commitKey(event) {

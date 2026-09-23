@@ -138,7 +138,73 @@ Rectangle {
     property bool dismissed: false
 
     function refreshOptions() {
+        if (row.postprocess) {
+            row.refreshScriptOptions()
+            return
+        }
         row.options = box.activeFocus ? AppController.completions(box.text) : []
+    }
+
+    /// For the DATA box, the line each offered path came from. `options`
+    /// holds the paths alone, because a script's first line is a path and
+    /// nothing else; the subscript that came with a dataset is kept here, for
+    /// takeIntoScript to write as the script's slice.
+    property var scriptOptions: []
+
+    /// The first line of the DATA box, which is where its path is.
+    function pathLine() {
+        const text = scriptBox.text
+        const end = text.indexOf("\n")
+        return end < 0 ? text : text.slice(0, end)
+    }
+
+    /// What could be written on the path line, while the caret is on it. The
+    /// same completer the slice box asks, handed the path line alone; nothing
+    /// is offered once that line has a step on it, because then it is not a
+    /// path that is being typed.
+    function refreshScriptOptions() {
+        const line = row.pathLine()
+        if (!scriptBox.editing || scriptBox.cursorPosition > line.length
+                || /\.[A-Za-z_]\w*\s*\(/.test(line)) {
+            row.options = []
+            row.scriptOptions = []
+            return
+        }
+        const offered = AppController.completions(line)
+        const paths = []
+        const full = []
+        for (let i = 0; i < offered.length; ++i) {
+            const whole = /^(.*)\[([^\[\]]*)\]$/.exec(offered[i])
+            const path = whole ? whole[1] : offered[i]
+            // The path already written is not something to write next.
+            if (path === line || paths.indexOf(path) >= 0)
+                continue
+            paths.push(path)
+            full.push(offered[i])
+        }
+        row.scriptOptions = full
+        row.options = paths
+    }
+
+    /// Write a completed path onto the first line of the DATA box. A dataset
+    /// brings the subscript that selects the whole of it, as it does in the
+    /// slice box, and here that is a `.slice(...)` line under the path --
+    /// unless the script already begins with a slice or a select of its own,
+    /// which is the reader's and is left alone.
+    function takeIntoScript(option) {
+        const at = row.options.indexOf(option)
+        const full = at >= 0 ? row.scriptOptions[at] : option
+        const whole = /^(.*)\[([^\[\]]*)\]$/.exec(full)
+        const path = whole ? whole[1] : full
+        const text = scriptBox.text
+        const end = text.indexOf("\n")
+        let rest = end < 0 ? "" : text.slice(end)
+        if (whole && !/^\n\s*\.(slice|select)\s*\(/.test(rest))
+            rest = "\n.slice(" + whole[2] + ")" + rest
+        scriptBox.text = path + rest
+        scriptBox.cursorPosition = path.length
+        row.problem = row.plot ? row.plot.entryError(row.rowIndex, scriptBox.text) : ""
+        row.refreshOptions()
     }
 
     Connections {
@@ -238,14 +304,55 @@ Rectangle {
                 invalid: row.problem !== "" || row.error !== ""
                 pending: row.pending
 
-                onTextEdited: row.problem = row.plot
-                    ? row.plot.entryError(row.rowIndex, scriptBox.text) : ""
+                completion: scriptCompletion
+
+                onTextEdited: {
+                    row.problem = row.plot
+                        ? row.plot.entryError(row.rowIndex, scriptBox.text) : ""
+                    row.dismissed = false
+                    row.refreshOptions()
+                }
+                onCompleting: {
+                    row.dismissed = false
+                    row.refreshOptions()
+                }
                 onAccepted: row.commit()
-                onEditingChanged: if (!scriptBox.editing) row.commit()
+                onEditingChanged: {
+                    if (scriptBox.editing) {
+                        row.dismissed = false
+                        row.refreshOptions()
+                        return
+                    }
+                    row.options = []
+                    row.commit()
+                }
                 onCancelled: {
+                    // The list first, as in the slice box: it is the thing that
+                    // just appeared.
+                    if (scriptCompletion.visible) {
+                        row.dismissed = true
+                        return
+                    }
                     scriptBox.text = row.expression
                     row.problem = ""
                 }
+            }
+
+            // Not a child of the box: a ScrollView puts what is declared in it
+            // into what it scrolls. Parented to it instead, so it opens under
+            // the box and as wide as it, as the slice box's list does.
+            CompletionPopup {
+                id: scriptCompletion
+
+                objectName: "entryScriptCompletion"
+
+                parent: scriptBox
+                options: row.postprocess ? row.options : []
+                written: row.pathLine()
+                visible: row.postprocess && row.options.length > 0 && scriptBox.editing
+                         && !row.dismissed
+
+                onTaken: (option) => row.takeIntoScript(option)
             }
 
             FilterInput {
