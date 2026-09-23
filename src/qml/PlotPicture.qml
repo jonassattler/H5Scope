@@ -156,6 +156,14 @@ Item {
             xLabel: picture.surface ? picture.surface.xLabel : ""
             yLabel: picture.surface ? picture.surface.yLabel : ""
 
+            // The axes of their own travel with the lines they are the axes
+            // of -- the item's per-line windows come across in adopt() -- and
+            // are numbered in the colours the strokes are drawn in, which on
+            // paper are the light scope's.
+            commonAxis: picture.surface ? picture.surface.sharedAxis : true
+            sideAxes: picture.surface ? picture.surface.separateAxes : []
+            paperAxes: picture.publication
+
             markers: picture.surface ? picture.surface.showMarkers : false
             markerSize: Theme.plotMarkerSize
 

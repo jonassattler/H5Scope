@@ -354,6 +354,8 @@ SettingsPanel {
                     required property bool scalable
                     required property bool drawn
                     required property var colour
+                    required property bool separateAxis
+                    required property bool axisFixed
 
                     width: parent ? parent.width : 0
                     implicitHeight: entry.implicitHeight
@@ -372,6 +374,8 @@ SettingsPanel {
                         scalable: holder.scalable
                         drawn: holder.drawn
                         colour: holder.colour
+                        separateAxis: holder.separateAxis
+                        axisFixed: holder.axisFixed
                     }
                 }
             }

@@ -17,6 +17,7 @@
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
 #include <cstddef>
@@ -111,6 +112,9 @@ class DatasetPlot : public QObject
     /// points: the length the axis below is described against, and the one a
     /// reader means by len(data).
     Q_PROPERTY(int sourcePointCount READ sourcePointCount NOTIFY changed)
+    /// Every drawn line, because every line here is on the common axis. See
+    /// seriesAxis().
+    Q_PROPERTY(int sharedSeriesCount READ seriesCount NOTIFY changed)
 
     // --- where the points sit along x ------------------------------------
     /// The x of the first element, and the distance from one element to the
@@ -186,6 +190,19 @@ public:
     {
         Q_UNUSED(series);
         return {};
+    }
+
+    /// The y axis line `series` is drawn against, which here is always the
+    /// common one.
+    ///
+    /// Not a stub either, and for the colour's reason: a separate axis is for
+    /// lines that measure different things, and the rows of one dataset
+    /// measure the same thing in the same units. The question is here so that
+    /// PlotSurface can ask it of either plot; see CustomPlot::seriesAxis.
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const
+    {
+        Q_UNUSED(series);
+        return {{QStringLiteral("separate"), false}};
     }
 
     /// Whether line `series` of the table is drawn.

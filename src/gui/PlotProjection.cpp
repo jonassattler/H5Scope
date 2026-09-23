@@ -100,6 +100,18 @@ AxisMapping yMappingOf(const PlotView& view)
     return mappingOver(view.yMin, view.yMax, view.yLog, view.yLogBase);
 }
 
+PlotView lineView(const PlotLine& line, const PlotView& view)
+{
+    if (!line.ownY) {
+        return view;
+    }
+    PlotView own = view;
+    own.yMin = line.yMin;
+    own.yMax = line.yMax;
+    own.yLog = false;
+    return own;
+}
+
 std::optional<PlotWindow> windowFor(double low, double high, long long length, long long buckets)
 {
     if (length <= 0 || buckets <= 0) {

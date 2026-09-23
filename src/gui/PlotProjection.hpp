@@ -126,6 +126,25 @@ struct PlotLine
     /// line width above 1 is an optional RHI feature that several backends
     /// silently ignore, which is why this is not a call to setLineWidth().
     double width = 1.0;
+
+    /// Whether this line is drawn against a y axis of its own rather than the
+    /// view's, and that axis's window.
+    ///
+    /// A custom tab can put a line of pressures beside a line of temperatures,
+    /// and on one axis the smaller of them is a flat stroke along the bottom.
+    /// A separate axis is the same values under a different *map*, so it is
+    /// here beside the colour -- a styling of the line, set after it is handed
+    /// over and changed without re-reading anything -- rather than a second
+    /// view. The window is always linear: the plot settings, logarithm
+    /// included, are the common axis's, and a separate axis is the line as it
+    /// would be drawn if it were the only one.
+    ///
+    /// Everything that turns a value into a place asks lineView() rather than
+    /// reading the view's y bounds, so the curve, the crosshair and the side
+    /// axis's ticks cannot disagree about where this line is.
+    bool ownY = false;
+    double yMin = 0.0;
+    double yMax = 1.0;
 };
 
 /// One closer look at a line: an aligned run of it, to be summarised at a
@@ -412,6 +431,12 @@ struct AxisMapping
 /// The two a view carries.
 [[nodiscard]] AxisMapping xMappingOf(const PlotView& view);
 [[nodiscard]] AxisMapping yMappingOf(const PlotView& view);
+
+/// The view `line` is drawn in: `view` itself, unless the line has a y axis
+/// of its own, and then `view` with that axis's linear window in place of its
+/// y. See PlotLine::ownY. The x half is never touched -- every line shares the
+/// one x axis whatever its y.
+[[nodiscard]] PlotView lineView(const PlotLine& line, const PlotView& view);
 
 /// One unbroken stroke. A line with two gaps in it is three runs.
 struct PlotRun

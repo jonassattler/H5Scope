@@ -318,7 +318,10 @@ Rectangle {
                         shown.push(counted(root.plot.pointCount,
                                            qsTr("datapoint"), qsTr("datapoints"))
                                    + (root.plot.thinned ? qsTr(" thinned") : ""))
-                        if (root.plot.hasData) {
+                        // The common axis's extent, which is what `minimum`
+                        // and `maximum` are once some lines have axes of
+                        // their own -- and nothing when none is left on it.
+                        if (root.plot.hasData && root.plot.sharedSeriesCount > 0) {
                             shown.push(qsTr("y %1 … %2")
                                        .arg(root.plot.minimum.toPrecision(4))
                                        .arg(root.plot.maximum.toPrecision(4)))

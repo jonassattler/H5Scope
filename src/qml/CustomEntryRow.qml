@@ -11,6 +11,7 @@ import H5Scope.Backend
 ///     | [x] SLICE   [ /series/half[:]              ]  [x] |
 ///     |     ALIAS   [ morning                      ]     |
 ///     |     COLOUR  [#]  clear                           |
+///     |     AXIS    [x] separate y-axis  [ ] exclude ... |
 ///     |     SCALING ( ) align   (o) stretch              |
 ///     +--------------------------------------------------+
 ///
@@ -63,6 +64,14 @@ Rectangle {
     /// not. Undefined and not a colour, because "none" has to be a different
     /// answer from "transparent"; see CustomPlot::seriesOverride.
     property var colour: undefined
+    /// Whether the reader asked for this line to have a y axis of its own,
+    /// and for that axis to stay put while the plot zooms. Requests: see
+    /// CustomPlot::seriesAxis for when the first is in force.
+    property bool separateAxis: false
+    property bool axisFixed: false
+    /// Whether there is a second line for this one to be separate from. A
+    /// plot of one line has one axis, whatever this card's box says.
+    readonly property bool separable: row.plot ? row.plot.seriesCount > 1 : false
 
     /// What this line is drawn in: the colour the reader gave it, or the
     /// cycle's answer for it where they have given none.
@@ -386,6 +395,79 @@ Rectangle {
                 AppToolTip {
                     shown: parent.hovered
                     text: qsTr("Give this line back to the colour cycle.")
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+        }
+
+        // --- which y axis it is read against -------------------------------
+        // A line of pressures beside a line of temperatures is a flat stroke
+        // along the bottom of whichever pane the larger one sets. Its own axis
+        // is the line as it would be drawn alone, numbered to the left of the
+        // common one in the line's own colour. Beside the colour because it is
+        // the same kind of thing: how this one line is drawn, at no read.
+        //
+        // Disabled rather than hidden while there is only one line, for the
+        // reason the colour's "clear" is: a row that came and went as lines
+        // were ticked would move everything under it. The hover is the row's
+        // own, because a disabled control takes no pointer and so could never
+        // say why it is disabled.
+        RowLayout {
+            id: axisRow
+
+            Layout.fillWidth: true
+            Layout.rightMargin: Theme.smallControlHeight + Theme.gapS
+            spacing: Theme.gapS
+
+            HoverHandler { id: axisHover }
+
+            AppToolTip {
+                shown: axisHover.hovered && !row.separable
+                text: qsTr("A plot of one line has one y axis. Add or tick a " +
+                           "second line to give either its own.")
+            }
+
+            Item { Layout.preferredWidth: Theme.indicatorSize }
+
+            Text {
+                Layout.preferredWidth: labels.width
+                text: qsTr("axis")
+                font: Theme.microLabel
+                color: Theme.textDisabled
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            AppCheckBox {
+                objectName: "entrySeparateAxis"
+
+                text: qsTr("separate y-axis")
+                enabled: row.separable
+                checked: row.separateAxis
+                onToggled: {
+                    if (row.plot)
+                        row.plot.setSeparateAxis(row.rowIndex, checked)
+                }
+            }
+
+            // Only beside a separate axis, because it is a question about
+            // one: the common axis is the one the reader zooms.
+            AppCheckBox {
+                objectName: "entryAxisFixed"
+
+                text: qsTr("exclude from zooming")
+                visible: row.separateAxis
+                enabled: row.separable
+                checked: row.axisFixed
+                onToggled: {
+                    if (row.plot)
+                        row.plot.setAxisFixed(row.rowIndex, checked)
+                }
+
+                AppToolTip {
+                    shown: parent.hovered
+                    text: qsTr("Keep this axis at the whole of its line " +
+                               "while the plot zooms and pans.")
                 }
             }
 

@@ -25,6 +25,22 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.8
+
+**A line of a custom tab can have a y axis of its own.** Each card under Data
+Settings has a **separate y-axis** box. Ticked, the line is drawn against an
+axis that spans that line alone, as if it were the only one on the plot, drawn
+to the left of the common axis and numbered in the line's own colour. The
+common axis then spans only the lines left on it, and Plot Settings go on
+applying to it alone: a separate axis is always linear. Tick every line and
+there is no common axis at all. A plot of one line has one axis, so the box is
+disabled until there is a second line, and the choice is kept for when there
+is. Zooming and panning in y move every separate axis by the same share of its
+range, about the same place on the pane, unless its **exclude from zooming**
+box is ticked, in which case it keeps showing the whole of its line. The
+crosshair reads a line on its own axis where that axis drew it. The axes
+appear in a copied picture, in its colours, and are kept in a saved view.
+
 ## 0.6.7
 
 **Either axis can be logarithmic, and reads as matplotlib's does.** A new

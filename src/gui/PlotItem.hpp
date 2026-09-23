@@ -152,6 +152,23 @@ public:
     Q_INVOKABLE void setSeriesOpacity(int index, double opacity);
     Q_INVOKABLE void setSeriesWidth(int index, double width);
 
+    /// Draw line `index` against a linear y axis of its own, from `low` to
+    /// `high`, or put it back on the common one. See PlotLine::ownY.
+    ///
+    /// A styling, set after the lines are handed over, for the reason a
+    /// colour is: which axis a line is on costs no read and changes nothing
+    /// about its values, so the item redraws from what it already has. A
+    /// fill() hands over lines with none, which is why the surface sets these
+    /// again every time it restyles.
+    Q_INVOKABLE void setSeriesYRange(int index, double low, double high);
+    Q_INVOKABLE void clearSeriesYRange(int index);
+    [[nodiscard]] Q_INVOKABLE bool seriesHasOwnY(int index) const;
+
+    /// Where `value` sits up the pane on line `index`'s own axis -- the
+    /// common axis's yFraction() for a line that has none. What a side axis's
+    /// ticks are placed by, so that they are drawn where that line's curve is.
+    [[nodiscard]] Q_INVOKABLE double seriesYFraction(int index, double value) const;
+
     /// What line `index` is actually going to be drawn in.
     ///
     /// Nothing in the application reads this back -- the colour goes one way,

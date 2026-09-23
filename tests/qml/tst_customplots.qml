@@ -1557,4 +1557,200 @@ TestCase {
         compare(plot.seriesCount, 2)
         compare(plot.pointCount, 128)
     }
+
+    // --- a line on a y axis of its own -------------------------------------
+
+    /// The side axes the frame on screen is drawing, left to right.
+    function sideAxes(view) {
+        return findAllOf(view, "plotSideAxis").sort((a, b) => a.x - b.x)
+    }
+
+    function test_a_line_can_be_given_a_y_axis_of_its_own() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+
+        // One line has one axis: the box is there, and says so by being off.
+        let boxes = findAllOf(view, "entrySeparateAxis")
+        compare(boxes.length, 1)
+        verify(!boxes[0].enabled, "a plot of one line has nothing to separate from")
+
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+        boxes = findAllOf(view, "entrySeparateAxis")
+        compare(boxes.length, 2)
+        tryVerify(() => boxes[1].enabled, 2000, "a second line is something to separate from")
+
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        const frame = lines.parent
+        const before = frame.gutterLeft
+        compare(sideAxes(view).length, 0)
+        verify(!findAllOf(view, "entryAxisFixed")[1].visible,
+               "exclude from zooming is a question about a separate axis")
+
+        mouseClick(boxes[1])
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        compare(plot.sharedSeriesCount, 1)
+        verify(findAllOf(view, "entryAxisFixed")[1].visible)
+        tryVerify(() => sideAxes(view).length === 1, 2000, "the line's axis must be drawn")
+        const axis = sideAxes(view)[0]
+        compare(axis.line, 1)
+        // To the left of the common axis, and the pane moved over to make room
+        // for it rather than the two being drawn over one another.
+        verify(frame.gutterLeft > before, "the gutter must grow by the axis")
+        verify(axis.x + axis.width < frame.area.x - frame.commonWidth + 1,
+               "the side axis is left of the common one")
+        // In the colour of the line it is the axis of.
+        compare(String(axis.colour), String(lines.seriesColor(1)))
+        verify(lines.seriesHasOwnY(1), "the line is drawn against its own axis")
+        verify(!lines.seriesHasOwnY(0), "and the other one is not")
+
+        // A tick is drawn where the curve is: the side axis's ticks and the
+        // item's own map of that line agree.
+        const tick = axis.ticks[1]
+        const value = Number(tick.text)
+        fuzzyCompare(tick.at, lines.seriesYFraction(1, value), 1e-9)
+
+        // The common axis spans the line left on it, and the separate one is
+        // the axis series_b would have if it were the only line: 37..100.
+        compare(plot.maximum, 63)
+        const own = surface.separateAxes[0]
+        verify(own.low < 37 && own.high > 100, "the own axis spans its whole line")
+        verify(own.low > 30 && own.high < 110, "...with a lone line's air and no more")
+
+        // Unticked, it goes back on the common axis.
+        mouseClick(boxes[1])
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(sideAxes(view).length, 0)
+        verify(!lines.seriesHasOwnY(1))
+        compare(frame.gutterLeft, before)
+    }
+
+    function test_a_separate_axis_zooms_with_the_plot_unless_excluded() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        plot.setSeparateAxis(1, true)
+        plot.setSeparateAxis(2, true)
+        plot.setAxisFixed(2, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        tryVerify(() => surface.separateAxes.length === 2, 2000)
+        const zooming = surface.separateAxes[0]
+        const fixed = surface.separateAxes[1]
+        compare(zooming.series, 1)
+        compare(fixed.series, 2)
+
+        // Twice as close, about the top of the pane.
+        surface.zoomY = 2
+        surface.panY = surface.clampPan(1e9, 2, surface.lowerBound, surface.upperBound,
+                                        false, 10)
+        waitForRendering(win.contentItem)
+
+        const after = surface.separateAxes
+        // The zooming axis shows the top half of itself -- the same share of
+        // its whole as the common axis is showing of its own.
+        fuzzyCompare(after[0].high, zooming.high, 1e-9)
+        fuzzyCompare(after[0].low, (zooming.low + zooming.high) / 2, 1e-9)
+        // ...and the excluded one has not moved at all.
+        compare(after[1].low, fixed.low)
+        compare(after[1].high, fixed.high)
+
+        // The renderer was told both.
+        const lines = findAllOf(view, "plotLines")[0]
+        fuzzyCompare(lines.seriesYFraction(1, after[0].low), 0, 1e-9)
+        fuzzyCompare(lines.seriesYFraction(2, fixed.low), 0, 1e-9)
+    }
+
+    function test_with_every_line_on_its_own_axis_there_is_no_common_one() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        plot.setSeparateAxis(0, true)
+        plot.setSeparateAxis(1, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        const frame = lines.parent
+
+        compare(plot.sharedSeriesCount, 0)
+        verify(!surface.sharedAxis)
+        tryVerify(() => sideAxes(view).length === 2, 2000)
+        // Nothing numbered, named or ruled in the common axis's place.
+        compare(frame.yTicks.length, 0)
+        compare(frame.yGrid.length, 0)
+        compare(frame.commonWidth, Theme.gapS)
+        // ...and still something to draw, and nothing to complain about.
+        verify(surface.drawable)
+        compare(surface.logReason, "")
+        surface.yLog = true
+        waitForRendering(win.contentItem)
+        compare(surface.logReason, "",
+                "a logarithmic common axis with no line on it is not a complaint")
+        verify(lines.drawnPointCount > 0, "the lines on their own axes still draw")
+    }
+
+    /// The picture that leaves is a second frame (PlotPicture.qml) with copies
+    /// of the lines, so both halves have to come across: which line is on an
+    /// axis of its own, which travels in the line, and the axis numbered
+    /// beside it, which is the frame's.
+    function test_a_copied_picture_keeps_the_separate_axes() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        plot.setSeparateAxis(1, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        tryVerify(() => surface.separateAxes.length === 1, 2000)
+
+        verify(surface.copyImage(), "a drawn plot must accept the request")
+        verify(surface.picture, "the picture is alive while the grab is in flight")
+        const drawn = findChild(surface.picture, "pictureLines")
+        verify(drawn, "the picture's own lines must be reachable")
+        verify(drawn.seriesHasOwnY(1), "the line keeps its own axis in the picture")
+        verify(!drawn.seriesHasOwnY(0))
+        compare(drawn.parent.sideColumns.length, 1)
+        compare(drawn.parent.commonAxis, true)
+        fuzzyCompare(drawn.seriesYFraction(1, surface.separateAxes[0].low), 0, 1e-9)
+
+        tryVerify(() => surface.picture === null, 10000, "the grab must answer")
+    }
 }
