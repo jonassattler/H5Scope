@@ -646,6 +646,7 @@ PostprocessModel::Subject AppController::pipelineSubject(
     if (originInfo_.type.cls == h5core::TypeClass::Compound && info.readable()) {
         subject.memberChoices = postproc::memberChains(originInfo_.type);
     }
+    subject.originType = originInfo_.type;
     return subject;
 }
 

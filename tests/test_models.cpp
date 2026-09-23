@@ -3840,6 +3840,125 @@ TEST_CASE_METHOD(ControllerFixture, "postprocessing is offered only where it mea
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture, "the pipeline and its script are one thing",
+                 "[controller][postproc][script]")
+{
+    // The panel shows a pipeline as rows or as text, and the two are views of
+    // one model rather than two copies kept in step: what the rows hold reads
+    // as a script, and a script applied is what the rows then hold.
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2 x 3 x 4, 0..23
+    post()->setEnabled(true);
+    post()->addStep(QStringLiteral("max"));
+    post()->setArgument(2, QStringLiteral("0"));
+    const QString slice = setup()->sliceText();
+
+    SECTION("the rows read as a script, a step to a line")
+    {
+        CHECK(post()->script() == QStringLiteral("/cube\n.slice(%1)\n.max(0)").arg(slice));
+    }
+
+    SECTION("a script writes the rows, the slice and the switch")
+    {
+        post()->setEnabled(false);
+        REQUIRE(post()->applyScript(QStringLiteral("/cube.slice(1).sum(0).cumsum")).isEmpty());
+        CHECK(post()->enabled());
+        REQUIRE(post()->rowCount() == 6);
+        CHECK(step(2, gui::PostprocessModel::LabelRole).toString() == QStringLiteral("sum"));
+        CHECK(step(2, gui::PostprocessModel::ArgumentRole).toString() == QStringLiteral("0"));
+        CHECK(step(3, gui::PostprocessModel::LabelRole).toString() == QStringLiteral("cumsum"));
+        CHECK(post()->outputShape() == std::vector<hsize_t>{4});
+        // Formatted, which is what the box then shows.
+        CHECK(post()->script()
+              == QStringLiteral("/cube\n.slice(%1)\n.sum(0)\n.cumsum").arg(setup()->sliceText()));
+        CHECK(setup()->sliceText().startsWith(QStringLiteral("1")));
+
+        // cube[1] is 12..23 as 3 x 4. The sum down its rows is 48 51 54 57,
+        // and the running total of that 48 99 153 210 -- printed as integers,
+        // because a sum of integers is one.
+        REQUIRE(h5test::settledRowCount(table()) == 4);
+        CHECK(cell(0, 0) == QStringLiteral("48"));
+        CHECK(cell(3, 0) == QStringLiteral("210"));
+    }
+
+    SECTION("a script that does not read changes nothing, and says why")
+    {
+        const QVariantList before = post()->steps();
+        CHECK_THAT(post()->applyScript(QStringLiteral("/cube\n.median(0)")).toStdString(),
+                   ContainsSubstring("not an operation"));
+        CHECK(post()->steps() == before);
+        CHECK_THAT(post()->scriptError(QStringLiteral("/cube\n.max(7)")).toStdString(),
+                   ContainsSubstring(".max(7): axis 7"));
+        CHECK(post()->scriptError(QStringLiteral("/cube\n.max(1)")).isEmpty());
+    }
+
+    SECTION("a step that cannot run is applied, and the pipeline stops at it")
+    {
+        // The contract every box here keeps: what the reader wrote is what the
+        // panel holds, with the reason beside it, rather than a refusal that
+        // leaves the box saying one thing and the views another.
+        REQUIRE(post()->applyScript(QStringLiteral("/cube\n.max(7)")).isEmpty());
+        CHECK(step(2, gui::PostprocessModel::ArgumentRole).toString() == QStringLiteral("7"));
+        CHECK_FALSE(post()->error().isEmpty());
+    }
+
+    SECTION("only a line goes into a custom plot")
+    {
+        CHECK_FALSE(post()->canAddToCustom());
+        CHECK_THAT(post()->customRefusal().toStdString(), ContainsSubstring("3 × 4"));
+        CHECK(post()->customScript().isEmpty());
+
+        post()->addStep(QStringLiteral("max"));
+        post()->setArgument(3, QStringLiteral("0"));
+        CHECK(post()->canAddToCustom());
+        CHECK(post()->customScript() == post()->script());
+
+        // What the views draw is what goes: run only to the first step and
+        // the output is 3 x 4 again.
+        post()->setActiveRow(2);
+        CHECK_FALSE(post()->canAddToCustom());
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a script names the member it reads with select",
+                 "[controller][postproc][script][member]")
+{
+    // /compound is {id: int32, value: float64}, two records.
+    REQUIRE(h5test::selectAndSettle(controller, "/compound"));
+    REQUIRE(post()->applyScript(QStringLiteral("/compound\n.select(value)\n.cumsum")).isEmpty());
+    h5test::settle();
+    CHECK(controller.memberText() == QStringLiteral(".value"));
+    CHECK(post()->active());
+    CHECK(post()->outputShape() == std::vector<hsize_t>{2});
+    CHECK(post()->script().startsWith(QStringLiteral("/compound\n.select(value)\n.slice(")));
+
+    SECTION("and a member the datatype does not have changes nothing")
+    {
+        CHECK_THAT(post()->applyScript(QStringLiteral("/compound\n.select(nope)")).toStdString(),
+                   ContainsSubstring("nope"));
+        CHECK(controller.memberText() == QStringLiteral(".value"));
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a script naming another dataset opens it and runs there",
+                 "[controller][postproc][script]")
+{
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+    REQUIRE(post()->applyScript(QStringLiteral("/matrix\n.max(1)")).isEmpty());
+    // The selection is a round trip, and the script waits for it through a
+    // queued connection -- so the loop has to turn after each settle.
+    for (int i = 0; i < 3; ++i) {
+        h5test::settle();
+        QCoreApplication::processEvents();
+    }
+    CHECK(controller.currentPath() == QStringLiteral("/matrix"));
+    CHECK(post()->enabled());
+    REQUIRE(post()->steps().size() == 1);
+    CHECK(post()->outputShape() == std::vector<hsize_t>{4});
+    // The largest of each row of r*10 + c is its last column.
+    REQUIRE(h5test::settledRowCount(table()) == 4);
+    CHECK(cell(3, 0) == QStringLiteral("32"));
+}
+
 TEST_CASE_METHOD(ControllerFixture, "a long vector goes through the pipeline whole",
                  "[controller][postproc]")
 {

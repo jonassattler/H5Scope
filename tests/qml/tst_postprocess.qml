@@ -658,4 +658,128 @@ TestCase {
         verify(!findShown(win.contentItem, "stepMember"),
                "there is nothing to select from in a dataset of int32")
     }
+    function test_the_dataset_path_takes_the_room_its_row_has() {
+        // The input row has no argument and no box, so there is nothing for
+        // its path to leave room for. It used to be capped at the width of the
+        // word column and elided to its last few characters beside a rail of
+        // empty space.
+        verify(select("/series/trace_pairs"))
+        const win = openPanel()
+
+        const labels = []
+        findAllOf(win.contentItem, "stepLabel", labels)
+        verify(labels.length > 0, "the input row must be built")
+        compare(labels[0].text, "/series/trace_pairs")
+        verify(!labels[0].truncated, "a path that fits is shown whole")
+    }
+
+    /// The panel with visual editing turned off, and its text box.
+    function openScript() {
+        const win = openPanel()
+        const visual = findChild(win.contentItem, "visualEditing")
+        verify(visual, "the panel must offer visual editing")
+        verify(visual.checked, "rows are the default")
+        mouseClick(visual)
+        waitForRendering(win.contentItem)
+        verify(!visual.checked)
+        const field = findChild(win.contentItem, "pipelineScript")
+        verify(field && field.visible, "the chain is shown as text")
+        return { win: win, field: field }
+    }
+
+    function test_without_visual_editing_the_chain_is_text() {
+        verify(select("/cube")) // 2 x 3 x 4
+        pipeline.enabled = true
+        pipeline.addStep("max")
+        pipeline.setArgument(2, "0")
+        const opened = openScript()
+
+        verify(!findChild(opened.win.contentItem, "pipelineRows").visible,
+               "the rows give way to the text")
+        compare(opened.field.text, pipeline.script)
+        verify(opened.field.text.startsWith("/cube\n.slice("))
+        verify(opened.field.text.endsWith("\n.max(0)"))
+
+        // ...and an edit made to the rows is mirrored into it.
+        pipeline.addStep("abs")
+        waitForRendering(opened.win.contentItem)
+        verify(opened.field.text.endsWith("\n.max(0)\n.abs"))
+    }
+
+    function test_a_script_written_and_applied_is_what_the_rows_hold() {
+        verify(select("/cube"))
+        const opened = openScript()
+        const field = opened.field
+
+        field.forceEditing()
+        field.text = "/cube.slice(0).sum(1)"
+        waitForRendering(opened.win.contentItem)
+        verify(field.pending, "typed, and not applied")
+        verify(!pipeline.enabled, "and nothing is running yet")
+
+        // Shift+Return is a line of the reader's own, not a commit.
+        field.cursorPosition = field.text.length
+        keyClick(Qt.Key_Return, Qt.ShiftModifier)
+        verify(field.text.indexOf("\n") >= 0, "a line break is written")
+        verify(!pipeline.enabled, "and still nothing is applied")
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(opened.win.contentItem)
+        verify(pipeline.enabled, "applying a script turns the pipeline on")
+        compare(pipeline.rowCount(), 5)
+        compare(pipeline.data(pipeline.index(2, 0), PostprocessModel.LabelRole), "sum")
+        compare(pipeline.data(pipeline.index(4, 0), PostprocessModel.ShapeRole), "3")
+        // Formatted a step to a line, which is what the box now says.
+        compare(field.text, pipeline.script)
+        verify(!field.pending)
+    }
+
+    function test_a_script_that_does_not_read_is_kept_with_its_reason() {
+        verify(select("/cube"))
+        const opened = openScript()
+        const field = opened.field
+
+        field.forceEditing()
+        field.text = "/cube\n.median(0)"
+        waitForRendering(opened.win.contentItem)
+        verify(field.invalid, "the box says it will not read")
+        const note = findChild(opened.win.contentItem, "pipelineScriptNote")
+        verify(note.visible)
+        verify(note.text.indexOf("not an operation") >= 0)
+        compare(note.color, Theme.warning)
+
+        keyClick(Qt.Key_Return)
+        compare(field.text, "/cube\n.median(0)", "what was written stays written")
+        compare(pipeline.rowCount(), 4, "and nothing was applied")
+    }
+
+    function test_only_a_line_can_be_added_to_a_custom_plot() {
+        verify(select("/cube"))
+        pipeline.enabled = true
+        const win = openPanel()
+        const button = findChild(win.contentItem, "addToCustomPlot")
+        verify(button && button.visible, "the foot of the panel has the button")
+        verify(!button.enabled, "2 × 3 × 4 is not a line")
+        verify(pipeline.customRefusal.indexOf("2 × 3 × 4") >= 0,
+               "and the reason names what it is instead")
+
+        pipeline.addStep("max")
+        pipeline.setArgument(2, "0")
+        pipeline.addStep("max")
+        pipeline.setArgument(3, "0")
+        waitForRendering(win.contentItem)
+        verify(button.enabled, "4 is")
+
+        const before = AppController.customPlots.count
+        mouseClick(button)
+        const fresh = findChild(win.contentItem, "addToNewCustomPlot")
+        verify(fresh, "the menu offers a new plot")
+        fresh.triggered()
+        compare(AppController.customPlots.count, before + 1)
+        const plot = AppController.customPlots.plotAt(before)
+        compare(plot.rowCount(), 1)
+        verify(plot.data(plot.index(0, 0), CustomPlot.PostprocessRole),
+               "the line arrives as a pipeline")
+        compare(plot.data(plot.index(0, 0), CustomPlot.ExpressionRole), pipeline.script)
+    }
 }

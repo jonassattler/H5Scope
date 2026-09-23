@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include "h5core/Types.hpp"
 #include "postproc/Operations.hpp"
 #include "postproc/Pipeline.hpp"
+#include "postproc/Script.hpp"
 
 #include <QAbstractListModel>
 #include <QString>
@@ -76,6 +78,23 @@ class PostprocessModel : public QAbstractListModel
     /// nothing and should not claim to.
     Q_PROPERTY(bool active READ active NOTIFY changed)
 
+    /// The whole chain as text, one step to a line: the path, the member on a
+    /// compound, the slice, then every operation. What the panel shows in
+    /// place of its rows when visual editing is off, and the same pipeline --
+    /// see postproc::Script, which is why the two can be mirrored rather than
+    /// kept in step. Empty with no dataset.
+    Q_PROPERTY(QString script READ script NOTIFY changed)
+
+    /// The shape the views are drawing, as the output row states it. What the
+    /// text view prints under its box, because a script has no shape column.
+    Q_PROPERTY(QString outputText READ outputText NOTIFY changed)
+
+    /// Whether what the views are drawing can go into a custom plot: a running
+    /// pipeline whose output is one-dimensional, because a custom plot draws
+    /// lines and a line is one dimension. `customRefusal` says why not.
+    Q_PROPERTY(bool canAddToCustom READ canAddToCustom NOTIFY changed)
+    Q_PROPERTY(QString customRefusal READ customRefusal NOTIFY changed)
+
 public:
     /// What a row is. Everything that is not an Operation is furniture: it
     /// carries no argument, cannot be removed and cannot be moved.
@@ -144,6 +163,9 @@ public:
         /// two would say the same thing and could disagree: there is a Select
         /// row exactly when there is something to select in it.
         QStringList memberChoices;
+        /// The dataset's own datatype, before any member was named. What a
+        /// script's `.select` is resolved against when the panel checks one.
+        h5core::TypeInfo originType;
     };
 
     void setDataset(const Subject& subject);
@@ -184,6 +206,41 @@ public:
     [[nodiscard]] Q_INVOKABLE QString argumentError(int row,
                                                     const QString& argument) const;
 
+    [[nodiscard]] QString script() const;
+    [[nodiscard]] QString outputText() const;
+    [[nodiscard]] bool canAddToCustom() const;
+    [[nodiscard]] QString customRefusal() const;
+
+    /// Why a script typed into the panel's text box will not do, or empty.
+    ///
+    /// Checked whole, on every keystroke, as every box here is. Against the
+    /// dataset selected when the script names it; against what the file has
+    /// already said about another path when it names that one; and for its
+    /// grammar alone when nothing is known about the path yet, because a path
+    /// nobody has asked about is not known to be wrong.
+    [[nodiscard]] Q_INVOKABLE QString scriptError(const QString& text) const;
+
+    /// Make the pipeline what a script says: the member, the slice, the steps,
+    /// and the switch on. One refresh at the end rather than one per part, so
+    /// the views run the result once.
+    ///
+    /// A script that does not parse, or names a member the datatype does not
+    /// have, changes nothing and says why. One whose steps cannot all run is
+    /// applied anyway and stops where the rows would stop, with the reason on
+    /// `error` -- the contract every box in this window keeps.
+    ///
+    /// A script naming **another dataset** selects it, as clicking it in the
+    /// tree would, and is applied when that dataset is open. The wait is
+    /// through a queued connection on `selectionChanged`, which is what puts
+    /// it after DatasetMemory has restored what was filed for that dataset --
+    /// the script is the newer instruction and has to win.
+    Q_INVOKABLE QString applyScript(const QString& text);
+
+    /// The script of what the views are drawing, which is the chain run only
+    /// as far as the active row. What the panel's add-to-custom-plot button
+    /// hands a custom plot.
+    [[nodiscard]] Q_INVOKABLE QString customScript() const;
+
     /// The shape the views are drawing, which is the output row's.
     [[nodiscard]] std::vector<hsize_t> outputShape() const { return trace_.output; }
     /// The pipeline as postproc understands it, slice first.
@@ -205,10 +262,20 @@ public slots:
     /// re-reads the shapes from it.
     void sliceChanged();
 
+private slots:
+    /// The selection moved; if a script was waiting for it, apply it now.
+    void applyPending();
+
 private:
     /// Re-walk the shapes and tell everyone. Cheap -- it reads no elements --
-    /// so it runs on every keystroke that commits.
+    /// so it runs on every keystroke that commits. Held off while a script is
+    /// being applied, which changes the member, the slice and the steps one
+    /// after another and should be run once.
     void refresh();
+    /// applyScript against the dataset already selected.
+    QString applyParsed(const postproc::Script& script);
+    /// The chain as a script, running `count` of the steps.
+    [[nodiscard]] QString scriptOf(std::size_t count) const;
     /// Which row the slice is, and everything counted from it.
     ///
     /// Every piece of row arithmetic here goes through these rather than
@@ -240,6 +307,10 @@ private:
     std::size_t upTo_ = 0;
     int chosenOperation_ = 0;
     postproc::Trace trace_;
+    h5core::TypeInfo originType_;
+    /// A script naming a dataset that was not yet selected, waiting for it.
+    std::optional<postproc::Script> pending_;
+    bool batching_ = false;
 };
 
 } // namespace gui
