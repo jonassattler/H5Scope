@@ -156,6 +156,410 @@ TEST_CASE("zoomed in far enough, every sample is drawn at its own x", "[plot]")
     }
 }
 
+// --- logarithmic axes -----------------------------------------------------
+
+TEST_CASE("a logarithmic axis places a value by its logarithm", "[plot][log]")
+{
+    // The whole of what the scale is: the same four bounds, in the data's own
+    // units, and a different answer to where a value sits between them. A
+    // decade is a decade wherever it falls, which is what a linear axis over
+    // the same range cannot say -- there, everything below a hundredth of the
+    // top is the bottom pixel row.
+    gui::PlotView view = paneOver(1.0, 10000.0, 1.0, 10000.0);
+    view.xLog = true;
+    view.yLog = true;
+
+    // Four decades across the pane, so each one is a quarter of it.
+    CHECK(gui::xFractionOf(1.0, view) == Approx(0.0));
+    CHECK(gui::xFractionOf(10.0, view) == Approx(0.25));
+    CHECK(gui::xFractionOf(100.0, view) == Approx(0.5));
+    CHECK(gui::xFractionOf(10000.0, view) == Approx(1.0));
+    CHECK(gui::yFractionOf(1000.0, view) == Approx(0.75));
+
+    // ...and back, exactly. This is the pair a pointer position resolves
+    // through, so a crosshair that reads a different x from the one under it
+    // would be this failing.
+    const gui::AxisMapping mapping = gui::xMappingOf(view);
+    CHECK(mapping.valueAt(0.5) == Approx(100.0));
+    CHECK(mapping.valueAt(mapping.fractionOf(37.0)) == Approx(37.0));
+
+    // The linear reading of the same window, for contrast: a thousand is
+    // nine-tenths of the way *down* it rather than three quarters of the way up.
+    const gui::PlotView linear = paneOver(1.0, 10000.0, 1.0, 10000.0);
+    CHECK(gui::yFractionOf(1000.0, linear) == Approx(0.0999).margin(0.001));
+}
+
+TEST_CASE("a value at or below zero is a gap on a logarithmic axis", "[plot][log]")
+{
+    // The one thing a logarithmic axis really does add, and it is the rule
+    // this file already had: there is no place on the pane that would be a
+    // true reading of a value the axis cannot place, so the stroke ends there
+    // and the next one starts after it. Exactly what a NaN does -- and the
+    // reason it must not be a clamp to some small positive number, which would
+    // draw a line down to a floor the data never reached.
+    std::vector<double> values(9, 1.0);
+    values[3] = 0.0;
+    values[4] = -1.0;
+    values[5] = -2.0;
+
+    gui::PlotView view = paneOver(0.0, 9.0, 0.1, 10.0);
+    view.yLog = true;
+    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+
+    // Three before the gap, three after it.
+    REQUIRE(drawn.runs.size() == 2);
+    CHECK(drawn.runs[0].count == 3);
+    CHECK(drawn.runs[1].count == 3);
+
+    // The same line on a linear axis is one unbroken stroke, which is what
+    // says the break above is the scale's doing and not the data's.
+    const Projected linear =
+        project(lineOver(values), gui::PlotAxis{}, paneOver(0.0, 9.0, -3.0, 3.0));
+    CHECK(linear.runs.size() == 1);
+}
+
+TEST_CASE("an x at or below zero is a gap too", "[plot][log]")
+{
+    // The same rule down the other axis, and it is worth its own case because
+    // the x path is the one with the arithmetic in it: x is affine in the
+    // sample index, so the window narrowing and the envelope both work in
+    // indices and neither of them has been told about a scale.
+    std::vector<double> values(10, 1.0);
+
+    gui::PlotAxis axis;
+    axis.start = -4.0; // samples at -4, -3, ... 5
+    axis.step = 1.0;
+
+    gui::PlotView view = paneOver(0.5, 6.0, 0.5, 2.0);
+    view.xLog = true;
+    const Projected drawn = project(lineOver(values), axis, view);
+
+    // Only the five samples at 1 through 5 have a place on this axis.
+    REQUIRE(drawn.runs.size() == 1);
+    CHECK(drawn.runs[0].count == 5);
+    for (const QPointF& point : drawn.points) {
+        CHECK(point.x() >= 0.0);
+    }
+}
+
+TEST_CASE("a logarithmic axis with a bound at or below zero draws nothing", "[plot][log]")
+{
+    // There is no nearest honest answer to fall back to. Clamping the bound to
+    // some tiny positive number would put the whole of the data in the top few
+    // pixels of a pane whose lower half means nothing at all, and every value
+    // on it would be drawn somewhere it is not. Refused instead, exactly as a
+    // span of zero is -- and keeping the bound positive is the caller's job,
+    // which is why PlotSurface takes it off the smallest positive value there
+    // is to show.
+    const std::vector<double> values{1.0, 2.0, 3.0};
+
+    SECTION("the low end is zero")
+    {
+        gui::PlotView view = paneOver(0.0, 10.0, 0.0, 10.0);
+        view.yLog = true;
+        CHECK(project(lineOver(values), gui::PlotAxis{}, view).points.empty());
+    }
+    SECTION("the low end is negative")
+    {
+        gui::PlotView view = paneOver(0.0, 10.0, -5.0, 10.0);
+        view.yLog = true;
+        CHECK(project(lineOver(values), gui::PlotAxis{}, view).points.empty());
+        CHECK(!gui::yMappingOf(view).usable);
+    }
+    SECTION("both ends are above zero and it draws")
+    {
+        gui::PlotView view = paneOver(0.0, 10.0, 0.5, 10.0);
+        view.yLog = true;
+        CHECK(!project(lineOver(values), gui::PlotAxis{}, view).points.empty());
+    }
+}
+
+TEST_CASE("the envelope keeps the extremes the axis can draw", "[plot][log]")
+{
+    // A bucket's extremes are its extremes *among the values that have a
+    // place*. A bucket holding one enormous negative reading and a thousand
+    // ordinary ones has not got a top at that reading -- the curve never
+    // reaches it, because the curve is not drawn there -- and an envelope that
+    // counted it would put the band's edge somewhere the line never goes.
+    //
+    // Eight thousand samples over a thousand columns, so the envelope runs.
+    std::vector<double> values(8000, 100.0);
+    values[10] = -1e6; // the largest magnitude in the line, and undrawable
+    values[11] = 1000.0;
+
+    gui::PlotView view = paneOver(0.0, 8000.0, 1.0, 10000.0);
+    view.yLog = true;
+    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+
+    // Nothing is drawn below the pane: the negative was skipped rather than
+    // projected to some enormous y.
+    for (const QPointF& point : drawn.points) {
+        CHECK(point.y() >= 0.0);
+        CHECK(point.y() <= view.height);
+    }
+    // ...and the 1000 beside it is still the top of its bucket. Three quarters
+    // of the way up a pane showing four decades.
+    const double expected = view.height - 0.75 * view.height;
+    CHECK(highestPoint(drawn) == Approx(expected).margin(0.5));
+}
+
+TEST_CASE("a bound that runs backwards is not a window", "[plot][log]")
+{
+    // Both axes are held to this and only x used to be. Nothing in the
+    // application produces an inverted window -- every path that states one
+    // sorts its bounds first -- so the difference was never a picture anybody
+    // saw; it is here because one rule that both axes keep is the only kind
+    // this file can hold the renderer and the chrome to.
+    const std::vector<double> values{1.0, 2.0, 3.0};
+    CHECK(project(lineOver(values), gui::PlotAxis{}, paneOver(0.0, 3.0, 3.0, 1.0)).points.empty());
+    CHECK(!gui::yMappingOf(paneOver(0.0, 3.0, 3.0, 1.0)).usable);
+}
+
+TEST_CASE("an infinity is not a place on a logarithmic axis either", "[plot][log]")
+{
+    // Positive infinity passes `value > 0` and fails `std::isfinite`, so the
+    // order of the two tests in AxisMapping::draws decides this one. It has to
+    // be a gap: a logarithm of infinity is an infinity, and an infinity in a
+    // vertex buffer is not a point off screen -- it is a triangle the
+    // rasteriser may do anything at all with. See kFarAway, which exists for
+    // the same hazard reached by a different road.
+    const double big = std::numeric_limits<double>::infinity();
+    std::vector<double> values(9, 1.0);
+    values[4] = big;
+
+    gui::PlotView view = paneOver(0.0, 9.0, 0.1, 10.0);
+    view.yLog = true;
+    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+
+    REQUIRE(drawn.runs.size() == 2);
+    for (const QPointF& point : drawn.points) {
+        CHECK(std::isfinite(point.x()));
+        CHECK(std::isfinite(point.y()));
+    }
+}
+
+TEST_CASE("a logarithmic axis holds up over the whole of double", "[plot][log]")
+{
+    // Three hundred decades apiece, which is the widest window there can be.
+    // What is being asked is not that it looks like anything -- it cannot --
+    // but that every coordinate it produces is a number, because the one thing
+    // a renderer must never be handed is a vertex it cannot rasterise.
+    std::vector<double> values(64);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::pow(10.0, -300.0 + static_cast<double>(i) * 10.0);
+    }
+
+    gui::PlotView view = paneOver(1e-300, 1e300, 1e-300, 1e300);
+    view.xLog = true;
+    view.yLog = true;
+    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+
+    REQUIRE(!drawn.points.empty());
+    for (const QPointF& point : drawn.points) {
+        CHECK(std::isfinite(point.x()));
+        CHECK(std::isfinite(point.y()));
+    }
+
+    // ...and the arithmetic is still the arithmetic out there: the middle of a
+    // six-hundred-decade window is the three-hundredth decade up it.
+    const gui::AxisMapping mapping = gui::yMappingOf(view);
+    CHECK(mapping.fractionOf(1.0) == Approx(0.5));
+    CHECK(mapping.valueAt(0.5) == Approx(1.0));
+    // A denormal is still a number with a logarithm.
+    CHECK(mapping.draws(5e-324));
+    CHECK(mapping.fractionOf(5e-324) < 0.0);
+}
+
+TEST_CASE("the inverse of a logarithmic axis is its own inverse", "[plot][log]")
+{
+    // The pair a pointer position resolves through, and the one place a
+    // rounding would show as the crosshair reading a different value from the
+    // one the tick under it prints. Over four decades and over sixty.
+    for (const double top : {1e4, 1e60}) {
+        gui::PlotView view = paneOver(1.0, top, 1.0, top);
+        view.yLog = true;
+        const gui::AxisMapping mapping = gui::yMappingOf(view);
+        REQUIRE(mapping.usable);
+        for (int i = 0; i <= 10; ++i) {
+            const double fraction = static_cast<double>(i) / 10.0;
+            CHECK(mapping.fractionOf(mapping.valueAt(fraction)) == Approx(fraction).margin(1e-12));
+        }
+    }
+}
+
+TEST_CASE("a summary that reaches zero is drawn as far as it can be", "[plot][log]")
+{
+    // The one place the scale and the decimation meet, and it is worth pinning
+    // because the answer is a compromise rather than a rule.
+    //
+    // A model hands over an *envelope*: two values a bucket, its smallest and
+    // its largest. That envelope was folded out of the file without knowing
+    // which scale it would be drawn on -- it is the same summary either way,
+    // and recomputing it would mean re-reading the file every time the box was
+    // ticked. So a bucket that dips to zero arrives here with a smallest value
+    // the axis cannot place.
+    //
+    // What is drawn is the half of that bucket that can be: the largest value
+    // is a point, and the smallest is a gap. The stroke therefore breaks for
+    // one station wherever the data reached zero, which is the honest reading
+    // -- that bucket is one the scale cannot show whole -- and it is not the
+    // line disappearing for a bucket, which is what dropping the pair would
+    // have been.
+    std::vector<double> summary{1.0, 4.0, 0.0, 5.0, 2.0, 6.0};
+    gui::PlotLine line = lineOver(summary);
+    line.summarised = true;
+
+    gui::PlotView view = paneOver(0.0, 6.0, 0.5, 10.0);
+    view.yLog = true;
+    const Projected drawn = project(line, gui::PlotAxis{}, view);
+
+    // Two strokes: 1, 4 and then 5, 2, 6, with the zero between them.
+    REQUIRE(drawn.runs.size() == 2);
+    CHECK(drawn.runs[0].count == 2);
+    CHECK(drawn.runs[1].count == 3);
+
+    // The bucket's own largest value is still drawn, which is the half of it
+    // that matters -- the top of the envelope is what a reader is looking at.
+    const double top = gui::yMappingOf(view).fractionOf(6.0) * view.height;
+    CHECK(highestPoint(drawn) == Approx(view.height - top).margin(0.5));
+}
+
+TEST_CASE("a logarithmic axis is taken to the base it was given", "[plot][log]")
+{
+    // Ten by default, which is what every axis here was before the choice
+    // existed -- so a view that says nothing about a base is the view it
+    // always was.
+    CHECK(gui::PlotView{}.xLogBase == 10.0);
+    CHECK(gui::PlotView{}.yLogBase == 10.0);
+
+    SECTION("base two puts an octave where base ten puts a decade")
+    {
+        gui::PlotView view = paneOver(1.0, 1024.0, 1.0, 1024.0);
+        view.yLog = true;
+        view.yLogBase = 2.0;
+        const gui::AxisMapping mapping = gui::yMappingOf(view);
+        REQUIRE(mapping.usable);
+        // Ten octaves across the pane, so each one is a tenth of it.
+        for (int octave = 0; octave <= 10; ++octave) {
+            CHECK(mapping.fractionOf(std::pow(2.0, octave)) ==
+                  Approx(static_cast<double>(octave) / 10.0));
+        }
+        CHECK(mapping.valueAt(0.5) == Approx(32.0));
+    }
+
+    SECTION("the base moves the numbers on the axis, not the curve on it")
+    {
+        // Worth stating outright, because it is the opposite of what the
+        // amount of code below it suggests: where a value sits is a *ratio* of
+        // two logarithms, and a change of base multiplies both by the same
+        // constant. So the base cancels, and every drawn point of a plot is in
+        // exactly the same place whichever base the reader picks.
+        //
+        // What they pick one for is the axis around the picture: the numbers
+        // go at the powers of the base and the rules between them, so base ten
+        // marks decades and base two marks octaves over an identical curve.
+        //
+        // Which is also the answer to why the renderer is told the base at
+        // all. Not to place anything -- it is told so that a base of one,
+        // where the logarithm is a division by zero, is refused here as well
+        // as in the panel that offers the choice.
+        std::vector<double> values(64);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            values[i] = std::pow(1.3, static_cast<double>(i)) + 0.5;
+        }
+
+        gui::PlotView ten = paneOver(0.0, 64.0, 0.4, 1e7);
+        ten.yLog = true;
+        ten.yLogBase = 10.0;
+        gui::PlotView two = ten;
+        two.yLogBase = 2.0;
+        gui::PlotView odd = ten;
+        odd.yLogBase = 1.5;
+
+        const Projected drawnTen = project(lineOver(values), gui::PlotAxis{}, ten);
+        REQUIRE(!drawnTen.points.empty());
+        for (const gui::PlotView& other : {two, odd}) {
+            const Projected drawn = project(lineOver(values), gui::PlotAxis{}, other);
+            INFO("base " << other.yLogBase);
+            REQUIRE(drawn.points.size() == drawnTen.points.size());
+            for (std::size_t i = 0; i < drawn.points.size(); ++i) {
+                CHECK(drawn.points[i].x() == Approx(drawnTen.points[i].x()));
+                CHECK(drawn.points[i].y() == Approx(drawnTen.points[i].y()));
+            }
+        }
+    }
+
+    SECTION("and a base of its own is its own inverse too")
+    {
+        for (const double base : {2.0, std::exp(1.0), 4.0, 1.5, 60.0}) {
+            gui::PlotView view = paneOver(1.0, 1e6, 1.0, 1e6);
+            view.yLog = true;
+            view.yLogBase = base;
+            const gui::AxisMapping mapping = gui::yMappingOf(view);
+            INFO("base " << base);
+            REQUIRE(mapping.usable);
+            for (int i = 0; i <= 10; ++i) {
+                const double fraction = static_cast<double>(i) / 10.0;
+                CHECK(mapping.fractionOf(mapping.valueAt(fraction)) ==
+                      Approx(fraction).margin(1e-12));
+            }
+        }
+    }
+}
+
+TEST_CASE("only a number above one is a base", "[plot][log]")
+{
+    // At exactly one the logarithm is a division by zero and every value on
+    // the axis lands in the same place; below it the axis runs backwards,
+    // which is a different request from the one this answers. Refused rather
+    // than corrected, because the legal bases are open at one and there is no
+    // nearest legal value to correct a bad one to.
+    //
+    // Refused *here* as well as in the panel that offers the choice, which is
+    // the point of this case: the renderer must never be handed a vertex it
+    // cannot rasterise, whatever wrote the property.
+    const std::vector<double> values{1.0, 2.0, 3.0};
+
+    for (const double base : {1.0, 0.0, -2.0, 0.5, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity()}) {
+        gui::PlotView view = paneOver(1.0, 100.0, 1.0, 100.0);
+        view.yLog = true;
+        view.yLogBase = base;
+        INFO("base " << base);
+        CHECK(!gui::yMappingOf(view).usable);
+        CHECK(project(lineOver(values), gui::PlotAxis{}, view).points.empty());
+        // A refused axis answers zero rather than a number nothing can use.
+        CHECK(gui::yFractionOf(10.0, view) == 0.0);
+    }
+
+    SECTION("a base just above one is legal, however little use it is")
+    {
+        gui::PlotView view = paneOver(1.0, 100.0, 1.0, 100.0);
+        view.yLog = true;
+        view.yLogBase = 1.0000001;
+        const gui::AxisMapping mapping = gui::yMappingOf(view);
+        REQUIRE(mapping.usable);
+        CHECK(std::isfinite(mapping.fractionOf(10.0)));
+        CHECK(mapping.fractionOf(10.0) == Approx(0.5));
+    }
+}
+
+TEST_CASE("a logarithm to a familiar base is exact", "[plot][log]")
+{
+    // std::log(1000.0) / std::log(10.0) is 2.9999999999999996, so a mark that
+    // ought to *be* a power of the base comes out a shade beside one -- and
+    // the whole structure of a logarithmic grid is that its majors land
+    // exactly on its labels. The two bases a reader is most likely to pick
+    // have exact library functions, and logOf takes them.
+    CHECK(gui::logOf(1000.0, 10.0) == 3.0);
+    CHECK(gui::logOf(0.001, 10.0) == -3.0);
+    CHECK(gui::logOf(1024.0, 2.0) == 10.0);
+    CHECK(gui::logOf(1.0 / 1024.0, 2.0) == -10.0);
+    // ...and the general case still answers, to within a rounding.
+    CHECK(gui::logOf(81.0, 3.0) == Approx(4.0));
+    CHECK(gui::logOf(std::exp(2.0), std::exp(1.0)) == Approx(2.0));
+}
+
 // --- gaps -----------------------------------------------------------------
 
 TEST_CASE("a run of missing data is a gap and not a line across it", "[plot]")

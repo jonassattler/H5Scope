@@ -185,10 +185,12 @@ void writeFixture(const std::string& path)
     // the whole of what that pair of checkboxes decides.
     //
     // In a group of their own rather than at the root, for two reasons. They
-    // are four faces of one thing and read as one; and the root listing is
-    // what the tree tests page through, so four more entries there pushed the
-    // last row of it off the bottom of an 800 x 600 pane and took a shape
-    // assertion with it.
+    // are faces of one thing and read as one; and the root listing is what the
+    // tree tests page through, so four more entries there pushed the last row
+    // of it off the bottom of an 800 x 600 pane and took a shape assertion
+    // with it. Anything else the plot needs a line for goes here for the second
+    // of those reasons whether or not it is about drawing two lines together --
+    // `decades` below is one of them.
     //
     // Values are closed forms rather than a table, so a test asserts against
     // arithmetic rather than against a list it would have to keep in step:
@@ -216,6 +218,44 @@ void writeFixture(const std::string& path)
             half[i] = 2.0 * static_cast<double>(i);
         }
         writeDataset(series, "half", H5T_NATIVE_DOUBLE, {32}, half.data());
+
+        // A line no linear axis can show whole, with the two values a
+        // logarithmic one cannot show at all.
+        //
+        // Six decades, eight steps to each of them, so every assertion about
+        // where a decade lands is arithmetic: element i is 10^(i/8 - 3), which
+        // runs 1e-3 to 1e3 and puts a power of ten on every eighth element.
+        // On a linear axis everything below about 1 is the bottom pixel row;
+        // on a logarithmic one the whole sweep is a straight line, which is
+        // what makes it obvious when the scale is not being applied.
+        //
+        // The zero and the negative are the case the scale has no place for.
+        // They must be a *gap* -- the same thing a NaN is, and for the same
+        // reason -- rather than a clamp to some invented floor, and they must
+        // leave the axis running from the smallest reading that does have a
+        // place (1e-3) rather than from the line's minimum, which is negative.
+        std::array<double, 49> decades{};
+        for (std::size_t i = 0; i < decades.size(); ++i) {
+            decades[i] = std::pow(10.0, static_cast<double>(i) / 8.0 - 3.0);
+        }
+        decades[10] = 0.0;
+        decades[20] = -decades[20];
+        writeDataset(series, "decades", H5T_NATIVE_DOUBLE, {49}, decades.data());
+
+        // A line a logarithmic axis cannot draw *any* of.
+        //
+        // The edge case at the end of the one above: every value is at or
+        // below zero, so there is no smallest positive value for the axis to
+        // start at and no sample that could be placed on it if there were.
+        // The pane is correctly empty, and an empty pane says none of that by
+        // itself -- the plot was there a moment ago and the only thing that
+        // changed was a checkbox -- so the surface has to say it instead. This
+        // is what it is asked.
+        std::array<double, 8> negative{};
+        for (std::size_t i = 0; i < negative.size(); ++i) {
+            negative[i] = -static_cast<double>(i);
+        }
+        writeDataset(series, "negative", H5T_NATIVE_DOUBLE, {8}, negative.data());
 
         // /trace again, as one member of a table of structs.
         //

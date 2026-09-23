@@ -4182,3 +4182,107 @@ TEST_CASE("the index walks the file once and answers out of memory",
         return 0;
     });
 }
+
+// --- the crosshair on a logarithmic axis -----------------------------------
+
+TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot][log]")
+{
+    // nearestSample is the one place that resolves a pixel *back* to a value
+    // and then measures in pixels again, so it goes through the mapping in
+    // both directions -- and it is also the one place that solves for an
+    // index, which is arithmetic that knows nothing about a scale. A pointer
+    // halfway up a logarithmic pane is over the geometric mean of its ends and
+    // not the arithmetic one, and a reading taken the other way would name a
+    // sample the reader is nowhere near.
+    //
+    // No window and no file: the item is handed four values directly, which is
+    // the whole of what it needs to answer.
+    const std::vector<double> values{1.0, 10.0, 100.0, 1000.0};
+
+    gui::PlotItem item;
+    item.setWidth(400.0);
+    item.setHeight(400.0);
+    item.setXMin(0.0);
+    item.setXMax(3.0);
+    item.setYMin(1.0);
+    item.setYMax(1000.0);
+    item.setYLog(true);
+
+    gui::PlotLine line;
+    line.values = values.data();
+    line.count = static_cast<qsizetype>(values.size());
+    item.setLines({line}, gui::PlotAxis{});
+
+    SECTION("a sample is read where it was drawn")
+    {
+        // Three decades over four hundred pixels, so 10 sits a third of the
+        // way up and is drawn two thirds of the way down.
+        const QVariantMap found = item.nearestSample(400.0 / 3.0, 400.0 * 2.0 / 3.0);
+        REQUIRE(found.value(QStringLiteral("valid")).toBool());
+        CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(10.0));
+        CHECK(found.value(QStringLiteral("py")).toDouble() ==
+              Catch::Approx(400.0 * 2.0 / 3.0).margin(1.0));
+        // ...and the item agrees with itself about where that is.
+        CHECK(item.yFraction(10.0) == Catch::Approx(1.0 / 3.0));
+        CHECK(item.valueAt(1.0 / 3.0) == Catch::Approx(10.0));
+    }
+
+    SECTION("and the same sample is read somewhere else on a linear one")
+    {
+        // The assertion that the branch above is doing anything. Which sample
+        // the crosshair takes is settled by x -- it solves for the nearest
+        // index and looks no further -- so what the scale changes is *where
+        // that sample is*, which is the number the crosshair is drawn at and
+        // the readout is placed by. On a linear pane of 1 to 1000, a ten is a
+        // hundredth of the way up and sits almost on the axis.
+        item.setYLog(false);
+        const QVariantMap found = item.nearestSample(400.0 / 3.0, 400.0 * 2.0 / 3.0);
+        REQUIRE(found.value(QStringLiteral("valid")).toBool());
+        CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(10.0));
+        CHECK(found.value(QStringLiteral("py")).toDouble() ==
+              Catch::Approx(400.0 - 9.0 / 999.0 * 400.0).margin(1.0));
+        CHECK(item.yFraction(10.0) == Catch::Approx(9.0 / 999.0));
+    }
+}
+
+TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[plot][log]")
+{
+    // A reading of a value that was not drawn is a readout naming a point that
+    // is not on the pane, and the walk outward from the pointer's own index is
+    // where it would come from: it stops at the first sample that reads, and
+    // "reads" has to mean drawable rather than merely finite.
+    //
+    // The pointer is put exactly on element 1, whose value is negative.
+    const std::vector<double> values{1.0, -5.0, 100.0, 1000.0};
+
+    gui::PlotItem item;
+    item.setWidth(400.0);
+    item.setHeight(400.0);
+    item.setXMin(0.0);
+    item.setXMax(3.0);
+    item.setYMin(1.0);
+    item.setYMax(1000.0);
+    item.setYLog(true);
+
+    gui::PlotLine line;
+    line.values = values.data();
+    line.count = static_cast<qsizetype>(values.size());
+    item.setLines({line}, gui::PlotAxis{});
+
+    const QVariantMap found = item.nearestSample(400.0 / 3.0, 200.0);
+    REQUIRE(found.value(QStringLiteral("valid")).toBool());
+    const double read = found.value(QStringLiteral("y")).toDouble();
+    CHECK(read > 0.0);
+    CHECK((read == Catch::Approx(1.0) || read == Catch::Approx(100.0)));
+
+    SECTION("and answers nothing at all when none of them can be placed")
+    {
+        const std::vector<double> none{-1.0, -2.0, -3.0, -4.0};
+        gui::PlotLine dark;
+        dark.values = none.data();
+        dark.count = static_cast<qsizetype>(none.size());
+        item.setLines({dark}, gui::PlotAxis{});
+        const QVariantMap nothing = item.nearestSample(200.0, 200.0);
+        CHECK(!nothing.value(QStringLiteral("valid")).toBool());
+    }
+}

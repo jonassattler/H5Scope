@@ -33,6 +33,90 @@ Item {
     property string gridMode: "loose"
     property real gridStepX: 0.0
     property real gridStepY: 0.0
+    /// Whether each axis places a value by its logarithm.
+    ///
+    /// A property of the *axis* and not of the window: the four bounds stay in
+    /// the data's own units, the ticks print the numbers the data has, and what
+    /// changes is how far apart two of them are drawn. See PlotFrame.fractionOn
+    /// and gui::AxisMapping, which are the one rule in its two implementations.
+    ///
+    /// Two things follow from it here and nowhere else. The gestures are
+    /// arithmetic over an axis's span, so on a logarithmic axis they are
+    /// arithmetic over decades -- see axisPosition. And a logarithmic axis has
+    /// to start above zero, so its low end is the smallest positive value there
+    /// is to show rather than the one the linear axis would have used; the
+    /// default x axis is the element's own index and starts at zero, so without
+    /// that every plot in the application would go blank the moment the box was
+    /// ticked.
+    property bool xLog: false
+    property bool yLog: false
+
+    /// Which base each of those logarithms is taken to: "10", "2", "e", or
+    /// "custom" and then the number beside it.
+    ///
+    /// The shape the grid's own density already has (`gridMode` and
+    /// `gridStepX`), and for the same reason: a list of the answers worth
+    /// having, and a box for the one nobody could have listed. It has to be
+    /// two properties rather than one number, because "custom" is a state and
+    /// not a value -- a single settable base would spring the dropdown back to
+    /// "base 10" the moment the reader picked custom over a base of ten, and
+    /// the box they were about to type in would never appear.
+    ///
+    /// Ten by default, which is what every axis in the application was before
+    /// the choice existed.
+    property string xLogBaseMode: "10"
+    property string yLogBaseMode: "10"
+    /// The base under "custom". Read only while that is what is chosen, and
+    /// only ever when it is a base at all -- see baseFor.
+    property real xLogBaseCustom: 10.0
+    property real yLogBaseCustom: 10.0
+
+    /// What each axis's logarithm is actually taken to.
+    ///
+    /// The one number everything downstream reads, and it is derived rather
+    /// than settable so that there is no way to be looking at an axis drawn to
+    /// a base the controls do not name.
+    readonly property real xLogBase:
+        surface.baseFor(surface.xLogBaseMode, surface.xLogBaseCustom)
+    readonly property real yLogBase:
+        surface.baseFor(surface.yLogBaseMode, surface.yLogBaseCustom)
+
+    /// Whether `base` is a base at all.
+    ///
+    /// Only a number above one is. At exactly one the logarithm is a division
+    /// by zero and every value on the axis would sit in the same place; below
+    /// it the axis runs backwards, which is a different request from the one
+    /// this answers. The same test gui::mappingOver makes, so that the chrome
+    /// and the renderer cannot disagree about whether an axis exists.
+    ///
+    /// A test and not a clamp, and that is the honest shape for it: the legal
+    /// bases are open at one, so there is no nearest legal value to correct a
+    /// bad one to. What the panel does with a refusal is put the box back to
+    /// the base in force, which says no rather than inventing a yes.
+    function usableBase(base) {
+        return isFinite(base) && base > 1
+    }
+
+    /// The base a mode and its number resolve to.
+    ///
+    /// Ten for anything this build does not recognise, which is the stance the
+    /// rest of the surface takes on a remembered setting it cannot read: a
+    /// saved view naming a base from some later version costs the reader that
+    /// base and not the whole of their view. It is also the last guard on the
+    /// number itself -- everything downstream may assume this answered.
+    function baseFor(mode, custom) {
+        if (mode === "2")
+            return 2
+        if (mode === "e")
+            return Math.E
+        if (mode === "custom")
+            return surface.usableBase(custom) ? custom : 10
+        return 10
+    }
+
+    /// Whether the subdivisions between two powers carry their digit. See
+    /// PlotFrame.minorNumbers, and minorNumbersOf for where they appear.
+    property bool minorNumbers: false
     property bool showMarkers: false
     /// Whether pointing at the plot reads the sample under the pointer: a
     /// crosshair on the plot and a line of numbers in the bar below it.
@@ -145,6 +229,69 @@ Item {
     property real axisMinX: xAxis.minimum
     property real axisMaxX: xAxis.maximum
 
+    /// The smallest x above zero on a *stated* x axis, or 0 when it has none.
+    ///
+    /// The x values there are a uniform grid -- `start + i x step` -- so the
+    /// first one above zero is arithmetic over three numbers rather than a pass
+    /// over anything. That matters: the whole of a stated axis's extent is
+    /// known without reading a single element, and a logarithmic axis must not
+    /// be the one thing about it that changes.
+    readonly property real gridPositiveMinX: {
+        const low = surface.axisMinX
+        const high = surface.axisMaxX
+        if (!(high > 0))
+            return 0
+        if (low > 0)
+            return low
+        const step = Math.abs(surface.rangeDrivesX && surface.rangeValid
+                              ? surface.resolved.step : 1)
+        if (!(step > 0))
+            return high
+        // The grid's members are low + j x step, so the first one strictly
+        // above zero is the one after the last at or below it -- which is what
+        // the +1 is, and why this is not a ceiling: at low = 0 exactly, the
+        // member at zero is the one being stepped past.
+        const at = low + (Math.floor(-low / step) + 1) * step
+        return at > 0 && at <= high ? at : high
+    }
+
+    /// ...and the one this plot actually uses.
+    ///
+    /// Overridable for exactly the reason axisMinX is: a plot drawing against
+    /// another dataset knows its own smallest positive x -- it has read every
+    /// one of them -- and the grid arithmetic above has nothing to say about a
+    /// time base. A separate property from the one it defaults to, rather than
+    /// an override that falls back to itself, which is a binding loop.
+    property real positiveMinX: surface.gridPositiveMinX
+
+    /// The x axis's ends as it is actually drawn between them.
+    ///
+    /// The same two numbers on a linear axis, and every gesture below is
+    /// measured against these rather than against the pair above so that there
+    /// is one answer to "where does this axis run".
+    ///
+    /// An axis with no positive part gets one empty decade, which is what the
+    /// y axis's `padded` does with the same situation and for the same reason:
+    /// a frame with legible numbers on it beats a frame with none. It also
+    /// keeps a *number* in every one of these, which matters more than it
+    /// looks. Left at the bounds it cannot use, this reached log10 of a
+    /// negative -- so the window was NaN, and NaN travelled out through
+    /// `setVisibleRange` into the model and out through the footer, which
+    /// printed "x NaN … NaN" under a pane that was explaining itself perfectly
+    /// well. Every reader of a degenerate axis guards for it, but a number
+    /// nothing has to guard for is better than a guard in every reader.
+    readonly property var xBounds: {
+        if (!surface.xLog)
+            return ({ low: surface.axisMinX, high: surface.axisMaxX })
+        const low = surface.positiveMinX
+        if (!(low > 0) || !(surface.axisMaxX > low))
+            return ({ low: 1.0, high: surface.xLogBase })
+        return ({ low: low, high: surface.axisMaxX })
+    }
+
+    readonly property real axisLowX: surface.xBounds.low
+    readonly property real axisHighX: surface.xBounds.high
+
     // Where the points sit is the plot's own business -- they are built in
     // fill() and never cross into QML -- so the resolved start and step are
     // pushed down to it. Moving them moves the same points, which is why
@@ -165,17 +312,45 @@ Item {
     }
 
     // --- the y axis: the values, and nothing to set about them -----------
-    /// A little air above and below, so a line at the extreme is a line and
-    /// not part of the frame. A flat series has no span to take a share of,
-    /// and gets a unit of room instead.
+    /// `low`..`high` with a little air at each end, so a line at the extreme is
+    /// a line and not part of the frame. A flat series has no span to take a
+    /// share of, and gets a unit of room instead.
     ///
-    /// Guarded like every other reader of the sample: `drawable` tests `active`
-    /// first, so a hidden plot's bindings never reach the file.
-    readonly property real padding: {
-        if (!drawable)
-            return 1.0
-        const span = plot.maximum - plot.minimum
-        return span > 0 ? span * 0.05 : 1.0
+    /// In the axis's own scale, which is what makes it the same air on either
+    /// one: a twentieth of a *decade* below the smallest value rather than a
+    /// twentieth of the value itself, which on a trace running from 1e-9 to 1
+    /// would be nine decades of margin over the top and none at all underneath.
+    ///
+    /// A flat line on a logarithmic axis runs between the powers either side
+    /// of it -- see the branch below.
+    ///
+    /// A logarithmic axis with nothing above zero to draw between gets one
+    /// empty decade. It draws nothing either way -- there is no value it could
+    /// place -- and an axis with legible numbers on it is a better answer than
+    /// one with none, which is what a span of zero would give.
+    function padded(low, high, logarithmic, base) {
+        if (logarithmic) {
+            if (!(low > 0) || !(high > 0) || !surface.usableBase(base))
+                return ({ low: 1.0, high: base > 1 ? base : 10.0 })
+            let from = surface.logOf(low, base)
+            let to = surface.logOf(high, base)
+            if (!(to > from)) {
+                // A flat line is widened to the powers either side of it,
+                // which is matplotlib's `LogLocator.nonsingular`: the power
+                // strictly below and the power strictly above, so a line at 5
+                // runs 1 to 10 and one at 10 runs 1 to 100. Then the air, as
+                // for any other line.
+                const at = Math.abs(from - Math.round(from)) < 1e-10
+                         ? Math.round(from) : from
+                from = Number.isInteger(at) ? at - 1 : Math.floor(at)
+                to = Number.isInteger(at) ? at + 1 : Math.ceil(at)
+            }
+            const air = (to - from) * 0.05
+            return ({ low: Math.pow(base, from - air),
+                      high: Math.pow(base, to + air) })
+        }
+        const air = high > low ? (high - low) * 0.05 : 1.0
+        return ({ low: low - air, high: high + air })
     }
 
     /// The extent of the values being drawn, which is the whole of the y axis.
@@ -183,10 +358,27 @@ Item {
     /// looking closer at part of it, and a second way to say the same thing --
     /// two boxes that also had to be kept from crossing, and that went stale
     /// the moment the selection moved -- is a control that earns nothing.
-    readonly property real lowerBound: !surface.drawable
-        ? 0.0 : surface.plot.minimum - surface.padding
-    readonly property real upperBound: !surface.drawable
-        ? 1.0 : surface.plot.maximum + surface.padding
+    ///
+    /// The bottom is the smallest value under a linear axis and the smallest
+    /// *positive* one under a logarithmic axis, which is why the plot objects
+    /// report both. Taking the ordinary minimum and clamping it would put a
+    /// trace whose one zero sample sits among a thousand readings of about a
+    /// hundred into a pane running from some invented floor up to a hundred --
+    /// every decade of it empty but the last.
+    ///
+    /// Guarded like every other reader of the sample: `drawable` tests `active`
+    /// first, so a hidden plot's bindings never reach the file.
+    readonly property var valueBounds: {
+        if (!surface.drawable)
+            return ({ low: 0.0, high: 1.0 })
+        return surface.padded(surface.yLog ? surface.plot.positiveMinimum
+                                           : surface.plot.minimum,
+                              surface.plot.maximum, surface.yLog,
+                              surface.yLogBase)
+    }
+
+    readonly property real lowerBound: surface.valueBounds.low
+    readonly property real upperBound: surface.valueBounds.high
 
     // --- which line is which ---------------------------------------------
     /// How the lines are coloured: the name of one of Theme's categorical
@@ -420,31 +612,83 @@ Item {
         panY = 0.0
     }
 
+    /// Where a value sits along an axis, in the units the zoom and the pan are
+    /// measured in -- and back again.
+    ///
+    /// The whole of what a logarithmic axis changes about the gestures, and
+    /// the two are the only lines below that know which scale they are on.
+    /// Zoom and pan are arithmetic over an axis's *span*, and on a logarithmic
+    /// axis the only span that means anything is a count of decades: a wheel
+    /// notch has to take the same bite out of a pane showing 1 to 10 as out of
+    /// one showing 1e6 to 1e7, and a drag has to move by so many decades rather
+    /// than by so many units. Measured in the data's own units instead, one
+    /// notch at the low end of a six-decade axis would zoom past every float
+    /// there is while the high end had not visibly moved at all.
+    ///
+    /// So `panX` and `panY` are in decades while their axis is logarithmic,
+    /// and that is why switching a scale resets the view: a pan of 40 is four
+    /// decades or it is forty units, and there is no reading of it that is both.
+    function axisPosition(value, logarithmic, base) {
+        return logarithmic ? surface.logOf(value, base) : value
+    }
+
+    function axisValue(position, logarithmic, base) {
+        return logarithmic ? Math.pow(base, position) : position
+    }
+
+    /// The logarithm of `value` to `base`. PlotFrame.logOf, and the reason the
+    /// two exact cases are worth branching for is written there.
+    function logOf(value, base) {
+        if (base === 10)
+            return Math.log10(value)
+        if (base === 2)
+            return Math.log2(value)
+        return Math.log(value) / Math.log(base)
+    }
+
+    /// The value `at` of the way from `low` to `high`. The inverse of
+    /// PlotFrame.fractionOn, and the same arithmetic gui::AxisMapping::valueAt
+    /// does -- which is what makes a pointer position resolve to the value the
+    /// tick under it prints.
+    function valueAlong(low, high, at, logarithmic, base) {
+        const from = surface.axisPosition(low, logarithmic, base)
+        const to = surface.axisPosition(high, logarithmic, base)
+        return surface.axisValue(from + at * (to - from), logarithmic, base)
+    }
+
     /// The window the axes are actually showing, worked out with the same
     /// arithmetic ValueAxis uses. The footer prints these, because once the
     /// view has been moved the range of the data is no longer the range on
     /// screen and only one of the two is worth reading.
-    function visibleLow(low, high, zoom, pan) {
-        return (low + high) / 2.0 + pan - (high - low) / zoom / 2.0
+    function visibleLow(low, high, zoom, pan, logarithmic, base) {
+        const from = surface.axisPosition(low, logarithmic, base)
+        const to = surface.axisPosition(high, logarithmic, base)
+        return surface.axisValue((from + to) / 2.0 + pan - (to - from) / zoom / 2.0,
+                                 logarithmic, base)
     }
 
-    function visibleHigh(low, high, zoom, pan) {
-        return (low + high) / 2.0 + pan + (high - low) / zoom / 2.0
+    function visibleHigh(low, high, zoom, pan, logarithmic, base) {
+        const from = surface.axisPosition(low, logarithmic, base)
+        const to = surface.axisPosition(high, logarithmic, base)
+        return surface.axisValue((from + to) / 2.0 + pan + (to - from) / zoom / 2.0,
+                                 logarithmic, base)
     }
 
     readonly property real viewMinX:
-        visibleLow(axisMinX, axisMaxX, zoomX, panX)
+        visibleLow(axisLowX, axisHighX, zoomX, panX, xLog, xLogBase)
     readonly property real viewMaxX:
-        visibleHigh(axisMinX, axisMaxX, zoomX, panX)
+        visibleHigh(axisLowX, axisHighX, zoomX, panX, xLog, xLogBase)
     readonly property real viewMinY:
-        visibleLow(lowerBound, upperBound, zoomY, panY)
+        visibleLow(lowerBound, upperBound, zoomY, panY, yLog, yLogBase)
     readonly property real viewMaxY:
-        visibleHigh(lowerBound, upperBound, zoomY, panY)
+        visibleHigh(lowerBound, upperBound, zoomY, panY, yLog, yLogBase)
 
     /// Pan clamped so the visible window stays inside the data. With zoom at
     /// 1 the window *is* the data and the only legal pan is none.
-    function clampPan(pan, zoom, low, high) {
-        const room = (high - low) * (1.0 - 1.0 / zoom) / 2.0
+    function clampPan(pan, zoom, low, high, logarithmic, base) {
+        const room = (surface.axisPosition(high, logarithmic, base)
+                      - surface.axisPosition(low, logarithmic, base))
+                     * (1.0 - 1.0 / zoom) / 2.0
         return Math.max(-room, Math.min(room, pan))
     }
 
@@ -454,15 +698,22 @@ Item {
     ///
     /// Returns the new { zoom, pan } for the caller to assign, because QML has
     /// no out-parameters and two of these run per wheel tick.
-    function zoomedAxis(zoom, pan, low, high, fraction, factor) {
+    function zoomedAxis(zoom, pan, low, high, fraction, factor, logarithmic, base) {
         const next = Math.max(1.0, Math.min(surface.maxZoom, zoom * factor))
-        const full = high - low
+        // In positions rather than in values, which is the whole of what makes
+        // this work on either scale: "hold the value under the pointer still"
+        // is "hold its position still", and a position is a decade count on a
+        // logarithmic axis.
+        const from = surface.axisPosition(low, logarithmic, base)
+        const to = surface.axisPosition(high, logarithmic, base)
+        const full = to - from
         const span = full / zoom
-        const held = (low + high) / 2.0 + pan - span / 2.0 + fraction * span
+        const held = (from + to) / 2.0 + pan - span / 2.0 + fraction * span
         const nextSpan = full / next
         const centre = held - fraction * nextSpan + nextSpan / 2.0
         return { zoom: next,
-                 pan: surface.clampPan(centre - (low + high) / 2.0, next, low, high) }
+                 pan: surface.clampPan(centre - (from + to) / 2.0, next, low, high,
+                                       logarithmic, base) }
     }
 
     /// Zoom about (px, py) by `factor`, on the axes `axes` names: "x", "y" or
@@ -495,20 +746,29 @@ Item {
             // the zoom is going, it reads that way instead -- and reads at once
             // rather than after the gesture stops, because an inward run costs
             // half the span of the one above it.
-            surface.pushZoomFocus(surface.viewMinX
-                                  + fx * (surface.viewMaxX - surface.viewMinX),
-                                  factor)
+            //
+            // Through valueAlong rather than by interpolating the two bounds,
+            // which is the same distinction: on a logarithmic axis the value
+            // halfway across the pane is the geometric mean of its ends and
+            // not the arithmetic one, and a focus taken the other way would
+            // send the read towards a place the pointer is nowhere near.
+            surface.pushZoomFocus(
+                surface.valueAlong(surface.viewMinX, surface.viewMaxX, fx,
+                                   surface.xLog, surface.xLogBase),
+                factor)
 
             const x = surface.zoomedAxis(surface.zoomX, surface.panX,
-                                         surface.axisMinX, surface.axisMaxX,
-                                         fx, factor)
+                                         surface.axisLowX, surface.axisHighX,
+                                         fx, factor, surface.xLog,
+                                         surface.xLogBase)
             surface.zoomX = x.zoom
             surface.panX = x.pan
         }
         if (axes !== "x") {
             const y = surface.zoomedAxis(surface.zoomY, surface.panY,
                                          surface.lowerBound, surface.upperBound,
-                                         fy, factor)
+                                         fy, factor, surface.yLog,
+                                         surface.yLogBase)
             surface.zoomY = y.zoom
             surface.panY = y.pan
         }
@@ -521,16 +781,45 @@ Item {
     /// they were computed from. Clamped the way every other path here is --
     /// never below 1, never past maxZoom, never outside the data -- so a
     /// window nobody can be shown comes back as the nearest one that can be.
-    function viewedAxis(low, high, from, to) {
-        const full = high - low
-        const span = Math.abs(to - from)
+    function viewedAxis(low, high, from, to, logarithmic, base) {
+        const axisFrom = surface.axisPosition(low, logarithmic, base)
+        const axisTo = surface.axisPosition(high, logarithmic, base)
+        const wantFrom = surface.axisPosition(from, logarithmic, base)
+        const wantTo = surface.axisPosition(to, logarithmic, base)
+        const full = axisTo - axisFrom
+        const span = Math.abs(wantTo - wantFrom)
         if (!(full > 0) || !(span > 0))
             return { zoom: 1.0, pan: 0.0 }
         const zoom = Math.max(1.0, Math.min(surface.maxZoom, full / span))
-        const centre = (from + to) / 2.0
+        const centre = (wantFrom + wantTo) / 2.0
         return { zoom: zoom,
-                 pan: surface.clampPan(centre - (low + high) / 2.0,
-                                       zoom, low, high) }
+                 pan: surface.clampPan(centre - (axisFrom + axisTo) / 2.0,
+                                       zoom, low, high, logarithmic, base) }
+    }
+
+    /// `from`..`to` cut down to the part of a logarithmic axis that exists.
+    ///
+    /// A reader can type a zero into the four boxes under Plot Settings, and a
+    /// saved view can carry a window from before the scale was turned on;
+    /// neither is a window on this axis, because there is no place at or below
+    /// zero for it to reach.
+    ///
+    /// Clipped to the axis's own low end rather than refused, which is what
+    /// matplotlib does with a limit it cannot use: what was asked for is
+    /// mostly reachable, and the part that is not is not there to be shown.
+    /// Without it such a window resolved to a logarithm of minus infinity, an
+    /// infinite span, and a zoom of one -- so asking to look at 0 to 100 on an
+    /// axis running to a million showed the whole million, which is the
+    /// opposite of what was asked.
+    ///
+    /// A window with nothing above zero in it at all is the whole axis, which
+    /// is what a request to look at nothing resolves to everywhere else here.
+    function positiveSpan(from, to, low, high, logarithmic) {
+        if (!logarithmic)
+            return ({ from: from, to: to })
+        if (!(to > 0))
+            return ({ from: low, to: high })
+        return ({ from: Math.max(from, low), to: to })
     }
 
     /// Put the window at exactly these four numbers, in data coordinates.
@@ -541,10 +830,18 @@ Item {
     /// thing said twice -- so it is arithmetic in one place and the boxes
     /// report the band's answer without either knowing about the other.
     function setViewRange(x0, x1, y0, y1) {
-        const x = surface.viewedAxis(surface.axisMinX, surface.axisMaxX,
-                                     Math.min(x0, x1), Math.max(x0, x1))
+        const wantX = surface.positiveSpan(Math.min(x0, x1), Math.max(x0, x1),
+                                           surface.axisLowX, surface.axisHighX,
+                                           surface.xLog)
+        const wantY = surface.positiveSpan(Math.min(y0, y1), Math.max(y0, y1),
+                                           surface.lowerBound, surface.upperBound,
+                                           surface.yLog)
+        const x = surface.viewedAxis(surface.axisLowX, surface.axisHighX,
+                                     wantX.from, wantX.to, surface.xLog,
+                                     surface.xLogBase)
         const y = surface.viewedAxis(surface.lowerBound, surface.upperBound,
-                                     Math.min(y0, y1), Math.max(y0, y1))
+                                     wantY.from, wantY.to, surface.yLog,
+                                     surface.yLogBase)
         surface.zoomX = x.zoom
         surface.panX = x.pan
         surface.zoomY = y.zoom
@@ -566,7 +863,8 @@ Item {
         if (area.width <= 0)
             return surface.viewMinX
         const at = Math.max(0, Math.min(1, (px - area.x) / area.width))
-        return surface.viewMinX + at * (surface.viewMaxX - surface.viewMinX)
+        return surface.valueAlong(surface.viewMinX, surface.viewMaxX, at,
+                                  surface.xLog, surface.xLogBase)
     }
 
     /// The same, down the other axis. y grows downward on screen and upward on
@@ -576,8 +874,8 @@ Item {
         if (area.height <= 0)
             return surface.viewMinY
         const at = Math.max(0, Math.min(1, (py - area.y) / area.height))
-        return surface.viewMinY
-               + (1.0 - at) * (surface.viewMaxY - surface.viewMinY)
+        return surface.valueAlong(surface.viewMinY, surface.viewMaxY, 1.0 - at,
+                                  surface.yLog, surface.yLogBase)
     }
 
     /// Go to the region a right-drag has just drawn, in this item's pixels.
@@ -660,14 +958,25 @@ Item {
         // stops the read going out on every frame of the drag: only a focus
         // skips the settle.
         surface.clearZoomFocus()
-        const spanX = (surface.axisMaxX - surface.axisMinX) / surface.zoomX
-        const spanY = (surface.upperBound - surface.lowerBound) / surface.zoomY
+        // In positions, so that a drag of so many pixels moves the view by the
+        // share of the axis those pixels are -- which is the same sentence on
+        // either scale and is a count of decades on one of them.
+        const spanX = (surface.axisPosition(surface.axisHighX, surface.xLog,
+                                           surface.xLogBase)
+                       - surface.axisPosition(surface.axisLowX, surface.xLog,
+                                              surface.xLogBase)) / surface.zoomX
+        const spanY = (surface.axisPosition(surface.upperBound, surface.yLog,
+                                           surface.yLogBase)
+                       - surface.axisPosition(surface.lowerBound, surface.yLog,
+                                              surface.yLogBase)) / surface.zoomY
         surface.panX = surface.clampPan(surface.panX - dx * spanX / area.width,
-                                        surface.zoomX, surface.axisMinX,
-                                        surface.axisMaxX)
+                                        surface.zoomX, surface.axisLowX,
+                                        surface.axisHighX, surface.xLog,
+                                        surface.xLogBase)
         surface.panY = surface.clampPan(surface.panY + dy * spanY / area.height,
                                         surface.zoomY, surface.lowerBound,
-                                        surface.upperBound)
+                                        surface.upperBound, surface.yLog,
+                                        surface.yLogBase)
     }
 
     /// A round tick spacing giving roughly `target` ticks across `span`:
@@ -734,6 +1043,11 @@ Item {
         gridMode: surface.gridMode
         gridStepX: surface.gridStepX
         gridStepY: surface.gridStepY
+        xLog: surface.xLog
+        yLog: surface.yLog
+        xLogBase: surface.xLogBase
+        yLogBase: surface.yLogBase
+        minorNumbers: surface.minorNumbers
         tickTarget: surface.tickTarget
 
         title: surface.plotTitle
@@ -805,12 +1119,19 @@ Item {
     /// be, and on an axis running 0 to 100 that is "30.0119" against ticks
     /// reading 20, 40, 60: four digits of noise about a position nobody can
     /// point at that precisely.
+    ///
+    /// `xLogNumbers` rather than `xLog`, for the same reason the ticks
+    /// themselves are written from it: a logarithmic axis zoomed inside a
+    /// decade is numbered the linear way, and a band's readout that did not
+    /// follow it there would print a different number from the tick beside it.
     function xNumber(value) {
-        return frame.labelFor(value, surface.viewMaxX - surface.viewMinX)
+        return frame.axisLabel(value, surface.viewMinX, surface.viewMaxX,
+                               frame.xLogNumbers)
     }
 
     function yNumber(value) {
-        return frame.labelFor(value, surface.viewMaxY - surface.viewMinY)
+        return frame.axisLabel(value, surface.viewMinY, surface.viewMaxY,
+                               frame.yLogNumbers)
     }
 
     /// One reading, written. Six significant figures, except for a whole
@@ -1088,6 +1409,20 @@ Item {
     onViewMinXChanged: surface.pushRange()
     onViewMaxXChanged: surface.pushRange()
 
+    // A window does not survive a change of scale, and cannot: the pan is a
+    // distance along the axis, and the axis has just changed what a distance
+    // along it is. A pan of forty is four decades or it is forty units, and
+    // there is no reading of the number that is both -- so the reader who
+    // ticks the box gets the whole of the data on the new scale, which is the
+    // picture they asked to see.
+    onXLogChanged: surface.resetView()
+    onYLogChanged: surface.resetView()
+    // ...and so does a change of base, for exactly the reason: the pan is a
+    // count of powers, and the base is what says how big a power is. Four
+    // decades and four octaves are not the same distance along the same axis.
+    onXLogBaseChanged: { if (surface.xLog) surface.resetView() }
+    onYLogBaseChanged: { if (surface.yLog) surface.resetView() }
+
     // A resized window is a different number of columns, and what a line is
     // thinned to follows it. Quantised on the other side, so a drag of the
     // frame's edge re-reads every sixty-four pixels rather than every one.
@@ -1176,6 +1511,8 @@ Item {
         "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
         "colorsReversed", "colorFrom", "colorTo",
         "gridMode", "gridStepX", "gridStepY",
+        "xLog", "yLog", "minorNumbers",
+        "xLogBaseMode", "yLogBaseMode", "xLogBaseCustom", "yLogBaseCustom",
         "showMarkers", "showCursor",
         "plotTitle", "xLabel", "yLabel",
         "legendOnPlot", "legendCorner"
@@ -1230,6 +1567,14 @@ Item {
                 "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
                 "colorsReversed", "colorFrom", "colorTo",
                 "gridMode", "gridStepX", "gridStepY",
+                // Before the zoom and the pan, and that order is load-bearing:
+                // DatasetMemory puts the names back in the order they are
+                // written here, and changing a scale resets the view. Restored
+                // after them, a remembered logarithmic axis would throw away
+                // the remembered window in the same breath.
+                "xLog", "yLog", "minorNumbers",
+                "xLogBaseMode", "yLogBaseMode",
+                "xLogBaseCustom", "yLogBaseCustom",
                 "showMarkers", "showCursor", "highlighted",
                 "plotTitle", "xLabel", "yLabel",
                 "legendOnPlot", "legendCorner",
@@ -1261,7 +1606,11 @@ Item {
         // pointer position in the graph's own coordinates -- which is what
         // plotRect and every gesture below are measured against.
         anchors.leftMargin: surface.contentLeft
-        enabled: surface.drawable
+        // Nothing to look at is nothing to zoom. The same condition the
+        // message above answers to: an axis with no value it can place has no
+        // window either, and a drag over one would be moving a view whose ends
+        // are not numbers.
+        enabled: surface.drawable && surface.logReason === ""
 
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -1423,11 +1772,41 @@ Item {
         return qsTr("The selected slice has no finite values in it.")
     }
 
+    /// Why a logarithmic axis has nothing to draw, or "".
+    ///
+    /// A logarithmic axis cannot place a value at or below zero, so a reader
+    /// who ticks the box over data that has nothing above zero gets an empty
+    /// pane. That is the correct picture -- there is no place on such an axis
+    /// that would be a true reading of any of those values -- and an empty
+    /// pane on its own says none of it: the plot was there a moment ago and
+    /// the only thing that changed was a checkbox.
+    ///
+    /// Asked of what the axes were *offered* rather than of what they settled
+    /// on, which is the half that is easy to get backwards. Both of them fall
+    /// back to a nominal decade when there is nothing to draw between -- see
+    /// xBounds and `padded` -- so the bounds themselves look perfectly healthy
+    /// in exactly the case this has to catch.
+    readonly property string logReason: {
+        if (!surface.drawable)
+            return ""
+        if (surface.yLog && !(surface.plot.maximum > 0))
+            return qsTr("Nothing here is above zero, and a logarithmic y axis "
+                        + "has no place to draw a value that is not.")
+        if (surface.xLog && !(surface.positiveMinX > 0
+                              && surface.axisMaxX > surface.positiveMinX))
+            return qsTr("No x here is above zero, and a logarithmic x axis "
+                        + "has no place to draw a value that is not.")
+        return ""
+    }
+
     ViewMessage {
+        objectName: "plotIdleMessage"
+
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
-        visible: !surface.drawable
-        title: qsTr("nothing to plot")
+        visible: !surface.drawable || surface.logReason !== ""
+        title: surface.logReason !== "" ? qsTr("nothing on this scale")
+                                        : qsTr("nothing to plot")
         warning: surface.active && surface.plot
                  && surface.plot.error !== ""
         text: {
@@ -1435,6 +1814,8 @@ Item {
             // not the presentation on screen.
             if (!surface.active || !surface.plot)
                 return ""
+            if (surface.logReason !== "")
+                return surface.logReason
             if (surface.plot.error !== "")
                 return surface.plot.error
             return surface.idleReason

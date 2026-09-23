@@ -2926,6 +2926,27 @@ TestCase {
                                               target: plot })
         verify(panel, "the plot settings panel must instantiate")
 
+        // The scale row's own box, which is offered only under a logarithmic
+        // scale -- absent rather than disabled, the stance this panel takes
+        // wherever a control would otherwise do nothing.
+        //
+        // Asked of `logScale` rather than of the box's own `visible`, which is
+        // the *effective* visibility in QML: this panel is built parented to
+        // the test case rather than into a shown window, so every item in it
+        // reports false whatever its binding says.
+        const minor = findChild(panel, "logMinorNumbersBox")
+        verify(minor, "the panel must offer the subdivision numbers")
+        compare(panel.logScale, false, "not on a linear plot")
+        plot.yLog = true
+        waitForRendering(view)
+        compare(panel.logScale, true)
+        compare(minor.checked, false)
+        plot.minorNumbers = true
+        waitForRendering(view)
+        compare(minor.checked, true, "the box must follow the plot")
+        plot.yLog = false
+        plot.minorNumbers = false
+
         const box = findChild(panel, "gridModeBox")
         verify(box, "the grid dropdown must be reachable")
         compare(panel.gridModeKeys.length, panel.gridModeLabels.length)
@@ -3807,6 +3828,1200 @@ TestCase {
         // projected to and where an off-by-a-sign would show.
         agreesOver(lines.yMin - (lines.yMax - lines.yMin),
                    lines.yMax + (lines.yMax - lines.yMin))
+    }
+
+    // --- logarithmic axes -------------------------------------------------
+    /// A plot of /series/decades with a logarithmic y axis, and the two items
+    /// every test below asks about.
+    ///
+    /// The fixture is six decades of 10^(i/8 - 3) with a zero at element 10
+    /// and a negative at element 20, so every assertion about where a decade
+    /// lands is arithmetic rather than a table -- and the two values the scale
+    /// has no place for are in the line rather than described beside it.
+    function logPlot(win) {
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot, "the plot surface must be reachable")
+        const lines = findChild(win.view, "plotLines")
+        verify(lines, "the drawing surface must be reachable")
+        plot.yLog = true
+        waitForRendering(win.view)
+
+        /// Every rule inside one power of `base` is the same step of *value*
+        /// from the next.
+        ///
+        /// The rule the whole grid is arranged around, asked of whatever is on
+        /// screen: the marks of a power are whole multiples of one unit, so
+        /// the gaps between them are that unit. Across a power boundary the
+        /// unit changes -- that is what a logarithmic axis is -- so the steps
+        /// are compared only within each power.
+        const assertEqualStepsWithinEachPower = (base) => {
+            const rules = found.frame.yGrid
+            verify(rules.length > 4, "there must be a grid to check")
+            const values = rules.map(
+                (r) => plot.valueAlong(plot.viewMinY, plot.viewMaxY, r.at,
+                                       true, base))
+            const unitOf = (value) =>
+                Math.pow(base, Math.floor(Math.log(value) / Math.log(base) + 1e-9))
+            for (let i = 1; i < values.length; ++i) {
+                const step = values[i] - values[i - 1]
+                const unit = unitOf(values[i - 1])
+                verify(Math.abs(step - unit) < unit * 1e-6,
+                       "a rule at " + values[i] + " must be one step of " + unit
+                       + " above " + values[i - 1] + ", not " + step)
+            }
+        }
+
+        const found = ({ surface: plot, lines: lines, frame: lines.parent,
+                         assertEqualStepsWithinEachPower:
+                             assertEqualStepsWithinEachPower })
+        return found
+    }
+
+    function openLogPlot() {
+        verify(select("/series/decades"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        return win
+    }
+
+    /// The tick rule holds on the other scale too.
+    ///
+    /// Exactly the assertion above, over a logarithmic axis, and it is worth
+    /// making twice: the chrome and the renderer are two implementations of
+    /// one mapping, and adding a second scale is adding a second way for them
+    /// to disagree. If the two ever took different branches the grid would not
+    /// look wrong -- it would look authoritative and read off by a decade.
+    function test_the_ticks_agree_with_the_renderer_on_a_logarithmic_axis() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+
+        compare(found.lines.yLog, true,
+                "the scale must reach the renderer, not only the chrome")
+
+        // Sampled by decade rather than by even steps, which is the point:
+        // on this axis a tenth of the window is not a tenth of the values.
+        const low = Math.log10(found.lines.yMin)
+        const high = Math.log10(found.lines.yMax)
+        for (let i = 0; i <= 10; ++i) {
+            const value = Math.pow(10, low + (high - low) * i / 10)
+            const mine = found.frame.yFraction(value)
+            const theirs = found.lines.yFraction(value)
+            verify(Math.abs(mine - theirs) < 1e-9,
+                   "the chrome puts " + value + " at " + mine
+                   + " and the renderer at " + theirs)
+            // ...and it is the logarithmic answer rather than the linear one.
+            verify(Math.abs(mine - i / 10) < 1e-9,
+                   "a decade is a decade wherever it falls: " + value
+                   + " sits at " + mine)
+        }
+    }
+
+    /// The axis runs from the smallest reading it can draw, not from the
+    /// smallest reading there is.
+    ///
+    /// The line's minimum is negative -- element 20 is -10^-0.5 -- and a
+    /// logarithmic axis has no place for it. What it must *not* do is start at
+    /// some invented floor under it: the data spans 1e-3 to 1e3, and an axis
+    /// reaching down to a millionth of that would be three empty decades with
+    /// the picture squeezed into what was left. It starts at 1e-3.
+    function test_a_logarithmic_axis_runs_from_the_smallest_reading_it_can_draw() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        compare(AppController.datasetPlot.positiveMinimum, 1e-3)
+        verify(AppController.datasetPlot.minimum < 0,
+               "the fixture must carry a value the scale cannot place")
+
+        // A twentieth of the six decades at each end, which is the same air a
+        // linear axis gets and is a share of the axis's own scale.
+        const air = 6.0 * 0.05
+        fuzzyCompare(Math.log10(plot.lowerBound), -3.0 - air, 1e-9)
+        fuzzyCompare(Math.log10(plot.upperBound), 3.0 + air, 1e-9)
+    }
+
+    /// A value the scale cannot place is a gap, exactly as missing data is.
+    ///
+    /// Not a clamp to the bottom of the pane, which would draw a line down to
+    /// a floor the data never reached and back up again -- a reading of
+    /// something nobody measured, which is the same objection this plot makes
+    /// to drawing across a NaN.
+    function test_a_value_at_or_below_zero_breaks_the_line() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+
+        // Forty-nine elements in a pane hundreds of pixels wide, so the line
+        // is drawn sample for sample and a run is exactly a stretch of
+        // drawable values: 0..9, 11..19, 21..48.
+        compare(found.lines.drawnRunCount, 3)
+
+        // The same line on a linear axis is one unbroken stroke, which is what
+        // says the breaks are the scale's doing and not the data's.
+        found.surface.yLog = false
+        waitForRendering(win.view)
+        compare(found.lines.drawnRunCount, 1)
+    }
+
+    /// The ticks and their labels are matplotlib's, window for window.
+    ///
+    /// Each row is what matplotlib 3.11 draws on a y axis with room for nine
+    /// numbers over that window: every tick it places, in order, and the label
+    /// on each ("" where it carries none). Asked of the frame's functions with
+    /// the same room, so the table is about the locator and the formatter and
+    /// not about how tall this window happens to be.
+    ///
+    /// Two rows are worth a word. 2..6 is numbered at 2, 3, 4 and 6 and not at
+    /// 5: past 0.4 of a decade matplotlib numbers the multiples spaced evenly
+    /// in ratio. And 0.001..0.01 has its multiples numbered where 1..10 does
+    /// not, because matplotlib's log(0.001) over log(10) is an ulp short of
+    /// -3 -- so it counts one power crossed there and two over 1..10. A
+    /// reader comparing the two figures sees the ulp, so it is kept.
+    function test_the_ticks_are_matplotlibs_window_for_window() {
+        const win = openLogPlot()
+        const frame = logPlot(win).frame
+        const rows = [
+            [1, 1e6, 10, 7 + 6 * 8, "10\u2070 10\u00b9 10\u00b2 10\u00b3 10\u2074 10\u2075 10\u2076"],
+            [0.5, 50, 10, 19, "10\u2070 10\u00b9"],
+            [1, 10, 10, 10, "10\u2070 10\u00b9"],
+            [2, 5, 10, 4, "2\u00d710\u2070 3\u00d710\u2070 4\u00d710\u2070 5\u00d710\u2070"],
+            [2, 6, 10, 5, "2\u00d710\u2070 3\u00d710\u2070 4\u00d710\u2070 6\u00d710\u2070"],
+            [0.001, 0.01, 10, 10,
+             "10\u207b\u00b3 2\u00d710\u207b\u00b3 3\u00d710\u207b\u00b3 4\u00d710\u207b\u00b3 "
+             + "6\u00d710\u207b\u00b3 10\u207b\u00b2"],
+            [1, 1e30, 10, 8,
+             "10\u2070 10\u2074 10\u2078 10\u00b9\u00b2 10\u00b9\u2076 10\u00b2\u2070 "
+             + "10\u00b2\u2074 10\u00b2\u2078"],
+            [0.3, 70, 4, 12, "4\u2070 4\u00b9 4\u00b2 4\u00b3"],
+            [1, 1024, 2, 6, "2\u2070 2\u00b2 2\u2074 2\u2076 2\u2078 2\u00b9\u2070"],
+        ]
+        for (const [low, high, base, count, labels] of rows) {
+            const found = frame.tickValues(low, high, true, base, 1000, true)
+            compare(found.ticks.length, count, low + ".." + high + " base " + base)
+            compare(found.texts.map((t) => t.text).join(" "), labels,
+                    low + ".." + high + " base " + base)
+        }
+        // The multiples of 0.3..70 on base four, which is where "the power
+        // below" is visibly not the power of ten below.
+        compare(frame.tickValues(0.3, 70, true, 4, 1000, true).ticks
+                     .map((v) => Number(v.toPrecision(6))),
+                [0.5, 0.75, 1, 2, 3, 4, 8, 12, 16, 32, 48, 64])
+    }
+
+    /// A logarithmic axis is numbered at its powers of ten, and writes them as
+    /// powers.
+    ///
+    /// matplotlib's `LogFormatterSciNotation`: `10⁻³` rather than `0.001`, a
+    /// base with its exponent raised, whatever the magnitude. Over six and a
+    /// bit decades there is room for one label each and no more, so that is
+    /// what it prints -- the same seven matplotlib 3.11 prints over this
+    /// window.
+    function test_a_logarithmic_axis_is_numbered_at_its_decades() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+
+        const ticks = found.frame.yTicks
+        compare(ticks.length, 7)
+        const wanted = ["10\u207b\u00b3", "10\u207b\u00b2", "10\u207b\u00b9", "10\u2070",
+                        "10\u00b9", "10\u00b2", "10\u00b3"]
+        for (let i = 0; i < ticks.length; ++i) {
+            compare(ticks[i].text, wanted[i])
+            // Drawn in two parts: the power in the axis's face, the exponent
+            // raised in the smaller one, with the true minus sign mathtext uses.
+            compare(ticks[i].base, "10")
+            compare(ticks[i].exponent, String(i - 3).replace("-", "\u2212"))
+            // ...and each one a decade further up a pane six and a bit
+            // decades tall, which is what makes them ticks rather than labels.
+            if (i > 0) {
+                verify(ticks[i].at > ticks[i - 1].at)
+                fuzzyCompare(ticks[i].at - ticks[i - 1].at, 1.0 / 6.6, 1e-6)
+            }
+        }
+        // The gutter holds the widest of them, measured in both faces: a
+        // label clipped at the frame is a number, and the wrong one.
+        let widest = 0
+        for (let i = 0; i < ticks.length; ++i)
+            widest = Math.max(widest, ticks[i].width)
+        verify(widest > 0)
+        verify(found.frame.gutterLeft >= Math.ceil(widest),
+               "the gutter must hold " + widest + ", has " + found.frame.gutterLeft)
+    }
+
+    /// Inside a decade, every rule is the same step of *value* from the next.
+    ///
+    /// The grid goes at 2, 3, 4 ... 9 times the decade it is in, which is what
+    /// every plotting library draws: a decade is cut into ten equal steps of
+    /// the thing the reader is reading off it. They are not evenly spaced on
+    /// the pane -- 1 to 2 takes six times the room 9 to 10 does -- and that
+    /// bunching is the shape of the scale rather than a fault in the grid.
+    ///
+    /// Two other cuts were tried and this is the assertion that rules both
+    /// out. A rung of 1, 2, 5 is niceStep's ladder, which is about a *linear*
+    /// axis's round numbers: it gives steps of 1, 3 and 5 inside a decade, so
+    /// it is equal in neither the values nor the distances. Cutting the decade
+    /// into equal *ratios* instead draws a perfectly regular grid whose rules
+    /// land at 1.2589 and 1.5849, which is a grid nobody can read a value off.
+    function test_a_decade_is_ruled_at_equal_steps_of_value() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+
+        const rules = found.frame.yGrid
+        verify(rules.length > 20, "the decades must be cut up: " + rules.length)
+
+        // Back to the values the rules are at, through the axis's own inverse
+        // -- so what is checked is where the rules were actually drawn and not
+        // what some list said they would be.
+        const values = rules.map(
+            (r) => plot.valueAlong(plot.viewMinY, plot.viewMaxY, r.at, true,
+                                   plot.yLogBase))
+
+        for (let i = 1; i < values.length; ++i) {
+            const step = values[i] - values[i - 1]
+            // The unit of the decade the pair is in: a rule at 300 follows one
+            // at 200 by a hundred, and one at 2 follows one at 1 by a unit.
+            // The pair that straddles a decade is no exception -- 9 to 10 is
+            // one step of the decade below, which is what makes the cut ten
+            // equal steps rather than nine.
+            const unit = Math.pow(10, Math.floor(Math.log10(values[i - 1]) + 1e-9))
+            verify(Math.abs(step - unit) < unit * 1e-6,
+                   "a rule at " + values[i] + " must be one step of " + unit
+                   + " above " + values[i - 1] + ", not " + step)
+        }
+    }
+
+    /// The four densities mean the same thing on either scale.
+    ///
+    /// `loose` rules about where the numbers are, `dense` cuts the same axis
+    /// finer, and `none` rules nowhere. What differs is what a step is made
+    /// of. A dense rule that is not on a number is a minor and is drawn back a
+    /// step, which is the distinction the linear axis already had and which
+    /// used to be tested by dividing by the label spacing -- something a
+    /// logarithmic axis has no answer for, since its labels have no one
+    /// spacing.
+    function test_the_grid_cuts_a_decade_finer_when_it_is_asked_to() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const frame = found.frame
+
+        found.surface.gridMode = "none"
+        compare(frame.yGrid.length, 0)
+
+        found.surface.gridMode = "loose"
+        const loose = frame.yGrid
+        compare(loose.length, 7, "loose rules at the numbers")
+        for (let i = 0; i < loose.length; ++i)
+            compare(loose[i].major, true, "and every one of them is a major")
+
+        // Six and a bit decades, cut at every whole multiple of their own
+        // decade: fifty-nine rules, of which the seven powers of ten are the
+        // majors.
+        found.surface.gridMode = "dense"
+        const dense = frame.yGrid
+        compare(dense.length, 59)
+
+        let majors = 0
+        for (let i = 0; i < dense.length; ++i) {
+            if (dense[i].major)
+                ++majors
+        }
+        compare(majors, 7)
+
+        // Every number the axis prints sits on one of them. A decade is a
+        // multiple of itself, so the cut cannot leave a label between two
+        // rules -- which is the thing that goes wrong first if the
+        // subdivision is ever computed a second way.
+        const ticks = frame.yTicks
+        for (let i = 0; i < ticks.length; ++i) {
+            let on = false
+            for (let j = 0; j < dense.length; ++j) {
+                if (dense[j].major && Math.abs(dense[j].at - ticks[i].at) < 1e-9)
+                    on = true
+            }
+            verify(on, "the number " + ticks[i].text + " must sit on a rule")
+        }
+    }
+
+    /// `loose` rules where the numbers are, which on a logarithmic axis is
+    /// matplotlib's major grid -- and inside one power the numbers include the
+    /// multiples matplotlib writes out.
+    ///
+    /// Two decades from 1 to 100 are numbered at 1, 10 and 100 and ruled
+    /// there, as `grid(which="major")` rules them. Zoomed to 2..7, inside a
+    /// single decade, matplotlib numbers 2, 3, 4 and 6 times it (its subset
+    /// past 0.4 of a decade), and those are ruled under `loose` because they
+    /// are the numbers; `dense` adds the 5 and the 7, which are ticks without
+    /// one.
+    function test_loose_rules_a_logarithmic_axis_where_it_is_numbered() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        compare(plot.gridMode, "loose")
+
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1, 100)
+        waitForRendering(win.view)
+        compare(found.frame.yTicks.map((t) => t.text).join(" "),
+                "10\u2070 10\u00b9 10\u00b2")
+        compare(found.frame.yGrid.length, 3, "loose rules at the three numbers")
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+        compare(found.frame.yGrid.length, 3 + 16, "dense adds 2..9 in each decade")
+
+        plot.gridMode = "loose"
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 2, 7)
+        waitForRendering(win.view)
+        compare(found.frame.yTicks.map((t) => t.text).join(" "),
+                "2\u00d710\u2070 3\u00d710\u2070 4\u00d710\u2070 6\u00d710\u2070")
+        compare(found.frame.yGrid.length, 4)
+        for (let i = 0; i < found.frame.yGrid.length; ++i)
+            compare(found.frame.yGrid[i].major, true)
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+        const dense = found.frame.yGrid
+        compare(dense.length, 6, "2 through 7")
+        compare(dense.filter((r) => !r.major).length, 2, "5 and 7 carry no number")
+    }
+
+    /// The subdivisions can be numbered, and each one says its digit.
+    ///
+    /// A single character, because the decade it belongs to is already written
+    /// above the run and below it: "2" between 0.01 and 0.1 is unambiguous in
+    /// a way that "0.02" is only longer than, and eight of the longer form per
+    /// decade down a narrow gutter reads as the axis rather than as its
+    /// subdivisions. It is what log paper prints.
+    ///
+    /// Off until it is asked for: eight more numbers per decade is a trade,
+    /// and which way it goes depends on whether the reader is putting a number
+    /// to a point or looking at a shape.
+    function test_the_subdivisions_carry_their_digit_when_asked() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+
+        compare(plot.minorNumbers, false, "off until it is asked for")
+        compare(found.frame.yMinorTicks.length, 0)
+
+        plot.minorNumbers = true
+        waitForRendering(win.view)
+        const digits = found.frame.yMinorTicks
+        verify(digits.length > 0, "the subdivisions must be numbered")
+
+        for (let i = 0; i < digits.length; ++i)
+            compare(digits[i].text.length, 1, "a digit, not a number")
+
+        // Six decades down one pane has no room for all eight of them, so what
+        // is drawn is as many as fit, taken from the bottom of each decade.
+        // Every one of them is a multiple of its decade and none is a 1, which
+        // is the decade's own label and is printed in full.
+        for (let i = 0; i < digits.length; ++i) {
+            const digit = Number(digits[i].text)
+            verify(digit >= 2 && digit <= 9, "expected 2 to 9, got " + digit)
+        }
+        verify(digits.length >= 6 * 3,
+               "as many as fit is more than a couple per decade: "
+               + digits.length)
+
+        // Every digit sits on a rule that is drawn, and on a *minor* one: a
+        // digit under a decade's own label would be saying the same thing
+        // twice and disagreeing about it.
+        const rules = found.frame.yGrid
+        for (let i = 0; i < digits.length; ++i) {
+            let on = false
+            for (let j = 0; j < rules.length; ++j) {
+                if (Math.abs(rules[j].at - digits[i].at) < 1e-9) {
+                    on = true
+                    compare(rules[j].major, false,
+                            "the digit " + digits[i].text + " is on a major")
+                }
+            }
+            verify(on, "the digit " + digits[i].text + " must sit on a rule")
+        }
+
+        // Zoomed to a single decade there is room for all of them, and all of
+        // them is what the axis then prints.
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1, 10)
+        waitForRendering(win.view)
+        const said = found.frame.yMinorTicks.map((t) => t.text).join("")
+        compare(said, "23456789")
+    }
+
+    /// ...and only where a decade is actually cut up.
+    ///
+    /// A number under a rule that is not there would be a reading of nothing,
+    /// and on an axis ruled at its decades alone every one of these digits
+    /// would be a 1. `custom` is the other exclusion: its rules are at the
+    /// reader's own factor, which are not multiples of a decade and have no
+    /// digit to carry.
+    function test_only_a_subdivided_decade_is_numbered() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.minorNumbers = true
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+        verify(found.frame.yMinorTicks.length > 0, "the case that does number")
+
+        plot.gridMode = "none"
+        waitForRendering(win.view)
+        compare(found.frame.yMinorTicks.length, 0, "no rules to number")
+
+        plot.gridMode = "custom"
+        plot.gridStepY = 2
+        waitForRendering(win.view)
+        compare(found.frame.yMinorTicks.length, 0, "a factor is not a multiple")
+
+        plot.gridMode = "loose"
+        waitForRendering(win.view)
+        compare(found.frame.yMinorTicks.length, 0,
+                "six decades ruled at the decades have nothing to subdivide")
+
+        plot.gridMode = "dense"
+        plot.yLog = false
+        waitForRendering(win.view)
+        compare(found.frame.yMinorTicks.length, 0, "and a linear axis has none")
+    }
+
+    // --- the base of the logarithm ----------------------------------------
+    /// A base of two numbers the axis in octaves, and strides them as
+    /// matplotlib does.
+    ///
+    /// The whole of what a base changes: the numbers go at the powers of it
+    /// and the rules between them. The curve does not move -- where a value
+    /// sits is a ratio of two logarithms and the base cancels out of it -- so
+    /// what is asserted here is the axis and not the picture.
+    ///
+    /// Twenty-two octaves have room for nine numbers, and matplotlib's locator
+    /// answers with seven, every third octave: 2⁻⁹ to 2⁹. Nothing lies between
+    /// them. A power of two has no whole multiple of itself inside it, and
+    /// matplotlib never subdivides a strided axis anyway, so `dense` rules
+    /// where the numbers are and the subdivisions have nothing to number.
+    function test_a_base_of_two_numbers_the_axis_in_octaves() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.gridMode = "dense"
+        compare(plot.yLogBase, 10, "ten until the reader says otherwise")
+
+        plot.yLogBaseMode = "2"
+        waitForRendering(win.view)
+        compare(plot.yLogBase, 2)
+        compare(found.lines.yLogBase, 2, "and it reaches the renderer")
+
+        const ticks = found.frame.yTicks
+        compare(ticks.map((t) => t.base + "^" + t.exponent).join(" "),
+                "2^\u22129 2^\u22126 2^\u22123 2^0 2^3 2^6 2^9")
+        for (let i = 0; i < ticks.length; ++i) {
+            const value = plot.valueAlong(plot.viewMinY, plot.viewMaxY,
+                                          ticks[i].at, true, 2)
+            fuzzyCompare(Math.log2(value), 3 * i - 9, 1e-6)
+        }
+
+        compare(found.frame.logSubs(2).length, 0, "an octave holds nothing")
+        compare(found.frame.yGrid.length, ticks.length)
+        plot.minorNumbers = true
+        waitForRendering(win.view)
+        compare(found.frame.yMinorTicks.length, 0)
+    }
+
+    /// Whether a power is subdivided at all is matplotlib's rule.
+    ///
+    /// Taken from its locator rather than reasoned out again. A power holds
+    /// `arange(2, base)` -- 2..9 on base ten, 2 and 3 on base four -- except
+    /// that a base under three holds nothing, e included. And no power is cut
+    /// on an axis crossing ten or more of them, or once they are strided. Over
+    /// this axis, six and a half decades, base four crosses eleven of its
+    /// powers and base e fifteen, and matplotlib 3.11 draws no minor ticks for
+    /// either -- numbering four every second power and e every second, as
+    /// here.
+    function test_whether_a_power_is_subdivided_is_matplotlibs_rule() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        const frame = found.frame
+        plot.gridMode = "dense"
+        plot.minorNumbers = true
+        waitForRendering(win.view)
+
+        compare(frame.logSubs(2), [])
+        compare(frame.logSubs(Math.E), [], "e is under three")
+        compare(frame.logSubs(4), [2, 3])
+        compare(frame.logSubs(10), [2, 3, 4, 5, 6, 7, 8, 9])
+
+        // Ten powers or more, never -- however generous the base.
+        compare(frame.logLocate(1, 1e10, 10, 9).minors.length, 0)
+        verify(frame.logLocate(1, 1e8, 10, 9).minors.length > 0)
+
+        plot.yLogBaseCustom = 4
+        plot.yLogBaseMode = "custom"
+        waitForRendering(win.view)
+        compare(frame.yTicks.map((t) => t.base + "^" + t.exponent).join(" "),
+                "4^\u22125 4^\u22123 4^\u22121 4^1 4^3 4^5")
+        compare(frame.yGrid.length, frame.yTicks.length, "nothing between them")
+        compare(frame.yMinorTicks.length, 0)
+
+        plot.yLogBaseMode = "e"
+        waitForRendering(win.view)
+        compare(frame.yTicks.map((t) => t.base + "^" + t.exponent).join(" "),
+                "e^\u22127 e^\u22125 e^\u22123 e^\u22121 e^1 e^3 e^5 e^7")
+        compare(frame.yGrid.length, frame.yTicks.length)
+
+        // ...and a narrower window of base four does subdivide, because what
+        // the rule is about is how many powers are crossed.
+        plot.yLogBaseMode = "custom"
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1, 100)
+        waitForRendering(win.view)
+        compare(plot.yLogBase, 4)
+        compare(frame.yTicks.length, 4, "4\u2070 to 4\u00b3")
+        compare(frame.yGrid.length, 4 + 6, "and 2, 3 times each power below 100")
+        const inside = frame.yMinorTicks.map((t) => t.text)
+        verify(inside.length > 0, "two multiples to a power are worth numbering")
+        for (let i = 0; i < inside.length; ++i)
+            verify(inside[i] === "2" || inside[i] === "3", inside[i])
+        found.assertEqualStepsWithinEachPower(4)
+    }
+
+    /// Zoomed inside a power, any base is numbered at round linear steps.
+    ///
+    /// matplotlib's fallback: when at most one tick of its own would be in
+    /// view, the minor locator hands over to the linear one and the formatter
+    /// writes what it gets as a multiple of a power -- `1.2×2⁰`. matplotlib
+    /// takes that fallback only where a power holds two multiples or more,
+    /// which leaves base two with an axis of no numbers at all; this takes it
+    /// on every base, because an axis nobody can read is the thing it is for.
+    function test_a_base_zoomed_inside_a_power_numbers_itself_linearly() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.yLogBaseMode = "2"
+        waitForRendering(win.view)
+
+        // Well inside one octave: 1.1 to 1.9 holds no power of two.
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1.1, 1.9)
+        waitForRendering(win.view)
+        const located = found.frame.logLocate(plot.viewMinY, plot.viewMaxY, 2, 9)
+        compare(located.majors.length, 0)
+        compare(located.linear, true)
+        compare(found.frame.yLogNumbers, false)
+
+        const ticks = found.frame.yTicks
+        verify(ticks.length >= 4,
+               "an axis nobody can read is the failure this prevents: "
+               + ticks.length + " ticks")
+        for (let i = 0; i < ticks.length; ++i) {
+            verify(/^1\.\d+\u00d72$/.test(ticks[i].base), ticks[i].base)
+            compare(ticks[i].exponent, "0")
+        }
+
+        // ...and the rules follow the numbers there, as they do on base ten:
+        // a pane numbered the linear way is ruled the linear way with it.
+        plot.gridMode = "dense"
+        waitForRendering(win.view)
+        const rules = found.frame.yGrid
+        verify(rules.length > ticks.length)
+        const values = rules.map(
+            (r) => plot.valueAlong(plot.viewMinY, plot.viewMaxY, r.at, true, 2))
+        const step = values[1] - values[0]
+        for (let i = 1; i < values.length; ++i) {
+            fuzzyCompare(values[i] - values[i - 1], step, Math.abs(step) * 1e-6)
+        }
+    }
+
+    /// Only a number above one is a base.
+    ///
+    /// At exactly one the logarithm is a division by zero and every value
+    /// would land in the same place; below it the axis runs backwards, which
+    /// is a different request from the one this answers. Refused rather than
+    /// corrected, because the legal bases are open at one and there is no
+    /// nearest legal value to correct a bad one to.
+    function test_only_a_number_above_one_is_a_base() {
+        const win = openLogPlot()
+        const plot = logPlot(win).surface
+
+        verify(plot.usableBase(10))
+        verify(plot.usableBase(2))
+        verify(plot.usableBase(Math.E))
+        verify(plot.usableBase(1.0000001), "legal, however little use it is")
+        verify(!plot.usableBase(1))
+        verify(!plot.usableBase(0))
+        verify(!plot.usableBase(-2))
+        verify(!plot.usableBase(0.5))
+        verify(!plot.usableBase(NaN))
+        verify(!plot.usableBase(Infinity))
+
+        // ...and nothing downstream is ever handed one that is not. A stated
+        // base that is not a base falls back to ten rather than to a pane that
+        // has quietly stopped drawing.
+        compare(plot.baseFor("custom", 1), 10)
+        compare(plot.baseFor("custom", -3), 10)
+        compare(plot.baseFor("custom", NaN), 10)
+        compare(plot.baseFor("custom", 7), 7)
+        compare(plot.baseFor("2", 7), 2)
+        fuzzyCompare(plot.baseFor("e", 7), Math.E, 1e-12)
+        compare(plot.baseFor("10", 7), 10)
+        // A mode from some later version costs the reader that base and not
+        // the whole of their view, which is the stance every remembered
+        // setting here is read under.
+        compare(plot.baseFor("tau", 7), 10)
+    }
+
+    /// The panel offers the base, and refuses one that is not a base.
+    ///
+    /// The dropdown holds the three worth listing and a box for the one nobody
+    /// could have listed. A commit that is not a base does not take, and
+    /// RealField puts the box back to what is in force -- so the reader who
+    /// types 1 watches it say no rather than watching the plot go blank.
+    function test_the_panel_offers_and_validates_the_base() {
+        verify(select("/series/decades"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        waitForRendering(view)
+        const plot = findChild(view, "plotSurface")
+
+        const panel = createTemporaryObject(plotSettingsComponent, testCase,
+                                            { width: Theme.railWidth, height: 900,
+                                              target: plot })
+        verify(panel, "the plot settings panel must instantiate")
+        const box = findChild(panel, "logBaseYBox")
+        const field = findChild(panel, "logBaseYField")
+        verify(box && field, "the base controls must be reachable")
+
+        plot.yLog = true
+        waitForRendering(view)
+        compare(panel.logBaseKeys.length, panel.logBaseLabels.length)
+        compare(box.selectedIndex, 0, "base ten to begin with")
+        compare(panel.customBase, false)
+
+        // The box follows the plot rather than remembering its own answer --
+        // every setting here is per dataset, so a control that lost its
+        // binding would go on naming the base belonging to the one before.
+        plot.yLogBaseMode = "2"
+        waitForRendering(view)
+        compare(box.selectedIndex, 1)
+
+        // ...and reaches it.
+        box.activated(2)
+        compare(plot.yLogBaseMode, "e")
+        fuzzyCompare(plot.yLogBase, Math.E, 1e-12)
+
+        box.activated(3)
+        compare(plot.yLogBaseMode, "custom")
+        compare(panel.customBase, true, "which is the only time the box is offered")
+        compare(plot.yLogBase, 10, "and it starts where every axis starts")
+
+        field.committed(4)
+        compare(plot.yLogBaseCustom, 4)
+        compare(plot.yLogBase, 4)
+
+        // None of these is a base, and none of them takes.
+        for (const refused of [1, 0, -3, 0.5, NaN]) {
+            field.committed(refused)
+            compare(plot.yLogBaseCustom, 4,
+                    "a base of " + refused + " must not take")
+        }
+        compare(plot.yLogBase, 4)
+
+        plot.yLog = false
+        plot.yLogBaseMode = "10"
+    }
+
+    /// A change of base puts the view back, for the reason a change of scale
+    /// does: the pan is a count of powers, and the base is what says how big a
+    /// power is. Four decades and four octaves are not the same distance.
+    function test_changing_the_base_puts_the_view_back() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        const area = plot.plotRect
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 4.0, "y")
+        waitForRendering(win.view)
+        verify(plot.zoomed, "there must be a window to lose")
+
+        plot.yLogBaseMode = "2"
+        waitForRendering(win.view)
+        verify(!plot.zoomed)
+
+        // ...and not when the axis is not on a logarithmic scale at all, where
+        // the base says nothing and moving the window would be a setting
+        // reaching outside what it is about.
+        plot.yLog = false
+        waitForRendering(win.view)
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 4.0, "y")
+        waitForRendering(win.view)
+        verify(plot.zoomed)
+        plot.yLogBaseMode = "10"
+        waitForRendering(win.view)
+        verify(plot.zoomed, "a base nothing is using must move nothing")
+    }
+
+    /// The base travels into a saved view and into the picture that leaves.
+    function test_the_base_travels_with_the_drawing() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.yLogBaseMode = "custom"
+        plot.yLogBaseCustom = 4
+        waitForRendering(win.view)
+
+        const saved = plot.drawingSettings()
+        compare(saved.yLogBaseMode, "custom")
+        compare(saved.yLogBaseCustom, 4)
+
+        plot.yLogBaseMode = "10"
+        plot.yLogBaseCustom = 10
+        waitForRendering(win.view)
+        compare(plot.yLogBase, 10)
+
+        plot.applyDrawingSettings(saved)
+        waitForRendering(win.view)
+        compare(plot.yLogBase, 4, "a saved view puts the base back")
+
+        // ...and the picture is drawn on the axis the reader is looking at.
+        copySpy.clear()
+        copyFailedSpy.clear()
+        verify(plot.copyImage())
+        verify(plot.picture)
+        const drawn = findChild(plot.picture, "pictureLines")
+        verify(drawn)
+        compare(drawn.yLogBase, 4)
+        compare(drawn.parent.yLogBase, 4)
+        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000)
+        compare(copyFailedSpy.count, 0,
+                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+    }
+
+    // --- the edges of the scale -------------------------------------------
+    /// A logarithmic axis with nothing above zero says so.
+    ///
+    /// The end of the rule that a value at or below zero is a gap: when every
+    /// value is one, the pane is correctly empty -- and an empty pane says
+    /// none of that by itself. The plot was there a moment ago and the only
+    /// thing that changed was a checkbox.
+    function test_a_logarithmic_axis_with_nothing_to_draw_says_why() {
+        verify(select("/series/negative"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+
+        const plot = findChild(win.view, "plotSurface")
+        const lines = findChild(win.view, "plotLines")
+        const message = findChild(win.view, "plotIdleMessage")
+        const gestures = findChild(win.view, "plotGestures")
+        verify(plot && lines && message && gestures)
+
+        // Nothing is wrong with the data: it draws on a linear axis.
+        verify(plot.drawable)
+        compare(plot.logReason, "")
+        compare(message.visible, false)
+        // Waited for rather than asserted once: the line arrives from the HDF5
+        // thread, and on a slower runner the first frame can land before it.
+        tryVerify(() => lines.drawnPointCount > 0, 5000,
+                  "the line must draw on a linear axis first")
+
+        plot.yLog = true
+        waitForRendering(win.view)
+
+        compare(AppController.datasetPlot.positiveMinimum, 0,
+                "there is no smallest positive value to start at")
+        verify(plot.logReason !== "", "the empty pane must say why")
+        compare(message.visible, true)
+        tryVerify(() => lines.drawnPointCount === 0, 5000,
+                  "and nothing may be drawn on it")
+
+        // The gestures go with it. A window whose ends are not numbers is not
+        // one to zoom, and a drag over it would have moved a pan measured in
+        // the logarithm of a negative.
+        compare(gestures.enabled, false)
+
+        // One empty decade rather than an axis of no width, so what is left is
+        // a frame with legible numbers on it.
+        compare(plot.lowerBound, 1)
+        compare(plot.upperBound, 10)
+
+        plot.yLog = false
+        waitForRendering(win.view)
+        compare(plot.logReason, "")
+        compare(message.visible, false)
+    }
+
+    /// ...and so does a logarithmic x axis with no positive x to draw at.
+    ///
+    /// The other half of the same guard, and it reaches a different number:
+    /// the x axis's extent is three numbers a reader stated rather than
+    /// anything read out of the file, so what has to be checked is the axis
+    /// and not the data. A range stated entirely below zero is the case.
+    function test_a_logarithmic_x_axis_with_no_positive_x_says_why() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.yLog = false
+        waitForRendering(win.view)
+
+        // The element's own index, which always has a positive part: index 0
+        // cannot be drawn and every other one can.
+        plot.xLog = true
+        waitForRendering(win.view)
+        compare(plot.logReason, "")
+        compare(plot.axisLowX, 1, "the first index that can be drawn")
+
+        // Stated below zero, and now there is nothing on the axis at all.
+        plot.rangeStart = -100
+        plot.lock("start")
+        plot.rangeStop = -1
+        plot.lock("stop")
+        waitForRendering(win.view)
+
+        compare(plot.gridPositiveMinX, 0)
+        verify(plot.logReason !== "", "the empty pane must say why")
+        const message = findChild(win.view, "plotIdleMessage")
+        compare(message.visible, true)
+        const gestures = findChild(win.view, "plotGestures")
+        compare(gestures.enabled, false)
+
+        // One empty decade rather than the bounds it cannot use, so every
+        // number downstream is a number. Left at those bounds this reached
+        // log10 of a negative, and the NaN travelled out through the model's
+        // visible range and out through the footer, which printed "x NaN …
+        // NaN" under a pane that was explaining itself perfectly well.
+        compare(plot.axisLowX, 1)
+        compare(plot.axisHighX, 10)
+        verify(isFinite(plot.viewMinX) && isFinite(plot.viewMaxX),
+               "the window must stay a pair of numbers")
+        verify(isFinite(plot.viewMinY) && isFinite(plot.viewMaxY))
+    }
+
+    /// The air at the ends of an axis is measured in that axis's own scale.
+    ///
+    /// A twentieth of the span either way, which on a logarithmic axis is a
+    /// twentieth of a *decade count*. A twentieth of the value instead would
+    /// be nine decades of margin over a trace running from 1e-9 to 1 and none
+    /// at all underneath it.
+    ///
+    /// matplotlib's `axes.ymargin`, which it too applies in the transformed
+    /// scale. A pure function, so the degenerate ends can be asked about
+    /// directly rather than hunted for in a file.
+    function test_a_logarithmic_axis_takes_its_air_in_decades() {
+        const win = openLogPlot()
+        const plot = logPlot(win).surface
+
+        const wide = plot.padded(1, 1000, true, 10)
+        fuzzyCompare(Math.log10(wide.low), -0.15, 1e-9)
+        fuzzyCompare(Math.log10(wide.high), 3.15, 1e-9)
+
+        // A flat line has no span to take a share of, and is widened to the
+        // powers either side of it before the air goes on -- matplotlib's
+        // `LogLocator.nonsingular`, which draws a line at 7 between 10^-0.05
+        // and 10^1.05, and one at 10 between 10^-0.1 and 10^2.1.
+        const flat = plot.padded(7, 7, true, 10)
+        fuzzyCompare(Math.log10(flat.low), -0.05, 1e-9)
+        fuzzyCompare(Math.log10(flat.high), 1.05, 1e-9)
+        const onPower = plot.padded(10, 10, true, 10)
+        fuzzyCompare(Math.log10(onPower.low), -0.1, 1e-9)
+        fuzzyCompare(Math.log10(onPower.high), 2.1, 1e-9)
+
+        // Nothing above zero is one empty decade rather than a span of none:
+        // a frame with numbers on it beats a frame with none.
+        const nothing = plot.padded(0, -5, true, 10)
+        compare(nothing.low, 1)
+        compare(nothing.high, 10)
+
+        // ...and the linear rule is untouched by any of it.
+        const linear = plot.padded(0, 100, false, 10)
+        compare(linear.low, -5)
+        compare(linear.high, 105)
+        const flatLinear = plot.padded(7, 7, false, 10)
+        compare(flatLinear.low, 6)
+        compare(flatLinear.high, 8)
+    }
+
+    /// A window reaching below zero is clipped, not thrown away.
+    ///
+    /// A reader can type a zero into the four boxes under Plot Settings > View,
+    /// and there is no place at or below zero on this axis for it to reach.
+    /// Clipped to the axis's own low end, which is what matplotlib does with a
+    /// limit it cannot use: what was asked for is mostly reachable.
+    ///
+    /// What this used to do is the failure worth naming. The zero resolved to
+    /// a logarithm of minus infinity, so the span was infinite and the zoom
+    /// came out at one -- and asking to look at a hundredth of the axis showed
+    /// the whole of it, which is the opposite of what was asked.
+    function test_a_window_below_zero_is_clipped_rather_than_ignored() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 0, 100)
+        waitForRendering(win.view)
+
+        verify(plot.viewMaxY < plot.upperBound / 10,
+               "the top must be near where it was asked: " + plot.viewMaxY)
+        fuzzyCompare(Math.log10(plot.viewMaxY), 2, 0.01)
+        fuzzyCompare(Math.log10(plot.viewMinY), Math.log10(plot.lowerBound), 1e-9)
+
+        // A window with nothing above zero anywhere in it is a request to look
+        // at nothing, which resolves to the whole axis here as it does
+        // everywhere else.
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, -10, 0)
+        waitForRendering(win.view)
+        fuzzyCompare(plot.viewMinY, plot.lowerBound, 1e-9)
+        fuzzyCompare(plot.viewMaxY, plot.upperBound, 1e-9)
+    }
+
+    /// An axis crossing more decades than it has room for numbers strides them
+    /// the way matplotlib does.
+    ///
+    /// Not a rounding of the count but matplotlib's search: the largest number
+    /// of ticks no more than the room allows that the powers really divide
+    /// into. Six hundred decades with room for nine are numbered every
+    /// seventy-fifth, 10⁻³⁰⁰ to 10³⁰⁰; thirty with room for nine are numbered
+    /// every fourth, eight numbers from 10⁰ to 10²⁸ -- where rounding thirty
+    /// over eight up to a round stride gave every fifth and seven. Both are
+    /// matplotlib 3.11's answers over the same windows.
+    ///
+    /// Asked of the functions directly: a fixture spanning the whole of double
+    /// would be a fixture built for one test.
+    function test_a_very_wide_logarithmic_axis_strides_its_decades() {
+        const win = openLogPlot()
+        const frame = logPlot(win).frame
+
+        const exponents = (located) => located.majors.map((v) => Math.round(Math.log10(v)))
+        compare(exponents(frame.logLocate(1e-300, 1e300, 10, 9)),
+                [-300, -225, -150, -75, 0, 75, 150, 225, 300])
+        compare(exponents(frame.logLocate(1, 1e30, 10, 9)),
+                [0, 4, 8, 12, 16, 20, 24, 28])
+        // A strided axis has nothing between its numbers.
+        compare(frame.logLocate(1, 1e30, 10, 9).minors.length, 0)
+
+        // How much room there is follows the pane: two lines of type a number
+        // up the side and three characters along the bottom, never fewer than
+        // two numbers and never more than nine.
+        compare(frame.logTickRoom(1000, true), 9)
+        compare(frame.logTickRoom(0, true), 2)
+        verify(frame.logTickRoom(100, true) > frame.logTickRoom(100, false))
+
+        // ...and a number out there is still short. A power of ten is round at
+        // every magnitude, which is the whole difference from a linear axis's
+        // round numbers.
+        const sci = (v) => frame.logLabel(v, 10, [1], 6).text
+        compare(sci(1e-300), "10\u207b\u00b3\u2070\u2070")
+        compare(sci(1e300), "10\u00b3\u2070\u2070")
+        compare(sci(1), "10\u2070")
+        // The band's readout is a number and not a power, and stays short too.
+        compare(frame.logLabelFor(1e6), "1e+6")
+        compare(frame.logLabelFor(0.001), "0.001")
+        compare(frame.logLabelFor(100), "100")
+    }
+
+    /// Changing a scale puts the view back.
+    ///
+    /// It has to: the pan is a distance along the axis and the axis has just
+    /// changed what a distance along it is. A pan of forty is four decades or
+    /// it is forty units, and there is no reading of the number that is both
+    /// -- so a window kept across the change would be a window nobody asked
+    /// for, very possibly off the data entirely.
+    function test_changing_a_scale_puts_the_view_back() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        const area = plot.plotRect
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 4.0, "both")
+        waitForRendering(win.view)
+        verify(plot.zoomed, "there must be a window to lose")
+
+        plot.yLog = false
+        waitForRendering(win.view)
+        verify(!plot.zoomed, "turning a scale off resets the view")
+        compare(plot.viewMinY, plot.lowerBound)
+
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 4.0, "x")
+        waitForRendering(win.view)
+        verify(plot.zoomed)
+        plot.xLog = true
+        waitForRendering(win.view)
+        verify(!plot.zoomed, "and so does turning one on")
+    }
+
+    /// The picture that leaves carries the scale it was drawn on.
+    ///
+    /// A logarithmic axis is a reading of the data rather than a way of
+    /// dressing it, so a figure that came back linear would not be a picture
+    /// of what the reader was looking at. The picture is a second frame built
+    /// off screen (PlotPicture.qml) and it is alive from the call that starts
+    /// the grab until the answer lands, which is where this looks at it.
+    function test_the_exported_picture_is_drawn_on_the_same_scale() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        plot.minorNumbers = true
+        waitForRendering(win.view)
+
+        copySpy.clear()
+        copyFailedSpy.clear()
+        verify(plot.copyImage(), "a drawn plot must accept the request")
+        verify(plot.picture, "the picture is alive while the grab is in flight")
+
+        const drawn = findChild(plot.picture, "pictureLines")
+        verify(drawn, "the picture's own lines must be reachable")
+        compare(drawn.yLog, true)
+        compare(drawn.yMin, plot.viewMinY)
+        compare(drawn.yMax, plot.viewMaxY)
+        // The frame around them too, which is what carries the numbers.
+        compare(drawn.parent.yLog, true)
+        compare(drawn.parent.minorNumbers, true)
+        verify(drawn.parent.yTicks.length > 0)
+
+        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
+                  "the grab must answer one way or the other")
+        compare(copyFailedSpy.count, 0,
+                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+    }
+
+    /// A custom step on a logarithmic axis is a factor.
+    ///
+    /// It is the one thing it cannot be an increment of: a rule every 1 up an
+    /// axis running to a thousand is a thousand rules, and what a reader means
+    /// by "every decade" or "every doubling" is a multiplication. So the rules
+    /// go at the number's powers, anchored at one -- and what says so is that
+    /// consecutive rules are in a constant *ratio* rather than a constant
+    /// distance apart.
+    function test_a_custom_grid_on_a_logarithmic_axis_is_a_factor() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const frame = found.frame
+
+        found.surface.gridMode = "custom"
+        found.surface.gridStepY = 10
+        // Ten is the decades, which is the reading that makes the control's
+        // own meaning obvious: it gives back exactly the numbered ticks.
+        compare(frame.yGrid.length, 7)
+
+        found.surface.gridStepY = 2
+        const doublings = frame.yGrid
+        verify(doublings.length > 15, "a doubling grid over six decades: "
+               + doublings.length)
+        // Evenly spaced up the *pane*, which is what a constant ratio is once
+        // the axis is logarithmic.
+        for (let i = 1; i < doublings.length; ++i) {
+            fuzzyCompare(doublings[i].at - doublings[i - 1].at,
+                         Math.log10(2) / 6.6, 1e-6)
+        }
+
+        // A factor of one is a rule at one place for ever, and a factor below
+        // it runs the wrong way. Both are what a half-typed box resolves to,
+        // and both draw nothing -- the same answer a step of zero gets on a
+        // linear axis.
+        found.surface.gridStepY = 1
+        compare(frame.yGrid.length, 0)
+        found.surface.gridStepY = 0
+        compare(frame.yGrid.length, 0)
+    }
+
+    /// A wheel notch takes the same bite out of every decade.
+    ///
+    /// The whole of what a logarithmic axis changes about the gestures. Zoom
+    /// and pan are arithmetic over an axis's span, and the only span that
+    /// means anything here is a count of decades -- so a notch has to halve
+    /// the decades on screen wherever the pointer is, and a drag has to move
+    /// by so many decades. Measured in the data's own units instead, one notch
+    /// at the bottom of this axis would zoom past every float there is while
+    /// the top of it had not visibly moved.
+    function test_a_zoom_on_a_logarithmic_axis_is_measured_in_decades() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        const decadesOf = () => Math.log10(plot.viewMaxY) - Math.log10(plot.viewMinY)
+        const whole = decadesOf()
+        fuzzyCompare(whole, 6.6, 1e-6)
+
+        const area = plot.plotRect
+        // About the middle of the pane, so the two ends come in together.
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 2.0, "y")
+        fuzzyCompare(decadesOf(), whole / 2, 1e-6)
+        // ...and the window is still the middle of the data: the value at the
+        // centre has not moved, which on this scale is the geometric mean.
+        fuzzyCompare(Math.log10(plot.viewMinY) + Math.log10(plot.viewMaxY),
+                     Math.log10(plot.lowerBound) + Math.log10(plot.upperBound),
+                     1e-6)
+
+        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 2.0, "y")
+        fuzzyCompare(decadesOf(), whole / 4, 1e-6)
+
+        plot.resetView()
+        fuzzyCompare(decadesOf(), whole, 1e-6)
+    }
+
+    /// The pointer reads the value it is over, and the band writes it the way
+    /// the ticks are written.
+    ///
+    /// Two halves of one rule: a pixel resolves to a value through the axis's
+    /// own scale, so halfway up a logarithmic pane is the geometric mean of
+    /// its ends and not the arithmetic one. A band that reported the second
+    /// would name a window the zoom then would not go to.
+    function test_a_pixel_on_a_logarithmic_axis_reads_the_value_under_it() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+        const area = plot.plotRect
+
+        const middle = plot.dataYAt(area.y + area.height / 2)
+        fuzzyCompare(Math.log10(middle),
+                     (Math.log10(plot.viewMinY) + Math.log10(plot.viewMaxY)) / 2,
+                     1e-9)
+        // The arithmetic mean of a window running 1e-3.3 to 1e3.3 is about a
+        // thousand; the value halfway up it is one.
+        fuzzyCompare(middle, 1.0, 1e-9)
+
+        // Written as a power of ten rather than to a linear axis's decimals,
+        // which over a span of two thousand would have rounded it to "0".
+        compare(plot.yNumber(middle), "1")
+        compare(plot.yNumber(0.01), "0.01")
+    }
+
+    /// Zoomed inside a decade, a logarithmic axis is numbered the linear way.
+    ///
+    /// matplotlib's fallback: there may be no power of ten in the window at
+    /// all, and an axis with nothing on it is an axis nobody can read. The
+    /// curve across such a window is very nearly straight, so the numbers
+    /// worth printing are the round ones a linear axis would have printed. A
+    /// run of ticks between 1.0001 and 1.0002 has to be written with enough
+    /// figures to tell them apart, which is the one place this parts from
+    /// matplotlib's `%g`: six figures there print the same label twice. (The
+    /// window asked for is wider by the time it is drawn: 1.01 to 1.02 is
+    /// past the pane's deepest zoom, so the ends read 9.7 and 10.3 tenths.)
+    function test_a_logarithmic_axis_zoomed_inside_a_decade_reads_as_a_linear_one() {
+        const win = openLogPlot()
+        const found = logPlot(win)
+        const plot = found.surface
+
+        plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1.01, 1.02)
+        waitForRendering(win.view)
+        verify(plot.viewMaxY / plot.viewMinY < 10,
+               "the window must be inside one decade")
+
+        const ticks = found.frame.yTicks
+        verify(ticks.length >= 4,
+               "an axis nobody can read is the failure this prevents: "
+               + ticks.length + " ticks")
+        compare(found.frame.yLogNumbers, false)
+        // Round in the linear sense, and written as matplotlib writes them
+        // there: a multiple of the power they are inside, `1.02×10⁰`, with as
+        // many figures as tell one from the next.
+        const said = {}
+        for (let i = 0; i < ticks.length; ++i) {
+            verify(/^\d\.\d+\u00d710$/.test(ticks[i].base) || ticks[i].base === "10",
+                   ticks[i].base)
+            verify(said[ticks[i].text] === undefined, "twice: " + ticks[i].text)
+            said[ticks[i].text] = true
+        }
     }
 
     /// Start, step and stop: any two describe the x axis and the third follows

@@ -589,6 +589,15 @@ QtObject {
     /// column index under it; the other two sides are air, and take a gap.
     readonly property int plotMargin: s7
     readonly property int plotLabelMargin: s10
+    /// How far an exponent on a logarithmic axis sits above the line of the
+    /// number it raises: the `3` of `10³`, set in `readoutMinor`.
+    ///
+    /// matplotlib's mathtext puts a superscript's baseline at a little under
+    /// half the height of the type it raises. `readout` is ten pixels, and
+    /// four is that on the spacing ladder -- enough that the exponent reads as
+    /// raised rather than as a smaller digit beside the power, and not so much
+    /// that it leaves the line of type the gutter was measured for.
+    readonly property int plotExponentRaise: s3
     /// The band a right-drag draws over the plot to say which region to go to.
     ///
     /// An alpha rather than a mix, for `surfaceMatch`'s reason and a stronger
@@ -866,6 +875,28 @@ QtObject {
         pixelSize: 10,
         weight: Font.Normal,
         letterSpacing: 0.6
+    })
+    /// A single digit written between two of those, and the smallest type this
+    /// application sets.
+    ///
+    /// Two things ask for it, and neither is a number on the axis in its own
+    /// right: the exponent of a power written `10³`, raised as matplotlib's
+    /// mathtext raises it (PlotFrame's TickLabel), and the subdivisions of a
+    /// logarithmic decade (PlotFrame.minorNumbers), which are marks on the way
+    /// between two of the axis's numbers. Eight of those per decade in the face the
+    /// axis itself is set in is an axis with two kinds of number down it,
+    /// arguing about which is the scale.
+    ///
+    /// Two pixels under `readout`, which is a fifth off and is as far as this
+    /// goes: 8px of a monospaced digit is still a digit on an unscaled
+    /// display, and the same run at 7 is a smudge. Untracked, because the
+    /// tracking `readout` carries is there to keep a string of them legible
+    /// and every one of these is one character long.
+    readonly property font readoutMinor: Qt.font({
+        families: theme.monoFamilies,
+        pixelSize: 8,
+        weight: Font.Normal,
+        letterSpacing: 0
     })
 
     // --- colour ramps for plotted lines ----------------------------------

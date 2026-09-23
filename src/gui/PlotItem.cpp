@@ -240,6 +240,42 @@ void PlotItem::setYMax(double value)
     }
 }
 
+void PlotItem::setXLog(bool on)
+{
+    if (view_.xLog != on) {
+        view_.xLog = on;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
+void PlotItem::setYLog(bool on)
+{
+    if (view_.yLog != on) {
+        view_.yLog = on;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
+void PlotItem::setXLogBase(double base)
+{
+    if (view_.xLogBase != base) {
+        view_.xLogBase = base;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
+void PlotItem::setYLogBase(double base)
+{
+    if (view_.yLogBase != base) {
+        view_.yLogBase = base;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
 void PlotItem::setMarkers(bool on)
 {
     if (markers_ != on) {
@@ -267,18 +303,17 @@ double PlotItem::valueAt(double fraction) const
 {
     // The exact inverse of yFraction(), which is the one piece of arithmetic
     // the chrome and the curve have to agree about.
-    return view_.yMin + fraction * (view_.yMax - view_.yMin);
+    return yMappingOf(view_).valueAt(fraction);
 }
 
 double PlotItem::xFraction(double x) const
 {
-    const double span = view_.xMax - view_.xMin;
-    return span > 0.0 ? (x - view_.xMin) / span : 0.0;
+    return xFractionOf(x, view_);
 }
 
 double PlotItem::xAt(double fraction) const
 {
-    return view_.xMin + fraction * (view_.xMax - view_.xMin);
+    return xMappingOf(view_).valueAt(fraction);
 }
 
 QVariantMap PlotItem::nearestSample(double px, double py) const
@@ -288,11 +323,15 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
 
     const double w = width();
     const double h = height();
-    const double xSpan = view_.xMax - view_.xMin;
-    if (!(w > 0.0) || !(h > 0.0) || !(xSpan > 0.0) || lines_.empty()) {
+    const AxisMapping xMap = xMappingOf(view_);
+    const AxisMapping yMap = yMappingOf(view_);
+    if (!(w > 0.0) || !(h > 0.0) || !xMap.usable || lines_.empty()) {
         return answer;
     }
-    const double wanted = view_.xMin + px / w * xSpan;
+    // In the data's own units, through the axis's own scale -- so on a
+    // logarithmic axis the pointer resolves to the x it is actually over
+    // rather than to the one it would be over if the axis were linear.
+    const double wanted = xMap.valueAt(px / w);
 
     double bestDistance = std::numeric_limits<double>::infinity();
     int bestLine = -1;
@@ -302,8 +341,14 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     double bestPy = 0.0;
 
     const auto consider = [&](int index, qsizetype at, double x, double value) {
-        const double sx = (x - view_.xMin) / xSpan * w;
-        const double sy = h - yFractionOf(value, view_) * h;
+        // A sample the axes cannot place is not a sample the crosshair may snap
+        // to: it was not drawn, and a readout of it would name a point that is
+        // not on the pane.
+        if (!xMap.draws(x) || !yMap.draws(value)) {
+            return false;
+        }
+        const double sx = xMap.fractionOf(x) * w;
+        const double sy = h - yMap.fractionOf(value) * h;
         const double distance = (sx - px) * (sx - px) + (sy - py) * (sy - py);
         if (distance < bestDistance) {
             bestDistance = distance;
@@ -314,6 +359,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
             bestPy = sy;
         }
         (void)at;
+        return true;
     };
 
     for (int index = 0; index < lineCount(); ++index) {
@@ -364,8 +410,13 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
                 if (!std::isfinite(value)) {
                     continue;
                 }
-                consider(index, at, xOf(line, axis_, at), value);
-                found = true;
+                // What the walk is looking for is a sample that could be
+                // *taken*, not one that is merely finite. Stopping on a value
+                // the axes declined to place -- every non-positive one on a
+                // logarithmic axis -- ended the search having considered
+                // nothing, and the crosshair then found no sample at all in a
+                // pane full of them.
+                found = consider(index, at, xOf(line, axis_, at), value) || found;
             }
             if (found) {
                 break;

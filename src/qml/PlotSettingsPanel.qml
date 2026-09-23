@@ -454,6 +454,172 @@ SettingsPanel {
         function onChanged() { panel.copyResult = "" }
     }
 
+    // --- which scale each axis is on --------------------------------------
+    // A row of its own rather than two more boxes under "drawing", because it
+    // is not about the drawing: a logarithmic axis does not restyle the
+    // picture, it is a different reading of the same data, and it is the only
+    // control on this panel that changes what "halfway up the pane" means.
+    //
+    // Two checkboxes rather than one dropdown of four combinations. The axes
+    // are independent -- a log-linear plot is as ordinary as a log-log one --
+    // and naming the four would make the reader pick their y scale out of a
+    // list to change their x one.
+    SettingRow {
+        label: qsTr("scale")
+
+        AppCheckBox {
+            objectName: "logXBox"
+
+            text: qsTr("logarithmic x")
+            checked: panel.target ? panel.target.xLog : false
+            onToggled: { if (panel.target) panel.target.xLog = checked }
+        }
+
+        AppCheckBox {
+            objectName: "logYBox"
+
+            text: qsTr("logarithmic y")
+            checked: panel.target ? panel.target.yLog : false
+            onToggled: { if (panel.target) panel.target.yLog = checked }
+        }
+
+        // Which base each logarithm is taken to, for each axis that is on one.
+        //
+        // The shape the grid's densities already have: a list of the answers
+        // worth having, and a box for the one nobody could have listed. Ten is
+        // where every axis starts -- it is what the application drew before
+        // the choice existed -- and two and e are the other two a reader comes
+        // here for.
+        //
+        // Per axis rather than one for the plot, because the two are not one
+        // question: a trace of amplitude against frequency is read in octaves
+        // along the bottom and in decades up the side. Each control is absent
+        // unless its own axis is logarithmic, so the usual case shows one.
+        Text {
+            width: parent.width
+            visible: panel.logScale
+            text: {
+                if (!panel.target)
+                    return ""
+                if (panel.target.xLog && panel.target.yLog)
+                    return qsTr("the base of each logarithm, along x and along y")
+                return panel.target.xLog
+                    ? qsTr("the base of the logarithm along x")
+                    : qsTr("the base of the logarithm along y")
+            }
+            font: Theme.caption
+            color: Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+
+        RowLayout {
+            width: parent.width
+            spacing: Theme.gapS
+            visible: panel.logScale
+
+            AppComboBox {
+                objectName: "logBaseXBox"
+
+                Layout.fillWidth: true
+                visible: !!panel.target && panel.target.xLog
+                model: panel.logBaseLabels
+                selectedIndex: panel.baseIndex(panel.target
+                                               ? panel.target.xLogBaseMode : "10")
+                onActivated: index => {
+                    if (panel.target)
+                        panel.target.xLogBaseMode = panel.logBaseKeys[index]
+                }
+            }
+
+            AppComboBox {
+                objectName: "logBaseYBox"
+
+                Layout.fillWidth: true
+                visible: !!panel.target && panel.target.yLog
+                model: panel.logBaseLabels
+                selectedIndex: panel.baseIndex(panel.target
+                                               ? panel.target.yLogBaseMode : "10")
+                onActivated: index => {
+                    if (panel.target)
+                        panel.target.yLogBaseMode = panel.logBaseKeys[index]
+                }
+            }
+        }
+
+        // The stated base, under "custom" and nowhere else.
+        //
+        // Refused rather than clamped when it is not a base, which is the
+        // honest shape: the legal bases are open at one, so there is no
+        // nearest legal value to correct a bad one to. RealField puts the box
+        // back to what is in force when a commit does not take, so a reader
+        // who types 1 or 0 or -3 watches the box say no.
+        RowLayout {
+            width: parent.width
+            spacing: Theme.gapS
+            visible: panel.customBase
+
+            RealField {
+                objectName: "logBaseXField"
+
+                Layout.fillWidth: true
+                visible: !!panel.target && panel.target.xLog
+                         && panel.target.xLogBaseMode === "custom"
+                value: panel.target ? panel.target.xLogBaseCustom : 10
+                onCommitted: amount => {
+                    if (panel.target && panel.target.usableBase(amount))
+                        panel.target.xLogBaseCustom = amount
+                }
+            }
+
+            RealField {
+                objectName: "logBaseYField"
+
+                Layout.fillWidth: true
+                visible: !!panel.target && panel.target.yLog
+                         && panel.target.yLogBaseMode === "custom"
+                value: panel.target ? panel.target.yLogBaseCustom : 10
+                onCommitted: amount => {
+                    if (panel.target && panel.target.usableBase(amount))
+                        panel.target.yLogBaseCustom = amount
+                }
+            }
+        }
+
+        /// The digits between two decades. See PlotFrame.minorNumbers.
+        ///
+        /// Under the two boxes above rather than in the drawing row, because
+        /// it is a question about this scale and does nothing without one --
+        /// and it is absent rather than disabled while neither axis is on one,
+        /// which is the stance this panel already takes on the map-range
+        /// slider and on the custom grid's steps.
+        AppCheckBox {
+            objectName: "logMinorNumbersBox"
+
+            visible: panel.logScale
+            text: qsTr("number the subdivisions")
+            checked: panel.target ? panel.target.minorNumbers : false
+            onToggled: { if (panel.target) panel.target.minorNumbers = checked }
+        }
+
+        /// What a logarithmic axis cannot do, said once rather than discovered.
+        ///
+        /// A reader who ticks one of these over data with zeros in it sees the
+        /// line break where they are, and there is nothing on the pane to say
+        /// why -- a gap is what this plot draws for missing data too, and here
+        /// the data is not missing. Shown only while a scale is on: it is an
+        /// explanation of what is on screen and not a warning about what might
+        /// be.
+        Text {
+            width: parent.width
+            visible: !!panel.target && (panel.target.xLog || panel.target.yLog)
+            text: qsTr("A value at or below zero has no place on a "
+                       + "logarithmic axis, and is drawn as a gap.")
+            font: Theme.caption
+            color: Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+    }
+
     SettingRow {
         label: qsTr("drawing")
 
@@ -487,7 +653,16 @@ SettingsPanel {
         Text {
             width: parent.width
             visible: panel.customGrid
-            text: qsTr("a rule every, along x and along y, in the data's own units")
+            // Two readings of the one number, because a logarithmic axis has
+            // no use for the first: a rule every 1 up an axis running to a
+            // million is a million rules, and what a reader means there is a
+            // multiplication -- 10 for the decades, 2 for the doublings. See
+            // PlotFrame.gridValues.
+            text: panel.logScale
+                  ? qsTr("a rule every, along x and along y -- a step in the "
+                         + "data's own units on a linear axis, and a factor "
+                         + "on a logarithmic one")
+                  : qsTr("a rule every, along x and along y, in the data's own units")
             font: Theme.caption
             color: Theme.textDisabled
             wrapMode: Text.WordWrap
@@ -645,6 +820,31 @@ SettingsPanel {
 
     readonly property bool customGrid:
         !!panel.target && panel.target.gridMode === "custom"
+
+    /// Whether either axis is logarithmic, which is what the custom grid's
+    /// caption changes for.
+    readonly property bool logScale:
+        !!panel.target && (panel.target.xLog || panel.target.yLog)
+
+    // --- the base of each logarithm ---------------------------------------
+    /// Stable lists rather than expressions that build an array each time they
+    /// run, for the reason the grid dropdown's note gives: a fresh array makes
+    /// the ComboBox reset its index, which clears the binding under it and
+    /// leaves the box naming a base the plot is not drawing.
+    readonly property var logBaseKeys: ["10", "2", "e", "custom"]
+    readonly property var logBaseLabels:
+        [qsTr("base 10"), qsTr("base 2"), qsTr("base e"), qsTr("custom")]
+
+    function baseIndex(mode) {
+        const at = panel.logBaseKeys.indexOf(mode)
+        return at < 0 ? 0 : at
+    }
+
+    /// Whether an axis that is on a logarithmic scale has been told to take a
+    /// base of its own, which is the only time the box for one is offered.
+    readonly property bool customBase: !!panel.target
+        && ((panel.target.xLog && panel.target.xLogBaseMode === "custom")
+            || (panel.target.yLog && panel.target.yLogBaseMode === "custom"))
 
     /// The four corners a legend on the plot can take, in reading order.
     readonly property var cornerKeys:

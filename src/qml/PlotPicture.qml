@@ -141,6 +141,15 @@ Item {
             gridMode: picture.surface ? picture.surface.gridMode : "loose"
             gridStepX: picture.surface ? picture.surface.gridStepX : 0
             gridStepY: picture.surface ? picture.surface.gridStepY : 0
+            // The scale the pane is on, and so the scale the picture is on.
+            // A logarithmic axis is a reading of the data rather than a way of
+            // dressing it, so a figure that came back linear would not be a
+            // picture of what the reader was looking at.
+            xLog: picture.surface ? picture.surface.xLog : false
+            yLog: picture.surface ? picture.surface.yLog : false
+            minorNumbers: picture.surface ? picture.surface.minorNumbers : false
+            xLogBase: picture.surface ? picture.surface.xLogBase : 10
+            yLogBase: picture.surface ? picture.surface.yLogBase : 10
             tickTarget: picture.surface ? picture.surface.tickTarget : 8
 
             title: picture.surface ? picture.surface.plotTitle : ""

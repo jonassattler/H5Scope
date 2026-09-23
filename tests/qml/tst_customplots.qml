@@ -1436,6 +1436,113 @@ TestCase {
         compare(win.currentTabId, "custom:0")
     }
 
+    // --- logarithmic axes --------------------------------------------------
+
+    /// A custom tab is drawn by the same surface, so it gets the same scales.
+    ///
+    /// That is the whole claim worth testing here: PlotSurface serves both
+    /// plots and neither of them was forked to grow a logarithmic axis. What a
+    /// custom tab does have of its own is where the x axis *starts* -- a time
+    /// base is read out of the file rather than stated as three numbers -- so
+    /// that is what the rest of this asserts.
+    function test_a_custom_tab_draws_on_a_logarithmic_axis_too() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/decades[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        verify(surface && lines, "the surface and its lines must be reachable")
+
+        // The same two values the Data tab's plot has no place for, in a tab
+        // that reached them by a different road.
+        compare(plot.positiveMinimum, 1e-3)
+        verify(plot.minimum < 0)
+
+        surface.yLog = true
+        waitForRendering(win.contentItem)
+        compare(lines.yLog, true)
+        // 0..9, 11..19, 21..48: the zero and the negative are gaps.
+        compare(lines.drawnRunCount, 3)
+        fuzzyCompare(Math.log10(surface.lowerBound), -3.3, 1e-9)
+        fuzzyCompare(Math.log10(surface.upperBound), 3.3, 1e-9)
+    }
+
+    /// A logarithmic x axis starts at the first x that can be drawn.
+    ///
+    /// The axis a custom tab has that the Data tab does not: a time base whose
+    /// values came out of the file. /series/time runs 0, 0.5, 1 ... 31.5, so
+    /// its low end is a value the scale has no place for -- and the smallest
+    /// one it does have a place for is the second element, which only the plot
+    /// object can say because only it has read them.
+    function test_a_logarithmic_x_axis_starts_at_the_first_time_it_can_draw() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.xMode = CustomPlot.Dataset
+        plot.xExpression = "/series/time[:]"
+        settleReads()
+        waitForRendering(win.contentItem)
+        verify(plot.xReady, "the time base must have been read")
+
+        compare(plot.xMinimum, 0)
+        compare(plot.xMaximum, 31.5)
+        compare(plot.xPositiveMinimum, 0.5)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        compare(surface.axisLowX, 0)
+
+        surface.xLog = true
+        waitForRendering(win.contentItem)
+        compare(surface.axisLowX, 0.5)
+        compare(surface.viewMinX, 0.5)
+        compare(surface.viewMaxX, 31.5)
+        // The first sample is drawn nowhere, so the line is one run short of
+        // its length rather than a stroke reaching down to an invented x.
+        const lines = findAllOf(view, "plotLines")[0]
+        compare(lines.drawnRunCount, 1)
+        verify(lines.drawnPointCount < 64)
+    }
+
+    /// An index axis starts at one, which is the first index there is a place
+    /// for.
+    ///
+    /// The other half of the same question, and the half no read answers: the
+    /// default x axis is the element's own index and starts at zero, so every
+    /// plot in the application would go blank the moment the box was ticked if
+    /// this were taken as given. It is arithmetic over the stated grid
+    /// instead -- see PlotSurface.gridPositiveMinX -- so it costs nothing and
+    /// is right before a single element has been read.
+    function test_a_logarithmic_index_axis_starts_at_the_first_index() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        compare(surface.axisLowX, 0)
+
+        surface.xLog = true
+        waitForRendering(win.contentItem)
+        compare(surface.axisLowX, 1)
+        compare(surface.viewMinX, 1)
+    }
+
     function test_the_footer_counts_entries_and_datapoints() {
         const win = openWindow()
         win.addCustomTab()

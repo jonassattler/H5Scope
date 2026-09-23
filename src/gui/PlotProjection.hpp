@@ -40,6 +40,17 @@
 //    handing the survivors to a line renderer draws a straight line *across*
 //    the missing data, which is a reading of data that was never taken. A run
 //    of them ends the stroke here and the next run starts a new one.
+//
+// A logarithmic axis is a fourth thing and is not in that list, because it is
+// not a design decision at all -- it is the observation that every one of the
+// three above is written in terms of *where a value sits*, and that there is
+// exactly one function per axis that answers it. AxisMapping is that function.
+// Put log10 inside it and the curve, the crosshair, the ticks, the rules, the
+// band and the readouts all follow, because none of them ever subtracted two
+// bounds for themselves. The one thing a log axis really does add is a second
+// way for a sample to be undrawable: a value at or below zero has no logarithm,
+// and it is a gap for exactly the reason a NaN is one -- there is no place on
+// the pane that would be a true reading of it.
 
 #include <QtCore/QPointF>
 #include <QtGui/QColor>
@@ -248,6 +259,44 @@ struct PlotView
     double yMin = 0.0;
     double yMax = 1.0;
 
+    /// Whether each axis places a value by its logarithm rather than by itself.
+    ///
+    /// The bounds above stay in the data's own units whichever this is -- they
+    /// are what the reader typed, what the ticks print and what the models are
+    /// asked to read between. Only the map from a value to a place on the pane
+    /// changes, and it changes in one place (AxisMapping).
+    ///
+    /// A logarithmic axis whose bounds are not both above zero is not a view at
+    /// all and nothing is drawn against it; see mappingOver(). Keeping those
+    /// bounds positive is the caller's job, because only the caller knows what
+    /// the data has -- PlotSurface.qml takes them off the smallest positive
+    /// value the plot object reports.
+    bool xLog = false;
+    bool yLog = false;
+
+    /// What base each logarithm is taken to. Ten unless the reader says
+    /// otherwise, which is what every axis in the application was before the
+    /// choice existed and is what a plot opens on.
+    ///
+    /// **It does not move anything that is drawn**, and that is worth knowing
+    /// before reading further. Where a value sits is a ratio of two
+    /// logarithms, and a change of base multiplies both by the same constant,
+    /// so it cancels: base ten and base two put every point of a curve in
+    /// exactly the same place. What a reader picks a base for is the axis
+    /// *around* the picture -- the numbers go at the powers of the base and
+    /// the rules between them, so ten marks decades where two marks octaves --
+    /// and that is PlotFrame.qml's business rather than this file's.
+    ///
+    /// So the renderer is told for one reason: to refuse a base that is not
+    /// one. Only a number above one is. At exactly one the logarithm is a
+    /// division by zero and every value would land in the same place; below it
+    /// the axis runs backwards, which is a different request from the one this
+    /// answers. mappingOver() refuses both outright, so a view carrying such a
+    /// base draws nothing rather than drawing something wrong -- whatever
+    /// wrote the property.
+    double xLogBase = 10.0;
+    double yLogBase = 10.0;
+
     /// The pane, in item coordinates.
     double width = 0.0;
     double height = 0.0;
@@ -275,6 +324,94 @@ struct PlotView
     /// the share down here. See kMaxVertices in PlotItem.cpp.
     int maxColumns = 0;
 };
+
+/// The logarithm of `value` to `base`.
+///
+/// The two bases a reader is most likely to pick have exact library functions
+/// of their own, and they are not the same answer as the division: std::log(
+/// 1000.0) / std::log(10.0) is 2.9999999999999996, so a mark that ought to
+/// *be* a power of the base comes out a shade beside one. The whole structure
+/// of a logarithmic grid is that its majors land exactly on its labels, so the
+/// shade matters.
+[[nodiscard]] inline double logOf(double value, double base)
+{
+    if (base == 10.0) {
+        return std::log10(value);
+    }
+    if (base == 2.0) {
+        return std::log2(value);
+    }
+    return std::log(value) / std::log(base);
+}
+
+/// One axis's map from a value to a fraction of the pane, and back.
+///
+/// The one piece of arithmetic every part of the plot has to agree about.
+/// `low` and `high` are already *in the axis's own scale* -- the logarithms,
+/// when the axis is logarithmic -- so that a fraction costs one transform and
+/// one subtraction rather than a branch per value in the hot loop.
+///
+/// Built by mappingOver(), which is also where a view that has no answer is
+/// refused. That is a wider question on a logarithmic axis than on a linear
+/// one: a span of zero has no answer on either, and a bound at or below zero
+/// has none on this one, nor has a base that is not above one.
+struct AxisMapping
+{
+    /// The bounds, transformed. Not the data's own units when `logarithmic`.
+    double low = 0.0;
+    double high = 1.0;
+    bool logarithmic = false;
+    /// What the logarithm is taken to. Meaningless unless `logarithmic`, and
+    /// never anything but a number above one when it is -- see mappingOver.
+    double base = 10.0;
+    /// Whether there is a span to divide by at all. Every caller has to notice
+    /// that before it divides, and one struct is how they all notice it the
+    /// same way.
+    bool usable = false;
+
+    /// Whether `value` has a place on this axis.
+    ///
+    /// Two ways to fail and they are the same failure: a value that is not
+    /// finite was never measured, and a value at or below zero on a
+    /// logarithmic axis has no logarithm to be placed by. Both are a gap --
+    /// the stroke ends and the next one starts after them -- because the
+    /// alternative in either case is to draw a line across a place where the
+    /// data says nothing.
+    [[nodiscard]] bool draws(double value) const
+    {
+        return std::isfinite(value) && (!logarithmic || value > 0.0);
+    }
+
+    /// Where `value` sits along the axis, as a fraction from `low`.
+    ///
+    /// Zero for a view with no span, which is what every degenerate view here
+    /// resolves to. Undrawable values are *not* special-cased: log10 of zero is
+    /// negative infinity and of a negative number is NaN, and either one lands
+    /// the point off the pane where it belongs. Callers that must tell a gap
+    /// from a point outside the window ask draws() first.
+    [[nodiscard]] double fractionOf(double value) const
+    {
+        if (!usable) {
+            return 0.0;
+        }
+        return ((logarithmic ? logOf(value, base) : value) - low) / (high - low);
+    }
+
+    /// ...and back, which is what a pointer position resolves through.
+    [[nodiscard]] double valueAt(double fraction) const
+    {
+        const double at = low + fraction * (high - low);
+        return logarithmic ? std::pow(base, at) : at;
+    }
+};
+
+/// The map from `low`..`high` in the data's own units, on either scale.
+[[nodiscard]] AxisMapping mappingOver(double low, double high, bool logarithmic,
+                                      double base = 10.0);
+
+/// The two a view carries.
+[[nodiscard]] AxisMapping xMappingOf(const PlotView& view);
+[[nodiscard]] AxisMapping yMappingOf(const PlotView& view);
 
 /// One unbroken stroke. A line with two gaps in it is three runs.
 struct PlotRun
@@ -311,15 +448,22 @@ struct PlotProjected
 /// cost. It exists as the seam tests/test_customplot.cpp asserts the x
 /// arithmetic through, and it agrees with projectLine() by construction --
 /// both drop a sample that does not read.
+///
+/// About the data and not about a scale: there is no PlotView here, so a value
+/// a logarithmic axis could not place is still reported. That is the right
+/// answer to what this is asked -- where the samples are -- and it is why the
+/// agreement above is an agreement over a linear view.
 [[nodiscard]] std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis);
 
-/// Where `value` sits up the pane, as a fraction from the bottom.
+/// Where `value` sits up the pane, as a fraction from the bottom, and where
+/// `x` sits along it.
 ///
 /// The one piece of arithmetic the chrome and the curve must agree about. A
-/// tick drawn at a fraction this function did not produce is a grid line that
-/// lies about where the curve is, which is why PlotItem hands this to QML
-/// rather than letting QML derive it.
+/// tick drawn at a fraction these functions did not produce is a grid line that
+/// lies about where the curve is, which is why PlotItem hands them to QML
+/// rather than letting QML derive the mapping a second time.
 [[nodiscard]] double yFractionOf(double value, const PlotView& view);
+[[nodiscard]] double xFractionOf(double x, const PlotView& view);
 
 /// Project `line` into `points` in item coordinates, splitting the strokes at
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
