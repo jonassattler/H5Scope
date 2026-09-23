@@ -1197,6 +1197,60 @@ TEST_CASE("a zoom across a logarithmic axis reads nothing and draws every column
     }
 }
 
+TEST_CASE("a window dragged past the ends of the line draws what is there and reads nothing",
+          "[cost][plot][zoom][log]")
+{
+    // The view may be dragged past either end of the data, as far as leaves a
+    // quarter of the pane on it -- see PlotSurface.panKeep. So the plot is now
+    // asked for windows that reach below the first element and beyond the
+    // last, on either scale, and has to answer for the part that exists
+    // without reading and without inventing anything for the part that does
+    // not.
+    constexpr long long kLine = 1LL << 20;
+    constexpr int kColumns = 1024;
+    Counted big({1, static_cast<hsize_t>(kLine)});
+    big.plot.setPaneColumns(kColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    const auto n = static_cast<double>(kLine);
+    const auto cost = big.measure([&] {
+        // Linear: three quarters of the pane before the first element, then
+        // after the last, at the whole line's width and zoomed in sixteen times.
+        for (const double width : {n, n / 16.0}) {
+            for (const double from : {-0.75 * width, n - 0.25 * width}) {
+                INFO("linear window " << from << ".." << from + width);
+                big.plot.setVisibleRange(from, from + width);
+                const gui::PlotLine line = big.plot.lineOf(0);
+                drawnMatchesTheFile(line, kLine);
+            }
+        }
+
+        // Logarithmic: the same share of the decades either side.
+        big.plot.setXLog(true);
+        const double decades = std::log10(n);
+        for (const double at : {-0.75 * decades, 0.75 * decades}) {
+            const double from = std::pow(10.0, at);
+            const double to = std::pow(10.0, at + decades);
+            INFO("logarithmic window " << from << ".." << to);
+            big.plot.setVisibleRange(from, to);
+            const gui::PlotLine line = big.plot.lineOf(0);
+            REQUIRE(line.xs != nullptr);
+            REQUIRE(line.count > 0);
+            for (qsizetype i = 0; i < line.count; ++i) {
+                // Nothing drawn outside the line: every point is an element
+                // that exists, at an x that one of them has.
+                REQUIRE(line.xs[i] >= 0.0);
+                REQUIRE(line.xs[i] < n);
+                REQUIRE(line.values[i] >= 0.0);
+                REQUIRE(line.values[i] < n);
+            }
+        }
+    });
+    CHECK(cost.crossings == 0);
+    CHECK(cost.reads == 0);
+}
+
 TEST_CASE("turning the budget down gives the memory back, and turning it up reads",
           "[cost][plot][zoom]")
 {

@@ -323,6 +323,15 @@ base from zero in thousandths started its axis at the end of the first bucket
 and the first decade and a third were off the pane. It walks the pyramid top
 down and opens only the buckets that straddle zero.
 
+**The view may be dragged past the data, not off it.** `PlotSurface.clampPan`
+keeps `panKeep` (a quarter) of the window over the data on each axis rather than
+the whole of it, so a plot at a zoom of one can be dragged at all and a zoomed
+one past its last sample. One rule for the drag, the wheel, the band and the
+four boxes, so a zoom after a drag does not snap the view back inside. The
+models are therefore asked for windows reaching past either end of the line and
+answer for the part that exists; `test_cost` holds that to no reads and no
+invented samples, on both scales.
+
 And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
 their own cache and copy nothing, so no path may free or prune a held line
 without saying something about it first. There are two things it can say, and

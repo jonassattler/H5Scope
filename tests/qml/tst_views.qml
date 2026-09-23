@@ -5078,15 +5078,111 @@ TestCase {
                                    + " rather than " + zoomed)
 
                         // ...and so is a zoom back out by the same factor.
+                        // Measured against the width of the view rather than
+                        // the value: an end at zero comes back as a rounding
+                        // residue of the arithmetic, which is not a drift. The
+                        // pan used to be forced to exactly zero at a zoom of
+                        // one; the view may now sit past the data there, so
+                        // nothing forces it -- see PlotSurface.panKeep.
                         plot.zoomAt(pixelX(fx), pixelY(fy), 1 / 3.0, "both")
                         const out = view()
+                        const width = [whole[1] - whole[0], whole[1] - whole[0],
+                                       whole[3] - whole[2], whole[3] - whole[2]]
                         for (let i = 0; i < 4; ++i)
-                            verify(near(out[i], whole[i]),
+                            verify(Math.abs(out[i] - whole[i]) <= 1e-9 * width[i],
                                    where + ": zoomed back out to " + out + " rather than " + whole)
                     }
                 }
             }
         }
+    }
+
+    /// The view can be dragged past the ends of the data, on either axis and
+    /// on either scale, but never off it: a quarter of the pane stays on the
+    /// data however far the drag goes.
+    ///
+    /// The window used to be held inside the data, so at a zoom of one --
+    /// which is how every plot opens -- a drag did nothing at all, and zoomed
+    /// in it stopped dead at the last sample with that sample on the frame.
+    /// What the limit is for is that the reader never loses the plot, and a
+    /// quarter of the pane is plainly still the plot.
+    function test_the_view_can_be_dragged_past_the_data_but_not_off_it() {
+        const opened = openTracePlot()
+        const plot = opened.plot
+        const gestures = findChild(opened.win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+
+        // How much of the window is over the data, as a share of the window,
+        // in the positions the gestures work in.
+        const onData = (low, high, from, to, logarithmic, base) => {
+            const p = (v) => plot.axisPosition(v, logarithmic, base)
+            const overlap = Math.min(p(to), p(high)) - Math.max(p(from), p(low))
+            return overlap / (p(to) - p(from))
+        }
+        const onDataX = () => onData(plot.axisLowX, plot.axisHighX, plot.viewMinX,
+                                     plot.viewMaxX, plot.xLog, plot.xLogBase)
+        const onDataY = () => onData(plot.lowerBound, plot.upperBound, plot.viewMinY,
+                                     plot.viewMaxY, plot.yLog, plot.yLogBase)
+
+        // A real drag with the mouse, at the zoom a plot opens on, moves it.
+        const before = plot.viewMinX
+        mouseDrag(gestures, Math.round(gestures.width / 2), Math.round(gestures.height / 2),
+                  -120, 60)
+        waitForRendering(opened.win.view)
+        verify(plot.viewMinX > before, "a drag at a zoom of one must move the view")
+        verify(onDataX() < 1 && onDataY() < 1, "and past the data, on both axes")
+
+        for (const xLog of [false, true]) {
+            for (const yLog of [false, true]) {
+                plot.xLog = xLog
+                plot.yLog = yLog
+                waitForRendering(opened.win.view)
+                for (const zoom of [1, 4]) {
+                    for (const way of [1, -1]) {
+                        const where = "x " + (xLog ? "log" : "lin") + " y "
+                                    + (yLog ? "log" : "lin") + " zoom " + zoom
+                                    + (way > 0 ? " dragged right and up" : " dragged left and down")
+                        plot.resetView()
+                        const area = plot.plotRect
+                        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, zoom, "both")
+                        // Ten panes' worth, far past anything the limit allows.
+                        for (let i = 0; i < 10; ++i)
+                            plot.panBy(way * plot.plotRect.width, -way * plot.plotRect.height)
+                        fuzzyCompare(onDataX(), plot.panKeep, 1e-9)
+                        fuzzyCompare(onDataY(), plot.panKeep, 1e-9)
+                        verify(way > 0 ? plot.viewMinX < plot.axisLowX
+                                       : plot.viewMaxX > plot.axisHighX, where)
+
+                        // ...and a wheel notch there zooms where the reader
+                        // is, rather than snapping them back inside the data.
+                        const kept = onDataX()
+                        plot.zoomAt(plot.plotRect.x + plot.plotRect.width / 2,
+                                    plot.plotRect.y + plot.plotRect.height / 2, 1.25, "both")
+                        verify(onDataX() < 1, where + ": a zoom must not put the view back: "
+                               + onDataX() + " after " + kept)
+                    }
+                }
+            }
+        }
+
+        // What is left on screen is drawn: a quarter of the pane of line, on a
+        // linear and on a logarithmic x alike -- which is the models being asked
+        // for a window reaching past the data and answering for the part that
+        // is there.
+        for (const xLog of [false, true]) {
+            plot.xLog = xLog
+            plot.yLog = false
+            plot.resetView()
+            for (let i = 0; i < 10; ++i)
+                plot.panBy(plot.plotRect.width, 0)
+            wait(200)
+            waitForRendering(opened.win.view)
+            const inked = inkedColumns(plot)
+            verify(inked > plot.panKeep - 0.03 && inked < plot.panKeep + 0.03,
+                   (xLog ? "logarithmic" : "linear") + ": a quarter of the pane must be "
+                   + "line and the rest empty axis, and " + inked + " of it was drawn")
+        }
+        plot.resetView()
     }
 
     /// A band drawn on either scale is the window the zoom goes to.

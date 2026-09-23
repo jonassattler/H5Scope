@@ -1723,10 +1723,11 @@ TestCase {
         compare(zooming.series, 1)
         compare(fixed.series, 2)
 
-        // Twice as close, about the top of the pane.
+        // Twice as close, about the top of the pane: the window's top on the
+        // top of the data. Worked out rather than clamped into, because the
+        // pan may now go past the data's end -- see PlotSurface.panKeep.
         surface.zoomY = 2
-        surface.panY = surface.clampPan(1e9, 2, surface.lowerBound, surface.upperBound,
-                                        false, 10)
+        surface.panY = (surface.upperBound - surface.lowerBound) / 4
         waitForRendering(win.contentItem)
 
         const after = surface.separateAxes

@@ -699,9 +699,10 @@ Item {
     // exact. Scaling the rendered picture instead would blur the line and
     // leave the axis printing numbers that are no longer under their ticks.
     //
-    // A zoom below 1 is not offered: 1 is the whole of the data, and there is
-    // nothing outside it to look at. Which is also what makes the pan clamp
-    // below simple -- the window is never larger than what it moves within.
+    // A zoom below 1 is not offered: 1 is the whole of the data, and a window
+    // wider than it is mostly empty axis. Which is also what keeps the pan
+    // clamp below simple -- the window is never larger than what it moves
+    // over, so "a quarter of it on the data" is always something it can do.
     property real zoomX: 1.0
     property real panX: 0.0
     property real zoomY: 1.0
@@ -856,12 +857,32 @@ Item {
     readonly property real viewMaxY:
         visibleHigh(lowerBound, upperBound, zoomY, panY, yLog, yLogBase)
 
-    /// Pan clamped so the visible window stays inside the data. With zoom at
-    /// 1 the window *is* the data and the only legal pan is none.
+    /// How much of the window must still be over the data, as a share of it.
+    ///
+    /// The window may be dragged past the ends of the data on either axis --
+    /// to look at the last samples away from the frame's edge, to line an
+    /// extreme up with a rule, or to see a trace's start with air before it --
+    /// but not off it altogether. A pane of nothing but empty axis is a reader
+    /// who has lost the plot and has to hunt for it with no idea which way it
+    /// went, so a quarter of the pane always stays on the data: enough that the
+    /// line is plainly still there and which way it lies is obvious.
+    readonly property real panKeep: 0.25
+
+    /// Pan clamped so that at least panKeep of the window stays over the data.
+    ///
+    /// It used to keep the whole window inside the data, so with the zoom at
+    /// 1 the only legal pan was none and the view could never be dragged at
+    /// all. In positions, like every gesture: the window is `full / zoom` wide
+    /// and its centre may go as far past either end of the data as leaves
+    /// `panKeep` of it on the near side. One rule for every path that moves
+    /// the window -- the drag, the wheel, the band and the four boxes -- so a
+    /// wheel notch after a drag off the edge zooms where the reader is rather
+    /// than snapping them back inside.
     function clampPan(pan, zoom, low, high, logarithmic, base) {
-        const room = (surface.axisPosition(high, logarithmic, base)
-                      - surface.axisPosition(low, logarithmic, base))
-                     * (1.0 - 1.0 / zoom) / 2.0
+        const full = surface.axisPosition(high, logarithmic, base)
+                   - surface.axisPosition(low, logarithmic, base)
+        const span = full / zoom
+        const room = full / 2.0 + span * (0.5 - surface.panKeep)
         return Math.max(-room, Math.min(room, pan))
     }
 
@@ -961,8 +982,9 @@ Item {
     /// The inverse of visibleLow/visibleHigh, which is what makes it exact:
     /// asked for the window those two report, it gives back the zoom and pan
     /// they were computed from. Clamped the way every other path here is --
-    /// never below 1, never past maxZoom, never outside the data -- so a
-    /// window nobody can be shown comes back as the nearest one that can be.
+    /// never below 1, never past maxZoom, never so far off the data that less
+    /// than panKeep of it is on screen -- so a window nobody can be shown comes
+    /// back as the nearest one that can be.
     function viewedAxis(low, high, from, to, logarithmic, base, minimumSpan) {
         const axisFrom = surface.axisPosition(low, logarithmic, base)
         const axisTo = surface.axisPosition(high, logarithmic, base)
