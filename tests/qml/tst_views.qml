@@ -4620,7 +4620,10 @@ TestCase {
         verify(plot.drawable)
         compare(plot.logReason, "")
         compare(message.visible, false)
-        verify(lines.drawnPointCount > 0)
+        // Waited for rather than asserted once: the line arrives from the HDF5
+        // thread, and on a slower runner the first frame can land before it.
+        tryVerify(() => lines.drawnPointCount > 0, 5000,
+                  "the line must draw on a linear axis first")
 
         plot.yLog = true
         waitForRendering(win.view)
