@@ -311,6 +311,18 @@ Item {
         value: surface.rangeValid ? surface.resolved.step : 1.0
     }
 
+    // The one fact about the scale the plot object has to know. On a
+    // logarithmic x axis a pixel column at the left holds a handful of elements
+    // and one at the right holds thousands, so a line folded into buckets of
+    // equal element width is folded wrong for nearly all of the pane -- see
+    // LogColumns in PlotLevels.hpp. Unconditional, unlike the two above: every
+    // x axis has a scale, a time base included.
+    Binding {
+        target: surface.plot
+        property: "xLog"
+        value: surface.xLog
+    }
+
     // --- the y axis: the values, and nothing to set about them -----------
     /// `low`..`high` with a little air at each end, so a line at the extreme is
     /// a line and not part of the frame. A flat series has no span to take a
@@ -712,6 +724,51 @@ Item {
     /// samples rather than a line.
     readonly property real maxZoom: Math.max(256.0, surface.dataLength / 16)
 
+    /// ...and what that ceiling is *for*, in the x the axis prints: the
+    /// narrowest window the x axis may show.
+    ///
+    /// On a linear axis the two are one statement, and maxZoom goes on being
+    /// the one the arithmetic uses. On a logarithmic one they come apart,
+    /// because a zoom there is a share of the *decades* and the same share is
+    /// a different number of elements at every place along the axis. The
+    /// linear ceiling read that way was wrong at both ends at once: at the low
+    /// end of six decades it let the reader zoom into the gap between the
+    /// first two samples and on past it, and at the high end it stopped them
+    /// with a hundred and seventy elements still across the pane. The window
+    /// is what the ceiling was about, so on a logarithmic axis it is the window
+    /// that is held to it -- see logZoomCeiling.
+    readonly property real minimumSpanX:
+        Math.abs(surface.axisMaxX - surface.axisMinX) / surface.maxZoom
+
+    /// The largest zoom that keeps a logarithmic window at least `minimumSpan`
+    /// wide in the data's own units, when the value at `held` -- a position,
+    /// so a logarithm -- stays at `fraction` of the pane.
+    ///
+    /// The window's width grows with its span in decades, so the answer is a
+    /// bisection of that span rather than a formula: the width is a difference
+    /// of two powers, and solving it in closed form is a quadratic in one of
+    /// them for no gain over fifty halvings of a number already in hand. A
+    /// window that cannot be made that wide at all is the whole axis, which is
+    /// a zoom of one.
+    function logZoomCeiling(full, held, fraction, minimumSpan, base) {
+        if (!(full > 0) || !(minimumSpan > 0))
+            return surface.maxZoom
+        const width = (span) => Math.pow(base, held + (1 - fraction) * span)
+                                - Math.pow(base, held - fraction * span)
+        if (!(width(full) > minimumSpan))
+            return 1.0
+        let narrow = 0.0
+        let wide = full
+        for (let i = 0; i < 60; ++i) {
+            const mid = (narrow + wide) / 2
+            if (width(mid) >= minimumSpan)
+                wide = mid
+            else
+                narrow = mid
+        }
+        return Math.max(1.0, full / wide)
+    }
+
     readonly property bool zoomed: zoomX !== 1.0 || zoomY !== 1.0
                                    || panX !== 0.0 || panY !== 0.0
 
@@ -814,8 +871,8 @@ Item {
     ///
     /// Returns the new { zoom, pan } for the caller to assign, because QML has
     /// no out-parameters and two of these run per wheel tick.
-    function zoomedAxis(zoom, pan, low, high, fraction, factor, logarithmic, base) {
-        const next = Math.max(1.0, Math.min(surface.maxZoom, zoom * factor))
+    function zoomedAxis(zoom, pan, low, high, fraction, factor, logarithmic, base,
+                        minimumSpan) {
         // In positions rather than in values, which is the whole of what makes
         // this work on either scale: "hold the value under the pointer still"
         // is "hold its position still", and a position is a decade count on a
@@ -825,6 +882,15 @@ Item {
         const full = to - from
         const span = full / zoom
         const held = (from + to) / 2.0 + pan - span / 2.0 + fraction * span
+        // The ceiling where the pointer is, on a logarithmic axis that has
+        // one -- see minimumSpanX -- and the flat one everywhere else.
+        const ceiling = logarithmic && minimumSpan > 0
+                      ? surface.logZoomCeiling(full, held, fraction, minimumSpan, base)
+                      : surface.maxZoom
+        // Never *out* past where the reader already is, though: a ceiling
+        // that fell below the zoom in hand -- the pointer moved to where the
+        // elements are sparser -- is not a reason to throw them back out.
+        const next = Math.max(1.0, Math.min(Math.max(ceiling, zoom), zoom * factor))
         const nextSpan = full / next
         const centre = held - fraction * nextSpan + nextSpan / 2.0
         return { zoom: next,
@@ -876,7 +942,7 @@ Item {
             const x = surface.zoomedAxis(surface.zoomX, surface.panX,
                                          surface.axisLowX, surface.axisHighX,
                                          fx, factor, surface.xLog,
-                                         surface.xLogBase)
+                                         surface.xLogBase, surface.minimumSpanX)
             surface.zoomX = x.zoom
             surface.panX = x.pan
         }
@@ -897,7 +963,7 @@ Item {
     /// they were computed from. Clamped the way every other path here is --
     /// never below 1, never past maxZoom, never outside the data -- so a
     /// window nobody can be shown comes back as the nearest one that can be.
-    function viewedAxis(low, high, from, to, logarithmic, base) {
+    function viewedAxis(low, high, from, to, logarithmic, base, minimumSpan) {
         const axisFrom = surface.axisPosition(low, logarithmic, base)
         const axisTo = surface.axisPosition(high, logarithmic, base)
         const wantFrom = surface.axisPosition(from, logarithmic, base)
@@ -906,8 +972,13 @@ Item {
         const span = Math.abs(wantTo - wantFrom)
         if (!(full > 0) || !(span > 0))
             return { zoom: 1.0, pan: 0.0 }
-        const zoom = Math.max(1.0, Math.min(surface.maxZoom, full / span))
         const centre = (wantFrom + wantTo) / 2.0
+        // Held about the middle of what was asked for, which is where a stated
+        // window is centred. See zoomedAxis for the ceiling itself.
+        const ceiling = logarithmic && minimumSpan > 0
+                      ? surface.logZoomCeiling(full, centre, 0.5, minimumSpan, base)
+                      : surface.maxZoom
+        const zoom = Math.max(1.0, Math.min(ceiling, full / span))
         return { zoom: zoom,
                  pan: surface.clampPan(centre - (axisFrom + axisTo) / 2.0,
                                        zoom, low, high, logarithmic, base) }
@@ -954,7 +1025,7 @@ Item {
                                            surface.yLog)
         const x = surface.viewedAxis(surface.axisLowX, surface.axisHighX,
                                      wantX.from, wantX.to, surface.xLog,
-                                     surface.xLogBase)
+                                     surface.xLogBase, surface.minimumSpanX)
         const y = surface.viewedAxis(surface.lowerBound, surface.upperBound,
                                      wantY.from, wantY.to, surface.yLog,
                                      surface.yLogBase)
@@ -1027,9 +1098,20 @@ Item {
         const y0 = surface.dataYAt(bottom)
         const y1 = surface.dataYAt(top)
 
-        const span = surface.viewMaxX - surface.viewMinX
-        if (span > 0 && x1 > x0)
-            surface.pushZoomFocus((x0 + x1) / 2.0, span / (x1 - x0))
+        // The middle of the band and the magnification it amounts to, both
+        // measured the way the axis measures: on a logarithmic one the middle
+        // of the band is the geometric mean of its ends, and a band a decade
+        // wide on a pane of six is six times in however many units that
+        // decade holds. Taken the linear way, a band over the first decades of
+        // a wide axis sent the read to the far end of it.
+        const span = surface.axisPosition(surface.viewMaxX, surface.xLog, surface.xLogBase)
+                   - surface.axisPosition(surface.viewMinX, surface.xLog, surface.xLogBase)
+        const band = surface.axisPosition(x1, surface.xLog, surface.xLogBase)
+                   - surface.axisPosition(x0, surface.xLog, surface.xLogBase)
+        if (span > 0 && band > 0)
+            surface.pushZoomFocus(surface.valueAlong(x0, x1, 0.5, surface.xLog,
+                                                     surface.xLogBase),
+                                  span / band)
         surface.setViewRange(x0, x1, y0, y1)
         return true
     }

@@ -18,12 +18,16 @@
 #include "gui/PlotProjection.hpp"
 #include "gui/PlotPyramid.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <vector>
+
+using Catch::Approx;
 
 namespace {
 
@@ -579,5 +583,322 @@ TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
         REQUIRE(gui::coarsenTo(fine, 1LL << 40));
         CHECK(fine.levels.size() == 1);
         CHECK_FALSE(fine.empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A logarithmic x axis: one envelope per column
+// ---------------------------------------------------------------------------
+
+TEST_CASE("any run's extremes come out of the pyramid as the elements' own",
+          "[levels][pyramid][log]")
+{
+    // A column of a logarithmic pane is a run of any length starting anywhere,
+    // not an aligned bucket -- so this is asked of runs that line up with
+    // nothing, across the NaN stretch and the spikes testLine plants.
+    const std::vector<double> line = testLine(50000);
+    const auto count = static_cast<long long>(line.size());
+
+    SECTION("over a base of one")
+    {
+        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), count, 1);
+        for (const long long first : {0LL, 1LL, 13LL, 1999LL, 2003LL, 4095LL, 40000LL}) {
+            for (const long long take : {1LL, 2LL, 3LL, 17LL, 400LL, 4097LL, 9999LL}) {
+                const long long last = std::min(first + take, count);
+                INFO("run " << first << ".." << last);
+                const gui::Extremes want = gui::extremesOf(line.data(), first, last);
+                const gui::Extremes got = gui::extremesOver(pyramid, first, last);
+                REQUIRE(got.found() == want.found());
+                if (!want.found()) {
+                    continue; // a run of nothing but NaN is a gap, and says so
+                }
+                CHECK(got.lowest == want.lowest);
+                CHECK(got.highest == want.highest);
+                // ...and in the order they occurred, which is what keeps a
+                // falling stretch of the line drawn falling.
+                CHECK(got.first() == want.first());
+                CHECK(got.second() == want.second());
+            }
+        }
+    }
+
+    SECTION("over a coarse base, rounded out to it")
+    {
+        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), count, 8);
+        for (const long long first : {0LL, 5LL, 1003LL, 40001LL}) {
+            for (const long long take : {1LL, 9LL, 1000LL}) {
+                const long long last = std::min(first + take, count);
+                const long long from = (first / 8) * 8;
+                const long long to = std::min(((last + 7) / 8) * 8, count);
+                INFO("run " << first << ".." << last << " rounded to " << from << ".." << to);
+                const gui::Extremes want = gui::extremesOf(line.data(), from, to);
+                const gui::Extremes got = gui::extremesOver(pyramid, first, last);
+                REQUIRE(got.found() == want.found());
+                if (want.found()) {
+                    CHECK(got.lowest == want.lowest);
+                    CHECK(got.highest == want.highest);
+                }
+            }
+        }
+    }
+}
+
+namespace {
+
+/// Where `x` falls across a logarithmic pane from `low` to `high`, as a
+/// fraction of it.
+double logFraction(double x, double low, double high)
+{
+    return (std::log2(x) - std::log2(low)) / (std::log2(high) - std::log2(low));
+}
+
+} // namespace
+
+TEST_CASE("a logarithmic pane is folded one envelope per column, from the first element",
+          "[levels][pyramid][log]")
+{
+    // The failure this replaces: a line of a million elements on an axis from
+    // 1 to 1e6 was bucketed six hundred elements at a time, so the first three
+    // decades -- half the pane -- were one bucket. It drew nothing at all below
+    // the first bucket's half-way point and a few straight strokes above it,
+    // and no zoom repaired it because every run was bucketed the same way.
+    constexpr long long kLength = 1000000;
+    constexpr int kColumns = 1000;
+    std::vector<double> line(kLength);
+    for (long long i = 0; i < kLength; ++i) {
+        line[static_cast<std::size_t>(i)] = std::sin(static_cast<double>(i) / 7.0);
+    }
+    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), kLength, 1);
+
+    const double low = 1.0;
+    const double high = static_cast<double>(kLength);
+    const std::optional<gui::LogColumns> columns = gui::logColumnsFor(low, high, kColumns);
+    REQUIRE(columns.has_value());
+
+    std::vector<double> edges;
+    gui::edgesAlong(*columns, 0.0, 1.0, edges);
+    gui::ColumnFold fold;
+    gui::foldColumns(pyramid, edges, fold);
+
+    REQUIRE(fold.values.size() == fold.positions.size());
+    CHECK(fold.summarised);
+    // Bounded by the pane, not by the line: two points a column at most, and
+    // the columns are between one and two a pixel with half a pane of margin
+    // either side.
+    CHECK(fold.values.size() <= 2 * edges.size());
+    CHECK(fold.values.size() <= 8 * static_cast<std::size_t>(kColumns) + 2);
+    REQUIRE(std::is_sorted(fold.positions.begin(), fold.positions.end()));
+
+    SECTION("the line starts at the first element there is a place for")
+    {
+        // Element 0 sits at x = 0, which this axis has no place for; element 1
+        // is the first it does, and it is drawn as itself.
+        REQUIRE_FALSE(fold.positions.empty());
+        CHECK(fold.positions.front() == 1.0);
+        CHECK(fold.values.front() == line[1]);
+    }
+
+    SECTION("every tenth of the pane is drawn as finely as the data allows")
+    {
+        // Counted per tenth of the pane rather than per point, which is what a
+        // reader sees: the old fold put one or two points in each of the first
+        // five tenths and thousands in the last one.
+        for (int tenth = 0; tenth < 10; ++tenth) {
+            const double from = std::exp2(std::log2(high) * tenth / 10.0);
+            const double to = std::exp2(std::log2(high) * (tenth + 1) / 10.0);
+            const auto drawn = std::count_if(
+                fold.positions.begin(), fold.positions.end(),
+                [&](double at) { return at >= from && at < to; });
+            // As many elements as there are, where there are fewer than the
+            // tenth has columns; a column's worth or more everywhere else.
+            const double elements = std::ceil(to) - std::ceil(from);
+            const double wanted = std::min(elements, kColumns / 10.0);
+            INFO("tenth " << tenth << " x " << from << ".." << to << " drew " << drawn);
+            CHECK(static_cast<double>(drawn) >= wanted);
+        }
+    }
+
+    SECTION("no two consecutive points are further apart than a column or two elements")
+    {
+        for (std::size_t i = 1; i < fold.positions.size(); ++i) {
+            const double a = fold.positions[i - 1];
+            const double b = fold.positions[i];
+            if (a < low || b > high) {
+                continue; // the margin either side of the pane
+            }
+            const double apart = logFraction(b, low, high) - logFraction(a, low, high);
+            INFO("points at " << a << " and " << b);
+            CHECK((apart <= 2.0 / kColumns || b - a <= 1.0));
+        }
+    }
+
+    SECTION("each point is a value its own column holds")
+    {
+        // An envelope pair is the extremes of the elements between two edges.
+        // Walk the edges and check each column against the elements themselves.
+        std::size_t at = 0;
+        for (std::size_t c = 0; c + 1 < edges.size() && at < fold.positions.size(); ++c) {
+            const auto first = static_cast<long long>(std::ceil(std::max(edges[c], 0.0)));
+            const auto last = static_cast<long long>(
+                std::min(std::ceil(edges[c + 1]), static_cast<double>(kLength)));
+            if (last <= first) {
+                continue;
+            }
+            const gui::Extremes want = gui::extremesOf(line.data(), first, last);
+            INFO("column " << c << " elements " << first << ".." << last);
+            if (last - first <= 2) {
+                for (long long i = first; i < last; ++i, ++at) {
+                    REQUIRE(fold.positions[at] == static_cast<double>(i));
+                    REQUIRE(fold.values[at] == line[static_cast<std::size_t>(i)]);
+                }
+                continue;
+            }
+            REQUIRE(at + 1 < fold.values.size());
+            CHECK(fold.positions[at] == static_cast<double>(first));
+            CHECK(fold.values[at] == want.first());
+            CHECK(fold.values[at + 1] == want.second());
+            at += 2;
+        }
+        CHECK(at == fold.values.size());
+    }
+}
+
+TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave at a time",
+          "[levels][log]")
+{
+    const std::optional<gui::LogColumns> here = gui::logColumnsFor(10.0, 1e5, 1000);
+    REQUIRE(here.has_value());
+
+    SECTION("a pan inside the margin is served by the columns in hand")
+    {
+        // Half a pane of margin in the logarithm, so a pan of a tenth of the
+        // pane either way needs nothing new -- which is what keeps a drag from
+        // folding on every frame of it.
+        const double tenth = std::pow(1e4, 0.1);
+        CHECK(gui::logColumnsServe(*here, 10.0 * tenth, 1e5 * tenth, 1000));
+        CHECK(gui::logColumnsServe(*here, 10.0 / tenth, 1e5 / tenth, 1000));
+        // A whole pane is past the margin.
+        CHECK_FALSE(gui::logColumnsServe(*here, 1e5, 1e9, 1000));
+    }
+
+    SECTION("a pan that does need new columns finds the same edges where they overlap")
+    {
+        // Aligned to a fixed grid in log2(x), so the edges are not derived from
+        // the view: two views folded apart agree edge for edge where they meet,
+        // and the envelope between two edges cannot change under the pointer.
+        const std::optional<gui::LogColumns> there = gui::logColumnsFor(100.0, 1e6, 1000);
+        REQUIRE(there.has_value());
+        CHECK(there->density == here->density);
+        const long long k = std::max(here->first, there->first);
+        CHECK(here->edge(k) == there->edge(k));
+    }
+
+    SECTION("the density steps by octaves, and between one and two edges land in a column")
+    {
+        for (const double decades : {1.0, 2.0, 3.3, 6.0, 12.0}) {
+            const double octaves = decades * std::log2(10.0);
+            const std::optional<gui::LogColumns> grid =
+                gui::logColumnsFor(1.0, std::pow(10.0, decades), 1000);
+            REQUIRE(grid.has_value());
+            INFO("decades " << decades);
+            const double perColumn = static_cast<double>(grid->density) * octaves / 1000.0;
+            CHECK(perColumn >= 1.0);
+            CHECK(perColumn < 2.0);
+            CHECK((grid->density & (grid->density - 1)) == 0);
+        }
+    }
+
+    SECTION("under an octave there is nothing to fold")
+    {
+        // No column is twice as wide as another there, and the linear path --
+        // which also reads below the pyramid's base -- is the right one.
+        CHECK_FALSE(gui::logColumnsFor(1000.0, 1900.0, 1000).has_value());
+        CHECK(gui::logColumnsFor(1000.0, 2000.0, 1000).has_value());
+        // ...and a window this axis cannot have is not folded either.
+        CHECK_FALSE(gui::logColumnsFor(0.0, 1000.0, 1000).has_value());
+        CHECK_FALSE(gui::logColumnsFor(-5.0, 1000.0, 1000).has_value());
+        CHECK_FALSE(gui::logColumnsFor(1.0, 1000.0, 0).has_value());
+    }
+
+    SECTION("the edges come out ascending whichever way the axis runs")
+    {
+        std::vector<double> forwards;
+        std::vector<double> backwards;
+        gui::edgesAlong(*here, 0.0, 2.0, forwards);
+        gui::edgesAlong(*here, 1e6, -2.0, backwards);
+        REQUIRE_FALSE(forwards.empty());
+        CHECK(std::is_sorted(forwards.begin(), forwards.end()));
+        CHECK(std::is_sorted(backwards.begin(), backwards.end()));
+        // x = start + p * step, so the first edge at 2^(first / density) is
+        // position edge / 2 on the forward axis.
+        CHECK(forwards.front() == Approx(here->edge(here->first) / 2.0));
+    }
+}
+
+TEST_CASE("the smallest value above zero comes out of the line, not out of its summary",
+          "[levels][pyramid][log]")
+{
+    // Where a logarithmic axis starts. A summary keeps each bucket's smallest,
+    // so a bucket holding a zero and a thousandth says zero and the thousandth
+    // is gone -- which was the bottom of a time base's axis, and a decade and a
+    // third of its data off the pane.
+    const auto brute = [](const std::vector<double>& line) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const double value : line) {
+            if (value > 0.0 && std::isfinite(value)) {
+                best = std::min(best, value);
+            }
+        }
+        return best;
+    };
+
+    SECTION("a time base from zero")
+    {
+        std::vector<double> time(20000);
+        for (std::size_t i = 0; i < time.size(); ++i) {
+            time[i] = static_cast<double>(i) / 1000.0;
+        }
+        const gui::LinePyramid pyramid = gui::pyramidOf(time.data(), 20000, 1);
+        double smallest = 0.0;
+        REQUIRE(gui::smallestPositive(pyramid, smallest));
+        CHECK(smallest == 0.001);
+
+        // The summary's answer, for contrast: the first pair is the zero and
+        // the end of the first bucket.
+        std::vector<double> summary;
+        gui::reduceBuckets(time.data(), 20000, 22, summary);
+        CHECK(brute(summary) > 0.02);
+    }
+
+    SECTION("a line crossing zero everywhere, with NaN in it")
+    {
+        std::vector<double> line = testLine(30000);
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (std::isfinite(line[i])) {
+                line[i] -= 0.5; // push most of the line below zero
+            }
+        }
+        line[17777] = 1e-9; // the answer, hidden next to negatives
+        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 30000, 1);
+        double smallest = 0.0;
+        REQUIRE(gui::smallestPositive(pyramid, smallest));
+        CHECK(smallest == brute(line));
+        CHECK(smallest == 1e-9);
+
+        SECTION("and over a coarse base, never below the truth")
+        {
+            const gui::LinePyramid coarse = gui::pyramidOf(line.data(), 30000, 16);
+            double answer = 0.0;
+            REQUIRE(gui::smallestPositive(coarse, answer));
+            CHECK(answer >= 1e-9);
+        }
+    }
+
+    SECTION("nothing above zero is no answer")
+    {
+        const std::vector<double> line{-1.0, 0.0, -3.0, kNaN, -0.0};
+        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 5, 1);
+        double smallest = 42.0;
+        CHECK_FALSE(gui::smallestPositive(pyramid, smallest));
     }
 }

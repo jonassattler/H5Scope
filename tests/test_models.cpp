@@ -4315,6 +4315,52 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     }
 }
 
+TEST_CASE("a picture of a logarithmic plot owns where its points are", "[plot][log]")
+{
+    // A line folded onto a logarithmic axis's columns carries its x rather
+    // than leaving them to the axis -- see PlotLine::xs -- and that array is
+    // borrowed exactly as the values are. The picture a copy takes lives on
+    // past the next fold, so adopt() has to take both: a picture holding the
+    // values and still pointing at the model's x would be drawn, a moment
+    // later, against whatever that memory had become.
+    gui::PlotItem copy;
+    copy.setWidth(300.0);
+    copy.setHeight(100.0);
+    copy.setXLog(true);
+    copy.setXMin(1.0);
+    copy.setXMax(1000.0);
+    copy.setYMin(0.0);
+    copy.setYMax(10.0);
+
+    {
+        const std::vector<double> values{2.0, 4.0, 6.0, 8.0};
+        auto xs =
+            std::make_unique<std::vector<double>>(std::vector<double>{1.0, 10.0, 100.0, 1000.0});
+
+        gui::PlotItem item;
+        item.setWidth(300.0);
+        item.setHeight(100.0);
+        gui::PlotLine line;
+        line.values = values.data();
+        line.xs = xs->data();
+        line.count = 4;
+        item.setLines({line}, gui::PlotAxis{});
+        copy.adopt(&item);
+
+        // The dangerous thing, done on purpose: the model folds again and its
+        // old x go -- overwritten first, so a copy still reading them would
+        // read nonsense rather than luckily reading the same numbers.
+        std::fill(xs->begin(), xs->end(), -1.0);
+        xs.reset();
+    }
+
+    // A decade a third of the pane, so 100 sits two thirds across it.
+    const QVariantMap found = copy.nearestSample(200.0, 40.0);
+    REQUIRE(found.value(QStringLiteral("valid")).toBool());
+    CHECK(found.value(QStringLiteral("x")).toDouble() == Catch::Approx(100.0));
+    CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(6.0));
+}
+
 TEST_CASE_METHOD(ControllerFixture, "the plot tab draws every line on the common axis",
                  "[plot][axes]")
 {

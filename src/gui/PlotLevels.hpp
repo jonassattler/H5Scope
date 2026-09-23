@@ -342,4 +342,89 @@ inline constexpr int kPrefetchOctaves = 2;
 [[nodiscard]] std::size_t coldestLevel(std::span<const HeldLevel> held, const LevelView& view,
                                        const PlotFocus& focus);
 
+// ---------------------------------------------------------------------------
+// A logarithmic x axis: a bucket is still a column
+// ---------------------------------------------------------------------------
+//
+// Everything above folds a line into buckets of equal *element* width, and on
+// a linear axis that is the same thing as equal pixel width. On a logarithmic
+// one it is not, and the difference is the whole of what went wrong there. A
+// pane showing 1 to 1e6 gives each decade a sixth of its width, so the first
+// decade -- nine elements of an index axis -- is a sixth of the pane and the
+// last -- nine hundred thousand -- is another sixth. A bucket sized for the
+// pane on average was about six hundred elements wide: the left half of the
+// plot was one bucket, drawn as nothing at all where it started below the
+// first drawable x, and as two or three straight strokes after that. Zooming
+// never repaired it, because every run the zoom read was bucketed the same way
+// and so was the renderer's own summary on top of it: whatever the reader
+// looked at, the left of the pane was an order of magnitude coarser for every
+// decade on screen.
+//
+// So on a logarithmic x axis a line is folded *per column*: one envelope for
+// each pixel column's own run of elements, however many that is, out of the
+// pyramid the line is already held in. It costs what a frame of the linear
+// path costs -- a pyramid answers any run of elements from a handful of its
+// buckets -- and it reads nothing.
+//
+// The columns are **aligned**, for the reason the linear buckets are (see
+// PlotWindow): edges derived from the view would slide with every pixel of a
+// pan, and the envelope each column selects would change under the pointer. So
+// the edges are a fixed grid in the logarithm of x -- edge `k` sits at
+// `2^(k / density)` -- and a pan moves which edges are on screen and nothing
+// about what lies between them. The density is a power of two, so a zoom steps
+// from one grid to the next an octave of density at a time.
+//
+// It applies to a window spanning at least an octave of x. Below that no
+// column is more than twice as wide as another, the linear path's own margin
+// covers the difference, and that path goes on reading below the pyramid's
+// base where the fold cannot -- which is exactly where a reader zoomed that far
+// in is.
+
+/// The columns a line is folded at on a logarithmic x axis.
+struct LogColumns
+{
+    /// Edges per octave of x. A power of two.
+    long long density = 0;
+    /// The first and last edge held, by index: edge `k` sits at
+    /// `2^(k / density)`.
+    long long first = 0;
+    long long last = 0;
+
+    [[nodiscard]] bool operator==(const LogColumns&) const = default;
+
+    [[nodiscard]] double edge(long long k) const
+    {
+        return std::exp2(static_cast<double>(k) / static_cast<double>(density));
+    }
+
+    /// Whether the edges held reach from `low` to `high`, in x.
+    [[nodiscard]] bool covers(double low, double high) const
+    {
+        return density > 0 && edge(first) <= low && edge(last) >= high;
+    }
+};
+
+/// The columns a logarithmic x axis showing `low`..`high` across `columns`
+/// pixel columns is folded at -- or nothing, when the window spans less than
+/// an octave or is not a window on such an axis at all.
+///
+/// Between one and two edges per pixel column, and half a pane of margin either
+/// side in the logarithm: a pan can go half a pane before it needs another
+/// fold, and a zoom stays on this grid until the density it wants changes by
+/// an octave. So at most four edges per column are ever folded.
+[[nodiscard]] std::optional<LogColumns> logColumnsFor(double low, double high, int columns);
+
+/// Whether `held` still serves `low`..`high`: the density the view wants and
+/// a reach that covers it. What a model asks before it folds again.
+[[nodiscard]] bool logColumnsServe(const LogColumns& held, double low, double high, int columns);
+
+/// The edges of `columns` as positions along a line whose position `p` sits at
+/// `x = start + p * step`, ascending, into `out`.
+///
+/// The index and the stated range axes are both this map, and so is a custom
+/// tab's line stretched over one of them with its step scaled. A negative step
+/// draws the line right to left; the edges come out ascending all the same,
+/// because a column is a run of positions whichever way the pane reads them.
+void edgesAlong(const LogColumns& columns, double start, double step, std::vector<double>& out);
+
 } // namespace gui

@@ -88,6 +88,22 @@ struct PlotLine
     double positionStart = 0.0;
     double positionStep = 1.0;
 
+    /// The x of every sample, when the line states them rather than leaving
+    /// them to the axis: `count` of them, borrowed on the same terms as
+    /// `values`.
+    ///
+    /// What a line folded onto a logarithmic axis's columns is drawn from --
+    /// see LogColumns in PlotLevels.hpp. Its points are one or two per pixel
+    /// column, so they are evenly spaced on the *pane* and nowhere near evenly
+    /// spaced in position, and no start and step can say where they are. When
+    /// this is set the two above and the axis are not consulted: the model that
+    /// folded the line has already put each point where the axis would.
+    ///
+    /// Drawn point for point, never summarised again, because they are already
+    /// a summary at the pane's own resolution: the renderer's envelope buckets
+    /// by position, which is the very thing that went wrong on this axis.
+    const double* xs = nullptr;
+
     /// Whether these values are a *summary* of the line rather than the line.
     ///
     /// Set by whoever read them. A model that folded the file into an envelope
