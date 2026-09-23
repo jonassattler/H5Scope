@@ -6,6 +6,7 @@
 #include "postproc/Array.hpp"
 #include "postproc/Operations.hpp"
 #include "postproc/Pipeline.hpp"
+#include "postproc/Script.hpp"
 #include "postproc/Subscripts.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -883,5 +884,197 @@ TEST_CASE("a whole dimension parses in time proportional to itself",
         const postproc::IndexExpression down =
             postproc::parseIndexExpression(QStringLiteral("::-1"), 5);
         REQUIRE(down.indices == std::vector<hsize_t>{4, 3, 2, 1, 0});
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The script
+// ---------------------------------------------------------------------------
+
+namespace {
+
+h5core::TypeInfo floats()
+{
+    h5core::TypeInfo type;
+    type.cls = h5core::TypeClass::Float;
+    type.description = "float64";
+    type.size = 8;
+    return type;
+}
+
+/// A struct with a four-long array of doubles in it, as `/plotting/events`
+/// has: the case where a member appends an axis.
+h5core::TypeInfo withSamples()
+{
+    h5core::TypeInfo samples;
+    samples.cls = h5core::TypeClass::Array;
+    samples.description = "array[4] of float64";
+    samples.arrayDims = {4};
+    samples.base = std::make_shared<const h5core::TypeInfo>(floats());
+
+    h5core::TypeInfo type;
+    type.cls = h5core::TypeClass::Compound;
+    type.description = "compound";
+    type.memberNames = {"time", "samples"};
+    type.members = {h5core::TypeMember{"time", floats(), 0},
+                    h5core::TypeMember{"samples", samples, 8}};
+    return type;
+}
+
+postproc::Script script(const char* text)
+{
+    return postproc::parseScript(QString::fromUtf8(text));
+}
+
+} // namespace
+
+TEST_CASE("a script reads as the rows it stands for", "[postproc][script]")
+{
+    const postproc::Script read = script("/group/dataset\n"
+                                         ".select(samples)\n"
+                                         ".slice(1, :)\n"
+                                         ".max(1)\n"
+                                         ".transpose\n"
+                                         ".reshape(2, 10)");
+    REQUIRE(read.ok());
+    REQUIRE(read.path == QStringLiteral("/group/dataset"));
+    REQUIRE(read.member == QStringLiteral(".samples"));
+    REQUIRE(read.sliced);
+    REQUIRE(read.slice == QStringLiteral("1, :"));
+    REQUIRE(read.steps == std::vector<Step>{{OperationKind::Max, "1"},
+                                            {OperationKind::Transpose, ""},
+                                            {OperationKind::Reshape, "2, 10"}});
+
+    SECTION("the line breaks are optional")
+    {
+        const postproc::Script flat = script(
+            "/group/dataset.select(samples).slice(1, :).max(1).transpose.reshape(2, 10)");
+        REQUIRE(flat == read);
+        // ...and so is the space around a step.
+        REQUIRE(script("/group/dataset .select(samples)\n  .slice(1, :) .max (1)"
+                       ".transpose .reshape(2, 10)")
+                == read);
+    }
+
+    SECTION("it is written one step to a line, and reads back as itself")
+    {
+        const QString lines = postproc::writeScript(read);
+        REQUIRE(lines
+                == QStringLiteral("/group/dataset\n.select(samples)\n.slice(1, :)\n"
+                                  ".max(1)\n.transpose\n.reshape(2, 10)"));
+        REQUIRE(postproc::parseScript(lines) == read);
+
+        // On one line every step keeps its parentheses, because there they are
+        // what says where the path stops.
+        const QString flat = postproc::writeScript(read, postproc::ScriptLayout::OneLine);
+        REQUIRE(flat
+                == QStringLiteral("/group/dataset.select(samples).slice(1, :).max(1)"
+                                  ".transpose().reshape(2, 10)"));
+        REQUIRE(postproc::parseScript(flat) == read);
+    }
+
+    SECTION("a slice after the first is a step like any other")
+    {
+        const postproc::Script twice = script("/d\n.slice(0)\n.max\n.slice(1)");
+        REQUIRE(twice.slice == QStringLiteral("0"));
+        REQUIRE(twice.steps
+                == std::vector<Step>{{OperationKind::Max, ""}, {OperationKind::Slice, "1"}});
+        // ...and a pipeline that never slices reads the whole of the dataset.
+        const postproc::Script none = script("/d\n.max(0)");
+        REQUIRE_FALSE(none.sliced);
+        REQUIRE(postproc::pipelineOf(none, {}, 2).front().argument.isEmpty());
+    }
+}
+
+TEST_CASE("a path runs to the end of its line, or to the first operation on it",
+          "[postproc][script]")
+{
+    // A link name holds a '.' as freely as a '[': these are all datasets.
+    REQUIRE(script("/data/run.3\n.max").path == QStringLiteral("/data/run.3"));
+    REQUIRE(script("/data/run.3").path == QStringLiteral("/data/run.3"));
+    REQUIRE(script("/stress/odd.name(1)").path == QStringLiteral("/stress/odd.name(1)"));
+    // Without parentheses an operation's name on the first line is part of the
+    // path: one line has nothing else to say where the path stops.
+    REQUIRE(script("/data/run.max").path == QStringLiteral("/data/run.max"));
+    REQUIRE(script("/data/run.max").steps.empty());
+    // With them it is a step.
+    REQUIRE(script("/a.b/c.max(0)").path == QStringLiteral("/a.b/c"));
+    REQUIRE(script("  /a/b  \n.abs").path == QStringLiteral("/a/b"));
+    REQUIRE(script("/a/b\r\n.abs\r\n").steps
+            == std::vector<Step>{{OperationKind::Abs, ""}});
+}
+
+TEST_CASE("a script says what is wrong with it", "[postproc][script]")
+{
+    const auto why = [](const char* text) {
+        const postproc::Script read = script(text);
+        INFO(text);
+        REQUIRE_FALSE(read.ok());
+        return read.error.toStdString();
+    };
+    REQUIRE_THAT(why(""), ContainsSubstring("path of a dataset"));
+    REQUIRE_THAT(why("/d\nmax(0)"), ContainsSubstring("'max(0)' is not a step"));
+    REQUIRE_THAT(why("/d\n.median(0)"), ContainsSubstring("'median' is not an operation"));
+    REQUIRE_THAT(why("/d\n.max(0"), ContainsSubstring("never closed"));
+    REQUIRE_THAT(why("/d\n."), ContainsSubstring("followed by an operation"));
+    REQUIRE_THAT(why("/d\n.slice(:)\n.select(samples)"), ContainsSubstring("comes first"));
+    REQUIRE_THAT(why("/d\n.select(a)\n.select(b)"), ContainsSubstring("comes first"));
+    REQUIRE_THAT(why("/d\n.select()"), ContainsSubstring("needs a member"));
+}
+
+TEST_CASE("a script is checked against a dataset without reading it",
+          "[postproc][script]")
+{
+    SECTION("the shape after every step, as the rows would state it")
+    {
+        const postproc::ScriptCheck check =
+            postproc::checkScript(script("/d\n.slice(0)\n.max(0)\n.cumsum"), {2, 3, 4},
+                                  floats());
+        REQUIRE(check.ok());
+        REQUIRE(check.output == std::vector<hsize_t>{4});
+    }
+
+    SECTION("a refusal names the step that gave it")
+    {
+        const postproc::ScriptCheck check =
+            postproc::checkScript(script("/d\n.max(0)\n.max(5)"), {2, 3}, floats());
+        REQUIRE_THAT(check.error.toStdString(), ContainsSubstring(".max(5): axis 5"));
+        REQUIRE(check.output == std::vector<hsize_t>{3});
+
+        const postproc::ScriptCheck slice =
+            postproc::checkScript(script("/d\n.slice(9)"), {2, 3}, floats());
+        REQUIRE_THAT(slice.error.toStdString(), ContainsSubstring(".slice(9): "));
+    }
+
+    SECTION("a struct is not a number, and a member of one can be")
+    {
+        const postproc::ScriptCheck whole =
+            postproc::checkScript(script("/events\n.max"), {10}, withSamples());
+        REQUIRE_THAT(whole.error.toStdString(), ContainsSubstring(".select"));
+
+        const postproc::ScriptCheck member = postproc::checkScript(
+            script("/events\n.select(samples)\n.max(1)"), {10}, withSamples());
+        REQUIRE(member.ok());
+        REQUIRE(member.input == std::vector<hsize_t>{10, 4});
+        REQUIRE(member.output == std::vector<hsize_t>{10});
+
+        const postproc::ScriptCheck missing = postproc::checkScript(
+            script("/events\n.select(nothing)"), {10}, withSamples());
+        REQUIRE_THAT(missing.error.toStdString(), ContainsSubstring(".select(nothing): "));
+    }
+
+    SECTION("a subscript on the member and one on the slice are the same selection")
+    {
+        // The identity the whole member notation rests on, kept here by the
+        // same function the slice bar uses rather than by a second copy of it.
+        const postproc::ScriptCheck shortSpelling = postproc::checkScript(
+            script("/events\n.select(samples[2])\n.slice(0:5)"), {10}, withSamples());
+        const postproc::ScriptCheck longSpelling = postproc::checkScript(
+            script("/events\n.select(samples)\n.slice(0:5, 2)"), {10}, withSamples());
+        INFO(shortSpelling.error.toStdString() << " / " << longSpelling.error.toStdString());
+        REQUIRE(shortSpelling.ok());
+        REQUIRE(longSpelling.ok());
+        REQUIRE(shortSpelling.pipeline == longSpelling.pipeline);
+        REQUIRE(shortSpelling.output == std::vector<hsize_t>{5});
     }
 }
