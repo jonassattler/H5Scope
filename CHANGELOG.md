@@ -25,6 +25,38 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.0
+
+**A pipeline can be written as text.** Untick **enable visual editing** in the
+postprocessing panel and its rows become the same pipeline written out a step
+to a line — `/group/dataset`, `.select(samples)`, `.slice(1, :)`, `.max(1)` —
+and the two stay in step either way round. The text is checked as you type,
+with the step that will not run named in the reason; Return applies it and puts
+it back a step to a line, and Shift+Return starts a new line. Writing another
+dataset's path on the first line opens that dataset and runs the pipeline there.
+
+**Eleven more operations.** `sum`, `prod`, `cumsum`, `cumprod`, `diff`, `clip`,
+`sqrt` and `pow` are numpy's and answer what numpy answers, down to the last
+bit of a sum; their arguments are written as numpy's are, by position or by
+name, as in `diff(1, axis=0)` or `sum(0, initial=5)`. `add` and `multiply` take
+a number, and `normalize(min, max)` rescales the finite values onto a range —
+0 to 1 unless told otherwise.
+
+**A custom plot's line can be a pipeline.** Each line's card has **enable
+postprocessing**; ticked, its SLICE box becomes a DATA box that takes a whole
+pipeline in the same text form, completes the dataset's path, and says so when
+what the pipeline leaves is not a single line. A line with only a slice in it
+reads exactly what it did before. **Add to custom plot**, at the foot of the
+postprocessing panel, puts what the panel is drawing into a new or an existing
+custom plot, as soon as that is a line.
+
+**A custom tab's lines are drawn at full strength.** Adding a second line
+used to dim every line on the tab, which is how the Plot tab shows where a
+bundle of rows piles up but only hid lines that were each put there on purpose.
+
+**The dataset's path at the top of the postprocessing panel is no longer cut
+short** while there is room beside it.
+
 ## 0.6.9
 
 **Zooming on a logarithmic x axis works.** The line used to be summarised in
