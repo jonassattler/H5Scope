@@ -3459,6 +3459,57 @@ TestCase {
         restoreExportSettings()
     }
 
+    /// ...and read the way Word reads it, the picture is still a page.
+    ///
+    /// Every assertion above reads the alpha, and on Windows the reader that
+    /// matters does not: Qt offers the picture there as a bitmap and Word
+    /// keeps its three channels. With the ground stored premultiplied, a pixel
+    /// with nothing on it is black in those three, so from 0.6.3 until 0.6.9
+    /// a publication figure pasted into Word was a black slab with its lines
+    /// on it and its numbers -- black -- gone. The test above passed the whole
+    /// time. opaquePixelOnClipboard is Qt's own conversion for that bitmap,
+    /// so this is the paste as Word receives it, on any platform.
+    function test_a_publication_copy_read_without_its_alpha_is_black_ink_on_white() {
+        verify(select("/series/a"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot && plot.drawable)
+
+        const wide = 240
+        const tall = 180
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = wide
+        AppController.plotExportHeight = tall
+        AppController.plotExportPublication = true
+
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, wide)
+
+        let paper = 0
+        let ink = 0
+        let samples = 0
+        for (let x = 0; x < wide; x += 2) {
+            for (let y = 0; y < tall; y += 2) {
+                const pixel = ImageClipboard.opaquePixelOnClipboard(x, y)
+                if (pixel.r > 0.95 && pixel.g > 0.95 && pixel.b > 0.95)
+                    ++paper
+                else if (pixel.r < 0.05 && pixel.g < 0.05 && pixel.b < 0.05)
+                    ++ink
+                ++samples
+            }
+        }
+        verify(paper > samples * 2 / 3,
+               "without its alpha a publication picture must be a white page, "
+               + "and " + paper + " of " + samples + " samples were white")
+        // The numbers are the one part drawn in the ink the ground used to be,
+        // so this is the count that says they can be read at all.
+        verify(ink > 10, "the numbers must still be black on it: " + ink)
+        verify(ink < samples / 4,
+               "black must be the ink and not the ground: " + ink + " of " + samples)
+
+        restoreExportSettings()
+    }
+
     /// A publication picture keeps the colours -- the light theme's.
     ///
     /// Until 0.6.4 it did not: every stroke went out in one black ink, which

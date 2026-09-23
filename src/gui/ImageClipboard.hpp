@@ -11,11 +11,46 @@
 #include <QtQml/qqmlregistration.h>
 
 QT_BEGIN_NAMESPACE
+class QImage;
+class QMimeData;
 class QQuickItem;
 class QQuickItemGrabResult;
 QT_END_NAMESPACE
 
 namespace gui {
+
+/// One picture out of two renders of it, on white above and on black below.
+/// See ImageClipboard::copyItem for the arithmetic.
+///
+/// **What comes back is straight ARGB32, and the empty ground is transparent
+/// *white*.** Both are for the reader that drops the alpha, and on Windows
+/// that is Word. Qt's Windows clipboard offers a picture as CF_DIBV5 and
+/// CF_DIB and never as PNG, and writing CF_DIB it converts anything
+/// premultiplied to RGB32 and keeps only the three channels. Premultiplied, a
+/// pixel with nothing on it is (0, 0, 0, 0) -- so a publication picture
+/// pasted into Word from 0.6.3 until 0.6.9 was a black slab with the lines on
+/// it and the numbers, which are black, gone into it. It pasted correctly out
+/// of a Linux session through a remote desktop, which offers image/png, and
+/// that is what made it look like a question of the picture rather than of
+/// the platform.
+///
+/// Straight, the colour of an empty pixel is free, so it is the page's.
+/// A reader honouring the alpha sees exactly what it saw before; one dropping
+/// it sees black ink on white paper, the edges of the type a little harder
+/// than they were drawn. That is the whole of the cost.
+[[nodiscard]] QImage composeOverNothing(const QImage& stacked);
+
+/// What copyItem() puts on the clipboard: the image, and -- under
+/// `pngFormat`, when it is not empty -- the same image as PNG, which carries
+/// the alpha and the dpi through any reader that takes it. The caller owns
+/// the result until it hands it to QClipboard.
+[[nodiscard]] QMimeData* pictureMimeData(const QImage& image, const QString& pngFormat);
+
+/// The clipboard format a PNG must be offered under for this platform's
+/// readers to find it, or empty where Qt offers one already. On Windows that
+/// is the native "PNG" format Office reads before any bitmap, and which Qt
+/// leaves out on purpose; see composeOverNothing for what that cost.
+[[nodiscard]] QString nativePngFormat();
 
 /// Puts a picture of an item on the system clipboard.
 ///
@@ -118,6 +153,16 @@ public:
     /// size is no witness to either. Nothing in the application reads this one
     /// either.
     [[nodiscard]] Q_INVOKABLE QColor pixelOnClipboard(int x, int y) const;
+
+    /// The same pixel as a reader that ignores alpha gets it: Word pasting
+    /// Qt's CF_DIB on Windows, reproduced here by the conversion Qt makes to
+    /// write one. Opaque by construction.
+    ///
+    /// The witness the suite was missing. A publication picture was right in
+    /// every pixel pixelOnClipboard() could see -- the ground clear, the ink
+    /// black -- and black on black in the one reading most readers' word
+    /// processor actually makes. See composeOverNothing.
+    [[nodiscard]] Q_INVOKABLE QColor opaquePixelOnClipboard(int x, int y) const;
 
 Q_SIGNALS:
     /// The picture is on the clipboard.
