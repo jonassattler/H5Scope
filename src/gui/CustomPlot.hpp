@@ -177,6 +177,10 @@ public:
         /// Whether that axis stays at the whole of its line while the reader
         /// zooms and pans in y.
         AxisFixedRole,
+        /// Whether the line is a postprocessing pipeline -- a postproc::Script
+        /// -- rather than a slice. What turns the card's SLICE box into a DATA
+        /// box that takes several lines.
+        PostprocessRole,
     };
     Q_ENUM(Roles)
 
@@ -208,6 +212,18 @@ public:
     // --- the entries ------------------------------------------------------
     /// Add a slice, written as a line. Returns the row it landed on.
     Q_INVOKABLE int addExpression(const QString& text);
+    /// Add a pipeline, written as a postproc::Script: what the postprocessing
+    /// panel's add-to-custom-plot button hands over. The line has
+    /// postprocessing on from the start. Returns the row it landed on.
+    Q_INVOKABLE int addScript(const QString& text);
+    /// Make a line a pipeline, or a slice again.
+    ///
+    /// Turning it on rewrites the slice as the script that says the same
+    /// thing, so nothing drawn moves. Turning it off writes the script back as
+    /// a slice, and the operations cannot come with it -- a slice has nowhere
+    /// to put them -- so the script is kept on the line for the session and
+    /// ticking the box again brings it back whole.
+    Q_INVOKABLE void setPostprocess(int row, bool on);
     /// Add every 1-D line of `path`, as the plot tab would draw them: the last
     /// dimension runs along x and every other one is spread over the lines.
     ///
@@ -444,6 +460,14 @@ private:
         /// force; `ownAxis` below is whether one is.
         bool separateAxis = false;
         bool axisFixed = false;
+        /// Whether `expression` is a pipeline rather than a slice. See
+        /// setPostprocess, and readLine, which is the one place it changes
+        /// how anything is read.
+        bool postprocess = false;
+        /// The script as it last was, while postprocessing is off for this
+        /// line: what ticking it again puts back. Not saved -- it is the undo
+        /// of one checkbox, not a second expression.
+        QString unticked;
 
         /// Filled by the last read.
         QString problem;

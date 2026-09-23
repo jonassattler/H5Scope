@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Jonas Sattler
 # SPDX-License-Identifier: GPL-3.0-only
 
-# The postprocessing pipeline: the array engine, the six operations, and the
-# computed data source the views read the result through.
+# The postprocessing pipeline: the array engine, the operations, the script a
+# pipeline is written out as, and the computed data source the views read the
+# result through.
 #
 # Between h5core and gui in the stack. It holds no Qt type of its own -- there
 # is no QObject here and AUTOMOC is off -- but it links Qt6::Core, because the
@@ -14,6 +15,7 @@ add_library(postproc STATIC
   MemberPath.cpp
   Operations.cpp
   Pipeline.cpp
+  Script.cpp
   ComputedDataset.cpp
 )
 

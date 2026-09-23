@@ -86,6 +86,11 @@ struct RunResult {
                             const std::vector<Step>& steps,
                             std::size_t upTo);
 
+/// Whether the first `upTo` steps leave whole numbers whole -- every one of
+/// them does. What ComputedDataset is told about a pipeline's output, so that
+/// a sum of integers prints as one and a square root of them does not.
+[[nodiscard]] bool preservesIntegers(const std::vector<Step>& steps, std::size_t upTo);
+
 /// Read exactly the elements `indices` names, dropping the dimensions `drop`
 /// marks. Exposed for the tests, which read a selection without a pipeline
 /// around it.

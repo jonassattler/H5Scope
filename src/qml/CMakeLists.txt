@@ -55,6 +55,7 @@ qt_add_qml_module(appqml
     TableSetupPanel.qml
     PostprocessPanel.qml
     PostprocessStepRow.qml
+    ScriptField.qml
     TextPane.qml
     CompoundPane.qml
     FilePicker.qml

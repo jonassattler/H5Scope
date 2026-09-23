@@ -430,6 +430,100 @@ TestCase {
         verify(plot.hasData, "a member named by Tab is a line like any other")
     }
 
+    function test_a_line_with_postprocessing_takes_a_pipeline_in_a_data_box() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "entryBox")[0]
+        box.forceActiveFocus()
+        box.text = "/matrix[:, 0]"
+        box.textEdited()
+        keyClick(Qt.Key_Return)
+        settleReads()
+
+        const label = findAllOf(view, "entryBoxLabel")[0]
+        compare(label.text, "slice")
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.pointCount, 4)
+
+        // Ticked, the slice is rewritten as the script that says the same
+        // thing, and the box that shows it is the one that takes several lines.
+        mouseClick(findAllOf(view, "entryPostprocess")[0])
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(label.text, "data", "it is not just a slice any more")
+        verify(!box.visible)
+        const script = findAllOf(view, "entryScript")[0]
+        verify(script.visible)
+        compare(script.text, "/matrix\n.slice(:, 0)")
+        compare(plot.pointCount, 4, "and nothing drawn moved")
+
+        // A pipeline that leaves more than a line is warned about as it is
+        // typed, in the words of what it leaves.
+        script.forceEditing()
+        script.text = "/matrix\n.abs"
+        waitForRendering(win.contentItem)
+        verify(script.invalid, "the box must be marked")
+        const notes = findAllOf(view, "entryNote").filter((n) => n.visible)
+        compare(notes.length, 1)
+        verify(notes[0].text.indexOf("one dimension") >= 0,
+               "the reason must say what a line has to be: " + notes[0].text)
+
+        // ...and one that reduces to a line is drawn.
+        script.text = "/matrix\n.max(1)"
+        verify(!script.invalid)
+        keyClick(Qt.Key_Return)
+        settleReads()
+        compare(plot.maximum, 32)
+        compare(script.text, "/matrix\n.max(1)")
+    }
+
+    function test_the_data_box_completes_a_path_and_writes_its_slice() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "entryPostprocess")[0])
+        waitForRendering(win.contentItem)
+
+        const script = findAllOf(view, "entryScript")[0]
+        verify(script.visible)
+        script.forceEditing()
+        script.text = "/series/ha"
+        script.cursorPosition = script.text.length
+        tryVerify(() => AppController.completions("/series/ha")[0] === "/series/half[:]",
+                  10000, "the group's listing and the dataset's rank must arrive")
+
+        // A dataset completes with the subscript that selects the whole of it,
+        // and in a script that is the slice line under the path.
+        keyClick(Qt.Key_Tab)
+        compare(script.text, "/series/half\n.slice(:)")
+
+        keyClick(Qt.Key_Return)
+        settleReads()
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.pointCount, 32, "and what Tab wrote is a line that reads")
+
+        // A slice the reader has written already is theirs, and stays.
+        script.forceEditing()
+        script.text = "/series/ha\n.slice(0:4)"
+        script.cursorPosition = "/series/ha".length
+        keyClick(Qt.Key_Tab)
+        compare(script.text, "/series/half\n.slice(0:4)")
+    }
+
     function test_a_line_that_will_not_read_says_why_under_its_box() {
         const win = openWindow()
         win.addCustomTab()

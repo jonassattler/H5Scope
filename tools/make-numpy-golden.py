@@ -4,8 +4,8 @@
 
 """Write the numpy answers the postprocessing suite is checked against.
 
-`postprocessing.md` asks for these six operations to work *exactly* as numpy's
-do, and the only way to know whether they do is to ask numpy. This runs a few
+`postprocessing.md` asks for these operations to work *exactly* as numpy's do,
+and the only way to know whether they do is to ask numpy. This runs a few
 hundred shape-and-argument combinations through it and writes what came back
 into a header the Catch2 suite includes.
 
@@ -97,6 +97,86 @@ PERMUTATIONS = ["", "0", "1,0", "0,1", "-1,-2", "2,0,1", "0,2,1", "2,1,0",
 RESHAPES = ["1", "-1", "5", "0", "2,3", "3,2", "6", "-1,2", "2,-1", "-1,-1",
             "1,-1", "24", "2,12", "4,3,2", "-1,4", "0,-1", "2,3,4", "120",
             "-1,5", "1,1,1"]
+
+def _axes(text):
+    """The axis argument a comma-separated list stands for (see axes_argument,
+    which is defined further down with the other readers)."""
+    if text == "":
+        return None
+    parts = [int(p) for p in text.split(",")]
+    return parts[0] if len(parts) == 1 else tuple(parts)
+
+
+# The operations added after the first six, each as the argument this
+# application reads and the numpy call that argument stands for. Written out
+# pair by pair rather than parsed, because the parsing is the thing under test:
+# a golden file that derived the call from the text with the same rules as the
+# code would agree with the code by construction.
+FOLDS = [(text, {"axis": _axes(text)}) for text in
+         ["", "0", "1", "2", "-1", "-2", "0,1", "0,2", "1,2", "0,1,2", "3", "5",
+          "0,0", "1,-1", "-1,-1", "0,-2"]] + [
+    ("None", {"axis": None}),
+    ("initial=5", {"initial": 5.0}),
+    ("0, initial=2.5", {"axis": 0, "initial": 2.5}),
+    ("axis=(0,1)", {"axis": (0, 1)}),
+    ("axis=-1, initial=-1", {"axis": -1, "initial": -1.0}),
+    ("(0, 1), initial=0.5", {"axis": (0, 1), "initial": 0.5}),
+]
+
+SCANS = [
+    ("", {}),
+    ("None", {"axis": None}),
+    ("0", {"axis": 0}),
+    ("1", {"axis": 1}),
+    ("-1", {"axis": -1}),
+    ("-2", {"axis": -2}),
+    ("2", {"axis": 2}),
+    ("5", {"axis": 5}),
+    ("axis=0", {"axis": 0}),
+]
+
+DIFFS = [
+    ("", {}),
+    ("1", {"n": 1}),
+    ("2", {"n": 2}),
+    ("0", {"n": 0}),
+    ("5", {"n": 5}),
+    ("-1", {"n": -1}),
+    ("1, 0", {"n": 1, "axis": 0}),
+    ("1, -2", {"n": 1, "axis": -2}),
+    ("2, 1", {"n": 2, "axis": 1}),
+    ("3, -1", {"n": 3, "axis": -1}),
+    ("1, 5", {"n": 1, "axis": 5}),
+    ("axis=0", {"axis": 0}),
+    ("n=2, axis=0", {"n": 2, "axis": 0}),
+]
+
+CLIPS = [
+    ("", (None, None)),
+    ("0, 1", (0.0, 1.0)),
+    ("-1, None", (-1.0, None)),
+    ("None, 2", (None, 2.0)),
+    ("2, 1", (2.0, 1.0)),
+    ("None, None", (None, None)),
+    ("min=0", (0.0, None)),
+    ("max=0.5", (None, 0.5)),
+    ("a_min=-1, a_max=1", (-1.0, 1.0)),
+    ("0, nan", (0.0, math.nan)),
+    # The signed zeros, where the three functions numpy's clip is made of
+    # part company -- see clipped() in Operations.cpp.
+    ("0, 0", (0.0, 0.0)),
+    ("-0.0, 0", (-0.0, 0.0)),
+    ("0", (0.0, None)),
+    ("-0.0", (-0.0, None)),
+    ("None, 0", (None, 0.0)),
+    ("None, -0.0", (None, -0.0)),
+    ("nan, 1", (math.nan, 1.0)),
+    ("nan", (math.nan, None)),
+]
+
+POWERS = ["2", "0.5", "-1", "0", "3", "exponent=2", ""]
+ADDENDS = ["1.5", "-2", "0", "inf", ""]
+FACTORS = ["2", "-0.5", "0", "inf", ""]
 
 
 def payload(shape):
@@ -233,10 +313,83 @@ def cases():
             out.append(record(f"reshape({text}) of {shape}", "Reshape", text, data,
                               lambda a, t=text: a.reshape(
                                   tuple(int(p) for p in t.split(",")))))
+
+        for text, keywords in FOLDS:
+            for name, function in (("Sum", np.sum), ("Prod", np.prod)):
+                out.append(record(f"{name.lower()}({text}) of {shape}", name, text,
+                                  data, lambda a, f=function, k=keywords: f(a, **k)))
+
+        for text, keywords in SCANS:
+            for name, function in (("CumSum", np.cumsum), ("CumProd", np.cumprod)):
+                out.append(record(f"{name.lower()}({text}) of {shape}", name, text,
+                                  data, lambda a, f=function, k=keywords: f(a, **k)))
+
+        for text, keywords in DIFFS:
+            out.append(record(f"diff({text}) of {shape}", "Diff", text, data,
+                              lambda a, k=keywords: np.diff(a, **k)))
+
+        for text, (low, high) in CLIPS:
+            out.append(record(f"clip({text}) of {shape}", "Clip", text, data,
+                              lambda a, lo=low, hi=high: np.clip(a, lo, hi)))
+
+        out.append(record(f"sqrt of {shape}", "Sqrt", "", data, np.sqrt))
+
+        for text in POWERS:
+            out.append(record(f"pow({text}) of {shape}", "Pow", text, data,
+                              lambda a, t=text: np.pow(a, float(t.split("=")[-1]))
+                              if t else np.pow(a)))
+
+        for text in ADDENDS:
+            out.append(record(f"add({text}) of {shape}", "Add", text, data,
+                              lambda a, t=text: np.add(a, float(t)) if t else np.add(a)))
+
+        for text in FACTORS:
+            out.append(record(f"multiply({text}) of {shape}", "Multiply", text, data,
+                              lambda a, t=text: np.multiply(a, float(t))
+                              if t else np.multiply(a)))
     return out
 
 
 def render(entries):
+    # Flat arrays of plain numbers, pooled, and the vectors built from them at
+    # run time. The header used to spell every case as a brace-initialised
+    # struct of four std::vectors, and once the operations after the first six
+    # doubled the number of cases GCC spent the better part of ten minutes on
+    # that one initialiser: an aggregate of non-trivial types is compiled as
+    # code, element by element, where an array of doubles is data. Pooling
+    # also means a shape's payload -- the same for every call made on it -- is
+    # written once rather than once per call.
+    extents = []
+    extentAt = {}
+    values = []
+    valueAt = {}
+
+    def pooled(items, pool, index, text):
+        key = tuple(text(v) for v in items)
+        if key not in index:
+            index[key] = len(pool)
+            pool.extend(key)
+        return index[key], len(key)
+
+    rows = []
+    for entry in entries:
+        shape = pooled(entry["shape"], extents, extentAt, lambda e: str(int(e)))
+        data = pooled(np.asarray(entry["input"]).reshape(-1), values, valueAt, literal)
+        out_shape = pooled(entry["outShape"], extents, extentAt, lambda e: str(int(e)))
+        output = pooled(np.asarray(entry["output"]).reshape(-1), values, valueAt, literal)
+        rows.append(
+            f'    {{"{escaped(entry["name"])}", "{entry["operation"]}", '
+            f'"{escaped(entry["argument"])}", {shape[0]}, {shape[1]}, {data[0]}, '
+            f'{data[1]}, {"true" if entry["raised"] else "false"}, '
+            f'"{escaped(entry["why"])}", {out_shape[0]}, {out_shape[1]}, {output[0]}, '
+            f"{output[1]}}},")
+
+    def wrapped(items):
+        out = []
+        for at in range(0, len(items), 8):
+            out.append("    " + ", ".join(items[at:at + 8]) + ",")
+        return out
+
     lines = [
         # Emitted, not inherited: this file is overwritten wholesale on every
         # run, so a header added by hand would survive exactly until the next
@@ -258,6 +411,7 @@ def render(entries):
         "#include <hdf5.h>",
         "",
         "#include <cmath>",
+        "#include <iterator>",
         "#include <string>",
         "#include <vector>",
         "",
@@ -275,32 +429,55 @@ def render(entries):
         "    std::vector<double> output;  ///< row-major",
         "};",
         "",
+        "namespace detail {",
+        "",
+        "/// One case, as offsets into the two pools below.",
+        "struct Raw {",
+        "    const char* name;",
+        "    const char* operation;",
+        "    const char* argument;",
+        "    unsigned shape, rank, input, size;",
+        "    bool raised;",
+        "    const char* why;",
+        "    unsigned outShape, outRank, output, outSize;",
+        "};",
+        "",
         "// clang-format off",
+        "inline constexpr hsize_t kExtents[] = {",
+        *wrapped(extents or ["0"]),
+        "};",
+        "",
+        "inline constexpr double kValues[] = {",
+        *wrapped(values or ["0.0"]),
+        "};",
+        "",
+        "inline constexpr Raw kCases[] = {",
+        *rows,
+        "};",
+        "// clang-format on",
+        "",
+        "} // namespace detail",
+        "",
         "inline const std::vector<Case>& cases()",
         "{",
-        "    static const std::vector<Case> kCases = {",
-    ]
-
-    for entry in entries:
-        shape = ", ".join(str(int(e)) for e in entry["shape"])
-        values = ", ".join(literal(v) for v in np.asarray(entry["input"]).reshape(-1))
-        outShape = ", ".join(str(int(e)) for e in entry["outShape"])
-        output = ", ".join(literal(v) for v in np.asarray(entry["output"]).reshape(-1))
-        lines.append("        {")
-        lines.append(f'            "{escaped(entry["name"])}",')
-        lines.append(f'            "{entry["operation"]}", "{escaped(entry["argument"])}",')
-        lines.append(f"            {{{shape}}},")
-        lines.append(f"            {{{values}}},")
-        lines.append(f'            {"true" if entry["raised"] else "false"}, "{escaped(entry["why"])}",')
-        lines.append(f"            {{{outShape}}},")
-        lines.append(f"            {{{output}}},")
-        lines.append("        },")
-
-    lines += [
-        "    };",
+        "    static const std::vector<Case> kCases = [] {",
+        "        std::vector<Case> out;",
+        "        out.reserve(std::size(detail::kCases));",
+        "        for (const detail::Raw& raw : detail::kCases) {",
+        "            out.push_back(Case{",
+        "                raw.name, raw.operation, raw.argument,",
+        "                {detail::kExtents + raw.shape, detail::kExtents + raw.shape + raw.rank},",
+        "                {detail::kValues + raw.input, detail::kValues + raw.input + raw.size},",
+        "                raw.raised, raw.why,",
+        "                {detail::kExtents + raw.outShape,",
+        "                 detail::kExtents + raw.outShape + raw.outRank},",
+        "                {detail::kValues + raw.output, detail::kValues + raw.output + raw.outSize},",
+        "            });",
+        "        }",
+        "        return out;",
+        "    }();",
         "    return kCases;",
         "}",
-        "// clang-format on",
         "",
         "} // namespace golden",
         "",

@@ -356,6 +356,7 @@ SettingsPanel {
                     required property var colour
                     required property bool separateAxis
                     required property bool axisFixed
+                    required property bool postprocess
 
                     width: parent ? parent.width : 0
                     implicitHeight: entry.implicitHeight
@@ -375,6 +376,7 @@ SettingsPanel {
                         drawn: holder.drawn
                         colour: holder.colour
                         separateAxis: holder.separateAxis
+                        postprocess: holder.postprocess
                         axisFixed: holder.axisFixed
                     }
                 }

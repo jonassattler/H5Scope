@@ -9,6 +9,7 @@ import H5Scope.Backend
 ///
 ///     +--------------------------------------------------+
 ///     | [x] SLICE   [ /series/half[:]              ]  [x] |
+///     |     PIPELINE [ ] enable postprocessing           |
 ///     |     ALIAS   [ morning                      ]     |
 ///     |     COLOUR  [#]  clear                           |
 ///     |     AXIS    [x] separate y-axis  [ ] exclude ... |
@@ -20,6 +21,11 @@ import H5Scope.Backend
 /// scattered through it unless something says where one stops and the next
 /// begins. An entry is a thing -- a line on the plot, with a name and a place
 /// to sit -- and a bordered ground says that.
+///
+/// With postprocessing on, SLICE reads DATA and its box takes a whole
+/// pipeline -- a postproc::Script, a step to a line -- in the same box the
+/// postprocessing panel's text mode uses, checked by the same function. It is
+/// not just a slice any more, and the label says so.
 ///
 /// The slice gets a line to itself because it is the long thing: a path, a
 /// subscript, and nothing else on the row to squeeze it. What used to sit
@@ -69,6 +75,9 @@ Rectangle {
     /// CustomPlot::seriesAxis for when the first is in force.
     property bool separateAxis: false
     property bool axisFixed: false
+    /// Whether the line is a pipeline rather than a slice. See
+    /// CustomPlot::setPostprocess.
+    property bool postprocess: false
     /// Whether there is a second line for this one to be separate from. A
     /// plot of one line has one axis, whatever this card's box says.
     readonly property bool separable: row.plot ? row.plot.seriesCount > 1 : false
@@ -101,7 +110,11 @@ Rectangle {
     /// line did not. Two channels, as the pipeline has: one about the text and
     /// one about the last read.
     property string problem: ""
-    readonly property bool pending: box.text.trim() !== row.expression
+    /// What is in whichever box is showing.
+    readonly property string written: row.postprocess ? scriptBox.text : box.text
+    /// Whether the reader is in whichever box is showing.
+    readonly property bool editing: row.postprocess ? scriptBox.editing : box.activeFocus
+    readonly property bool pending: row.written.trim() !== row.expression
                                     && row.problem === ""
     readonly property bool troubled: row.problem !== "" || row.error !== ""
 
@@ -125,7 +138,73 @@ Rectangle {
     property bool dismissed: false
 
     function refreshOptions() {
+        if (row.postprocess) {
+            row.refreshScriptOptions()
+            return
+        }
         row.options = box.activeFocus ? AppController.completions(box.text) : []
+    }
+
+    /// For the DATA box, the line each offered path came from. `options`
+    /// holds the paths alone, because a script's first line is a path and
+    /// nothing else; the subscript that came with a dataset is kept here, for
+    /// takeIntoScript to write as the script's slice.
+    property var scriptOptions: []
+
+    /// The first line of the DATA box, which is where its path is.
+    function pathLine() {
+        const text = scriptBox.text
+        const end = text.indexOf("\n")
+        return end < 0 ? text : text.slice(0, end)
+    }
+
+    /// What could be written on the path line, while the caret is on it. The
+    /// same completer the slice box asks, handed the path line alone; nothing
+    /// is offered once that line has a step on it, because then it is not a
+    /// path that is being typed.
+    function refreshScriptOptions() {
+        const line = row.pathLine()
+        if (!scriptBox.editing || scriptBox.cursorPosition > line.length
+                || /\.[A-Za-z_]\w*\s*\(/.test(line)) {
+            row.options = []
+            row.scriptOptions = []
+            return
+        }
+        const offered = AppController.completions(line)
+        const paths = []
+        const full = []
+        for (let i = 0; i < offered.length; ++i) {
+            const whole = /^(.*)\[([^\[\]]*)\]$/.exec(offered[i])
+            const path = whole ? whole[1] : offered[i]
+            // The path already written is not something to write next.
+            if (path === line || paths.indexOf(path) >= 0)
+                continue
+            paths.push(path)
+            full.push(offered[i])
+        }
+        row.scriptOptions = full
+        row.options = paths
+    }
+
+    /// Write a completed path onto the first line of the DATA box. A dataset
+    /// brings the subscript that selects the whole of it, as it does in the
+    /// slice box, and here that is a `.slice(...)` line under the path --
+    /// unless the script already begins with a slice or a select of its own,
+    /// which is the reader's and is left alone.
+    function takeIntoScript(option) {
+        const at = row.options.indexOf(option)
+        const full = at >= 0 ? row.scriptOptions[at] : option
+        const whole = /^(.*)\[([^\[\]]*)\]$/.exec(full)
+        const path = whole ? whole[1] : full
+        const text = scriptBox.text
+        const end = text.indexOf("\n")
+        let rest = end < 0 ? "" : text.slice(end)
+        if (whole && !/^\n\s*\.(slice|select)\s*\(/.test(rest))
+            rest = "\n.slice(" + whole[2] + ")" + rest
+        scriptBox.text = path + rest
+        scriptBox.cursorPosition = path.length
+        row.problem = row.plot ? row.plot.entryError(row.rowIndex, scriptBox.text) : ""
+        row.refreshOptions()
     }
 
     Connections {
@@ -139,15 +218,21 @@ Rectangle {
         // A commit is the end of an edit, so the list of what could have been
         // written next goes with it. The next keystroke brings it back.
         row.options = []
-        const wanted = box.text.trim()
+        const wanted = row.written.trim()
         if (wanted === row.expression) {
             row.problem = ""
             return
         }
         row.plot.setExpression(row.rowIndex, wanted)
-        // What the model made of it is what the row is now stating.
-        box.text = row.expression
+        // What the model made of it is what the row is now stating -- for a
+        // pipeline, formatted a step to a line.
+        row.showExpression()
         row.problem = ""
+    }
+
+    function showExpression() {
+        box.text = row.expression
+        scriptBox.text = row.expression
     }
 
     function commitAlias() {
@@ -177,7 +262,7 @@ Rectangle {
             AppCheckBox {
                 objectName: "entryDrawn"
 
-                Layout.alignment: Qt.AlignVCenter
+                Layout.alignment: Qt.AlignTop
                 // No label, so no gap for one: the control's width is its
                 // indicator plus the room a label would have taken, and the
                 // rows below reserve the indicator alone. Eight pixels of
@@ -192,11 +277,82 @@ Rectangle {
             }
 
             Text {
+                objectName: "entryBoxLabel"
+
                 Layout.preferredWidth: labels.width
-                text: qsTr("slice")
+                Layout.preferredHeight: Theme.smallControlHeight
+                Layout.alignment: Qt.AlignTop
+                text: row.postprocess ? qsTr("data") : qsTr("slice")
                 font: Theme.microLabel
                 color: Theme.textDisabled
                 verticalAlignment: Text.AlignVCenter
+            }
+
+            // The pipeline's box. Its own control rather than the slice's box
+            // made taller, because it keeps the whole of ScriptField's
+            // contract -- Return commits and Shift+Return breaks the line --
+            // and the two are shown one at a time, never both.
+            ScriptField {
+                id: scriptBox
+
+                objectName: "entryScript"
+
+                Layout.fillWidth: true
+                visible: row.postprocess
+                text: row.expression
+                placeholderText: qsTr("/group/dataset\n.slice(:, 0)\n.max(0)")
+                invalid: row.problem !== "" || row.error !== ""
+                pending: row.pending
+
+                completion: scriptCompletion
+
+                onTextEdited: {
+                    row.problem = row.plot
+                        ? row.plot.entryError(row.rowIndex, scriptBox.text) : ""
+                    row.dismissed = false
+                    row.refreshOptions()
+                }
+                onCompleting: {
+                    row.dismissed = false
+                    row.refreshOptions()
+                }
+                onAccepted: row.commit()
+                onEditingChanged: {
+                    if (scriptBox.editing) {
+                        row.dismissed = false
+                        row.refreshOptions()
+                        return
+                    }
+                    row.options = []
+                    row.commit()
+                }
+                onCancelled: {
+                    // The list first, as in the slice box: it is the thing that
+                    // just appeared.
+                    if (scriptCompletion.visible) {
+                        row.dismissed = true
+                        return
+                    }
+                    scriptBox.text = row.expression
+                    row.problem = ""
+                }
+            }
+
+            // Not a child of the box: a ScrollView puts what is declared in it
+            // into what it scrolls. Parented to it instead, so it opens under
+            // the box and as wide as it, as the slice box's list does.
+            CompletionPopup {
+                id: scriptCompletion
+
+                objectName: "entryScriptCompletion"
+
+                parent: scriptBox
+                options: row.postprocess ? row.options : []
+                written: row.pathLine()
+                visible: row.postprocess && row.options.length > 0 && scriptBox.editing
+                         && !row.dismissed
+
+                onTaken: (option) => row.takeIntoScript(option)
             }
 
             FilterInput {
@@ -205,6 +361,8 @@ Rectangle {
                 objectName: "entryBox"
 
                 Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                visible: !row.postprocess
                 implicitHeight: Theme.smallControlHeight
                 text: row.expression
                 placeholderText: qsTr("/group/dataset[:, 0]")
@@ -288,7 +446,7 @@ Rectangle {
             AppIconButton {
                 objectName: "removeEntry"
 
-                Layout.alignment: Qt.AlignVCenter
+                Layout.alignment: Qt.AlignTop
                 glyph: "close"
                 ink: Theme.danger
                 bare: true
@@ -297,6 +455,38 @@ Rectangle {
                         row.plot.removeEntry(row.rowIndex)
                 }
             }
+        }
+
+        // --- whether the line is a pipeline --------------------------------
+        // Under the box it changes, because what it changes is what that box
+        // takes: a slice, or a whole pipeline written a step to a line.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.rightMargin: Theme.smallControlHeight + Theme.gapS
+            spacing: Theme.gapS
+
+            Item { Layout.preferredWidth: Theme.indicatorSize }
+
+            Text {
+                Layout.preferredWidth: labels.width
+                text: qsTr("pipeline")
+                font: Theme.microLabel
+                color: Theme.textDisabled
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            AppCheckBox {
+                objectName: "entryPostprocess"
+
+                text: qsTr("enable postprocessing")
+                checked: row.postprocess
+                onToggled: {
+                    if (row.plot)
+                        row.plot.setPostprocess(row.rowIndex, checked)
+                }
+            }
+
+            Item { Layout.fillWidth: true }
         }
 
         // --- what the legend should call it instead -----------------------
@@ -548,16 +738,22 @@ Rectangle {
         id: labels
 
         font: Theme.microLabel
-        text: qsTr("scaling")
+        text: qsTr("pipeline")
     }
 
     // A row whose text was changed from anywhere else -- a restored view, a
     // dataset added from the tree -- is still this row, so the boxes follow it.
     onExpressionChanged: {
-        if (!box.activeFocus) {
-            box.text = row.expression
+        if (!row.editing) {
+            row.showExpression()
             row.problem = ""
         }
+    }
+    // Ticking the box rewrites the line into the other grammar, and the box
+    // that shows it changes with it.
+    onPostprocessChanged: {
+        row.showExpression()
+        row.problem = ""
     }
 
     onAliasChanged: {

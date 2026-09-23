@@ -410,6 +410,10 @@ QtObject {
     readonly property int rowHeight:       28
     readonly property int controlHeight:   32  // --ctl-h-lg
     readonly property int smallControlHeight: 26 // --ctl-h-md
+    /// How tall a box a pipeline is written in grows before it scrolls. Ten
+    /// lines of monoSmall: a path, a member, a slice and seven steps, which is
+    /// longer than any pipeline anybody reads at a glance.
+    readonly property int scriptFieldMaxHeight: s14 * 2
     /// --ctl-h-sm. A menu row: denser than any other control in the UI,
     /// because that is the desktop convention a menu is measured against.
     readonly property int tinyControlHeight: 22

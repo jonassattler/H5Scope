@@ -4,6 +4,8 @@
 #include "PostprocessModel.hpp"
 
 #include "AppController.hpp"
+#include "CustomPlotSet.hpp"
+#include "DatasetLookup.hpp"
 #include "TableSetupModel.hpp"
 
 #include <algorithm>
@@ -20,6 +22,12 @@ void PostprocessModel::setSliceSource(TableSetupModel* slice)
 void PostprocessModel::setMemberSource(AppController* controller)
 {
     member_ = controller;
+    // Queued, so that a script waiting for its dataset is applied after
+    // everything else that answers the selection landing -- DatasetMemory's
+    // restore above all, which would otherwise put back the pipeline filed for
+    // that dataset over the one the reader just typed.
+    connect(controller, &AppController::selectionChanged, this,
+            &PostprocessModel::applyPending, Qt::QueuedConnection);
 }
 
 bool PostprocessModel::hasMember() const
@@ -135,6 +143,7 @@ void PostprocessModel::setDataset(const Subject& subject)
     numeric_ = subject.numeric;
     originShape_ = subject.originShape;
     memberChoices_ = subject.memberChoices;
+    originType_ = subject.originType;
     endResetModel();
     refresh();
 }
@@ -153,6 +162,9 @@ void PostprocessModel::sliceChanged() { refresh(); }
 
 void PostprocessModel::refresh()
 {
+    if (batching_) {
+        return;
+    }
     upTo_ = std::clamp<std::size_t>(upTo_, 1, steps_.size() + 1);
     trace_ = postproc::trace(shape_, pipeline(), upTo_);
     if (rowCount() > 0) {
@@ -494,6 +506,167 @@ QString PostprocessModel::argumentError(int row, const QString& argument) const
     const postproc::Step& step = steps_[static_cast<std::size_t>(stepIndex(row))];
     return postproc::shapeAfter({step.kind, argument}, trace_.stages[stage].shape)
         .error;
+}
+
+QString PostprocessModel::scriptOf(std::size_t count) const
+{
+    if (path_.isEmpty()) {
+        return {};
+    }
+    postproc::Script script;
+    script.path = path_;
+    script.member = hasMember() ? member_->memberText() : QString{};
+    // A scalar has nothing to subscript, and a `.slice()` written above it
+    // would be a row the panel does not have.
+    script.sliced = !shape_.empty();
+    script.slice = sliceText();
+    script.steps.assign(steps_.begin(),
+                        steps_.begin()
+                            + static_cast<std::ptrdiff_t>(std::min(count, steps_.size())));
+    return postproc::writeScript(script);
+}
+
+QString PostprocessModel::script() const
+{
+    return scriptOf(steps_.size());
+}
+
+QString PostprocessModel::outputText() const
+{
+    return path_.isEmpty() ? QString{} : postproc::describeShape(trace_.output);
+}
+
+QString PostprocessModel::customScript() const
+{
+    return canAddToCustom() ? scriptOf(upTo_ - 1) : QString{};
+}
+
+bool PostprocessModel::canAddToCustom() const
+{
+    return customRefusal().isEmpty();
+}
+
+QString PostprocessModel::customRefusal() const
+{
+    if (!active()) {
+        return tr("turn postprocessing on to add its output to a custom plot");
+    }
+    if (!trace_.ok()) {
+        return tr("the pipeline stops before its end — put right the step it "
+                  "stopped at first");
+    }
+    if (trace_.output.size() != 1) {
+        return tr("the output is %1, and a custom plot draws lines — slice or "
+                  "reduce it to one dimension")
+            .arg(postproc::describeShape(trace_.output));
+    }
+    return {};
+}
+
+QString PostprocessModel::scriptError(const QString& text) const
+{
+    const postproc::Script script = postproc::parseScript(text);
+    if (!script.ok()) {
+        return script.error;
+    }
+    if (script.path == path_) {
+        return postproc::checkScript(script, originShape_, originType_).error;
+    }
+    // Another dataset. What the file has already said about it is enough to
+    // check against; nothing is asked of it here, because this runs on every
+    // keystroke and a path half typed is a question about a dataset nobody
+    // has chosen yet.
+    if (member_ != nullptr) {
+        if (const PathFacts* facts = member_->customPlots()->lookup()->facts(script.path);
+            facts != nullptr) {
+            if (!facts->isDataset) {
+                return facts->problem.isEmpty()
+                           ? tr("%1 is not a dataset").arg(script.path)
+                           : facts->problem;
+            }
+            return postproc::checkScript(script, facts->shape, facts->type).error;
+        }
+    }
+    return {};
+}
+
+QString PostprocessModel::applyScript(const QString& text)
+{
+    const postproc::Script script = postproc::parseScript(text);
+    if (!script.ok()) {
+        return script.error;
+    }
+    if (script.path == path_) {
+        pending_.reset();
+        return applyParsed(script);
+    }
+    if (member_ == nullptr) {
+        return tr("%1 is not the dataset this pipeline belongs to").arg(script.path);
+    }
+    // The path is the dataset the reader wants, so it is selected -- and the
+    // rest waits for it to open, because until it has there is no shape for a
+    // slice to be read against. See applyPending().
+    pending_ = script;
+    member_->selectPath(script.path);
+    return {};
+}
+
+void PostprocessModel::applyPending()
+{
+    if (!pending_.has_value()) {
+        return;
+    }
+    // The first answer about the path decides it: either this is the dataset
+    // the script named and it goes on, or the selection has gone somewhere
+    // else -- a group, a path that is not there, the reader clicking on --
+    // and the script is dropped rather than applied to whatever is there now.
+    const postproc::Script script = *pending_;
+    pending_.reset();
+    if (script.path != path_ || member_ == nullptr || member_->currentPath() != path_) {
+        return;
+    }
+    static_cast<void>(applyParsed(script));
+}
+
+QString PostprocessModel::applyParsed(const postproc::Script& script)
+{
+    const postproc::ScriptCheck check =
+        postproc::checkScript(script, originShape_, originType_);
+    if (!check.chain.valid()) {
+        // The member decides the shape everything else is read against, so a
+        // chain that does not resolve leaves nothing that can be applied.
+        return check.error;
+    }
+
+    batching_ = true;
+    QString problem;
+    // The member first, because it decides the shape the slice is read
+    // against. Written back in its canonical form -- the chain without its
+    // subscripts -- because those are on the slice line already: the check
+    // folded them there.
+    if (member_ != nullptr) {
+        const auto canonical = QString::fromStdString(check.chain.selection.text);
+        if (canonical != member_->memberText()) {
+            problem = member_->applyMember(canonical);
+        }
+    }
+    if (problem.isEmpty() && slice_ != nullptr && !check.input.empty()
+        && !check.pipeline.empty()) {
+        QString line = check.pipeline.front().argument;
+        if (line.trimmed().isEmpty()) {
+            line = QStringLiteral("..."); // a pipeline that never slices reads it all
+        }
+        problem = slice_->applySlice(line);
+    }
+
+    beginResetModel();
+    steps_ = script.steps;
+    upTo_ = steps_.size() + 1;
+    enabled_ = true;
+    endResetModel();
+    batching_ = false;
+    refresh();
+    return problem;
 }
 
 } // namespace gui

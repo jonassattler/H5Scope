@@ -11,9 +11,11 @@
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
 #include "postproc/Array.hpp"
+#include "postproc/ComputedDataset.hpp"
 #include "postproc/MemberPath.hpp"
 #include "postproc/Operations.hpp"
 #include "postproc/Pipeline.hpp"
+#include "postproc/Script.hpp"
 
 #include <QPointF>
 
@@ -24,6 +26,8 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
+#include <optional>
 #include <utility>
 
 namespace gui {
@@ -92,6 +96,8 @@ struct Ask
     /// make. See PlotPyramid.hpp, and DatasetPlot, which reads the same way for
     /// the same reason.
     long long budget = 0;
+    /// Whether `expression` is a postproc::Script rather than a slice.
+    bool postprocess = false;
 };
 
 /// What it hands back, alongside the facts it learned on the way.
@@ -131,11 +137,27 @@ struct Reply
     Answer answer;
     h5core::File* file = session.file();
 
+    // A line is a slice, or a pipeline written as a script. Both come down to
+    // a path, a member chain and a slice line; a script may also carry steps,
+    // and only a script that does is read any differently from here on.
     const QString& expression = ask.expression;
-    const Expression parts = splitExpression(expression);
-    if (!parts.valid()) {
-        answer.problem = parts.error;
-        return answer;
+    Expression parts;
+    std::optional<postproc::Script> script;
+    if (ask.postprocess) {
+        script = postproc::parseScript(expression);
+        if (!script->ok()) {
+            answer.problem = script->error;
+            return answer;
+        }
+        parts.path = script->path;
+        parts.member = script->member;
+    }
+    else {
+        parts = splitExpression(expression);
+        if (!parts.valid()) {
+            answer.problem = parts.error;
+            return answer;
+        }
     }
 
     // The facts, once per path per job. lookupFacts opens the dataset to read
@@ -171,14 +193,72 @@ struct Reply
     std::vector<hsize_t> shape = known->second.shape;
     shape.insert(shape.end(), chain.selection.dims.begin(),
                  chain.selection.dims.end());
+    const std::size_t originRank = known->second.shape.size();
+
+    h5core::Dataset* open =
+        session.held(parts.path.toStdString(), chain.selection);
+    if (open == nullptr) {
+        answer.problem = known->second.problem.isEmpty()
+                             ? QStringLiteral("cannot open %1").arg(parts.path)
+                             : known->second.problem;
+        return answer;
+    }
 
     std::vector<std::vector<hsize_t>> indices;
     std::vector<bool> drop;
-    if (!resolveLine(postproc::sliceLineFor(parts.subscript, chain.folded,
-                                            known->second.shape.size()),
-                     shape, indices, drop, answer.problem)) {
-        return answer;
+    // What the reduction below reads from: the dataset, or -- for a pipeline
+    // with steps in it -- the pipeline's output, held in memory. It is handed
+    // the second as a DataSource, because a ComputedDataset is one, so nothing
+    // below this point has a branch for which it got.
+    const h5core::DataSource* source = open;
+    std::shared_ptr<const postproc::ComputedDataset> computed;
+
+    if (script.has_value() && !script->steps.empty()) {
+        // A pipeline has to materialise -- an axis cannot be reduced a block
+        // at a time -- so it is run whole, under the cap the panel runs under,
+        // and the line it leaves is folded exactly as a line read from the
+        // file would be. Checked first, because the check costs no read and
+        // says which step is at fault.
+        const postproc::ScriptCheck check =
+            postproc::checkScript(*script, known->second.shape, known->second.type);
+        if (!check.ok()) {
+            answer.problem = check.error;
+            return answer;
+        }
+        if (check.output.size() != 1) {
+            answer.problem = notOneLine(check.output);
+            return answer;
+        }
+        const postproc::RunResult run = postproc::run(*open, check.pipeline, check.pipeline.size());
+        if (!run.error.isEmpty() || run.array.rank() != 1) {
+            answer.problem = run.error.isEmpty()
+                                 ? QStringLiteral("the pipeline did not leave a line")
+                                 : run.error;
+            return answer;
+        }
+        computed = std::make_shared<const postproc::ComputedDataset>(
+            run.array, open->info(), open->path(), "(postprocessed)");
+        source = computed.get();
+        indices.emplace_back(static_cast<std::size_t>(run.array.size()));
+        std::iota(indices.front().begin(), indices.front().end(), hsize_t{0});
+        drop.push_back(false);
     }
+    else {
+        // A script with no steps is a slice written another way, and is read
+        // as one -- streamed, never materialised -- so ticking the box costs a
+        // line nothing. pipelineOf is what makes its slice line: over the
+        // whole derived shape unless the chain carries subscripts of its own.
+        const QString line =
+            script.has_value()
+                ? postproc::pipelineOf(*script, chain.folded, originRank).front().argument
+                : postproc::sliceLineFor(parts.subscript, chain.folded, originRank);
+        if (!resolveLine(line, shape, indices, drop, answer.problem)) {
+            return answer;
+        }
+    }
+    // Reads out of memory are not reads of the file, and the count is of the
+    // file's.
+    const bool fromFile = computed == nullptr;
 
     for (std::size_t d = 0; d < indices.size(); ++d) {
         if (d >= drop.size() || !drop[d]) {
@@ -190,20 +270,17 @@ struct Reply
     // the elements outside that run are never touched -- which is what makes
     // zooming in cost the pane rather than the file. The run's bucket was
     // chosen against the pane by gui::windowFor and is simply obeyed here.
+    //
+    // For a pipeline, the run is of its output, and asking for one runs the
+    // pipeline again. That is only ever below the pyramid's base, which for a
+    // line under the pipeline's cap means a budget too small to hold it at
+    // bucket one -- rare, bounded by kMaxElements, and correct.
     if (ask.window.has_value()) {
         windowLine(indices, drop, ask.window->first, ask.window->span);
         answer.start = static_cast<double>(ask.window->first);
     }
 
-    h5core::Dataset* open =
-        session.held(parts.path.toStdString(), chain.selection);
-    if (open == nullptr) {
-        answer.problem = known->second.problem.isEmpty()
-                             ? QStringLiteral("cannot open %1").arg(parts.path)
-                             : known->second.problem;
-        return answer;
-    }
-    h5core::Dataset& dataset = *open;
+    const h5core::DataSource& dataset = *source;
 
     // How what is left is reduced to something a screen can show.
     //
@@ -250,7 +327,9 @@ struct Reply
             const long long run = std::min<long long>(kReadRun, length - read);
             indices[along].assign(whole.begin() + static_cast<std::ptrdiff_t>(read),
                                   whole.begin() + static_cast<std::ptrdiff_t>(read + run));
-            gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+            if (fromFile) {
+                gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+            }
             const postproc::ArrayResult got = postproc::read(dataset, indices, drop);
             if (!got.ok()) {
                 answer.problem = got.error;
@@ -279,7 +358,9 @@ struct Reply
 
     if (bucket <= 1) {
         // Short enough to draw sample for sample. One read of the lot.
-        gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+        if (fromFile) {
+            gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+        }
         const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
         if (!read.ok()) {
             answer.problem = read.error;
@@ -333,7 +414,9 @@ struct Reply
         indices[along].assign(line.begin() + static_cast<std::ptrdiff_t>(done),
                               line.begin() + static_cast<std::ptrdiff_t>(done + run));
 
-        gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+        if (fromFile) {
+            gHyperslabs.fetch_add(1, std::memory_order_relaxed);
+        }
         const postproc::ArrayResult read = postproc::read(dataset, indices, drop);
         if (!read.ok()) {
             answer.problem = read.error;
@@ -485,6 +568,8 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
         return entry.separateAxis;
     case AxisFixedRole:
         return entry.axisFixed;
+    case PostprocessRole:
+        return entry.postprocess;
     default:
         return {};
     }
@@ -502,7 +587,8 @@ QHash<int, QByteArray> CustomPlot::roleNames() const
             {DrawnRole, "drawn"},
             {ColourRole, "colour"},
             {SeparateAxisRole, "separateAxis"},
-            {AxisFixedRole, "axisFixed"}};
+            {AxisFixedRole, "axisFixed"},
+            {PostprocessRole, "postprocess"}};
 }
 
 void CustomPlot::setName(QString name)
@@ -564,6 +650,63 @@ int CustomPlot::addExpression(const QString& text)
     endInsertRows();
     invalidate();
     return row;
+}
+
+int CustomPlot::addScript(const QString& text)
+{
+    const int row = static_cast<int>(entries_.size());
+    beginInsertRows({}, row, row);
+    Entry entry;
+    entry.postprocess = true;
+    const postproc::Script script = postproc::parseScript(text);
+    entry.expression = script.ok() ? postproc::writeScript(script) : text.trimmed();
+    entries_.push_back(std::move(entry));
+    endInsertRows();
+    invalidate();
+    return row;
+}
+
+void CustomPlot::setPostprocess(int row, bool on)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    if (entry.postprocess == on) {
+        return;
+    }
+    QString rewritten;
+    if (on) {
+        // The script put aside when the box was last unticked, if the slice
+        // is still the one it was put aside as -- otherwise the slice, written
+        // as a script.
+        const bool untouched =
+            !entry.unticked.isEmpty() && lookup_ != nullptr
+            && expressionFromScript(entry.unticked, *lookup_) == entry.expression;
+        rewritten = untouched ? entry.unticked : scriptFromExpression(entry.expression);
+        entry.unticked.clear();
+    }
+    else {
+        const postproc::Script script = postproc::parseScript(entry.expression);
+        if (script.ok() && !script.steps.empty()) {
+            entry.unticked = entry.expression;
+        }
+        if (lookup_ != nullptr) {
+            rewritten = expressionFromScript(entry.expression, *lookup_);
+        }
+    }
+    entry.postprocess = on;
+    touch(row, {PostprocessRole});
+    // A line that did not parse either way keeps its text, and says what is
+    // wrong with it in the other grammar.
+    if (!rewritten.isEmpty() && rewritten != entry.expression) {
+        const QString text = rewritten;
+        entry.expression.clear(); // so that setExpression sees a change
+        setExpression(row, text);
+        return;
+    }
+    touch(row, {ErrorRole});
+    discard();
 }
 
 void CustomPlot::addDataset(const QString& path, bool confirmed)
@@ -690,7 +833,15 @@ void CustomPlot::setExpression(int row, const QString& text)
         return;
     }
     Entry& entry = entries_[static_cast<std::size_t>(row)];
-    const QString trimmed = text.trimmed();
+    QString trimmed = text.trimmed();
+    if (entry.postprocess) {
+        // Formatted a step to a line, which is what Return in a DATA box
+        // promises; a script that does not read is kept as it was typed, with
+        // its reason, as every box here keeps a line it cannot use.
+        if (const postproc::Script script = postproc::parseScript(trimmed); script.ok()) {
+            trimmed = postproc::writeScript(script);
+        }
+    }
     if (entry.expression == trimmed) {
         return;
     }
@@ -710,11 +861,12 @@ void CustomPlot::setExpression(int row, const QString& text)
 
 QString CustomPlot::entryError(int row, const QString& text) const
 {
-    Q_UNUSED(row);
     if (lookup_ == nullptr) {
         return {};
     }
-    return expressionProblem(text, *lookup_);
+    const bool postprocess = row >= 0 && row < static_cast<int>(entries_.size())
+                             && entries_[static_cast<std::size_t>(row)].postprocess;
+    return lineProblem(text, postprocess, *lookup_);
 }
 
 void CustomPlot::setAlias(int row, const QString& text)
@@ -1109,7 +1261,16 @@ QString CustomPlot::seriesLabel(int series) const
         return {};
     }
     const Entry& entry = entries_[static_cast<std::size_t>(series)];
-    return entry.alias.isEmpty() ? entry.expression : entry.alias;
+    if (!entry.alias.isEmpty()) {
+        return entry.alias;
+    }
+    if (entry.postprocess) {
+        // On one line: a label that breaks across lines is not a label.
+        const postproc::Script script = postproc::parseScript(entry.expression);
+        return script.ok() ? postproc::writeScript(script, postproc::ScriptLayout::OneLine)
+                           : entry.expression;
+    }
+    return entry.expression;
 }
 
 bool CustomPlot::seriesVisible(int series) const
@@ -1791,7 +1952,7 @@ void CustomPlot::askForCloser()
             continue;
         }
         rows.push_back(static_cast<int>(i));
-        asks.push_back(Ask{entry.expression, want, closerBuckets(), 0});
+        asks.push_back(Ask{entry.expression, want, closerBuckets(), 0, entry.postprocess});
     }
     if (asks.empty()) {
         return;
@@ -1831,7 +1992,8 @@ void CustomPlot::askForCloser()
                 }
                 else if (const auto row = static_cast<std::size_t>(rows[i]);
                          row < entries_.size() &&
-                         entries_[row].expression == asks[i].expression) {
+                         entries_[row].expression == asks[i].expression &&
+                         entries_[row].postprocess == asks[i].postprocess) {
                     into = &entries_[row];
                 }
                 if (into == nullptr) {
@@ -2071,9 +2233,9 @@ QStringList CustomPlot::paths() const
 {
     QStringList named;
     for (const Entry& entry : entries_) {
-        const Expression parts = splitExpression(entry.expression);
-        if (parts.valid() && !named.contains(parts.path)) {
-            named.append(parts.path);
+        const QString path = linePath(entry.expression, entry.postprocess);
+        if (!path.isEmpty() && !named.contains(path)) {
+            named.append(path);
         }
     }
     if (xMode_ == Dataset && !xExpression_.trimmed().isEmpty()) {
@@ -2269,7 +2431,7 @@ void CustomPlot::refresh()
         asks.push_back(Ask{xExpression_, {}, bucketBudget(), budget});
     }
     for (const Entry& entry : entries_) {
-        asks.push_back(Ask{entry.expression, {}, bucketBudget(), budget});
+        asks.push_back(Ask{entry.expression, {}, bucketBudget(), budget, entry.postprocess});
     }
 
     if (asks.empty()) {
@@ -2398,6 +2560,11 @@ QVariantMap CustomPlot::state() const
         if (entry.axisFixed) {
             fields.insert(QStringLiteral("axisFixed"), true);
         }
+        // Again only where it says something, so every view saved before a
+        // line could be a pipeline is a view of slices, which it is.
+        if (entry.postprocess) {
+            fields.insert(QStringLiteral("postprocess"), true);
+        }
         rows.append(fields);
     }
 
@@ -2449,6 +2616,7 @@ void CustomPlot::setState(const QVariantMap& state)
         }
         entry.separateAxis = fields.value(QStringLiteral("separateAxis"), false).toBool();
         entry.axisFixed = fields.value(QStringLiteral("axisFixed"), false).toBool();
+        entry.postprocess = fields.value(QStringLiteral("postprocess"), false).toBool();
         entries_.push_back(std::move(entry));
     }
     endResetModel();

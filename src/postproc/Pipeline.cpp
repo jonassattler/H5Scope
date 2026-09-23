@@ -204,6 +204,13 @@ Trace trace(const std::vector<hsize_t>& shape, const std::vector<Step>& steps,
     return result;
 }
 
+bool preservesIntegers(const std::vector<Step>& steps, std::size_t upTo)
+{
+    const std::size_t limit = std::min(upTo, steps.size());
+    return std::all_of(steps.begin(), steps.begin() + static_cast<std::ptrdiff_t>(limit),
+                       [](const Step& step) { return preservesIntegers(step); });
+}
+
 RunResult run(const h5core::DataSource& source, const std::vector<Step>& steps,
               std::size_t upTo)
 {

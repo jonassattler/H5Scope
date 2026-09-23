@@ -3,6 +3,8 @@
 
 #include "CustomPlotSet.hpp"
 
+#include "postproc/Script.hpp"
+
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -55,18 +57,26 @@ constexpr auto kViewsKey = "customViews";
     return object.toVariantMap();
 }
 
-/// Every line a stored view draws, as written.
-[[nodiscard]] QStringList expressionsOf(const QVariantMap& state)
+/// One line a stored view draws, as written, and which grammar it is in.
+struct WrittenLine {
+    QString text;
+    bool postprocess = false;
+};
+
+/// Every line a stored view draws.
+[[nodiscard]] std::vector<WrittenLine> expressionsOf(const QVariantMap& state)
 {
-    QStringList written;
+    std::vector<WrittenLine> written;
     for (const QVariant& row : state.value(QStringLiteral("entries")).toList()) {
-        written.append(row.toMap().value(QStringLiteral("expression")).toString());
+        const QVariantMap fields = row.toMap();
+        written.push_back({fields.value(QStringLiteral("expression")).toString(),
+                           fields.value(QStringLiteral("postprocess"), false).toBool()});
     }
     if (state.value(QStringLiteral("xMode")).toString()
         == QStringLiteral("dataset")) {
         const QString base = state.value(QStringLiteral("xExpression")).toString();
         if (!base.trimmed().isEmpty()) {
-            written.append(base);
+            written.push_back({base, false});
         }
     }
     return written;
@@ -76,10 +86,10 @@ constexpr auto kViewsKey = "customViews";
 [[nodiscard]] QStringList pathsOf(const QVariantMap& state)
 {
     QStringList paths;
-    for (const QString& written : expressionsOf(state)) {
-        const Expression parts = splitExpression(written);
-        if (parts.valid() && !paths.contains(parts.path)) {
-            paths.append(parts.path);
+    for (const WrittenLine& written : expressionsOf(state)) {
+        const QString path = linePath(written.text, written.postprocess);
+        if (!path.isEmpty() && !paths.contains(path)) {
+            paths.append(path);
         }
     }
     return paths;
@@ -364,6 +374,16 @@ void CustomPlotSet::addDatasetTo(int index, const QString& path, bool confirmed)
     }
 }
 
+void CustomPlotSet::addScriptTo(int index, const QString& script)
+{
+    if (script.trimmed().isEmpty()) {
+        return;
+    }
+    if (CustomPlot* plot = plotAt(index); plot != nullptr) {
+        plot->addScript(script);
+    }
+}
+
 QString CustomPlotSet::uniqueName(const QString& wanted, int except) const
 {
     const QString trimmed = wanted.trimmed();
@@ -454,14 +474,20 @@ void CustomPlotSet::checkView(const QString& name)
     // nobody has browsed as perfect, which is exactly the case the warning is
     // for.
     const QVariantMap state = held.value().plot;
-    const QStringList expressions = expressionsOf(state);
+    const std::vector<WrittenLine> expressions = expressionsOf(state);
 
     lookup_.resolve(pathsOf(state), [this, name, expressions] {
         QStringList reasons;
-        for (const QString& written : expressions) {
-            const QString problem = expressionProblem(written, lookup_);
+        for (const WrittenLine& written : expressions) {
+            const QString problem = lineProblem(written.text, written.postprocess, lookup_);
             if (!problem.isEmpty()) {
-                reasons.append(tr("%1 — %2").arg(written, problem));
+                // A pipeline is named on one line here, as its legend names it.
+                QString shown = written.text;
+                if (const postproc::Script script = postproc::parseScript(written.text);
+                    written.postprocess && script.ok()) {
+                    shown = postproc::writeScript(script, postproc::ScriptLayout::OneLine);
+                }
+                reasons.append(tr("%1 — %2").arg(shown, problem));
             }
         }
         emit viewChecked(name, static_cast<int>(reasons.size()), reasons);

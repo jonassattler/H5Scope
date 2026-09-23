@@ -20,7 +20,7 @@ namespace postproc {
 /// only thing it would buy is exactness above 2^53 -- which the plot and the
 /// image have already given up.
 ///
-/// Strided rather than flat because three of the six operations do not need to
+/// Strided rather than flat because three of the operations do not need to
 /// move a single element. A transpose permutes the strides, a reshape of a
 /// contiguous array rewrites the shape, and a slice whose indices form an
 /// arithmetic progression -- which is every `:`, every `a:b`, every `::k` and

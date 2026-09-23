@@ -9,6 +9,7 @@
 #include "h5core/File.hpp"
 #include "postproc/MemberPath.hpp"
 #include "postproc/Operations.hpp"
+#include "postproc/Script.hpp"
 #include "postproc/Subscripts.hpp"
 
 #include <algorithm>
@@ -437,6 +438,131 @@ QString expressionProblem(const QString& text, const DatasetLookup& lookup)
                                              facts->shape.size()),
                       shape, indices, drop, error);
     return error;
+}
+
+QString scriptProblem(const QString& text, const DatasetLookup& lookup)
+{
+    const postproc::Script script = postproc::parseScript(text);
+    if (!script.ok()) {
+        return script.error;
+    }
+    const PathFacts* facts = lookup.facts(script.path);
+    if (facts == nullptr) {
+        return {}; // not known to be anything; see expressionProblem
+    }
+    if (!facts->usable) {
+        return facts->problem;
+    }
+    const postproc::ScriptCheck check = postproc::checkScript(script, facts->shape, facts->type);
+    if (!check.ok()) {
+        return check.error;
+    }
+    return check.output.size() == 1 ? QString{} : notOneLine(check.output);
+}
+
+QString notOneLine(const std::vector<hsize_t>& output)
+{
+    return output.empty()
+               ? QStringLiteral("this pipeline leaves a single value, and a line "
+                                "needs one dimension to run along")
+               : QStringLiteral("this pipeline leaves %1, and a line needs exactly "
+                                "one dimension — slice or reduce it to one")
+                     .arg(postproc::describeShape(output));
+}
+
+QString lineProblem(const QString& text, bool postprocess, const DatasetLookup& lookup)
+{
+    return postprocess ? scriptProblem(text, lookup) : expressionProblem(text, lookup);
+}
+
+QString linePath(const QString& text, bool postprocess)
+{
+    if (postprocess) {
+        const postproc::Script script = postproc::parseScript(text);
+        return script.ok() ? script.path : QString{};
+    }
+    const Expression parts = splitExpression(text);
+    return parts.valid() ? parts.path : QString{};
+}
+
+QString scriptFromExpression(const QString& text)
+{
+    const Expression parts = splitExpression(text);
+    if (!parts.valid()) {
+        return {};
+    }
+    postproc::Script script;
+    script.path = parts.path;
+    script.member = parts.member;
+    script.sliced = !parts.subscript.isEmpty();
+    script.slice = parts.subscript;
+    if (!script.member.isEmpty() && !script.member.contains(QLatin1Char('['))
+        && script.slice.contains(QStringLiteral("..."))) {
+        script.member += QStringLiteral("[...]");
+    }
+    return postproc::writeScript(script);
+}
+
+QString expressionFromScript(const QString& text, const DatasetLookup& lookup)
+{
+    const postproc::Script script = postproc::parseScript(text);
+    if (!script.ok()) {
+        return {};
+    }
+    const auto bracketed = [](const QString& body) {
+        return body.isEmpty() ? QString{} : QStringLiteral("[") + body + QStringLiteral("]");
+    };
+    QString subscript = script.slice;
+    QString member = script.member;
+
+    // A bare chain whose slice reaches the member's axes: split the slice at
+    // the dataset's own rank and give the rest back to the chain, which is the
+    // only place a plain line can say it.
+    const PathFacts* facts = lookup.facts(script.path);
+    if (!member.isEmpty() && !member.contains(QLatin1Char('[')) && facts != nullptr
+        && facts->isDataset) {
+        const postproc::MemberChain chain = postproc::resolveMemberChain(member, facts->type);
+        QStringList written;
+        QString ignored;
+        // Split as text rather than resolved: the terms only have to be moved,
+        // and resolving `:` over a billion-element dataset is eight gigabytes
+        // of indices to find that out. The ellipsis and the trailing terms
+        // nobody wrote are spelled out, as sliceLineFor spells them.
+        if (chain.valid() && !chain.selection.dims.empty()
+            && postproc::splitSubscripts(subscript, written, ignored)) {
+            const auto rank = static_cast<qsizetype>(facts->shape.size());
+            const auto total = rank + static_cast<qsizetype>(chain.selection.dims.size());
+            for (QString& term : written) {
+                term = term.trimmed();
+            }
+            if (written.size() == 1 && written.front().isEmpty()) {
+                written.clear();
+            }
+            const qsizetype ellipsis = written.indexOf(QStringLiteral("..."));
+            if (ellipsis >= 0) {
+                written.removeAt(ellipsis);
+                while (written.size() < total) {
+                    written.insert(ellipsis, QStringLiteral(":"));
+                }
+            }
+            while (written.size() < total) {
+                written.append(QStringLiteral(":"));
+            }
+            if (written.size() == total) {
+                const QStringList own = written.mid(0, rank);
+                const QStringList appended = written.mid(rank);
+                subscript = own.join(QStringLiteral(", "));
+                const bool whole = std::all_of(appended.begin(), appended.end(),
+                                               [](const QString& term) {
+                                                   return term.trimmed() == QStringLiteral(":");
+                                               });
+                if (!whole) {
+                    member += bracketed(appended.join(QStringLiteral(", ")));
+                }
+            }
+        }
+    }
+    return script.path + bracketed(subscript) + member;
 }
 
 } // namespace gui
