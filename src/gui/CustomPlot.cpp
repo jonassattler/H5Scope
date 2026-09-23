@@ -481,6 +481,10 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
         // Nothing rather than an invalid colour, for the reason
         // seriesOverride gives: in QML the two are not the same answer.
         return entry.colour.isValid() ? QVariant(entry.colour) : QVariant();
+    case SeparateAxisRole:
+        return entry.separateAxis;
+    case AxisFixedRole:
+        return entry.axisFixed;
     default:
         return {};
     }
@@ -496,7 +500,9 @@ QHash<int, QByteArray> CustomPlot::roleNames() const
             {ScalingRole, "scaling"},
             {ScalableRole, "scalable"},
             {DrawnRole, "drawn"},
-            {ColourRole, "colour"}};
+            {ColourRole, "colour"},
+            {SeparateAxisRole, "separateAxis"},
+            {AxisFixedRole, "axisFixed"}};
 }
 
 void CustomPlot::setName(QString name)
@@ -639,6 +645,10 @@ void CustomPlot::removeEntry(int row)
     beginRemoveRows({}, row, row);
     entries_.erase(entries_.begin() + row);
     endRemoveRows();
+    // Now, rather than when the re-read lands: the lines left are already in
+    // hand, and one of them may just have become the only line -- whose own
+    // axis is then no longer in force.
+    recount();
     discard(); // the row's values went with it
 }
 
@@ -756,6 +766,51 @@ QVariant CustomPlot::seriesOverride(int series) const
     }
     const QColor& colour = entries_[static_cast<std::size_t>(series)].colour;
     return colour.isValid() ? QVariant(colour) : QVariant();
+}
+
+void CustomPlot::setSeparateAxis(int row, bool on)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    if (entry.separateAxis == on) {
+        return;
+    }
+    entry.separateAxis = on;
+    touch(row, {SeparateAxisRole});
+    // The same line, under another map. Nothing is re-read; what moves is the
+    // common axis, which no longer spans this line (or spans it again), and
+    // that is a recount of values already in hand.
+    recount();
+    announce();
+}
+
+void CustomPlot::setAxisFixed(int row, bool on)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    if (entry.axisFixed == on) {
+        return;
+    }
+    entry.axisFixed = on;
+    touch(row, {AxisFixedRole});
+    announce();
+}
+
+QVariantMap CustomPlot::seriesAxis(int series) const
+{
+    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+        return {{QStringLiteral("separate"), false}};
+    }
+    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    return {{QStringLiteral("separate"), entry.ownAxis},
+            {QStringLiteral("fixed"), entry.ownAxis && entry.axisFixed},
+            {QStringLiteral("finite"), entry.finite},
+            {QStringLiteral("low"), entry.low},
+            {QStringLiteral("high"), entry.high}};
 }
 
 void CustomPlot::setScaling(int row, Scaling scaling)
@@ -1864,17 +1919,46 @@ void CustomPlot::recount()
     positiveMinimum_ = 0.0;
     hasFinite_ = false;
     hasPositive_ = false;
-    for (const Entry& entry : entries_) {
+    sharedSeries_ = 0;
+    bool hasShared = false;
+    // A separate axis is a second axis beside the common one, so it is in
+    // force only where there is something for it to be separate *from*: a
+    // plot of one line has one axis however that line's box is set, and the
+    // request is kept so a second line brings it back.
+    const int drawnLines = seriesCount();
+    for (Entry& entry : entries_) {
+        entry.ownAxis = entry.drawn && entry.separateAxis && drawnLines > 1;
+        entry.finite = false;
+        entry.low = 0.0;
+        entry.high = 0.0;
         if (!entry.drawn) {
             continue;
+        }
+        if (!entry.ownAxis) {
+            ++sharedSeries_;
         }
         for (const double value : entry.values) {
             if (!std::isfinite(value)) {
                 continue;
             }
-            if (!hasFinite_) {
+            // The line's own extent, for its own axis -- and counted for every
+            // line rather than only the separate ones, because it is two
+            // comparisons in a loop that is already here.
+            entry.low = entry.finite ? std::min(entry.low, value) : value;
+            entry.high = entry.finite ? std::max(entry.high, value) : value;
+            entry.finite = true;
+            ++points_;
+            // Whether anything at all is drawable is a question about every
+            // line; the extent below is the common axis's and spans only the
+            // lines left on it.
+            if (entry.ownAxis) {
+                hasFinite_ = true;
+                continue;
+            }
+            if (!hasShared) {
                 minimum_ = value;
                 maximum_ = value;
+                hasShared = true;
                 hasFinite_ = true;
             }
             else {
@@ -1887,7 +1971,6 @@ void CustomPlot::recount()
                 positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, value) : value;
                 hasPositive_ = true;
             }
-            ++points_;
         }
     }
     // In Dataset mode a line with no time base to draw against is not drawable
@@ -2079,6 +2162,15 @@ QVariantMap CustomPlot::state() const
         if (entry.colour.isValid()) {
             fields.insert(QStringLiteral("colour"), entry.colour);
         }
+        // The same rule for the same reason: written only where it says
+        // something, so every view saved before separate axes existed is a
+        // view whose lines share one.
+        if (entry.separateAxis) {
+            fields.insert(QStringLiteral("separateAxis"), true);
+        }
+        if (entry.axisFixed) {
+            fields.insert(QStringLiteral("axisFixed"), true);
+        }
         rows.append(fields);
     }
 
@@ -2128,6 +2220,8 @@ void CustomPlot::setState(const QVariantMap& state)
             entry.colour =
                 colour.canConvert<QColor>() ? colour.value<QColor>() : QColor(colour.toString());
         }
+        entry.separateAxis = fields.value(QStringLiteral("separateAxis"), false).toBool();
+        entry.axisFixed = fields.value(QStringLiteral("axisFixed"), false).toBool();
         entries_.push_back(std::move(entry));
     }
     endResetModel();

@@ -121,6 +121,25 @@ Item {
     property string xLabel: ""
     property string yLabel: ""
 
+    /// Whether there is a common y axis to number. False when every drawn
+    /// line is on an axis of its own: the common axis's numbers, its name and
+    /// the rules it draws across the pane then all go, because the window it
+    /// would print is a nominal one the gestures run on and not a reading of
+    /// any line. See PlotSurface.sharedAxis.
+    property bool commonAxis: true
+
+    /// The lines drawn against axes of their own, as PlotSurface.separateAxes
+    /// lists them: `{ line, low, high, colour, paperColour }` apiece, in
+    /// drawing order. Each is numbered in a column of its own to the left of
+    /// the common axis, in the colour of the line it is the axis of.
+    property var sideAxes: []
+
+    /// Which of each side axis's two colours to draw it in. The picture that
+    /// leaves for a page is the light scope's (see PlotPicture.qml), and an
+    /// axis numbered in the colour of a stroke on the dark theme could be a
+    /// white axis on a white page.
+    property bool paperAxes: false
+
     /// Punctuation on the lines: a dot at every sample, where the line is
     /// drawn sample for sample rather than summarised.
     property bool markers: false
@@ -167,7 +186,10 @@ Item {
             x: taken.x,
             y: taken.y,
             px: plotLines.xFraction(taken.x) * plotLines.width,
-            py: plotLines.height - plotLines.yFraction(taken.y) * plotLines.height
+            // Through the line's own axis when it has one, which is the only
+            // place its curve is.
+            py: plotLines.height
+                - plotLines.seriesYFraction(taken.line, taken.y) * plotLines.height
         })
     }
 
@@ -275,11 +297,68 @@ Item {
     /// and not its length. Nothing is reserved for it when the box is empty,
     /// which is the whole of "no wasted space" -- an unnamed axis's pane
     /// starts exactly where it started before this existed.
-    readonly property int gutterLeft:
-        Math.max(Theme.plotLabelMargin,
-                 Math.ceil(frame.widestYLabel) + Theme.gapM)
-        + (frame.yLabel === ""
-           ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
+    ///
+    /// The side axes go on the outside of all of it (sideWidth), so the
+    /// common axis stays against the pane it is the axis of. With no common
+    /// axis there is only a gap's worth of air between the last side axis and
+    /// the pane's own left rule.
+    readonly property int gutterLeft: frame.sideWidth + frame.commonWidth
+
+    /// The common axis's share of the left gutter.
+    readonly property int commonWidth: !frame.commonAxis ? Theme.gapS
+        : Math.max(Theme.plotLabelMargin,
+                   Math.ceil(frame.widestYLabel) + Theme.gapM)
+          + (frame.yLabel === ""
+             ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
+
+    // --- the axes of their own --------------------------------------------
+    /// Each side axis, laid out: where its column starts, how wide it is, and
+    /// its ticks, as `{ line, colour, x, width, ticks }`.
+    ///
+    /// A column is its numbers, a gap, a tick and a rule, right to left from
+    /// the rule; a gap between one column and the next is what keeps two
+    /// axes reading as two. Its numbers are placed by the same fractionOn the
+    /// common axis's are, over the window the renderer was handed for that
+    /// line -- linear, always -- so a side axis's tick is drawn where its
+    /// line's curve is, which PlotItem.seriesYFraction answers too and the
+    /// suite holds them to.
+    readonly property var sideColumns: {
+        const out = []
+        let at = 0
+        for (let i = 0; i < frame.sideAxes.length; ++i) {
+            const axis = frame.sideAxes[i]
+            const found = frame.tickValues(axis.low, axis.high, false, 10,
+                                           frame.areaHeight, true)
+            const ticks = []
+            let widest = 0
+            for (let k = 0; k < found.values.length; ++k) {
+                const written = found.texts[k]
+                const width = frame.labelWidth(written)
+                widest = Math.max(widest, width)
+                ticks.push({ at: frame.fractionOn(found.values[k], axis.low,
+                                                  axis.high, false, 10),
+                             text: written.text, base: written.base,
+                             exponent: written.exponent, width: width })
+            }
+            const width = Math.ceil(widest) + Theme.gapS + Theme.s3
+                          + Theme.borderWidthAccent
+            out.push({ line: axis.line,
+                       colour: frame.paperAxes ? axis.paperColour : axis.colour,
+                       x: at, width: width, ticks: ticks })
+            at += width + Theme.gapM
+        }
+        return out
+    }
+
+    /// How much of the left gutter the side axes take, the gap after the last
+    /// of them included.
+    readonly property int sideWidth: {
+        const columns = frame.sideColumns
+        if (columns.length === 0)
+            return 0
+        const last = columns[columns.length - 1]
+        return Math.ceil(last.x + last.width + Theme.gapM)
+    }
 
     readonly property real widestYLabel: {
         let widest = 0
@@ -883,9 +962,12 @@ Item {
     readonly property var xTickValues:
         frame.tickValues(frame.viewMinX, frame.viewMaxX, frame.xLog, frame.xLogBase,
                          frame.area.width, false)
-    readonly property var yTickValues:
-        frame.tickValues(frame.viewMinY, frame.viewMaxY, frame.yLog, frame.yLogBase,
-                         frame.areaHeight, true)
+    // None with no common axis: its window is then a nominal one, and the
+    // numbers, the rules and the digits between them all read this list.
+    readonly property var yTickValues: frame.commonAxis
+        ? frame.tickValues(frame.viewMinY, frame.viewMaxY, frame.yLog, frame.yLogBase,
+                           frame.areaHeight, true)
+        : ({ values: [], texts: [], ticks: [], logarithmic: false, fallback: false })
 
     /// Whether each axis's ticks came out the logarithmic way. Read by the
     /// band's readout, which writes its own numbers the way the ticks beside
@@ -1185,8 +1267,10 @@ Item {
     readonly property var xGridValues: frame.gridValues(
         frame.viewMinX, frame.viewMaxX, frame.gridStepX, frame.xTickValues)
 
-    readonly property var yGridValues: frame.gridValues(
-        frame.viewMinY, frame.viewMaxY, frame.gridStepY, frame.yTickValues)
+    readonly property var yGridValues: frame.commonAxis
+        ? frame.gridValues(frame.viewMinY, frame.viewMaxY, frame.gridStepY,
+                           frame.yTickValues)
+        : []
 
     readonly property var xGrid:
         frame.gridAt(frame.xGridValues, frame.xTickValues.values, false)
@@ -1367,6 +1451,9 @@ Item {
     // axis the exponent is empty and takes no room.
     component TickLabel: Item {
         required property var modelData
+        /// What it is written in: the frame's ink, except on a side axis,
+        /// which is written in its line's colour.
+        property color ink: frame.ink
 
         implicitWidth: power.implicitWidth + raised.implicitWidth
         implicitHeight: power.implicitHeight
@@ -1378,7 +1465,7 @@ Item {
 
             text: parent.modelData.base
             font: Theme.readout
-            color: frame.ink
+            color: parent.ink
         }
 
         Text {
@@ -1388,7 +1475,7 @@ Item {
             y: power.baselineOffset - baselineOffset - Theme.plotExponentRaise
             text: parent.modelData.exponent
             font: Theme.readoutMinor
-            color: frame.ink
+            color: parent.ink
         }
     }
 
@@ -1399,6 +1486,65 @@ Item {
             x: frame.area.x - width - Theme.gapS
             y: Math.round(frame.area.y + (1 - modelData.at) * frame.area.height)
                - height / 2
+        }
+    }
+
+    // Each side axis: a rule the height of the pane, a tick at each number,
+    // and the numbers, all in the colour of the line it is the axis of --
+    // which is the whole of how a reader tells which axis a line is read
+    // against. The rule is drawn at the accent's weight rather than as a
+    // hairline, because a hairline of colour on black is a colour nobody can
+    // name.
+    Repeater {
+        model: frame.sideColumns
+
+        Item {
+            id: sideColumn
+
+            required property var modelData
+
+            objectName: "plotSideAxis"
+            /// Which line of the item this is the axis of, for the suite.
+            readonly property int line: modelData.line
+            readonly property color colour: modelData.colour
+            readonly property var ticks: modelData.ticks
+
+            x: modelData.x
+            y: frame.area.y
+            width: modelData.width
+            height: frame.area.height
+
+            Rectangle {
+                x: sideColumn.width - width
+                width: Theme.borderWidthAccent
+                height: sideColumn.height + Theme.hairline
+                color: sideColumn.colour
+            }
+
+            Repeater {
+                model: sideColumn.ticks
+
+                Item {
+                    required property var modelData
+
+                    y: Math.round((1 - modelData.at) * sideColumn.height)
+
+                    Rectangle {
+                        x: sideColumn.width - Theme.borderWidthAccent - Theme.s3
+                        width: Theme.s3
+                        height: Theme.hairline
+                        color: sideColumn.colour
+                    }
+
+                    TickLabel {
+                        modelData: parent.modelData
+                        ink: sideColumn.colour
+                        x: sideColumn.width - Theme.borderWidthAccent - Theme.s3
+                           - Theme.gapS - width
+                        y: -height / 2
+                    }
+                }
+            }
         }
     }
 
@@ -1519,10 +1665,10 @@ Item {
         id: yNameText
 
         width: frame.area.height
-        x: Math.ceil(axisNameMetrics.height) / 2 - width / 2
+        x: frame.sideWidth + Math.ceil(axisNameMetrics.height) / 2 - width / 2
         y: frame.area.y + frame.area.height / 2 - height / 2
         rotation: -90
-        visible: frame.yLabel !== ""
+        visible: frame.yLabel !== "" && frame.commonAxis
         text: frame.yLabel
         font: Theme.bodySmall
         color: frame.ink

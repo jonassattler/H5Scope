@@ -4245,6 +4245,88 @@ TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot]
     }
 }
 
+TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", "[plot][axes]")
+{
+    // A line on an axis of its own is placed by that axis, so the ring the
+    // crosshair draws round a sample of it has to be placed there too -- a
+    // ring on the common axis's reading of the same value would sit on no
+    // stroke at all. Two lines over one x, one of them on an axis of its own.
+    const std::vector<double> large{0.0, 500.0, 1000.0};
+    const std::vector<double> small{0.0, 5.0, 10.0};
+
+    gui::PlotItem item;
+    item.setWidth(200.0);
+    item.setHeight(400.0);
+    item.setXMin(0.0);
+    item.setXMax(2.0);
+    item.setYMin(0.0);
+    item.setYMax(1000.0);
+
+    gui::PlotLine first;
+    first.values = large.data();
+    first.count = static_cast<qsizetype>(large.size());
+    gui::PlotLine second;
+    second.values = small.data();
+    second.count = static_cast<qsizetype>(small.size());
+    item.setLines({first, second}, gui::PlotAxis{});
+
+    // On the common axis the small line is a stroke along the bottom, and a
+    // pointer halfway up the pane is nearest the large line.
+    QVariantMap found = item.nearestSample(100.0, 200.0);
+    REQUIRE(found.value(QStringLiteral("valid")).toBool());
+    CHECK(found.value(QStringLiteral("line")).toInt() == 0);
+
+    item.setSeriesYRange(1, 0.0, 20.0);
+    CHECK(item.seriesHasOwnY(1));
+    CHECK_FALSE(item.seriesHasOwnY(0));
+    // Five is a quarter of the way up its own axis, and that is where the
+    // item says it is -- through the same map the side axis's ticks use.
+    CHECK(item.seriesYFraction(1, 5.0) == Catch::Approx(0.25));
+    CHECK(item.seriesYFraction(0, 500.0) == Catch::Approx(0.5));
+
+    found = item.nearestSample(100.0, 300.0);
+    REQUIRE(found.value(QStringLiteral("valid")).toBool());
+    CHECK(found.value(QStringLiteral("line")).toInt() == 1);
+    CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(5.0));
+    CHECK(found.value(QStringLiteral("py")).toDouble() == Catch::Approx(300.0));
+
+    SECTION("a picture of it keeps the axis")
+    {
+        // adopt() copies the lines, and which axis a line is on is part of
+        // the line -- so the picture that leaves draws it where the pane did.
+        gui::PlotItem copy;
+        copy.setWidth(200.0);
+        copy.setHeight(400.0);
+        copy.setYMin(0.0);
+        copy.setYMax(1000.0);
+        copy.adopt(&item);
+        CHECK(copy.seriesHasOwnY(1));
+        CHECK(copy.seriesYFraction(1, 5.0) == Catch::Approx(0.25));
+    }
+
+    SECTION("and puts it back on the common one")
+    {
+        item.clearSeriesYRange(1);
+        CHECK_FALSE(item.seriesHasOwnY(1));
+        CHECK(item.seriesYFraction(1, 5.0) == Catch::Approx(0.005));
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "the plot tab draws every line on the common axis",
+                 "[plot][axes]")
+{
+    // A separate axis is for lines that measure different things; the rows of
+    // one dataset measure the same thing. The Plot tab answers the question
+    // PlotSurface asks of both plots, and always the same way.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+    REQUIRE(plot->seriesCount() == 6);
+    CHECK(plot->property("sharedSeriesCount").toInt() == 6);
+    for (int series = 0; series < 6; ++series) {
+        CHECK_FALSE(plot->seriesAxis(series).value(QStringLiteral("separate")).toBool());
+    }
+}
+
 TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[plot][log]")
 {
     // A reading of a value that was not drawn is a readout naming a point that

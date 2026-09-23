@@ -1777,3 +1777,73 @@ TEST_CASE("a gentle corner still gets its miter", "[plot]")
     CHECK(corner > 2.0);
     CHECK(corner < 2.0 * gui::kMiterLimit);
 }
+
+// --- a line on an axis of its own -------------------------------------------
+TEST_CASE("a line on an axis of its own is placed by that axis", "[plot][axes]")
+{
+    // A pressure of about a thousand beside a temperature of about twenty. On
+    // the pressures' axis the temperatures are a flat stroke along the bottom;
+    // on one of their own they span the pane, which is the whole of what the
+    // feature is for.
+    const std::vector<double> temperature{10.0, 30.0};
+    gui::PlotLine line = lineOver(temperature);
+    const gui::PlotView view = paneOver(0.0, 1.0, 0.0, 1000.0);
+
+    const Projected shared = project(line, {}, view);
+    REQUIRE(shared.points.size() == 2);
+    CHECK(shared.points[0].y() == Approx(495.0));
+    CHECK(shared.points[1].y() == Approx(485.0));
+
+    line.ownY = true;
+    line.yMin = 0.0;
+    line.yMax = 40.0;
+    const Projected own = project(line, {}, gui::lineView(line, view));
+    REQUIRE(own.points.size() == 2);
+    CHECK(own.points[0].y() == Approx(375.0));
+    CHECK(own.points[1].y() == Approx(125.0));
+    // The x axis is every line's: an axis of its own is a y axis and nothing
+    // else.
+    CHECK(own.points[0].x() == Approx(shared.points[0].x()));
+    CHECK(own.points[1].x() == Approx(shared.points[1].x()));
+}
+
+TEST_CASE("an axis of its own is linear whatever the common one is", "[plot][axes][log]")
+{
+    // The plot settings are the common axis's, logarithm included. A line on
+    // an axis of its own is the line as it would be drawn alone, and a value
+    // at or below zero is therefore a point on it and not a gap.
+    const std::vector<double> values{-5.0, 0.0, 5.0};
+    gui::PlotLine line = lineOver(values);
+    line.ownY = true;
+    line.yMin = -10.0;
+    line.yMax = 10.0;
+    gui::PlotView view = paneOver(0.0, 2.0, 1.0, 1000.0);
+    view.yLog = true;
+
+    const gui::PlotView own = gui::lineView(line, view);
+    CHECK_FALSE(own.yLog);
+    CHECK(gui::yFractionOf(0.0, own) == Approx(0.5));
+    // The x half of the view is untouched.
+    CHECK(own.xMin == view.xMin);
+    CHECK(own.xMax == view.xMax);
+
+    const Projected drawn = project(line, {}, own);
+    CHECK(drawn.runs.size() == 1);
+    CHECK(drawn.points.size() == 3);
+
+    // ...and a line with no axis of its own is handed the view it was given.
+    const gui::PlotLine common = lineOver(values);
+    CHECK(gui::lineView(common, view).yLog);
+    CHECK(gui::lineView(common, view).yMax == view.yMax);
+}
+
+TEST_CASE("an axis of its own with no span draws nothing", "[plot][axes]")
+{
+    // The same refusal every other window gets: a span of zero has no answer.
+    const std::vector<double> values{1.0, 2.0};
+    gui::PlotLine line = lineOver(values);
+    line.ownY = true;
+    line.yMin = 3.0;
+    line.yMax = 3.0;
+    CHECK_FALSE(gui::yMappingOf(gui::lineView(line, paneOver(0.0, 1.0, 0.0, 1.0))).usable);
+}

@@ -1940,6 +1940,131 @@ TEST_CASE_METHOD(PlotFixture, "a line keeps the colour the reader gave it", "[cu
     }
 }
 
+TEST_CASE_METHOD(PlotFixture, "a line can be read against a y axis of its own", "[custom][axes]")
+{
+    gui::CustomPlotSet* plots = set();
+    const int index = plots->addPlot();
+    gui::CustomPlot* plot = plots->plotAt(index);
+    // series_a is i over 64 samples and series_b is 100 - i: 0..63 and 37..100.
+    REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == 0);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/b[:]")) == 1);
+    settleAll();
+
+    CHECK(plot->sharedSeriesCount() == 2);
+    CHECK_FALSE(plot->seriesAxis(0).value(QStringLiteral("separate")).toBool());
+    // A row that does not exist is on no axis of its own.
+    CHECK_FALSE(plot->seriesAxis(7).value(QStringLiteral("separate")).toBool());
+
+    SECTION("the common axis spans only the lines left on it")
+    {
+        QSignalSpy changed(plot, &gui::CustomPlot::changed);
+        const long long before = gui::CustomPlot::hyperslabs();
+
+        plot->setSeparateAxis(1, true);
+        settleAll();
+
+        CHECK(plot->data(plot->index(1, 0), gui::CustomPlot::SeparateAxisRole).toBool());
+        CHECK(plot->sharedSeriesCount() == 1);
+        CHECK(plot->minimum() == 0.0);
+        CHECK(plot->maximum() == 63.0);
+        // ...while the line on its own axis is the axis that line would have
+        // if it were the only one on the plot.
+        const QVariantMap own = plot->seriesAxis(1);
+        CHECK(own.value(QStringLiteral("separate")).toBool());
+        CHECK(own.value(QStringLiteral("finite")).toBool());
+        CHECK(own.value(QStringLiteral("low")).toDouble() == 37.0);
+        CHECK(own.value(QStringLiteral("high")).toDouble() == 100.0);
+        // Everything is still drawn, and still counted.
+        CHECK(plot->hasData());
+        CHECK(plot->pointCount() == 128);
+        CHECK(changed.count() >= 1);
+        // A different map over the same values: nothing is read again.
+        CHECK(gui::CustomPlot::hyperslabs() == before);
+
+        plot->setSeparateAxis(1, false);
+        CHECK(plot->sharedSeriesCount() == 2);
+        CHECK(plot->maximum() == 100.0);
+        CHECK(gui::CustomPlot::hyperslabs() == before);
+    }
+
+    SECTION("a plot with every line on its own axis has no common one")
+    {
+        plot->setSeparateAxis(0, true);
+        plot->setSeparateAxis(1, true);
+        CHECK(plot->sharedSeriesCount() == 0);
+        CHECK(plot->hasData());
+        CHECK(plot->seriesAxis(0).value(QStringLiteral("high")).toDouble() == 63.0);
+        CHECK(plot->seriesAxis(1).value(QStringLiteral("low")).toDouble() == 37.0);
+    }
+
+    SECTION("a plot of one line has one axis, and remembers the request")
+    {
+        plot->setSeparateAxis(1, true);
+        plot->setSeriesVisible(0, false);
+        // One line drawn: there is nothing for it to be separate from.
+        CHECK_FALSE(plot->seriesAxis(1).value(QStringLiteral("separate")).toBool());
+        CHECK(plot->sharedSeriesCount() == 1);
+        CHECK(plot->maximum() == 100.0);
+        // The box still says what the reader asked for...
+        CHECK(plot->data(plot->index(1, 0), gui::CustomPlot::SeparateAxisRole).toBool());
+
+        // ...and a second line brings it back.
+        plot->setSeriesVisible(0, true);
+        CHECK(plot->seriesAxis(1).value(QStringLiteral("separate")).toBool());
+        CHECK(plot->sharedSeriesCount() == 1);
+
+        // Removing the other line is the same case, answered at once rather
+        // than when the re-read lands.
+        plot->removeEntry(0);
+        CHECK_FALSE(plot->seriesAxis(0).value(QStringLiteral("separate")).toBool());
+        CHECK(plot->sharedSeriesCount() == 1);
+    }
+
+    SECTION("exclude from zooming is a question about a separate axis")
+    {
+        plot->setAxisFixed(1, true);
+        CHECK(plot->data(plot->index(1, 0), gui::CustomPlot::AxisFixedRole).toBool());
+        // Asked of a line on the common axis, it has nothing to hold still.
+        CHECK_FALSE(plot->seriesAxis(1).value(QStringLiteral("fixed")).toBool());
+        plot->setSeparateAxis(1, true);
+        CHECK(plot->seriesAxis(1).value(QStringLiteral("fixed")).toBool());
+    }
+
+    SECTION("the renderer is handed every line on the common axis")
+    {
+        // Which axis a line is on is a styling the surface sets after the
+        // fill, as it sets the colour; the model hands over values and no map.
+        plot->setSeparateAxis(1, true);
+        CHECK_FALSE(plot->lineOf(1).ownY);
+    }
+
+    SECTION("and both requests travel through the plot's own state")
+    {
+        plot->setSeparateAxis(1, true);
+        plot->setAxisFixed(1, true);
+        const QVariantMap state = plot->state();
+        const QVariantList rows = state.value(QStringLiteral("entries")).toList();
+        REQUIRE(rows.size() == 2);
+        // Written only where they say something, so a view whose lines share
+        // one axis is the same document it was before separate axes existed.
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("separateAxis")));
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("axisFixed")));
+        CHECK(rows.at(1).toMap().value(QStringLiteral("separateAxis")).toBool());
+        CHECK(rows.at(1).toMap().value(QStringLiteral("axisFixed")).toBool());
+
+        const int into = plots->addPlot();
+        gui::CustomPlot* restored = plots->plotAt(into);
+        restored->setState(state);
+        settleAll();
+        CHECK_FALSE(restored->data(restored->index(0, 0), gui::CustomPlot::SeparateAxisRole)
+                        .toBool());
+        CHECK(restored->data(restored->index(1, 0), gui::CustomPlot::SeparateAxisRole).toBool());
+        CHECK(restored->data(restored->index(1, 0), gui::CustomPlot::AxisFixedRole).toBool());
+        CHECK(restored->seriesAxis(1).value(QStringLiteral("separate")).toBool());
+        CHECK(restored->sharedSeriesCount() == 1);
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom]")
 {
     gui::CustomPlotSet* plots = set();

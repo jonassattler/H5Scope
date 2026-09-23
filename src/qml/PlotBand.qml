@@ -114,9 +114,15 @@ Item {
     /// ticks beneath them say, to the same precision, and a reader zooming in
     /// is given digits as the ticks close up rather than six of them whatever
     /// they are looking at.
+    ///
+    /// Only the x when there is no common y axis: every line is then on an
+    /// axis of its own, the y the band spans is a different number on each of
+    /// them, and the one the gestures run on is a nominal axis nobody can see.
     function coordinateText(x, y) {
         if (!readout.target)
             return ""
+        if (!readout.target.sharedAxis)
+            return readout.target.xNumber(x)
         return qsTr("%1, %2").arg(readout.target.xNumber(x))
                              .arg(readout.target.yNumber(y))
     }
@@ -144,7 +150,7 @@ Item {
                              readout.target.xNumber)
                        : ""
     readonly property string heightText:
-        readout.target ? readout.lengthText(
+        readout.target && readout.target.sharedAxis ? readout.lengthText(
                              Math.abs(readout.endValueY - readout.startValueY),
                              readout.target.yNumber)
                        : ""
@@ -380,7 +386,8 @@ Item {
                               width: widthSize.width, height: widthSize.height,
                               turn: 0 })
         }
-        if (heightSize.height <= readout.bandRect.height) {
+        if (readout.heightText !== ""
+                && heightSize.height <= readout.bandRect.height) {
             candidates.push({ key: "heightLeft", text: readout.heightText,
                               x: readout.bandLeft - gap - heightSize.width,
                               y: midY - heightSize.height / 2,

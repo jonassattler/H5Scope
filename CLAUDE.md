@@ -102,6 +102,33 @@ there is its place in the table and the cycle already says that. Both plots
 are drawn by `PlotSurface.qml`, which asks the question without knowing which
 plot it has.
 
+A line of a custom tab may also be drawn against a **y axis of its own**
+(`Entry::separateAxis`, `axisFixed`, answered by `seriesAxis`), and it is the
+colour's kind of setting: the same values under a different map, so nothing is
+re-read. The map lives on the line — `PlotLine::ownY` with its window, set by
+`PlotItem::setSeriesYRange` after every fill as the colour is — and everything
+that places a y goes through `gui::lineView`, so the curve, the crosshair's
+snap (`nearestSample`, `PlotFrame.placeReading` via `seriesYFraction`) and the
+side axis's ticks cannot disagree. Four rules hold it up:
+
+- **A separate axis is the line alone, and linear.** Its whole is that line's
+  own extent (counted in `recount`, which also takes it *out* of `minimum` /
+  `maximum`, so the common axis spans only the lines left on it) with the air
+  `padded` gives a lone line. The plot settings, logarithm included, are the
+  common axis's.
+- **It zooms by the common axis's fractions.** `PlotSurface.separateAxes` takes
+  the share of the common axis on screen and shows the same share of each
+  separate one, so one gesture moves every axis and there is no per-axis zoom
+  or pan to remember, reset or save. A fixed axis ignores the share. With no
+  line left on the common axis (`sharedSeriesCount` of zero) the surface keeps
+  a nominal 0..1 axis for the gestures to run on, and the frame numbers, names
+  and rules none of it.
+- **It needs a second line.** `ownAxis` is the request and more than one drawn
+  line; the request is kept, so a second line brings the axis back.
+- **`DatasetPlot` answers "common" for every line**, and `separateAxes` returns
+  early when nothing is separate — it is re-evaluated on every frame of a zoom,
+  and the Plot tab can be ten thousand lines.
+
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without

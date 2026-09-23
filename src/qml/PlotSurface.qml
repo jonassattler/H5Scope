@@ -368,9 +368,17 @@ Item {
     ///
     /// Guarded like every other reader of the sample: `drawable` tests `active`
     /// first, so a hidden plot's bindings never reach the file.
+    ///
+    /// A plot with no common axis -- every line on one of its own -- has a
+    /// nominal one instead, 0..1 or one power of the base, so that the zoom,
+    /// the pan and the band go on working in fractions of it; see
+    /// separateAxes, which is what reads those fractions.
     readonly property var valueBounds: {
         if (!surface.drawable)
             return ({ low: 0.0, high: 1.0 })
+        if (!surface.sharedAxis)
+            return surface.yLog ? ({ low: 1.0, high: surface.yLogBase })
+                                : ({ low: 0.0, high: 1.0 })
         return surface.padded(surface.yLog ? surface.plot.positiveMinimum
                                            : surface.plot.minimum,
                               surface.plot.maximum, surface.yLog,
@@ -379,6 +387,114 @@ Item {
 
     readonly property real lowerBound: surface.valueBounds.low
     readonly property real upperBound: surface.valueBounds.high
+
+    // --- the lines on axes of their own ----------------------------------
+    /// Whether there is a common y axis at all. There is not when every drawn
+    /// line has been given one of its own, and then the frame numbers nothing
+    /// in the common axis's place and rules nothing across the pane: the
+    /// rules are the common axis's, and a grid ruled at a nominal axis would
+    /// be a grid of nothing.
+    ///
+    /// Asked of the plot object, which counts it: DatasetPlot answers with
+    /// every drawn line, because its lines are never separate.
+    readonly property bool sharedAxis: !surface.drawable || !surface.plot
+                                       || surface.plot.sharedSeriesCount > 0
+
+    /// Where the window on the common axis sits within the whole of it, as
+    /// a fraction from the bottom -- in the axis's own positions, so on a
+    /// logarithmic common axis a zoom into the top decade is a zoom into the
+    /// top of every separate axis too.
+    function commonFraction(value) {
+        const from = surface.axisPosition(surface.lowerBound, surface.yLog,
+                                          surface.yLogBase)
+        const to = surface.axisPosition(surface.upperBound, surface.yLog,
+                                        surface.yLogBase)
+        if (!(to > from))
+            return 0.0
+        return (surface.axisPosition(value, surface.yLog, surface.yLogBase)
+                - from) / (to - from)
+    }
+
+    /// Every drawn line that is on an axis of its own, in drawing order, as
+    /// `{ series, line, fixed, low, high, colour, paperColour }` -- `line`
+    /// being its place in what the item was handed and `series` its row.
+    ///
+    /// **A separate axis zooms by the common axis's fractions.** Its whole
+    /// is the line's own extent, with the air a lone line would get, so it is
+    /// the axis that line would have if it were the only one on the plot; and
+    /// the window on it is the same share of that whole the common axis is
+    /// showing of its own. So one gesture zooms every axis at once, about the
+    /// same place on the pane, and no axis needs a zoom or a pan of its own to
+    /// be remembered, reset or saved. A *fixed* axis ignores the fractions and
+    /// shows its whole, which is what "exclude from zooming" asks.
+    ///
+    /// Always linear: the plot settings are the common axis's, logarithm
+    /// included, and a separate axis is the line as it would be drawn alone.
+    readonly property var separateAxes: {
+        if (!surface.drawable || !surface.plot)
+            return []
+        // Named so that this binding depends on them: seriesColor() and
+        // seriesAxis() are calls, and a call creates no dependency on what it
+        // reads. `drawnSeries` is announced with every change a separate axis
+        // can follow -- a line ticked, a box ticked, a re-read.
+        const drawn = surface.plot.drawnSeries
+        // Nothing separate is nothing to ask about, and this binding runs on
+        // every frame of a zoom: the Plot tab can be ten thousand lines, none
+        // of them ever separate, and asking each of them per frame would be a
+        // cost paid for a feature it does not have.
+        if (surface.plot.sharedSeriesCount >= drawn.length)
+            return []
+        const cycle = surface.colorMode
+        const reversed = surface.colorsReversed
+        const single = surface.colorSingle
+        const from = surface.colorRangeFrom
+        const to = surface.colorRangeTo
+        const band = [surface.colorFrom, surface.colorTo]
+        const dark = Theme.dark
+        const low = surface.commonFraction(surface.viewMinY)
+        const high = surface.commonFraction(surface.viewMaxY)
+        const found = []
+        for (let i = 0; i < drawn.length; ++i) {
+            const axis = surface.plot.seriesAxis(drawn[i])
+            if (!axis.separate)
+                continue
+            const whole = axis.finite ? surface.padded(axis.low, axis.high, false, 10)
+                                      : ({ low: 0.0, high: 1.0 })
+            const bottom = axis.fixed ? 0.0 : low
+            const top = axis.fixed ? 1.0 : high
+            const span = whole.high - whole.low
+            found.push({
+                series: drawn[i],
+                line: i,
+                fixed: axis.fixed,
+                low: whole.low + bottom * span,
+                high: whole.low + top * span,
+                colour: surface.seriesColor(drawn[i], i, drawn.length, false),
+                paperColour: surface.seriesColor(drawn[i], i, drawn.length, true)
+            })
+        }
+        return found
+    }
+
+    /// Put each line on the axis it belongs to. Part of restyling, because a
+    /// fill hands the item lines on the common axis and this is what moves
+    /// them off it -- and on its own whenever the window moves, because that
+    /// moves every separate axis with it.
+    function pushSeriesAxes() {
+        const count = frame.lines.lineCount()
+        const own = {}
+        for (let i = 0; i < surface.separateAxes.length; ++i)
+            own[surface.separateAxes[i].line] = surface.separateAxes[i]
+        for (let line = 0; line < count; ++line) {
+            const axis = own[line]
+            if (axis)
+                frame.lines.setSeriesYRange(line, axis.low, axis.high)
+            else
+                frame.lines.clearSeriesYRange(line)
+        }
+    }
+
+    onSeparateAxesChanged: surface.pushSeriesAxes()
 
     // --- which line is which ---------------------------------------------
     /// How the lines are coloured: the name of one of Theme's categorical
@@ -1054,6 +1170,9 @@ Item {
         xLabel: surface.xLabel
         yLabel: surface.yLabel
 
+        commonAxis: surface.sharedAxis
+        sideAxes: surface.separateAxes
+
         markers: surface.showMarkers
         markerSize: Theme.plotMarkerSize
         showCursor: surface.showCursor && !surface.selecting
@@ -1321,6 +1440,7 @@ Item {
                                                                    drawn.length))
             frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))
         }
+        surface.pushSeriesAxes()
     }
 
     /// Tell the plot object what is on screen.
@@ -1789,7 +1909,7 @@ Item {
     readonly property string logReason: {
         if (!surface.drawable)
             return ""
-        if (surface.yLog && !(surface.plot.maximum > 0))
+        if (surface.yLog && surface.sharedAxis && !(surface.plot.maximum > 0))
             return qsTr("Nothing here is above zero, and a logarithmic y axis "
                         + "has no place to draw a value that is not.")
         if (surface.xLog && !(surface.positiveMinX > 0

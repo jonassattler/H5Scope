@@ -204,6 +204,45 @@ void PlotItem::setSeriesWidth(int index, double width)
     }
 }
 
+void PlotItem::setSeriesYRange(int index, double low, double high)
+{
+    if (index < 0 || index >= lineCount()) {
+        return;
+    }
+    PlotLine& line = lines_[static_cast<std::size_t>(index)];
+    if (!line.ownY || line.yMin != low || line.yMax != high) {
+        line.ownY = true;
+        line.yMin = low;
+        line.yMax = high;
+        update();
+    }
+}
+
+void PlotItem::clearSeriesYRange(int index)
+{
+    if (index < 0 || index >= lineCount()) {
+        return;
+    }
+    PlotLine& line = lines_[static_cast<std::size_t>(index)];
+    if (line.ownY) {
+        line.ownY = false;
+        update();
+    }
+}
+
+bool PlotItem::seriesHasOwnY(int index) const
+{
+    return index >= 0 && index < lineCount() && lines_[static_cast<std::size_t>(index)].ownY;
+}
+
+double PlotItem::seriesYFraction(int index, double value) const
+{
+    if (index < 0 || index >= lineCount()) {
+        return yFraction(value);
+    }
+    return yFractionOf(value, lineView(lines_[static_cast<std::size_t>(index)], view_));
+}
+
 void PlotItem::setXMin(double value)
 {
     if (view_.xMin != value) {
@@ -324,7 +363,6 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     const double w = width();
     const double h = height();
     const AxisMapping xMap = xMappingOf(view_);
-    const AxisMapping yMap = yMappingOf(view_);
     if (!(w > 0.0) || !(h > 0.0) || !xMap.usable || lines_.empty()) {
         return answer;
     }
@@ -340,6 +378,10 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     double bestPx = 0.0;
     double bestPy = 0.0;
 
+    // Per line, because a line on an axis of its own is drawn through that
+    // axis: snapping it through the common one would put the crosshair's dot
+    // somewhere the stroke is not.
+    AxisMapping yMap;
     const auto consider = [&](int index, qsizetype at, double x, double value) {
         // A sample the axes cannot place is not a sample the crosshair may snap
         // to: it was not drawn, and a readout of it would name a point that is
@@ -367,6 +409,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
         if (line.values == nullptr || line.count <= 0) {
             continue;
         }
+        yMap = yMappingOf(lineView(line, view_));
 
         if (axis_.explicitX() || !(std::abs(line.positionStep * axis_.step) > 0.0)) {
             // A time base need not be monotonic, so there is no index to solve
@@ -472,7 +515,9 @@ void PlotItem::projectAll()
     lineDecimated_.assign(lines, false);
     for (std::size_t line = 0; line < lines; ++line) {
         lineRuns_[line] = static_cast<int>(runs_.size());
-        lineDecimated_[line] = projectLine(lines_[line], axis_, view, points_, runs_).decimated;
+        lineDecimated_[line] =
+            projectLine(lines_[line], axis_, lineView(lines_[line], view), points_, runs_)
+                .decimated;
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
 

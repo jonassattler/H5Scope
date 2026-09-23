@@ -101,6 +101,10 @@ class CustomPlot : public QAbstractListModel
     /// logarithmic y axis runs from; see DatasetPlot::positiveMinimum for why
     /// it is a second number rather than `minimum` clamped.
     Q_PROPERTY(double positiveMinimum READ positiveMinimum NOTIFY changed)
+    /// Drawn lines on the common y axis, which is every drawn line that has
+    /// not been given one of its own. Zero is a plot with no common axis at
+    /// all -- every line on its own -- and the frame then draws none.
+    Q_PROPERTY(int sharedSeriesCount READ sharedSeriesCount NOTIFY changed)
     /// How long the x axis is, in positions. What `len(data)` means here.
     Q_PROPERTY(int sourcePointCount READ sourcePointCount NOTIFY changed)
     Q_PROPERTY(double xStart READ xStart WRITE setXStart NOTIFY xAxisChanged)
@@ -161,6 +165,15 @@ public:
         /// only the override, so that clearing one gives the line back to the
         /// cycle rather than freezing whatever the cycle happened to say.
         ColourRole,
+        /// Whether the reader asked for this line to have a y axis of its own.
+        /// The request, not whether it has one: a plot of one line has one
+        /// axis however the box is set, and the flag is kept so that adding a
+        /// second line brings the separate axis back. seriesAxis() is what
+        /// answers whether it is in force.
+        SeparateAxisRole,
+        /// Whether that axis stays at the whole of its line while the reader
+        /// zooms and pans in y.
+        AxisFixedRole,
     };
     Q_ENUM(Roles)
 
@@ -253,6 +266,30 @@ public:
     /// forking those files -- and DatasetPlot answers "none" for every line.
     Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const;
 
+    /// Draw a line against a y axis of its own, or put it back on the common
+    /// one; and hold that axis still while the rest of the plot zooms.
+    ///
+    /// A pressure and a temperature on one axis are one line and a flat
+    /// stroke along the bottom of the pane. A separate axis is the same values
+    /// under a different map, so these are the colour's kind of setting and
+    /// not the expression's: nothing is re-read and no line comes or goes. What
+    /// does move is the common axis, which spans only the lines left on it --
+    /// its extent is recounted here, from values already in hand.
+    Q_INVOKABLE void setSeparateAxis(int row, bool on);
+    Q_INVOKABLE void setAxisFixed(int row, bool on);
+
+    /// The y axis line `series` is drawn against, as
+    /// `{ separate, fixed, finite, low, high }` -- `low` and `high` being the
+    /// extent of that line alone, which is the range the axis would have if it
+    /// were the only line on the plot.
+    ///
+    /// `separate` is whether the axis is *in force*, which is the request and
+    /// more than one drawn line: a plot of one line has only the one axis
+    /// there is. Shaped as a question for the reason seriesOverride is --
+    /// PlotSurface asks it of either plot, and DatasetPlot answers "common"
+    /// for every line.
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const;
+
     // --- what the surface and the legend ask -------------------------------
     [[nodiscard]] QVariantList drawnSeries() const;
     [[nodiscard]] int seriesCount() const;
@@ -267,6 +304,7 @@ public:
     [[nodiscard]] double minimum() const;
     [[nodiscard]] double maximum() const;
     [[nodiscard]] double positiveMinimum() const;
+    [[nodiscard]] int sharedSeriesCount() const { return sharedSeries_; }
     [[nodiscard]] int sourcePointCount() const;
     [[nodiscard]] double xStart() const { return xStart_; }
     void setXStart(double value);
@@ -397,6 +435,10 @@ private:
         QColor colour;
         Scaling scaling = Align;
         bool drawn = true;
+        /// See setSeparateAxis. Requests, kept whether or not they are in
+        /// force; `ownAxis` below is whether one is.
+        bool separateAxis = false;
+        bool axisFixed = false;
 
         /// Filled by the last read.
         QString problem;
@@ -407,6 +449,15 @@ private:
         /// bucket marks a reading nobody took.
         bool summarised = false;
         int sourceLength = 0; ///< elements the slice has in the file
+
+        /// Filled by recount(): whether this line is drawn against an axis of
+        /// its own right now, and the finite extent of its values, which is
+        /// what that axis spans. Counted in the pass that already touches
+        /// every value for the common axis.
+        bool ownAxis = false;
+        bool finite = false;
+        double low = 0.0;
+        double high = 0.0;
 
         /// The closer look: the same line over an aligned run of itself, read
         /// at a finer bucket because the reader has zoomed into that run.
@@ -683,6 +734,8 @@ private:
     double positiveMinimum_ = 0.0;
     bool hasFinite_ = false;
     bool hasPositive_ = false;
+    /// Drawn lines on the common y axis; see sharedSeriesCount.
+    int sharedSeries_ = 0;
 
     /// What fill() last handed the entries to, so it can be emptied before
     /// they are freed.
