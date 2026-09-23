@@ -21,8 +21,10 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
   which says up front how much of it that file still holds
 - View images, which are automatically detected based on the HDF5 specification
 - Work with high dimensional arrays by utilizing powerful slicing tools
-- Transpose, reshape, reduce and slice a dataset before you look at it, with a
-  pipeline whose operations are numpy's
+- Transpose, reshape, reduce, accumulate, difference, clip and rescale a
+  dataset before you look at it, with a pipeline whose operations are numpy's
+  -- built row by row or written out as text, and put into a custom plot as a
+  line of its own
 - Modern and responsive Qt based user interface
 
 Files are opened read-only. H5Scope never writes to the file it is showing.

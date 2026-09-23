@@ -57,7 +57,7 @@ ctest --preset release
 | Path | What it is |
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
-| `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, reduce…). Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
+| `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
 | `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
@@ -612,6 +612,53 @@ lines. `/series/pairs` in the test fixture is
 `test_customplot` assert that a member and a dataset of its own cost the same —
 **read for read**, not only value for value. A member read that fell back to a
 round trip per element would draw exactly the right picture.
+
+## Pipelines as text: `postproc::Script`
+
+The postprocessing panel shows a pipeline as rows or, with visual editing off,
+as text, and a custom plot's line can be the same text with postprocessing
+ticked on its card:
+
+    /group/dataset
+    .select(samples)
+    .slice(1, :)
+    .max(1)
+    .transpose
+
+> **A script is what the rows hold, and nothing else.** The path, the member,
+> the slice and the steps, each step's argument being the very text its row's
+> box holds. So the two views are mirrored rather than kept in step, and
+> `checkScript` is the one answer to whether a script runs -- the panel's box,
+> a custom card's box and a custom plot's read all ask it.
+
+Four rules, each written down where it is decided:
+
+- **Where the path ends.** A link name holds `.` and `(` as freely as `[`, so
+  the path runs to the end of the first line, or on one line to the first
+  `.name(` whose name is an operation. Parentheses are optional after that.
+- **`.select` comes first and the first `.slice` is step 0.** They are the
+  Select row and the slice bar's slice; a later `.slice` is an ordinary step.
+  The slice is over the whole derived shape, as the slice row is, unless the
+  chain carries subscripts of its own (`.select(samples[2])`), in which case
+  `sliceLineFor` folds them on -- the member identity, unchanged.
+- **A custom line with no steps is still a slice.** It is streamed exactly as
+  the plain line is, read for read (`test_customplot` holds that), so ticking
+  the box costs nothing. One with steps materialises under `kMaxElements`, and
+  its output is handed to the existing reduction as a `ComputedDataset` -- a
+  `DataSource` -- so nothing below that point has a branch for it. A pipeline
+  has to *end* on one dimension, which is said in terms of what it leaves.
+- **A script naming another dataset selects it** and is applied when that
+  dataset opens, through a queued connection on `selectionChanged` so that it
+  lands after DatasetMemory's restore. Visual editing itself is not remembered.
+
+The operations after the first six are checked against numpy 2.5.1 through
+`tools/make-numpy-golden.py`, which is where three details came from that
+reasoning would not have found: a sum is numpy's pairwise summation, ported
+(`pairwiseSum`); `clip` is three functions that part company at the signed
+zeros (`clipped`); and `pow(0.5)` is a square root. `add`, `multiply` and
+`normalize` are not numpy's and are tested by hand. The golden header is
+pooled arrays of plain numbers rather than structs of vectors, which GCC took
+minutes over.
 
 ## Invariants worth knowing before editing
 
