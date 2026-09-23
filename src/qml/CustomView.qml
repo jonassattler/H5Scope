@@ -262,6 +262,9 @@ Rectangle {
                     // DatasetMemory off entirely.
                     memoryGroup: ""
                     plotMemoryGroup: ""
+                    // Its lines are not a bundle: each one is drawn at the
+                    // strength it would have alone.
+                    bundle: false
 
                     // The stated range drives x only when it is what the reader
                     // chose. Under Index the plot counts positions itself, and

@@ -176,6 +176,14 @@ QColor PlotItem::seriesColor(int index) const
     return lines_[static_cast<std::size_t>(index)].colour;
 }
 
+double PlotItem::seriesOpacity(int index) const
+{
+    if (index < 0 || index >= lineCount()) {
+        return 0.0;
+    }
+    return lines_[static_cast<std::size_t>(index)].opacity;
+}
+
 void PlotItem::setSeriesColor(int index, const QColor& colour)
 {
     if (index < 0 || index >= lineCount()) {
