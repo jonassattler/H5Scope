@@ -109,6 +109,9 @@ class CustomPlot : public QAbstractListModel
     Q_PROPERTY(int sourcePointCount READ sourcePointCount NOTIFY changed)
     Q_PROPERTY(double xStart READ xStart WRITE setXStart NOTIFY xAxisChanged)
     Q_PROPERTY(double xStep READ xStep WRITE setXStep NOTIFY xAxisChanged)
+    /// Whether the x axis places a value by its logarithm. See
+    /// DatasetPlot::xLog, which is the same fact asked for the same reason.
+    Q_PROPERTY(bool xLog READ xLog WRITE setXLog NOTIFY xAxisChanged)
     Q_PROPERTY(bool hasData READ hasData NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     /// Whether anything has been asked of the file yet for this tab. The view
@@ -310,6 +313,8 @@ public:
     void setXStart(double value);
     [[nodiscard]] double xStep() const { return xStep_; }
     void setXStep(double value);
+    [[nodiscard]] bool xLog() const { return xLog_; }
+    void setXLog(bool logarithmic);
     [[nodiscard]] bool hasData() const;
     [[nodiscard]] QString error() const;
     [[nodiscard]] bool empty() const { return entries_.empty(); }
@@ -480,8 +485,23 @@ private:
         /// is the one copy of it.
         ///
         /// Not borrowed by the renderer: what reaches PlotLine is always
-        /// `values` above or a Level's, so this needs no retiring.
+        /// `values` above, a Level's, or the fold below, so this needs no
+        /// retiring.
         LinePyramid pyramid;
+
+        /// This line folded onto a logarithmic axis's columns, and where each
+        /// of its points is. See LogColumns in PlotLevels.hpp and
+        /// DatasetPlot::fold_, which is the same thing for the Plot tab.
+        ///
+        /// Borrowed by the renderer on the terms `values` is. Mutable because
+        /// it is made in lineOf(), in the frame that draws it: it is memory,
+        /// and there is nothing to wait for. `foldGeneration` says which grid
+        /// it was made for, so a grid replaced is every entry's fold stale at
+        /// once without a walk to say so.
+        mutable std::vector<double> foldValues;
+        mutable std::vector<double> foldXs;
+        mutable bool foldSummarised = false;
+        mutable long long foldGeneration = -1;
     };
 
     // Both of these live in a std::vector that is pushed to while the renderer
@@ -549,6 +569,27 @@ private:
     /// False when there is no time base, or when the reading is not sorted --
     /// see positionOfX, which is where the monotonicity rule is stated.
     [[nodiscard]] bool axisPositionOf(double x, double& position, double& resolution) const;
+
+    // --- a logarithmic x axis ----------------------------------------------
+    /// The columns the view is folded at, or nothing when it is drawn the
+    /// linear way. See DatasetPlot::foldWanted; the one thing added here is a
+    /// time base, which has to run one way to be folded against at all.
+    [[nodiscard]] std::optional<LogColumns> foldWanted() const;
+    /// Whether the grid in hand still serves the view.
+    [[nodiscard]] bool foldServes() const;
+    /// `entry` folded onto the view's columns, into `line`, or false.
+    [[nodiscard]] bool foldedLine(const Entry& entry, PlotLine& line) const;
+    /// Forget every entry's fold, retiring what the renderer may be reading.
+    void dropFold() const;
+    /// Element `at` of the time base, as the pyramid holds it: the element
+    /// itself at a base of one, and its bucket's first element above that --
+    /// which on a time base that runs one way is the first of the pair.
+    [[nodiscard]] double timeAt(long long at) const;
+    /// Whether the time base, as held, runs one way; and which.
+    [[nodiscard]] bool timeSorted(bool& ascending) const;
+    /// The edges of `columns` as positions of an entry scaled by `scale`
+    /// against the time base, ascending.
+    void timeEdges(const LogColumns& columns, double scale, std::vector<double>& out) const;
     /// Work out where the view and the focus fall in axis positions, once, for
     /// every entry to divide by its own scaling.
     ///
@@ -727,6 +768,21 @@ private:
     double xPositiveMinimum_ = 0.0;
     double xStart_ = 0.0;
     double xStep_ = 1.0;
+    bool xLog_ = false;
+
+    /// The grid every entry's fold was made on, and what each point's x was
+    /// worked out with. See Entry::foldValues.
+    mutable std::optional<LogColumns> foldColumns_;
+    mutable double foldStart_ = 0.0;
+    mutable double foldStep_ = 1.0;
+    mutable int foldBuckets_ = 0;
+    mutable int foldMode_ = -1;
+    mutable long long foldGeneration_ = 0;
+    /// Whether the held time base runs one way, asked once per time base
+    /// rather than once per fold: the answer is a walk of every element.
+    mutable const double* sortedFor_ = nullptr;
+    mutable std::size_t sortedSize_ = 0;
+    mutable int sortedAnswer_ = 0;
 
     int points_ = 0;
     double minimum_ = 0.0;

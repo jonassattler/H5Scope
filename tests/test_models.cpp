@@ -12,6 +12,7 @@
 #include "gui/PlotProjection.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/ImageClipboard.hpp"
 #include "gui/Completion.hpp"
 #include "gui/ObjectInfoModel.hpp"
 #include "gui/TableLayout.hpp"
@@ -37,6 +38,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QMimeData>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QSettings>
@@ -47,6 +49,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <memory>
 #include <cmath>
 
 using Catch::Matchers::ContainsSubstring;
@@ -4312,6 +4315,52 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     }
 }
 
+TEST_CASE("a picture of a logarithmic plot owns where its points are", "[plot][log]")
+{
+    // A line folded onto a logarithmic axis's columns carries its x rather
+    // than leaving them to the axis -- see PlotLine::xs -- and that array is
+    // borrowed exactly as the values are. The picture a copy takes lives on
+    // past the next fold, so adopt() has to take both: a picture holding the
+    // values and still pointing at the model's x would be drawn, a moment
+    // later, against whatever that memory had become.
+    gui::PlotItem copy;
+    copy.setWidth(300.0);
+    copy.setHeight(100.0);
+    copy.setXLog(true);
+    copy.setXMin(1.0);
+    copy.setXMax(1000.0);
+    copy.setYMin(0.0);
+    copy.setYMax(10.0);
+
+    {
+        const std::vector<double> values{2.0, 4.0, 6.0, 8.0};
+        auto xs =
+            std::make_unique<std::vector<double>>(std::vector<double>{1.0, 10.0, 100.0, 1000.0});
+
+        gui::PlotItem item;
+        item.setWidth(300.0);
+        item.setHeight(100.0);
+        gui::PlotLine line;
+        line.values = values.data();
+        line.xs = xs->data();
+        line.count = 4;
+        item.setLines({line}, gui::PlotAxis{});
+        copy.adopt(&item);
+
+        // The dangerous thing, done on purpose: the model folds again and its
+        // old x go -- overwritten first, so a copy still reading them would
+        // read nonsense rather than luckily reading the same numbers.
+        std::fill(xs->begin(), xs->end(), -1.0);
+        xs.reset();
+    }
+
+    // A decade a third of the pane, so 100 sits two thirds across it.
+    const QVariantMap found = copy.nearestSample(200.0, 40.0);
+    REQUIRE(found.value(QStringLiteral("valid")).toBool());
+    CHECK(found.value(QStringLiteral("x")).toDouble() == Catch::Approx(100.0));
+    CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(6.0));
+}
+
 TEST_CASE_METHOD(ControllerFixture, "the plot tab draws every line on the common axis",
                  "[plot][axes]")
 {
@@ -4367,4 +4416,112 @@ TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[pl
         const QVariantMap nothing = item.nearestSample(200.0, 200.0);
         CHECK(!nothing.value(QStringLiteral("valid")).toBool());
     }
+}
+
+namespace {
+
+/// A picture drawn twice, as PlotPicture draws a publication one: white
+/// ground above, black ground below, and the same ink on both. Four pixels
+/// across: nothing, black type, half-covered black type, and an orange stroke.
+QImage publicationPair()
+{
+    QImage pair(4, 2, QImage::Format_RGB32);
+    const QRgb orange = qRgb(230, 159, 0);
+    // On white.
+    pair.setPixel(0, 0, qRgb(255, 255, 255));
+    pair.setPixel(1, 0, qRgb(0, 0, 0));
+    pair.setPixel(2, 0, qRgb(128, 128, 128));
+    pair.setPixel(3, 0, orange);
+    // On black.
+    pair.setPixel(0, 1, qRgb(0, 0, 0));
+    pair.setPixel(1, 1, qRgb(0, 0, 0));
+    pair.setPixel(2, 1, qRgb(0, 0, 0));
+    pair.setPixel(3, 1, orange);
+    return pair;
+}
+
+/// A pixel as Qt's Windows clipboard writes it into CF_DIB, which is what
+/// Word reads: formats past straight ARGB32 converted to RGB32, and then the
+/// alpha dropped. See ImageClipboard::opaquePixelOnClipboard.
+QRgb asWordReadsIt(QImage image, int x, int y)
+{
+    if (image.format() > QImage::Format_ARGB32) {
+        image = image.convertToFormat(QImage::Format_RGB32);
+    }
+    return image.pixel(x, y) | 0xff000000u;
+}
+
+} // namespace
+
+// A publication picture pasted into Word on Windows was a black slab with the
+// numbers gone into it, from the release that made its ground transparent
+// until 0.6.9. Every assertion the QML suite made about it held -- the ground
+// had no alpha, the ink was black -- because each of them read the alpha, and
+// the reader that mattered does not.
+TEST_CASE("a picture on no ground is still a page to a reader that drops the alpha",
+          "[export]")
+{
+    const QImage out = gui::composeOverNothing(publicationPair());
+    REQUIRE(out.size() == QSize(4, 1));
+
+    SECTION("to a reader that honours it, nothing has changed")
+    {
+        CHECK(qAlpha(out.pixel(0, 0)) == 0);
+        CHECK(out.pixelColor(1, 0) == QColor(0, 0, 0));
+        CHECK(qAlpha(out.pixel(2, 0)) == 127);
+        CHECK(out.pixelColor(2, 0).rgb() == qRgb(0, 0, 0));
+        CHECK(out.pixelColor(3, 0) == QColor(230, 159, 0));
+    }
+
+    SECTION("to one that drops it, the ground is paper and the type is ink")
+    {
+        CHECK(asWordReadsIt(out, 0, 0) == qRgb(255, 255, 255));
+        CHECK(asWordReadsIt(out, 1, 0) == qRgb(0, 0, 0));
+        CHECK(asWordReadsIt(out, 2, 0) == qRgb(0, 0, 0));
+        CHECK(asWordReadsIt(out, 3, 0) == qRgb(230, 159, 0));
+    }
+}
+
+TEST_CASE("a partly covered colour comes back as that colour and not darker", "[export]")
+{
+    // Orange at half coverage: C*a + (1-a) on white, C*a on black.
+    QImage pair(1, 2, QImage::Format_RGB32);
+    pair.setPixel(0, 0, qRgb(243, 207, 128));
+    pair.setPixel(0, 1, qRgb(115, 80, 0));
+    const QImage out = gui::composeOverNothing(pair);
+    const QRgb pixel = out.pixel(0, 0);
+    CHECK(std::abs(qAlpha(pixel) - 128) <= 1);
+    CHECK(std::abs(qRed(pixel) - 230) <= 2);
+    CHECK(std::abs(qGreen(pixel) - 159) <= 2);
+    CHECK(qBlue(pixel) == 0);
+}
+
+TEST_CASE("a copied picture carries a PNG with its alpha and its density", "[export]")
+{
+    QImage picture = gui::composeOverNothing(publicationPair());
+    const int perMetre = 11811; // 300 dpi
+    picture.setDotsPerMeterX(perMetre);
+    picture.setDotsPerMeterY(perMetre);
+
+    const QString format = QStringLiteral("application/x-h5scope-test-png");
+    const std::unique_ptr<QMimeData> data(gui::pictureMimeData(picture, format));
+    REQUIRE(data->hasImage());
+    REQUIRE(data->hasFormat(format));
+
+    const QImage png = QImage::fromData(data->data(format), "PNG");
+    REQUIRE(png.size() == picture.size());
+    CHECK(png.hasAlphaChannel());
+    CHECK(qAlpha(png.pixel(0, 0)) == 0);
+    CHECK(png.pixelColor(3, 0) == QColor(230, 159, 0));
+    CHECK(std::abs(png.dotsPerMeterX() - perMetre) <= 1);
+
+    const std::unique_ptr<QMimeData> plain(gui::pictureMimeData(picture, QString()));
+    CHECK(plain->hasImage());
+    CHECK(plain->formats().size() == 1);
+
+#if defined(Q_OS_WIN)
+    // Office reads a native format called PNG before any bitmap, and Qt never
+    // offers one; this is the whole of what gets a transparent figure into Word.
+    CHECK(!gui::nativePngFormat().isEmpty());
+#endif
 }

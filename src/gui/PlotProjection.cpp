@@ -161,6 +161,12 @@ std::optional<PlotWindow> windowFor(double low, double high, long long length, l
 
 double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
 {
+    if (line.xs != nullptr) {
+        // Stated by the line itself, which is what a fold onto a logarithmic
+        // axis's columns does. See PlotLine::xs.
+        const double x = line.xs[at];
+        return std::isfinite(x) ? x : std::numeric_limits<double>::quiet_NaN();
+    }
     const double position = line.positionStart + static_cast<double>(at) * line.positionStep;
     if (!axis.explicitX()) {
         return axis.start + position * axis.step;
@@ -291,7 +297,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 
     const auto count = static_cast<std::int64_t>(line.count);
 
-    if (axis.explicitX()) {
+    if (axis.explicitX() || line.xs != nullptr) {
         // A time base is not required to be monotonic and is not required to
         // be evenly spaced, so neither the window narrowing nor the envelope
         // below applies to it: a pixel column would hold samples from all over
@@ -302,6 +308,10 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         // custom plot entry, and those are thinned on the way out of the file
         // like everything else. It would not be affordable for an arbitrary
         // dataset, which is why this is the one path without a bound.
+        //
+        // A line that states its own x comes here too, for the same reason and
+        // with a better bound: it was folded to the pane's columns before it
+        // was handed over, so it is two points a column at most.
         for (std::int64_t i = 0; i < count; ++i) {
             const double value = line.values[i];
             const double x = xOf(line, axis, i);
@@ -425,6 +435,18 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // looking at is read again at a finer bucket like any other. Bucketing in
     // log space instead would slide every boundary with the pan, which is the
     // crawling this alignment exists to prevent.
+    //
+    // That paragraph was wrong about the zoom, and the reader saw it. Every
+    // run was bucketed by element too, so the left of the pane stayed an order
+    // of magnitude coarser for every decade on screen however far they zoomed,
+    // and the first bucket's worth of the axis had nothing drawn in it at all.
+    // A window of an octave or more on a logarithmic axis no longer reaches
+    // this loop: the models fold it per pixel column on a grid aligned in the
+    // logarithm -- which answers the crawling as well, because the grid is
+    // fixed and the pan only moves which of it is on screen -- and hand it over
+    // with its own x. See LogColumns in PlotLevels.hpp and the branch above.
+    // Under an octave, the difference between the widest and narrowest
+    // column is under two, and this is still the right place for it.
     //
     // Within a bucket the smallest and the largest are emitted in the order
     // they occur, so the stroke keeps the direction the data has -- and this is

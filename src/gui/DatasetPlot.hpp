@@ -130,6 +130,18 @@ class DatasetPlot : public QObject
     /// has instead of building another graph.
     Q_PROPERTY(double xStart READ xStart WRITE setXStart NOTIFY xAxisChanged)
     Q_PROPERTY(double xStep READ xStep WRITE setXStep NOTIFY xAxisChanged)
+    /// Whether the x axis places a value by its logarithm.
+    ///
+    /// The one fact about the scale this object has to know, because it
+    /// decides what a column *is*: on a logarithmic axis a pixel column at the
+    /// left holds a handful of elements and one at the right holds thousands,
+    /// so a line folded into buckets of equal element width is folded wrong
+    /// for almost all of the pane. See LogColumns in PlotLevels.hpp. The base
+    /// does not come with it, because it moves nothing that is drawn.
+    ///
+    /// On `xAxisChanged` for that signal's reason: the same points, drawn at
+    /// different places, and nothing to re-read.
+    Q_PROPERTY(bool xLog READ xLog WRITE setXLog NOTIFY xAxisChanged)
     Q_PROPERTY(bool numeric READ numeric NOTIFY changed)
     Q_PROPERTY(bool hasData READ hasData NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
@@ -155,6 +167,8 @@ public:
     void setXStart(double value);
     [[nodiscard]] double xStep() const { return xStep_; }
     void setXStep(double value);
+    [[nodiscard]] bool xLog() const { return xLog_; }
+    void setXLog(bool logarithmic);
     [[nodiscard]] bool numeric() const;
     [[nodiscard]] bool hasData() const;
     [[nodiscard]] QString error() const;
@@ -500,6 +514,22 @@ private:
     /// False when any drawn line cannot answer, which leaves the whole run to
     /// the file: a run half in memory and half on disk would be two pictures.
     [[nodiscard]] bool fillDetail(const PlotWindow& detail);
+
+    // --- a logarithmic x axis ----------------------------------------------
+    /// The columns the view is folded at, or nothing when the view is drawn
+    /// the linear way: a linear axis, a window under an octave wide, or more
+    /// lines than kWindowedSeries -- past which nothing is looked at closely.
+    [[nodiscard]] std::optional<LogColumns> foldWanted() const;
+    /// Whether the fold in hand serves the view as it stands, so that a pan
+    /// inside it neither folds nor refills.
+    [[nodiscard]] bool foldServes() const;
+    /// Line `series` folded onto the view's columns, into `line`. False when
+    /// it cannot be -- nothing wanted, or no pyramid for the line -- which
+    /// leaves the linear path to draw it.
+    [[nodiscard]] bool foldedLine(int series, PlotLine& line) const;
+    /// Forget the fold, retiring what the renderer may be reading.
+    void dropFold() const;
+
     /// Build the pyramid for every drawn line that has none. Blocks.
     void buildPyramids() const;
     /// Doubles one line's pyramid may spend. See gui::baseBucketFor.
@@ -544,6 +574,32 @@ private:
 
     double xStart_ = 0.0;
     double xStep_ = 1.0;
+    bool xLog_ = false;
+
+    /// Every drawn line folded onto a logarithmic axis's columns. See
+    /// LogColumns.
+    ///
+    /// Beside the whole-line summary and the runs rather than instead of
+    /// them, because it answers only for a view spanning an octave or more:
+    /// zoomed in past that, the runs are what is drawn and what reads below
+    /// the pyramid's base. Both maps are borrowed by the renderer on the terms
+    /// `lines_` is, keyed as it is, and pruned and retired with it.
+    struct LogFold
+    {
+        std::optional<LogColumns> columns;
+        /// What the x of every point was worked out with. A fold is of one
+        /// axis; moving the axis is a fold that no longer says where anything
+        /// is.
+        double start = 0.0;
+        double step = 1.0;
+        int buckets = 0;
+        /// The column edges in table positions, shared by every line.
+        std::vector<double> edges;
+        std::map<int, std::vector<double>> values;
+        std::map<int, std::vector<double>> xs;
+        std::map<int, bool> summarised;
+    };
+    mutable LogFold fold_;
 
     /// One entry per drawn line, keyed by its index in the table -- not by its
     /// position in `drawn_`, which changes whenever a line above it is hidden.

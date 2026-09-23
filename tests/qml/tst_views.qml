@@ -3459,6 +3459,57 @@ TestCase {
         restoreExportSettings()
     }
 
+    /// ...and read the way Word reads it, the picture is still a page.
+    ///
+    /// Every assertion above reads the alpha, and on Windows the reader that
+    /// matters does not: Qt offers the picture there as a bitmap and Word
+    /// keeps its three channels. With the ground stored premultiplied, a pixel
+    /// with nothing on it is black in those three, so from 0.6.3 until 0.6.9
+    /// a publication figure pasted into Word was a black slab with its lines
+    /// on it and its numbers -- black -- gone. The test above passed the whole
+    /// time. opaquePixelOnClipboard is Qt's own conversion for that bitmap,
+    /// so this is the paste as Word receives it, on any platform.
+    function test_a_publication_copy_read_without_its_alpha_is_black_ink_on_white() {
+        verify(select("/series/a"))
+        const win = plotWindow()
+        const plot = findChild(win.view, "plotSurface")
+        verify(plot && plot.drawable)
+
+        const wide = 240
+        const tall = 180
+        AppController.plotExportCustomSize = true
+        AppController.plotExportWidth = wide
+        AppController.plotExportHeight = tall
+        AppController.plotExportPublication = true
+
+        compare(copyAndWait(plot), "")
+        compare(ImageClipboard.imageOnClipboard().width, wide)
+
+        let paper = 0
+        let ink = 0
+        let samples = 0
+        for (let x = 0; x < wide; x += 2) {
+            for (let y = 0; y < tall; y += 2) {
+                const pixel = ImageClipboard.opaquePixelOnClipboard(x, y)
+                if (pixel.r > 0.95 && pixel.g > 0.95 && pixel.b > 0.95)
+                    ++paper
+                else if (pixel.r < 0.05 && pixel.g < 0.05 && pixel.b < 0.05)
+                    ++ink
+                ++samples
+            }
+        }
+        verify(paper > samples * 2 / 3,
+               "without its alpha a publication picture must be a white page, "
+               + "and " + paper + " of " + samples + " samples were white")
+        // The numbers are the one part drawn in the ink the ground used to be,
+        // so this is the count that says they can be read at all.
+        verify(ink > 10, "the numbers must still be black on it: " + ink)
+        verify(ink < samples / 4,
+               "black must be the ink and not the ground: " + ink + " of " + samples)
+
+        restoreExportSettings()
+    }
+
     /// A publication picture keeps the colours -- the light theme's.
     ///
     /// Until 0.6.4 it did not: every stroke went out in one black ink, which
@@ -4847,6 +4898,329 @@ TestCase {
         plot.xLog = true
         waitForRendering(win.view)
         verify(!plot.zoomed, "and so does turning one on")
+    }
+
+    /// How much of the plot area, as a share of its columns, has any of the
+    /// line in it.
+    ///
+    /// The reader's own question about a logarithmic x axis, asked of the
+    /// pixels: is the line drawn across the pane? The grab comes from the
+    /// window's origin -- see the gotcha about grabImage -- so the rows start
+    /// under the slice bar.
+    function inkedColumns(plot) {
+        const shot = grabImage(plot)
+        const area = plot.plotRect
+        const top = Theme.sliceBarHeight + Math.ceil(area.y)
+        const bottom = Math.min(shot.height, Theme.sliceBarHeight + Math.floor(area.y + area.height))
+        const left = Math.ceil(area.x) + 1
+        const right = Math.floor(area.x + area.width) - 1
+        let inked = 0
+        for (let x = left; x < right; ++x) {
+            for (let y = top; y < bottom; ++y) {
+                const pixel = shot.pixel(x, y)
+                if (Math.max(pixel.r, pixel.g, pixel.b)
+                    - Math.min(pixel.r, pixel.g, pixel.b) > 0.06) {
+                    ++inked
+                    break
+                }
+            }
+        }
+        return inked / Math.max(1, right - left)
+    }
+
+    /// /trace on the Plot tab, drawn in a saturated colour, at the pane's own
+    /// width. See test_zooming_in_reads_the_run_on_screen_again for why each.
+    function openTracePlot() {
+        verify(select("/trace"))
+        const win = createTemporaryObject(viewWindowComponent, testCase)
+        waitForRendering(win.view)
+        win.view.show("plot")
+        waitForRendering(win.view)
+        const plot = findChild(win.view, "plotSurface")
+        plot.colorMode = "spectrum"
+        wait(600)
+        waitForRendering(win.view)
+        return { win: win, plot: plot }
+    }
+
+    /// A logarithmic x axis draws the line across the whole pane.
+    ///
+    /// It did not. The line is folded into buckets of so many elements, and a
+    /// bucket sized for the pane on average is a fixed number of elements wide
+    /// -- which on this axis is a sliver at the right and several decades at
+    /// the left. The first bucket of /trace's summary ran to its twenty-fourth
+    /// element, so the first drawn point sat at the twelfth and the left
+    /// quarter of the pane had nothing in it at all; after that it was a few
+    /// straight strokes. Zooming never repaired it, because every closer look
+    /// was bucketed the same way. See LogColumns in PlotLevels.hpp.
+    function test_a_logarithmic_x_axis_draws_the_line_across_the_whole_pane() {
+        const opened = openTracePlot()
+        const plot = opened.plot
+        verify(inkedColumns(plot) > 0.95, "the linear plot is the baseline")
+
+        plot.xLog = true
+        wait(200)
+        waitForRendering(opened.win.view)
+        const whole = inkedColumns(plot)
+        verify(whole > 0.95, "the line must reach across the pane: " + whole)
+
+        // ...and after a zoom about the left third, where the elements are
+        // sparsest: the part of the pane the old fold drew as one bucket.
+        const area = plot.plotRect
+        plot.zoomAt(area.x + area.width / 3, area.y + area.height / 2, 4.0, "x")
+        wait(200)
+        waitForRendering(opened.win.view)
+        const zoomed = inkedColumns(plot)
+        verify(zoomed > 0.95, "and still after a zoom: " + zoomed)
+    }
+
+    /// The zoom stops with elements still across the pane, wherever the
+    /// pointer is -- on either scale.
+    ///
+    /// The ceiling was a magnification, and on a logarithmic axis a
+    /// magnification is a share of the *decades*, so the same number meant a
+    /// different window at every place along it. At the left of /trace it let
+    /// the reader zoom straight into the gap between its first two elements
+    /// and on through it; at the right it stopped them with a hundred and
+    /// sixty elements still on screen. What the ceiling is about is the window
+    /// -- sixteen elements across the pane -- and that is what is held now.
+    function test_the_zoom_ceiling_is_the_same_window_on_either_scale() {
+        const opened = openTracePlot()
+        const plot = opened.plot
+        const area = plot.plotRect
+        const narrowest = 20000 / plot.maxZoom
+        compare(plot.minimumSpanX, narrowest)
+
+        const zoomAll = (fraction) => {
+            plot.resetView()
+            for (let i = 0; i < 60; ++i)
+                plot.zoomAt(area.x + area.width * fraction, area.y + area.height / 2, 2.0, "x")
+            return plot.viewMaxX - plot.viewMinX
+        }
+
+        for (const logarithmic of [false, true]) {
+            plot.xLog = logarithmic
+            waitForRendering(opened.win.view)
+            for (const fraction of [0.02, 0.5, 0.98]) {
+                const span = zoomAll(fraction)
+                const where = (logarithmic ? "logarithmic" : "linear") + " at " + fraction
+                verify(span >= narrowest * (1 - 1e-6),
+                       where + ": zoomed past the narrowest window, to " + span)
+                verify(span <= narrowest * 1.3,
+                       where + ": stopped short of the narrowest window, at " + span)
+            }
+        }
+    }
+
+    /// A zoom holds the value under the pointer still, and a zoom back out and
+    /// a pan there and back again put the view back, on all four combinations
+    /// of the two scales.
+    ///
+    /// The whole contract of the gestures, asked of every scale at once
+    /// rather than of the one somebody happened to be looking at. The
+    /// arithmetic is in positions -- decades, on a logarithmic axis -- and a
+    /// path that took one step in values would pass on a linear axis and drift
+    /// on the other.
+    function test_the_gestures_hold_on_every_combination_of_scales() {
+        const win = openLogPlot()
+        const plot = logPlot(win).surface
+        const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(Math.abs(a), Math.abs(b), 1e-300)
+        const view = () => [plot.viewMinX, plot.viewMaxX, plot.viewMinY, plot.viewMaxY]
+        // Where on the pane, in the pane's own fractions and measured afresh
+        // every time: a zoom changes the y labels, the left gutter is sized
+        // from them, and so the same pixel is a different place on the axis
+        // after one -- which is the layout doing its job, not the zoom drifting.
+        const pixelX = (fx) => plot.plotRect.x + plot.plotRect.width * fx
+        const pixelY = (fy) => plot.plotRect.y + plot.plotRect.height * (1 - fy)
+        const xAt = (fx) => plot.valueAlong(plot.viewMinX, plot.viewMaxX, fx, plot.xLog,
+                                            plot.xLogBase)
+        const yAt = (fy) => plot.valueAlong(plot.viewMinY, plot.viewMaxY, fy, plot.yLog,
+                                            plot.yLogBase)
+
+        for (const xLog of [false, true]) {
+            for (const yLog of [false, true]) {
+                plot.xLog = xLog
+                plot.yLog = yLog
+                waitForRendering(win.view)
+                for (const fx of [0.1, 0.5, 0.9]) {
+                    for (const fy of [0.2, 0.8]) {
+                        const where = "x " + (xLog ? "log" : "lin") + " y "
+                                    + (yLog ? "log" : "lin") + " at " + fx + ", " + fy
+                        plot.resetView()
+                        const x = xAt(fx)
+                        const y = yAt(fy)
+                        const whole = view()
+
+                        plot.zoomAt(pixelX(fx), pixelY(fy), 3.0, "both")
+                        verify(plot.zoomed, where)
+                        verify(near(xAt(fx), x),
+                               where + ": x under the pointer went from " + x + " to " + xAt(fx))
+                        verify(near(yAt(fy), y),
+                               where + ": y under the pointer went from " + y + " to " + yAt(fy))
+
+                        // A drag and its reverse are the identity, along each
+                        // axis. One axis at a time, because a drag along y
+                        // changes the y labels and with them the width a drag
+                        // along x is measured against.
+                        const zoomed = view()
+                        const across = plot.plotRect.width / 10
+                        plot.panBy(across, 0)
+                        verify(!near(plot.viewMinX, zoomed[0]), where + ": the drag moved nothing")
+                        plot.panBy(-across, 0)
+                        const up = plot.plotRect.height / 10
+                        plot.panBy(0, up)
+                        verify(!near(plot.viewMinY, zoomed[2]), where + ": the drag moved nothing")
+                        plot.panBy(0, -up)
+                        const back = view()
+                        for (let i = 0; i < 4; ++i)
+                            verify(near(back[i], zoomed[i]),
+                                   where + ": a drag there and back ended at " + back
+                                   + " rather than " + zoomed)
+
+                        // ...and so is a zoom back out by the same factor.
+                        // Measured against the width of the view rather than
+                        // the value: an end at zero comes back as a rounding
+                        // residue of the arithmetic, which is not a drift. The
+                        // pan used to be forced to exactly zero at a zoom of
+                        // one; the view may now sit past the data there, so
+                        // nothing forces it -- see PlotSurface.panKeep.
+                        plot.zoomAt(pixelX(fx), pixelY(fy), 1 / 3.0, "both")
+                        const out = view()
+                        const width = [whole[1] - whole[0], whole[1] - whole[0],
+                                       whole[3] - whole[2], whole[3] - whole[2]]
+                        for (let i = 0; i < 4; ++i)
+                            verify(Math.abs(out[i] - whole[i]) <= 1e-9 * width[i],
+                                   where + ": zoomed back out to " + out + " rather than " + whole)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The view can be dragged past the ends of the data, on either axis and
+    /// on either scale, but never off it: a quarter of the pane stays on the
+    /// data however far the drag goes.
+    ///
+    /// The window used to be held inside the data, so at a zoom of one --
+    /// which is how every plot opens -- a drag did nothing at all, and zoomed
+    /// in it stopped dead at the last sample with that sample on the frame.
+    /// What the limit is for is that the reader never loses the plot, and a
+    /// quarter of the pane is plainly still the plot.
+    function test_the_view_can_be_dragged_past_the_data_but_not_off_it() {
+        const opened = openTracePlot()
+        const plot = opened.plot
+        const gestures = findChild(opened.win.view, "plotGestures")
+        verify(gestures, "the gesture layer must be reachable")
+
+        // How much of the window is over the data, as a share of the window,
+        // in the positions the gestures work in.
+        const onData = (low, high, from, to, logarithmic, base) => {
+            const p = (v) => plot.axisPosition(v, logarithmic, base)
+            const overlap = Math.min(p(to), p(high)) - Math.max(p(from), p(low))
+            return overlap / (p(to) - p(from))
+        }
+        const onDataX = () => onData(plot.axisLowX, plot.axisHighX, plot.viewMinX,
+                                     plot.viewMaxX, plot.xLog, plot.xLogBase)
+        const onDataY = () => onData(plot.lowerBound, plot.upperBound, plot.viewMinY,
+                                     plot.viewMaxY, plot.yLog, plot.yLogBase)
+
+        // A real drag with the mouse, at the zoom a plot opens on, moves it.
+        const before = plot.viewMinX
+        mouseDrag(gestures, Math.round(gestures.width / 2), Math.round(gestures.height / 2),
+                  -120, 60)
+        waitForRendering(opened.win.view)
+        verify(plot.viewMinX > before, "a drag at a zoom of one must move the view")
+        verify(onDataX() < 1 && onDataY() < 1, "and past the data, on both axes")
+
+        for (const xLog of [false, true]) {
+            for (const yLog of [false, true]) {
+                plot.xLog = xLog
+                plot.yLog = yLog
+                waitForRendering(opened.win.view)
+                for (const zoom of [1, 4]) {
+                    for (const way of [1, -1]) {
+                        const where = "x " + (xLog ? "log" : "lin") + " y "
+                                    + (yLog ? "log" : "lin") + " zoom " + zoom
+                                    + (way > 0 ? " dragged right and up" : " dragged left and down")
+                        plot.resetView()
+                        const area = plot.plotRect
+                        plot.zoomAt(area.x + area.width / 2, area.y + area.height / 2, zoom, "both")
+                        // Ten panes' worth, far past anything the limit allows.
+                        for (let i = 0; i < 10; ++i)
+                            plot.panBy(way * plot.plotRect.width, -way * plot.plotRect.height)
+                        fuzzyCompare(onDataX(), plot.panKeep, 1e-9)
+                        fuzzyCompare(onDataY(), plot.panKeep, 1e-9)
+                        verify(way > 0 ? plot.viewMinX < plot.axisLowX
+                                       : plot.viewMaxX > plot.axisHighX, where)
+
+                        // ...and a wheel notch there zooms where the reader
+                        // is, rather than snapping them back inside the data.
+                        const kept = onDataX()
+                        plot.zoomAt(plot.plotRect.x + plot.plotRect.width / 2,
+                                    plot.plotRect.y + plot.plotRect.height / 2, 1.25, "both")
+                        verify(onDataX() < 1, where + ": a zoom must not put the view back: "
+                               + onDataX() + " after " + kept)
+                    }
+                }
+            }
+        }
+
+        // What is left on screen is drawn: a quarter of the pane of line, on a
+        // linear and on a logarithmic x alike -- which is the models being asked
+        // for a window reaching past the data and answering for the part that
+        // is there.
+        for (const xLog of [false, true]) {
+            plot.xLog = xLog
+            plot.yLog = false
+            plot.resetView()
+            for (let i = 0; i < 10; ++i)
+                plot.panBy(plot.plotRect.width, 0)
+            wait(200)
+            waitForRendering(opened.win.view)
+            const inked = inkedColumns(plot)
+            verify(inked > plot.panKeep - 0.03 && inked < plot.panKeep + 0.03,
+                   (xLog ? "logarithmic" : "linear") + ": a quarter of the pane must be "
+                   + "line and the rest empty axis, and " + inked + " of it was drawn")
+        }
+        plot.resetView()
+    }
+
+    /// A band drawn on either scale is the window the zoom goes to.
+    ///
+    /// The numbers the band writes beside itself and the window it resolves to
+    /// are one reading of the same two pixels on every scale. Asked of all
+    /// four combinations for the reason the test above is.
+    function test_a_band_on_any_scale_is_the_window_it_goes_to() {
+        const win = openLogPlot()
+        const plot = logPlot(win).surface
+        const area = plot.plotRect
+        const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(Math.abs(a), Math.abs(b))
+
+        for (const xLog of [false, true]) {
+            for (const yLog of [false, true]) {
+                plot.xLog = xLog
+                plot.yLog = yLog
+                waitForRendering(win.view)
+                plot.resetView()
+                const where = "x " + (xLog ? "log" : "lin") + " y " + (yLog ? "log" : "lin")
+                const px0 = area.x + area.width * 0.2
+                const px1 = area.x + area.width * 0.45
+                const py0 = area.y + area.height * 0.3
+                const py1 = area.y + area.height * 0.6
+                const x0 = plot.dataXAt(px0)
+                const x1 = plot.dataXAt(px1)
+                const yTop = plot.dataYAt(py0)
+                const yBottom = plot.dataYAt(py1)
+
+                verify(plot.zoomToRegion(px0, py0, px1, py1), where)
+                verify(near(plot.viewMinX, x0) && near(plot.viewMaxX, x1),
+                       where + ": x went to " + plot.viewMinX + ".." + plot.viewMaxX
+                       + " rather than " + x0 + ".." + x1)
+                verify(near(plot.viewMinY, yBottom) && near(plot.viewMaxY, yTop),
+                       where + ": y went to " + plot.viewMinY + ".." + plot.viewMaxY
+                       + " rather than " + yBottom + ".." + yTop)
+            }
+        }
     }
 
     /// The picture that leaves carries the scale it was drawn on.

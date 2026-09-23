@@ -48,9 +48,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QModelIndex>
+#include <QSignalSpy>
 #include <QString>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -1040,6 +1042,213 @@ TEST_CASE("a zoom from the whole line to a single sample reads nothing", "[cost]
         CHECK(back.crossings == 0);
         CHECK(back.reads == 0);
     }
+}
+
+namespace {
+
+/// How many of `line`'s drawn points land in each tenth of a logarithmic pane
+/// from `low` to `high`, and how many elements that tenth holds.
+///
+/// The shape of the failure this is written against: on a logarithmic axis the
+/// left of the pane holds few elements per column and the right holds many,
+/// and a fold that buckets by element put one or two points in each of the
+/// left tenths and thousands in the last. Counted per tenth because that is
+/// what a reader sees.
+void everyTenthIsDrawn(const gui::PlotLine& line, double low, double high, int columns)
+{
+    REQUIRE(line.xs != nullptr);
+    for (int tenth = 0; tenth < 10; ++tenth) {
+        const double from = std::exp2(std::log2(low) + (std::log2(high / low)) * tenth / 10.0);
+        const double to = std::exp2(std::log2(low) + (std::log2(high / low)) * (tenth + 1) / 10.0);
+        long long drawn = 0;
+        for (qsizetype i = 0; i < line.count; ++i) {
+            drawn += (line.xs[i] >= from && line.xs[i] < to) ? 1 : 0;
+        }
+        const double elements = std::ceil(to) - std::ceil(from);
+        INFO("tenth " << tenth << " x " << from << ".." << to << " drew " << drawn);
+        CHECK(static_cast<double>(drawn) >= std::min(elements, columns / 10.0));
+    }
+}
+
+/// Check a fold against the elements it claims to summarise, on a line whose
+/// element `i` *is* `i` -- see drawnMatchesTheFile. A drawn value is then the
+/// index of the element it came from, so it has to lie in the column its point
+/// is drawn in: within a column or two of its own x, on the pane's scale.
+void foldMatchesTheFile(const gui::PlotLine& line, double low, double high, int columns)
+{
+    REQUIRE(line.xs != nullptr);
+    const double column = std::log2(high / low) / columns; // octaves per column
+    for (qsizetype i = 0; i < line.count; ++i) {
+        const double value = line.values[i];
+        const double x = line.xs[i];
+        INFO("point " << i << " at x " << x << " holds " << value);
+        REQUIRE(value >= 1.0);
+        REQUIRE(value == std::floor(value));
+        REQUIRE(std::abs(std::log2(value) - std::log2(x)) <= 2.0 * column + 1e-12);
+    }
+}
+
+} // namespace
+
+TEST_CASE("a zoom across a logarithmic axis reads nothing and draws every column",
+          "[cost][plot][zoom][log]")
+{
+    // The Plot tab on a logarithmic x axis. The whole-line summary and every
+    // run under it are bucketed by element, and on this axis that put the
+    // first half of the pane into one bucket at every zoom: blank below the
+    // bucket's middle and a few straight strokes above it. What replaces it is
+    // a fold per pixel column out of the pyramid already held -- so on top of
+    // being right, it has to cost what the linear zoom costs, which is nothing.
+    constexpr long long kLine = 1LL << 20;
+    constexpr int kColumns = 1024;
+    Counted big({1, static_cast<hsize_t>(kLine)});
+    big.plot.setPaneColumns(kColumns);
+    (void)big.plot.pointCount(); // the one pass over the file
+    Counted::settleAll();
+    big.plot.setXLog(true);
+
+    // The index axis starts at the first element there is a place for.
+    const double low = 1.0;
+    const double high = static_cast<double>(kLine);
+
+    for (const double focus : {3.0, 1000.0, 900000.0}) {
+        DYNAMIC_SECTION("zooming in at x = " << focus)
+        {
+            double from = low;
+            double to = high;
+            int folded = 0;
+            const auto cost = big.measure([&] {
+                for (int frame = 0; frame < 24; ++frame) {
+                    // What PlotSurface.zoomedAxis does on this axis: hold the
+                    // pointer's *logarithm* still and bring both edges in
+                    // towards it by the same share of the decades.
+                    big.plot.setZoomFocus(focus, 1.6);
+                    from = std::exp2(std::log2(focus) - (std::log2(focus) - std::log2(from)) / 1.6);
+                    to = std::exp2(std::log2(focus) + (std::log2(to) - std::log2(focus)) / 1.6);
+                    if (to - from < 16.0) {
+                        break; // the surface stops here; see minimumSpanX
+                    }
+                    big.plot.setVisibleRange(from, to);
+                    const gui::PlotLine line = big.plot.lineOf(0);
+                    INFO("frame " << frame << " view " << from << ".." << to);
+                    if (to / from >= 2.0) {
+                        // An octave or more across the pane: the fold.
+                        foldMatchesTheFile(line, from, to, kColumns);
+                        everyTenthIsDrawn(line, from, to, kColumns);
+                        ++folded;
+                    }
+                    else {
+                        // Under an octave, the linear path takes over, and it
+                        // is the one the rest of this file already holds.
+                        CHECK(line.xs == nullptr);
+                        drawnMatchesTheFile(line, kLine);
+                    }
+                }
+            });
+            CHECK(folded > 0);
+            CHECK(cost.crossings == 0);
+            CHECK(cost.reads == 0);
+        }
+    }
+
+    SECTION("the whole axis, unzoomed, starts at its first element")
+    {
+        big.plot.setVisibleRange(low, high);
+        const gui::PlotLine line = big.plot.lineOf(0);
+        REQUIRE(line.xs != nullptr);
+        REQUIRE(line.count > 0);
+        // Element 1, drawn as itself. It used to be the middle of the first
+        // bucket, half a thousand elements along.
+        CHECK(line.xs[0] == 1.0);
+        CHECK(line.values[0] == 1.0);
+        everyTenthIsDrawn(line, low, high, kColumns);
+        // Bounded by the pane rather than by the line.
+        CHECK(line.count <= 8 * kColumns + 2);
+    }
+
+    SECTION("a pan inside the fold neither folds again nor asks to be refilled")
+    {
+        big.plot.setVisibleRange(10.0, 100000.0);
+        (void)big.plot.lineOf(0);
+        const gui::PlotLine before = big.plot.lineOf(0);
+
+        QSignalSpy changed(&big.plot, &DatasetPlot::changed);
+        // A twentieth of the pane at a time, both ways -- well inside the half
+        // pane of margin the fold is made with.
+        const double step = std::pow(10000.0, 1.0 / 20.0);
+        double at = 1.0;
+        for (const double by : {step, step, 1.0 / step, 1.0 / step, 1.0 / step}) {
+            at *= by;
+            big.plot.setVisibleRange(10.0 * at, 100000.0 * at);
+        }
+        CHECK(changed.count() == 0);
+        // ...and the same buffers are drawn, so nothing was even retired.
+        CHECK(big.plot.lineOf(0).values == before.values);
+        CHECK(big.plot.retiredDoubles() == 0);
+    }
+
+    SECTION("turning the scale off puts the linear picture back")
+    {
+        big.plot.setXLog(false);
+        big.plot.setVisibleRange(0.0, high);
+        const gui::PlotLine line = big.plot.lineOf(0);
+        CHECK(line.xs == nullptr);
+        drawnMatchesTheFile(line, kLine);
+    }
+}
+
+TEST_CASE("a window dragged past the ends of the line draws what is there and reads nothing",
+          "[cost][plot][zoom][log]")
+{
+    // The view may be dragged past either end of the data, as far as leaves a
+    // quarter of the pane on it -- see PlotSurface.panKeep. So the plot is now
+    // asked for windows that reach below the first element and beyond the
+    // last, on either scale, and has to answer for the part that exists
+    // without reading and without inventing anything for the part that does
+    // not.
+    constexpr long long kLine = 1LL << 20;
+    constexpr int kColumns = 1024;
+    Counted big({1, static_cast<hsize_t>(kLine)});
+    big.plot.setPaneColumns(kColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    const auto n = static_cast<double>(kLine);
+    const auto cost = big.measure([&] {
+        // Linear: three quarters of the pane before the first element, then
+        // after the last, at the whole line's width and zoomed in sixteen times.
+        for (const double width : {n, n / 16.0}) {
+            for (const double from : {-0.75 * width, n - 0.25 * width}) {
+                INFO("linear window " << from << ".." << from + width);
+                big.plot.setVisibleRange(from, from + width);
+                const gui::PlotLine line = big.plot.lineOf(0);
+                drawnMatchesTheFile(line, kLine);
+            }
+        }
+
+        // Logarithmic: the same share of the decades either side.
+        big.plot.setXLog(true);
+        const double decades = std::log10(n);
+        for (const double at : {-0.75 * decades, 0.75 * decades}) {
+            const double from = std::pow(10.0, at);
+            const double to = std::pow(10.0, at + decades);
+            INFO("logarithmic window " << from << ".." << to);
+            big.plot.setVisibleRange(from, to);
+            const gui::PlotLine line = big.plot.lineOf(0);
+            REQUIRE(line.xs != nullptr);
+            REQUIRE(line.count > 0);
+            for (qsizetype i = 0; i < line.count; ++i) {
+                // Nothing drawn outside the line: every point is an element
+                // that exists, at an x that one of them has.
+                REQUIRE(line.xs[i] >= 0.0);
+                REQUIRE(line.xs[i] < n);
+                REQUIRE(line.values[i] >= 0.0);
+                REQUIRE(line.values[i] < n);
+            }
+        }
+    });
+    CHECK(cost.crossings == 0);
+    CHECK(cost.reads == 0);
 }
 
 TEST_CASE("turning the budget down gives the memory back, and turning it up reads",

@@ -189,6 +189,61 @@ TEST_CASE("a logarithmic axis places a value by its logarithm", "[plot][log]")
     CHECK(gui::yFractionOf(1000.0, linear) == Approx(0.0999).margin(0.001));
 }
 
+TEST_CASE("a line that says where its points are is drawn where it says", "[plot][log]")
+{
+    // What a line folded onto a logarithmic axis's columns hands over: one or
+    // two points per pixel column, evenly spaced on the pane and nowhere near
+    // evenly spaced in position. No start and step can say where those are, so
+    // the line carries its x -- and the renderer must take them as they come.
+    //
+    // Many of them, and clustered, which is the case that matters: the
+    // renderer's own envelope buckets by *position*, so if it summarised these
+    // again it would put the left of a logarithmic pane back to one bucket.
+    std::vector<double> values;
+    std::vector<double> xs;
+    for (int i = 0; i < 4000; ++i) {
+        xs.push_back(std::pow(10.0, 4.0 * i / 3999.0));
+        values.push_back(i % 2 == 0 ? 1.0 : 2.0);
+    }
+    gui::PlotLine line = lineOver(values);
+    line.xs = xs.data();
+    // A start and a step that would put every point somewhere else entirely.
+    line.positionStart = 500.0;
+    line.positionStep = 3.0;
+
+    gui::PlotView view = paneOver(1.0, 10000.0, 0.5, 2.5);
+    view.xLog = true;
+    const Projected drawn = project(line, gui::PlotAxis{}, view);
+
+    // Every point, point for point, where its own x puts it.
+    REQUIRE(drawn.runs.size() == 1);
+    REQUIRE(drawn.points.size() == xs.size());
+    for (std::size_t i = 0; i < xs.size(); i += 97) {
+        INFO("point " << i);
+        CHECK(drawn.points[i].x() == Approx(gui::xFractionOf(xs[i], view) * view.width));
+    }
+    CHECK(gui::xOf(line, gui::PlotAxis{}, 1234) == xs[1234]);
+
+    SECTION("and a stated x the axis cannot place is a gap like any other")
+    {
+        xs[2000] = 0.0;
+        xs[2001] = std::numeric_limits<double>::quiet_NaN();
+        const Projected broken = project(line, gui::PlotAxis{}, view);
+        CHECK(broken.runs.size() == 2);
+    }
+
+    SECTION("a time base is not consulted when the line says where it is")
+    {
+        const std::vector<double> times(4000, 42.0);
+        gui::PlotAxis axis;
+        axis.values = times.data();
+        axis.count = static_cast<qsizetype>(times.size());
+        const Projected against = project(line, axis, view);
+        REQUIRE(against.points.size() == drawn.points.size());
+        CHECK(against.points.back().x() == Approx(drawn.points.back().x()));
+    }
+}
+
 TEST_CASE("a value at or below zero is a gap on a logarithmic axis", "[plot][log]")
 {
     // The one thing a logarithmic axis really does add, and it is the rule

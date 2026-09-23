@@ -1514,6 +1514,66 @@ TestCase {
         verify(lines.drawnPointCount < 64)
     }
 
+    /// A tab drawn against a time base spanning decades draws across the whole
+    /// of a logarithmic pane.
+    ///
+    /// The custom tab's half of what tst_views asserts for the Plot tab, and
+    /// the half with a time base in it: /trace_time runs four decades, from a
+    /// thousandth of a second to twenty, and its summary put one drawn point
+    /// every ten milliseconds -- so the first two decades of the pane, where
+    /// there are ten elements, held one bucket and the line began a fifth of
+    /// the way across. Asked of the pixels, in the window's own grab, because
+    /// what matters is what the reader sees.
+    function test_a_time_base_across_decades_draws_across_a_logarithmic_pane() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/trace[:]")
+        plot.xMode = CustomPlot.Dataset
+        plot.xExpression = "/trace_time[:]"
+        settleReads()
+        verify(plot.xReady, "the time base must have been read")
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        surface.colorMode = "spectrum"
+        wait(600)
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const inked = () => {
+            const shot = grabImage(win.contentItem)
+            const area = surface.plotRect
+            const corner = surface.mapToItem(win.contentItem, area.x, area.y)
+            const left = Math.ceil(corner.x) + 1
+            const right = Math.floor(corner.x + area.width) - 1
+            const top = Math.ceil(corner.y)
+            const bottom = Math.floor(corner.y + area.height)
+            let columns = 0
+            for (let x = left; x < right; ++x) {
+                for (let y = top; y < bottom; ++y) {
+                    const pixel = shot.pixel(x, y)
+                    if (Math.max(pixel.r, pixel.g, pixel.b)
+                        - Math.min(pixel.r, pixel.g, pixel.b) > 0.06) {
+                        ++columns
+                        break
+                    }
+                }
+            }
+            return columns / Math.max(1, right - left)
+        }
+        verify(inked() > 0.95, "the linear plot is the baseline")
+
+        surface.xLog = true
+        wait(200)
+        waitForRendering(win.contentItem)
+        fuzzyCompare(surface.axisLowX, 0.001, 1e-12)
+        const across = inked()
+        verify(across > 0.95, "the line must reach across the pane: " + across)
+    }
+
     /// An index axis starts at one, which is the first index there is a place
     /// for.
     ///
@@ -1663,10 +1723,11 @@ TestCase {
         compare(zooming.series, 1)
         compare(fixed.series, 2)
 
-        // Twice as close, about the top of the pane.
+        // Twice as close, about the top of the pane: the window's top on the
+        // top of the data. Worked out rather than clamped into, because the
+        // pan may now go past the data's end -- see PlotSurface.panKeep.
         surface.zoomY = 2
-        surface.panY = surface.clampPan(1e9, 2, surface.lowerBound, surface.upperBound,
-                                        false, 10)
+        surface.panY = (surface.upperBound - surface.lowerBound) / 4
         waitForRendering(win.contentItem)
 
         const after = surface.separateAxes

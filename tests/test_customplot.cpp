@@ -1362,6 +1362,145 @@ TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base is read closer wh
     }
 }
 
+namespace {
+
+/// /trace, element for element: see h5test::writeFixture.
+double traceAt(long long i)
+{
+    return i == 12345 ? 9.0 : std::sin(static_cast<double>(i) / 300.0);
+}
+
+} // namespace
+
+TEST_CASE_METHOD(PlotFixture, "a tab on a logarithmic x axis is folded per column, on every axis",
+                 "[custom][plot][log]")
+{
+    // The custom tab's half of the logarithmic fold -- see LogColumns in
+    // PlotLevels.hpp. It has two things the Plot tab does not: a line stretched
+    // over an axis longer than itself, and a time base, where the way from an x
+    // back to an element is a search rather than a division. Both have to land
+    // every point where the axis would, or the fold is right about the values
+    // and wrong about where they are.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    plot->setPaneColumns(800);
+    h5test::settleFor(300);
+    settleAll();
+    plot->setXLog(true);
+
+    SECTION("against a time base")
+    {
+        // /trace_time is i / 1000, so the first element is at zero -- which
+        // this axis has no place for -- and the rest run four decades from a
+        // thousandth of a second to twenty.
+        plot->setXExpression(QStringLiteral("/trace_time[:]"));
+        plot->setXMode(gui::CustomPlot::Dataset);
+        settleAll();
+        REQUIRE(plot->xReady());
+
+        // The axis starts at the first time above zero, which is the second
+        // element -- not at the end of the summary's first bucket, which is
+        // where the smallest positive value of a summary is.
+        CHECK(plot->xPositiveMinimum() == 0.001);
+
+        const long long asked = gui::CustomPlot::hyperslabs();
+        plot->setVisibleRange(0.001, 19.999);
+        const gui::PlotLine line = plot->lineOf(0);
+        REQUIRE(line.xs != nullptr);
+        REQUIRE(line.count > 0);
+        // The first element with a place, drawn as itself at its own time --
+        // where the time base's summary used to put the first drawn point ten
+        // milliseconds along, and the first two decades had nothing in them.
+        CHECK(line.xs[0] == Approx(0.001));
+        CHECK(line.values[0] == Approx(traceAt(1)));
+
+        // Every point sits at a time the file records, and holds a value of an
+        // element within a column or two of it.
+        const double column = std::log2(19.999 / 0.001) / 800.0;
+        int raw = 0;
+        for (qsizetype i = 0; i < line.count; ++i) {
+            const double x = line.xs[i];
+            INFO("point " << i << " at " << x);
+            REQUIRE(std::abs(x * 1000.0 - std::round(x * 1000.0)) < 1e-6);
+            const auto element = static_cast<long long>(std::llround(x * 1000.0));
+            if (line.values[i] == traceAt(element)) {
+                ++raw;
+            }
+            bool nearby = false;
+            const auto reach = static_cast<long long>(std::ceil(x * 1000.0 * column * 2.0)) + 1;
+            for (long long e = std::max(element - reach, 0LL); e <= element + reach && !nearby;
+                 ++e) {
+                nearby = line.values[i] == traceAt(e);
+            }
+            CHECK(nearby);
+        }
+        // The left of the pane is the elements themselves.
+        CHECK(raw > 50);
+
+        // Zoomed about the spike, through an octave and under it: nothing read.
+        double low = 0.001;
+        double high = 19.999;
+        for (int frame = 0; frame < 16; ++frame) {
+            low = std::exp2((std::log2(low) + std::log2(12.345)) / 2.0);
+            high = std::exp2((std::log2(high) + std::log2(12.345)) / 2.0);
+            plot->setZoomFocus(12.345, 2.0);
+            plot->setVisibleRange(low, high);
+            CHECK(plot->lineOf(0).count > 1);
+        }
+        h5test::settleFor(300);
+        settleAll();
+        CHECK(gui::CustomPlot::hyperslabs() - asked == 0);
+    }
+
+    SECTION("on a stated range")
+    {
+        plot->setXStart(0.5);
+        plot->setXStep(0.25);
+        plot->setVisibleRange(0.75, 5000.25);
+        const gui::PlotLine line = plot->lineOf(0);
+        REQUIRE(line.xs != nullptr);
+        // x = 0.5 + i / 4, so element 1 is the first inside the window and the
+        // margin before it holds element 0.
+        CHECK(line.xs[0] == Approx(0.5));
+        for (qsizetype i = 0; i < line.count; ++i) {
+            const double element = (line.xs[i] - 0.5) * 4.0;
+            INFO("point " << i << " at " << line.xs[i]);
+            CHECK(element >= 0.0);
+            CHECK(element < 20000.0);
+        }
+    }
+
+    SECTION("stretched over an axis longer than itself")
+    {
+        // /series/half is 32 elements spread over the 20000 of /trace, so each
+        // of its elements is 645 positions along the axis and the line's last
+        // element sits at the axis's last position.
+        add(plot, QStringLiteral("/series/half[:]"));
+        plot->setScaling(1, gui::CustomPlot::Stretch);
+        settleAll();
+        plot->setVisibleRange(1.0, 19999.0);
+        const gui::PlotLine line = plot->lineOf(1);
+        REQUIRE(line.xs != nullptr);
+        REQUIRE(line.count == 32 - 1); // every element but the one at x = 0
+        const double scale = 19999.0 / 31.0;
+        for (qsizetype i = 0; i < line.count; ++i) {
+            INFO("point " << i);
+            CHECK(line.xs[i] == Approx(static_cast<double>(i + 1) * scale));
+            CHECK(line.values[i] == Approx(2.0 * static_cast<double>(i + 1)));
+        }
+    }
+
+    SECTION("zoomed in under an octave, the runs take over again")
+    {
+        plot->setVisibleRange(12300.0, 12400.0);
+        h5test::settleFor(300);
+        settleAll();
+        const gui::PlotLine line = plot->lineOf(0);
+        CHECK(line.xs == nullptr);
+        CHECK(line.positionStep == Approx(1.0));
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "a descending time base is a time base", "[custom]")
 {
     // /series/b is 100 - i: monotonic, and the other way up. The axis is drawn

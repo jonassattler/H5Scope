@@ -368,4 +368,54 @@ std::size_t coldestLevel(std::span<const HeldLevel> held, const LevelView& view,
     return worst;
 }
 
+std::optional<LogColumns> logColumnsFor(double low, double high, int columns)
+{
+    if (columns <= 0 || !(low > 0.0) || !(high > low) || !std::isfinite(high)) {
+        return {};
+    }
+    const double from = std::log2(low);
+    const double to = std::log2(high);
+    const double octaves = to - from;
+    // Under an octave the linear path is the right one; see the header.
+    if (!(octaves >= 1.0) || !std::isfinite(octaves)) {
+        return {};
+    }
+    // Rounded up to a power of two, so between one and two edges land in each
+    // pixel column. The bound is the pane: at an octave exactly it is
+    // `columns` rounded up, and it only falls from there.
+    const double wanted = static_cast<double>(columns) / octaves;
+    long long density = 1;
+    while (static_cast<double>(density) < wanted && density < (1LL << 30)) {
+        density <<= 1;
+    }
+    const double margin = octaves / 2.0;
+    LogColumns grid;
+    grid.density = density;
+    grid.first = static_cast<long long>(std::floor((from - margin) * static_cast<double>(density)));
+    grid.last = static_cast<long long>(std::ceil((to + margin) * static_cast<double>(density)));
+    return grid;
+}
+
+bool logColumnsServe(const LogColumns& held, double low, double high, int columns)
+{
+    const std::optional<LogColumns> wanted = logColumnsFor(low, high, columns);
+    return wanted.has_value() && wanted->density == held.density && held.covers(low, high);
+}
+
+void edgesAlong(const LogColumns& columns, double start, double step, std::vector<double>& out)
+{
+    out.clear();
+    if (columns.density <= 0 || columns.last < columns.first || !std::isfinite(start) ||
+        !std::isfinite(step) || !(std::abs(step) > 0.0)) {
+        return;
+    }
+    out.reserve(static_cast<std::size_t>(columns.last - columns.first + 1));
+    for (long long k = columns.first; k <= columns.last; ++k) {
+        out.push_back((columns.edge(k) - start) / step);
+    }
+    if (step < 0.0) {
+        std::reverse(out.begin(), out.end());
+    }
+}
+
 } // namespace gui

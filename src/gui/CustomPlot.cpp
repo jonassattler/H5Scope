@@ -914,6 +914,175 @@ void CustomPlot::setXStep(double value)
     refreshCloser();
 }
 
+void CustomPlot::setXLog(bool logarithmic)
+{
+    if (xLog_ == logarithmic) {
+        return;
+    }
+    xLog_ = logarithmic;
+    dropFold();
+    emit xAxisChanged();
+    refreshCloser();
+}
+
+std::optional<LogColumns> CustomPlot::foldWanted() const
+{
+    const int drawn = seriesCount();
+    if (!xLog_ || drawn == 0 || drawn > kCrowdedLines) {
+        return {};
+    }
+    if (xMode_ == Dataset) {
+        // Folded against only while it runs one way, which is the rule every
+        // closer look at a time base keeps: one that doubles back puts an x in
+        // two places and there is no column to put it in.
+        bool ascending = true;
+        if (axis_.pyramid.empty() || !timeSorted(ascending)) {
+            return {};
+        }
+    }
+    else if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return {};
+    }
+    return logColumnsFor(viewMin_, viewMax_, bucketBudget());
+}
+
+bool CustomPlot::foldServes() const
+{
+    return foldColumns_.has_value() && foldStart_ == xStart_ && foldStep_ == xStep_ &&
+           foldMode_ == static_cast<int>(xMode_) && foldBuckets_ == bucketBudget() &&
+           logColumnsServe(*foldColumns_, viewMin_, viewMax_, bucketBudget());
+}
+
+void CustomPlot::dropFold() const
+{
+    for (const Entry& entry : entries_) {
+        retire(entry.foldValues);
+        retire(entry.foldXs);
+        entry.foldGeneration = -1;
+    }
+    foldColumns_.reset();
+    ++foldGeneration_;
+}
+
+double CustomPlot::timeAt(long long at) const
+{
+    const LinePyramid& time = axis_.pyramid;
+    if (time.empty() || at < 0 || at >= time.length) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const PyramidLevel& bottom = time.levels.front();
+    if (bottom.bucket == 1) {
+        return bottom.values[static_cast<std::size_t>(at)];
+    }
+    return bottom.values[static_cast<std::size_t>(at / bottom.bucket) * 2];
+}
+
+bool CustomPlot::timeSorted(bool& ascending) const
+{
+    const LinePyramid& time = axis_.pyramid;
+    if (time.empty()) {
+        return false;
+    }
+    const std::vector<double>& bottom = time.levels.front().values;
+    if (sortedFor_ != bottom.data() || sortedSize_ != bottom.size()) {
+        sortedFor_ = bottom.data();
+        sortedSize_ = bottom.size();
+        // A pair per bucket above a base of one, in the order the two
+        // occurred, which on a time base running one way is its first element
+        // and its last -- so the pairs laid end to end run the same way the
+        // elements do, and one walk answers for both.
+        sortedAnswer_ = std::is_sorted(bottom.begin(), bottom.end())     ? 1
+                        : std::is_sorted(bottom.rbegin(), bottom.rend()) ? -1
+                                                                         : 0;
+    }
+    ascending = sortedAnswer_ >= 0;
+    return sortedAnswer_ != 0;
+}
+
+void CustomPlot::timeEdges(const LogColumns& columns, double scale, std::vector<double>& out) const
+{
+    out.clear();
+    bool ascending = true;
+    if (!timeSorted(ascending) || !(scale > 0.0)) {
+        return;
+    }
+    const long long length = axis_.pyramid.length;
+    // How many elements lie before `x` in the order the time base runs:
+    // those below it when it ascends, those above it when it descends. A
+    // column's elements are then a run between two of these, which is what an
+    // edge is.
+    const auto before = [&](double x) {
+        long long low = 0;
+        long long high = length;
+        while (low < high) {
+            const long long mid = low + (high - low) / 2;
+            const double t = timeAt(mid);
+            if (ascending ? t < x : t >= x) {
+                low = mid + 1;
+            }
+            else {
+                high = mid;
+            }
+        }
+        return low;
+    };
+    out.reserve(static_cast<std::size_t>(columns.last - columns.first + 1));
+    for (long long k = columns.first; k <= columns.last; ++k) {
+        out.push_back(static_cast<double>(before(columns.edge(k))) / scale);
+    }
+    if (!ascending) {
+        std::reverse(out.begin(), out.end());
+    }
+}
+
+bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
+{
+    if (entry.pyramid.empty() || !foldWanted().has_value()) {
+        return false;
+    }
+    if (!foldServes()) {
+        // Another grid. Every entry's fold goes with the one it was made on --
+        // retired rather than freed, because the renderer is drawing them
+        // until it is handed these.
+        dropFold();
+        foldColumns_ = logColumnsFor(viewMin_, viewMax_, bucketBudget());
+        foldStart_ = xStart_;
+        foldStep_ = xStep_;
+        foldMode_ = static_cast<int>(xMode_);
+        foldBuckets_ = bucketBudget();
+    }
+    if (entry.foldGeneration != foldGeneration_) {
+        retire(entry.foldValues);
+        retire(entry.foldXs);
+        // An element of this entry sits at `scale` axis positions per
+        // element: one under Align, the axis over the line under Stretch.
+        const double scale = stretchScale(entry);
+        std::vector<double> edges;
+        if (xMode_ == Dataset) {
+            timeEdges(*foldColumns_, scale, edges);
+        }
+        else {
+            edgesAlong(*foldColumns_, xStart_, xStep_ * scale, edges);
+        }
+        ColumnFold folded;
+        foldColumns(entry.pyramid, edges, folded);
+        std::vector<double> xs(folded.positions.size());
+        for (std::size_t i = 0; i < xs.size(); ++i) {
+            const double at = folded.positions[i] * scale;
+            xs[i] = xMode_ == Dataset ? timeAt(std::llround(at)) : xStart_ + at * xStep_;
+        }
+        entry.foldValues = std::move(folded.values);
+        entry.foldXs = std::move(xs);
+        entry.foldSummarised = folded.summarised;
+        entry.foldGeneration = foldGeneration_;
+    }
+    line.values = entry.foldValues.data();
+    line.xs = entry.foldXs.data();
+    line.count = static_cast<qsizetype>(entry.foldValues.size());
+    line.summarised = entry.foldSummarised;
+    return true;
+}
+
 bool CustomPlot::hasData() const
 {
     return hasFinite_;
@@ -1087,6 +1256,29 @@ void CustomPlot::applyColumns()
 void CustomPlot::setVisibleRange(double xMin, double xMax)
 {
     if (viewMin_ == xMin && viewMax_ == xMax) {
+        return;
+    }
+    // A logarithmic axis wide enough to be folded per column is its own path;
+    // see DatasetPlot::setVisibleRange, which is this written for one line.
+    const bool wasFolded = foldWanted().has_value();
+    const double oldMin = viewMin_;
+    const double oldMax = viewMax_;
+    viewMin_ = xMin;
+    viewMax_ = xMax;
+    if (foldWanted().has_value()) {
+        recomputeView();
+        if (!wasFolded || !foldServes()) {
+            announce();
+        }
+        return;
+    }
+    viewMin_ = oldMin;
+    viewMax_ = oldMax;
+    if (wasFolded) {
+        viewMin_ = xMin;
+        viewMax_ = xMax;
+        refreshCloser();
+        announce();
         return;
     }
     // Which run in hand covers the pane is a property of the view, so it can
@@ -1441,6 +1633,13 @@ void CustomPlot::refreshCloser()
 
     recomputeView();
 
+    if (foldWanted().has_value()) {
+        // What is drawn is the fold, and no run below would be looked at. See
+        // DatasetPlot::refreshDetail.
+        settle_.stop();
+        return;
+    }
+
     // The time base first, and the order is the whole of why it works.
     //
     // Every run below is a run of *positions*, and under Dataset a position is
@@ -1694,6 +1893,9 @@ void CustomPlot::clearCloser()
         retire(level.values);
     }
     axis_.levels.clear();
+    // And every fold, for the same reason: it is a fold of the lines, and of
+    // the time base, as they were.
+    dropFold();
     recomputeView();
 }
 
@@ -1772,6 +1974,12 @@ PlotLine CustomPlot::lineOf(int series) const
     // against *those* x, and an axis of indices with the same line on it is a
     // different plot wearing the same label.
     if (xMode_ == Dataset && axis_.values.empty()) {
+        return line;
+    }
+
+    // On a logarithmic axis spanning an octave or more, the line folded onto
+    // the pane's own columns, and nothing below is asked. See LogColumns.
+    if (foldedLine(entry, line)) {
         return line;
     }
 
@@ -1966,11 +2174,22 @@ void CustomPlot::recount()
                 maximum_ = std::max(maximum_, value);
             }
             // The other end a logarithmic axis needs, taken in the pass that
-            // is already touching every value.
-            if (value > 0.0) {
+            // is already touching every value -- when the line has nothing
+            // better to answer with. A summary cannot say it: see below.
+            if (value > 0.0 && entry.pyramid.empty()) {
                 positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, value) : value;
                 hasPositive_ = true;
             }
+        }
+        // ...and when it has the line itself, out of that. An envelope keeps
+        // a bucket's smallest, so a bucket holding a zero and a thousandth
+        // answers with the zero and the thousandth is not in the summary at
+        // all -- which on a logarithmic axis is the bottom of the axis gone.
+        // See gui::smallestPositive.
+        double smallest = 0.0;
+        if (!entry.ownAxis && smallestPositive(entry.pyramid, smallest)) {
+            positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, smallest) : smallest;
+            hasPositive_ = true;
         }
     }
     // In Dataset mode a line with no time base to draw against is not drawable
@@ -2009,6 +2228,14 @@ void CustomPlot::recount()
             xPositiveMinimum_ = seenPositive ? std::min(xPositiveMinimum_, value) : value;
             seenPositive = true;
         }
+    }
+    // Out of the time base itself where it is held, for the reason the lines
+    // above take theirs from their pyramids -- and it matters more here. The
+    // summary is pairs of extremes, and the first pair of a time base from
+    // zero is the zero and the end of the first bucket, so a logarithmic axis
+    // began a bucket along and every element before that was off the pane.
+    if (double smallest = 0.0; smallestPositive(axis_.pyramid, smallest)) {
+        xPositiveMinimum_ = smallest;
     }
     if (seen && xMaximum_ <= xMinimum_) {
         // A flat time base has no extent to draw against; give it a unit of

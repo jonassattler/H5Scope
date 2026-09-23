@@ -106,17 +106,25 @@ void PlotItem::adopt(PlotItem* source)
     // still pointing at -- which is exactly what happens when the source *is*
     // an item this one adopted from before.
     std::vector<std::vector<double>> owned;
-    owned.reserve(source->lines_.size() + 2);
+    owned.reserve(source->lines_.size() * 2 + 2);
 
     std::vector<PlotLine> lines = source->lines_;
     for (PlotLine& line : lines) {
         if (line.values == nullptr || line.count <= 0) {
             line.values = nullptr;
+            line.xs = nullptr;
             line.count = 0;
             continue;
         }
         owned.emplace_back(line.values, line.values + line.count);
         line.values = owned.back().data();
+        // ...and where each of them is, when the line says so itself. A
+        // picture holding the values and borrowing the x would be a picture
+        // of a logarithmic plot that died with the next fold.
+        if (line.xs != nullptr) {
+            owned.emplace_back(line.xs, line.xs + line.count);
+            line.xs = owned.back().data();
+        }
     }
 
     // The axis borrows twice: the whole time base, and the run of it the
@@ -411,7 +419,8 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
         }
         yMap = yMappingOf(lineView(line, view_));
 
-        if (axis_.explicitX() || !(std::abs(line.positionStep * axis_.step) > 0.0)) {
+        if (axis_.explicitX() || line.xs != nullptr ||
+            !(std::abs(line.positionStep * axis_.step) > 0.0)) {
             // A time base need not be monotonic, so there is no index to solve
             // for and the line is searched. Affordable because a line drawn
             // against one is a custom plot entry, and those are thinned on the

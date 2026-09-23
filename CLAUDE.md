@@ -278,6 +278,60 @@ matplotlib does. Four rules cover them:
   drawn and the smallest is a gap, which breaks the stroke for one station
   wherever the data reached zero. That is the honest reading and the cheap one:
   the alternative is re-reading the file whenever the box is ticked.
+
+**A logarithmic x axis is folded per column, not per bucket.** Everything above
+the renderer buckets a line by *element*, which on a linear axis is the same as
+by pixel and on a logarithmic one is not: a pane from 1 to 1e6 gives the first
+nine elements a sixth of its width, so a bucket sized for the pane on average
+put half of it into one bucket — blank below that bucket's middle, a few
+straight strokes above it, at every zoom, because every run and the renderer's
+own envelope were bucketed the same way. Four pieces replace it:
+
+- **`gui::LogColumns`** (`PlotLevels`) is the grid: edge `k` at
+  `2^(k / density)`, the density a power of two giving one to two edges per
+  pixel column, half a pane of margin either side. Aligned in log2(x) for the
+  reason `PlotWindow` is aligned — a pan moves which edges are on screen, never
+  what lies between two of them — so a pan inside the margin neither folds nor
+  refills (`logColumnsServe`). It applies only to a window spanning **an octave
+  or more**; under that, no column is twice another's width and the linear path,
+  which also reads below the pyramid's base, is the right one.
+- **`gui::foldColumns`** (`PlotPyramid`) folds a line onto those edges out of
+  the pyramid already held (`extremesOver` answers any run, aligned or not, from
+  a few buckets of each level), so it reads nothing. A column of one or two
+  elements holds *them*, at their own positions; anything wider is its extremes
+  in occurrence order.
+- **`PlotLine::xs`** says where each point is. The fold's points are even on
+  the pane and nowhere near even in position, so no start and step can place
+  them; a line with `xs` is drawn point for point by the explicit branch of
+  `projectLine` and never re-bucketed. It is borrowed like `values`, retired
+  with it (`DatasetPlot::fold_`, `CustomPlot::Entry::foldValues`), and copied by
+  `PlotItem::adopt`. A custom tab against a time base finds its edges by
+  bisecting the held time base (`timeEdges`) and only while it runs one way.
+- **The models are told the scale** (`xLog` on both plots, bound by
+  `PlotSurface`), because it decides what a column is. The base is not passed:
+  it moves nothing that is drawn.
+
+Two more things on that axis follow the same instinct. **The zoom ceiling is a
+window, not a magnification** (`minimumSpanX`, `logZoomCeiling`): on a
+logarithmic axis a zoom is a share of the decades, so the linear `maxZoom` let
+a reader zoom through the gap between the first two samples at the left and
+stopped them with a hundred and sixty on screen at the right; the narrowest
+window is now the same number of units wherever the pointer is. And **where a
+logarithmic axis starts is asked of the line, not of its summary**
+(`gui::smallestPositive`): an envelope keeps each bucket's smallest, so a time
+base from zero in thousandths started its axis at the end of the first bucket
+and the first decade and a third were off the pane. It walks the pyramid top
+down and opens only the buckets that straddle zero.
+
+**The view may be dragged past the data, not off it.** `PlotSurface.clampPan`
+keeps `panKeep` (a quarter) of the window over the data on each axis rather than
+the whole of it, so a plot at a zoom of one can be dragged at all and a zoomed
+one past its last sample. One rule for the drag, the wheel, the band and the
+four boxes, so a zoom after a drag does not snap the view back inside. The
+models are therefore asked for windows reaching past either end of the line and
+answer for the part that exists; `test_cost` holds that to no reads and no
+invented samples, on both scales.
+
 And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
 their own cache and copy nothing, so no path may free or prune a held line
 without saying something about it first. There are two things it can say, and

@@ -9,6 +9,9 @@
 #include <QThreadPool>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <utility>
 
 namespace gui {
 
@@ -427,6 +430,185 @@ bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out
     // themselves.
     step = stride == 1 ? 1.0 : static_cast<double>(stride) / 2.0;
     return true;
+}
+
+Extremes extremesOver(const LinePyramid& pyramid, long long first, long long last)
+{
+    Extremes found;
+    if (pyramid.empty()) {
+        return found;
+    }
+    const long long base = pyramid.baseBucket();
+    first = std::max<long long>(first, 0);
+    last = std::min(last, pyramid.length);
+    first = (first / base) * base;
+    if (last < pyramid.length) {
+        last = ((last + base - 1) / base) * base;
+        last = std::min(last, pyramid.length);
+    }
+
+    const auto take = [&found](double value, long long at) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+        if (found.lowAt < 0 || value < found.lowest) {
+            found.lowest = value;
+            found.lowAt = at;
+        }
+        if (found.highAt < 0 || value > found.highest) {
+            found.highest = value;
+            found.highAt = at;
+        }
+    };
+
+    long long at = first;
+    while (at < last) {
+        // The coarsest level whose bucket starts here and ends inside the run
+        // -- or at the end of the line, which a run reaching it is allowed to
+        // take whole. The base always qualifies, because `at` is on it.
+        std::size_t use = 0;
+        for (std::size_t i = 1; i < pyramid.levels.size(); ++i) {
+            const long long bucket = pyramid.levels[i].bucket;
+            if (at % bucket != 0 || std::min(at + bucket, pyramid.length) > last) {
+                break; // coarser still cannot fit where this one did not
+            }
+            use = i;
+        }
+        const PyramidLevel& level = pyramid.levels[use];
+        const long long index = at / level.bucket;
+        if (level.bucket == 1) {
+            take(level.values[static_cast<std::size_t>(index)], at);
+        }
+        else if (index < level.buckets()) {
+            // A pair in the order its two occurred, so the first is taken as
+            // earlier than the second -- the bucket's start and its middle.
+            take(level.values[static_cast<std::size_t>(index) * 2], at);
+            take(level.values[static_cast<std::size_t>(index) * 2 + 1], at + level.bucket / 2);
+        }
+        at += level.bucket;
+    }
+    return found;
+}
+
+void foldColumns(const LinePyramid& pyramid, std::span<const double> edges, ColumnFold& out)
+{
+    out.values.clear();
+    out.positions.clear();
+    out.summarised = false;
+    if (pyramid.empty() || edges.size() < 2) {
+        return;
+    }
+    const long long base = pyramid.baseBucket();
+    const long long length = pyramid.length;
+    const PyramidLevel& bottom = pyramid.levels.front();
+    out.values.reserve(edges.size() * 2);
+    out.positions.reserve(edges.size() * 2);
+
+    // Where the last column stopped. A column never starts before it, which is
+    // what keeps an element out of two columns once the ends are rounded to
+    // the base.
+    long long cursor = 0;
+    for (std::size_t c = 0; c + 1 < edges.size(); ++c) {
+        const double from = edges[c];
+        const double to = edges[c + 1];
+        if (!(to > from) || !(to > 0.0) || !(from < static_cast<double>(length))) {
+            continue;
+        }
+        long long first = static_cast<long long>(std::ceil(std::max(from, 0.0)));
+        long long last =
+            static_cast<long long>(std::min(std::ceil(to), static_cast<double>(length)));
+        if (base > 1) {
+            first = (first / base) * base;
+            last = std::min(((last + base - 1) / base) * base, length);
+        }
+        first = std::max(first, cursor);
+        if (last <= first) {
+            continue;
+        }
+        cursor = last;
+
+        if (base == 1 && last - first <= 2) {
+            for (long long i = first; i < last; ++i) {
+                out.values.push_back(bottom.values[static_cast<std::size_t>(i)]);
+                out.positions.push_back(static_cast<double>(i));
+            }
+            continue;
+        }
+
+        out.summarised = true;
+        const Extremes found = extremesOver(pyramid, first, last);
+        if (!found.found()) {
+            out.values.push_back(std::numeric_limits<double>::quiet_NaN());
+            out.positions.push_back(static_cast<double>(first));
+            continue;
+        }
+        out.values.push_back(found.first());
+        out.positions.push_back(static_cast<double>(first));
+        out.values.push_back(found.second());
+        out.positions.push_back(static_cast<double>(first) +
+                                static_cast<double>(last - first) / 2.0);
+    }
+}
+
+bool smallestPositive(const LinePyramid& pyramid, double& out)
+{
+    if (pyramid.empty()) {
+        return false;
+    }
+    constexpr long long factor = 1LL << kPyramidOctaves;
+    bool found = false;
+    double best = 0.0;
+    const auto offer = [&](double value) {
+        if (value > 0.0 && std::isfinite(value) && (!found || value < best)) {
+            best = value;
+            found = true;
+        }
+    };
+
+    // Depth first, with the buckets still to open on a stack of (level,
+    // bucket). The top level is a handful of buckets, so it seeds the stack.
+    std::vector<std::pair<std::size_t, long long>> open;
+    const std::size_t top = pyramid.levels.size() - 1;
+    for (long long j = pyramid.levels[top].buckets() - 1; j >= 0; --j) {
+        open.emplace_back(top, j);
+    }
+    while (!open.empty()) {
+        const auto [at, j] = open.back();
+        open.pop_back();
+        const PyramidLevel& level = pyramid.levels[at];
+        if (level.bucket == 1) {
+            offer(level.values[static_cast<std::size_t>(j)]);
+            continue;
+        }
+        const double a = level.values[static_cast<std::size_t>(j) * 2];
+        const double b = level.values[static_cast<std::size_t>(j) * 2 + 1];
+        if (std::isnan(a) || std::isnan(b)) {
+            continue; // nothing finite under it
+        }
+        const double low = std::min(a, b);
+        const double high = std::max(a, b);
+        if (!(high > 0.0)) {
+            continue; // nothing above zero under it
+        }
+        if (low > 0.0) {
+            // All of it is above zero, so its smallest is its answer.
+            offer(low);
+            continue;
+        }
+        if (at == 0) {
+            // A bucket of the base that straddles zero: its largest is the
+            // nearest thing above zero it can vouch for.
+            offer(high);
+            continue;
+        }
+        const PyramidLevel& below = pyramid.levels[at - 1];
+        const long long last = std::min((j + 1) * factor, below.buckets());
+        for (long long child = last - 1; child >= j * factor; --child) {
+            open.emplace_back(at - 1, child);
+        }
+    }
+    out = best;
+    return found;
 }
 
 } // namespace gui

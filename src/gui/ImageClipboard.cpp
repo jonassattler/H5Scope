@@ -3,6 +3,8 @@
 
 #include "ImageClipboard.hpp"
 
+#include <QtCore/QBuffer>
+#include <QtCore/QMimeData>
 #include <QtGui/QClipboard>
 #include <QtGui/QColor>
 #include <QtGui/QGuiApplication>
@@ -20,15 +22,7 @@ ImageClipboard::ImageClipboard(QObject* parent) : QObject(parent) {}
 
 ImageClipboard::~ImageClipboard() = default;
 
-namespace {
-
-/// One picture out of two grabs of it, on white and on black.
-///
-/// `stacked` is the pair, the white half above the black one. See the header:
-/// the difference between the two is the coverage, and the black half is
-/// already the premultiplied colour, so this is two subtractions a pixel and
-/// no guesswork about what was ground and what was ink.
-[[nodiscard]] QImage composeOverNothing(const QImage& stacked)
+QImage composeOverNothing(const QImage& stacked)
 {
     const int height = stacked.height() / 2;
     if (height <= 0 || stacked.width() <= 0) {
@@ -39,7 +33,10 @@ namespace {
     const QImage onBlack =
         stacked.copy(0, height, stacked.width(), height).convertToFormat(QImage::Format_ARGB32);
 
-    QImage out(stacked.width(), height, QImage::Format_ARGB32_Premultiplied);
+    // Straight alpha and not premultiplied, and the empty ground white rather
+    // than black -- see the header, which is about a paste into Word on
+    // Windows that came back as a black slab with the numbers gone.
+    QImage out(stacked.width(), height, QImage::Format_ARGB32);
     for (int y = 0; y < height; ++y) {
         const auto* white = reinterpret_cast<const QRgb*>(onWhite.constScanLine(y));
         const auto* black = reinterpret_cast<const QRgb*>(onBlack.constScanLine(y));
@@ -52,18 +49,53 @@ namespace {
                 std::max({qRed(white[x]) - qRed(black[x]), qGreen(white[x]) - qGreen(black[x]),
                           qBlue(white[x]) - qBlue(black[x])});
             const int alpha = std::clamp(255 - clear, 0, 255);
-            // Already premultiplied: the black pass is C*a by construction.
-            // Clamped to alpha all the same, because rounding in two renders
-            // can leave a channel a step above it, and a premultiplied pixel
-            // whose colour exceeds its alpha is an invalid one.
-            row[x] = qRgba(std::min(qRed(black[x]), alpha), std::min(qGreen(black[x]), alpha),
-                           std::min(qBlue(black[x]), alpha), alpha);
+            if (alpha == 0) {
+                row[x] = qRgba(255, 255, 255, 0);
+                continue;
+            }
+            // The black pass is C*a by construction, so the colour is that
+            // over a -- clamped first, because rounding in two renders can
+            // leave a channel a step above its alpha, and C*a > a is no colour.
+            const auto straight = [alpha](int premultiplied) {
+                return (std::min(premultiplied, alpha) * 255 + alpha / 2) / alpha;
+            };
+            row[x] = qRgba(straight(qRed(black[x])), straight(qGreen(black[x])),
+                           straight(qBlue(black[x])), alpha);
         }
     }
     return out;
 }
 
-} // namespace
+QMimeData* pictureMimeData(const QImage& image, const QString& pngFormat)
+{
+    auto* data = new QMimeData;
+    data->setImageData(image);
+    if (!pngFormat.isEmpty()) {
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        if (image.save(&buffer, "PNG")) {
+            data->setData(pngFormat, png);
+        }
+    }
+    return data;
+}
+
+QString nativePngFormat()
+{
+#if defined(Q_OS_WIN)
+    // The clipboard format registered under the name "PNG", which is the one
+    // Office and every browser read. Qt's own name for "a native format
+    // called this", since image/png would be registered as a format called
+    // image/png, which nothing on Windows looks for.
+    return QStringLiteral("application/x-qt-windows-mime;value=\"PNG\"");
+#else
+    // Offered already: the X11 and Wayland clipboards serve image/png out of
+    // the image itself, which is why a copy made on Linux pasted correctly
+    // into Word through a remote desktop all along.
+    return {};
+#endif
+}
 
 bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool composited, double dpi)
 {
@@ -137,7 +169,7 @@ bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool compos
             emit failed(tr("This system has no clipboard."));
             return;
         }
-        board->setImage(image);
+        board->setMimeData(pictureMimeData(image, nativePngFormat()));
         emit copied();
     });
 
@@ -168,6 +200,27 @@ QColor ImageClipboard::pixelOnClipboard(int x, int y) const
     // ground whose alpha is zero. Read raw, every colour under a zero alpha is
     // black and the question cannot be told from its answer.
     return image.pixelColor(x, y);
+}
+
+QColor ImageClipboard::opaquePixelOnClipboard(int x, int y) const
+{
+    const QClipboard* board = QGuiApplication::clipboard();
+    if (board == nullptr) {
+        return {};
+    }
+    QImage image = board->image();
+    if (!image.valid(x, y)) {
+        return {};
+    }
+    // What Qt's Windows clipboard does to write CF_DIB, step for step
+    // (QWindowsMimeImage::convertFromMime): any format past straight ARGB32
+    // is converted to RGB32, and anything else is written as its bytes stand.
+    // Either way the reader keeps the three channels and drops the fourth.
+    if (image.format() > QImage::Format_ARGB32) {
+        image = image.convertToFormat(QImage::Format_RGB32);
+    }
+    const QRgb raw = image.pixel(x, y);
+    return QColor(qRed(raw), qGreen(raw), qBlue(raw));
 }
 
 } // namespace gui

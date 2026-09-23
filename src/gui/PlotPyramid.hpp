@@ -36,9 +36,11 @@
 // no window. The .cpp uses QThreadPool for the build, which is the one part
 // that is worth spreading over the machine.
 
+#include "gui/PlotLevels.hpp"
 #include "gui/PlotProjection.hpp"
 
 #include <cstddef>
+#include <span>
 #include <vector>
 
 namespace gui {
@@ -199,5 +201,68 @@ private:
 /// would have given, element for element.
 [[nodiscard]] bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out,
                              long long& stride, double& step);
+
+/// The extremes of elements `[first, last)`, out of whichever levels cover
+/// that run in the fewest buckets.
+///
+/// Any run at all, not only an aligned one: it is cut into the largest aligned
+/// buckets that fit -- a few from each level on the way up and the way back
+/// down -- and an extreme of a union is an extreme of the extremes, so the
+/// answer is exact. The ends are rounded out to the base bucket, because below
+/// the base there is nothing left to cut with; with a base of one that rounds
+/// nothing.
+///
+/// `lowAt` and `highAt` say where each extreme sat closely enough to put the
+/// two in the order they occurred -- the element itself at the base, a bucket's
+/// start or middle above it -- which is all Extremes::first() asks of them.
+[[nodiscard]] Extremes extremesOver(const LinePyramid& pyramid, long long first, long long last);
+
+/// The smallest value above zero anywhere in the line, into `out`; false when
+/// there is none.
+///
+/// Where a logarithmic axis starts, and not a question a summary can answer.
+/// An envelope keeps each bucket's smallest and largest, so a bucket holding a
+/// zero and a thousandth answers with the zero and the thousandth is gone: a
+/// time base from 0 in steps of a thousandth, summarised twenty to a bucket,
+/// started its axis at two hundredths, and the first decade and a third of the
+/// data were off the pane. Asked of the pyramid instead, top down: a bucket
+/// whose smallest is above zero answers with it, one whose largest is not
+/// holds nothing, and only the buckets that straddle zero are opened -- so a
+/// line that crosses zero once costs a few dozen buckets, and one that crosses
+/// it everywhere costs, at worst, the walk of its base.
+///
+/// Exact over a base of one. Above that the finest bucket that straddles zero
+/// cannot be opened, and its largest value is the answer given for it: never
+/// below the true one, so the axis loses no more than that bucket's worth.
+[[nodiscard]] bool smallestPositive(const LinePyramid& pyramid, double& out);
+
+/// A line folded onto columns that are not all the same width.
+///
+/// What a logarithmic x axis is drawn from: see LogColumns in PlotLevels.hpp.
+/// A column narrow enough to hold one or two elements holds *them*, drawn at
+/// their own positions, because an envelope of two elements is those two
+/// elements with a claim of summary on them; anything wider is its extremes,
+/// in the order they occurred, at its first element and half way along it --
+/// half a bucket apart, as every envelope here is.
+struct ColumnFold
+{
+    std::vector<double> values;
+    /// The element position each of `values` stands at. Ascending.
+    std::vector<double> positions;
+    /// Whether any of them is an envelope rather than an element. See
+    /// PlotLine::summarised.
+    bool summarised = false;
+};
+
+/// Fold the line into the columns between consecutive `edges`, which are
+/// element positions, ascending and not necessarily whole.
+///
+/// A column holds the elements `i` with `edges[c] <= i < edges[c + 1]`, so
+/// every element falls in exactly one column and none is folded twice -- and a
+/// column narrower than one element holds nothing and adds nothing. A column
+/// with nothing finite in it is one NaN, which is a gap.
+///
+/// `out` is cleared first. Its size is at most twice the number of columns.
+void foldColumns(const LinePyramid& pyramid, std::span<const double> edges, ColumnFold& out);
 
 } // namespace gui

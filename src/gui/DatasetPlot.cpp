@@ -171,6 +171,7 @@ void DatasetPlot::invalidate()
     // the old line for another frame would be drawing the wrong file.
     releaseDrawing();
     lines_.clear();
+    dropFold();
     // And the lines they were folded out of. A pyramid is a reading of one
     // dataset's elements; carrying it into another would be drawing the wrong
     // file, which is the same thing releaseDrawing() above is here to prevent.
@@ -514,6 +515,8 @@ void DatasetPlot::ensure() const
         retire(gone);
     };
     prune(lines_);
+    prune(fold_.values);
+    prune(fold_.xs);
     for (Detail& level : levels_) {
         prune(level.lines);
     }
@@ -545,11 +548,24 @@ void DatasetPlot::ensure() const
                 maximum_ = std::max(maximum_, value);
             }
             // The other end a logarithmic axis needs, taken here because this
-            // pass is already touching every value there is.
-            if (value > 0.0) {
+            // pass is already touching every value there is -- when the line
+            // has nothing better to answer with. A summary cannot say it: see
+            // below.
+            if (value > 0.0 && pyramids_.find(series) == pyramids_.end()) {
                 positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, value) : value;
                 hasPositive_ = true;
             }
+        }
+        // ...and out of the line itself where it is held. An envelope keeps a
+        // bucket's smallest, so a bucket holding a zero and a thousandth
+        // answers with the zero and the thousandth is not in the summary at
+        // all -- which on a logarithmic axis is the bottom of the axis gone.
+        // See gui::smallestPositive.
+        const auto pyramid = pyramids_.find(series);
+        double smallest = 0.0;
+        if (pyramid != pyramids_.end() && smallestPositive(pyramid->second, smallest)) {
+            positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, smallest) : smallest;
+            hasPositive_ = true;
         }
     }
 
@@ -583,6 +599,11 @@ int DatasetPlot::pointCount() const
     // says how many points are on screen, and the answer changed the moment
     // part of the line started being read at a finer bucket than the rest of it
     // ever was.
+    if (!drawn_.empty()) {
+        if (PlotLine folded; foldedLine(drawn_.front(), folded)) {
+            return static_cast<int>(folded.count);
+        }
+    }
     const int at = drawnLevel();
     return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
                ? levels_[static_cast<std::size_t>(at)].points
@@ -597,6 +618,11 @@ int DatasetPlot::sourceSeriesCount() const
 bool DatasetPlot::thinned() const
 {
     ensure();
+    if (!drawn_.empty()) {
+        if (PlotLine folded; foldedLine(drawn_.front(), folded)) {
+            return folded.summarised;
+        }
+    }
     const int at = drawnLevel();
     return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
                ? levels_[static_cast<std::size_t>(at)].step > 1.0
@@ -651,6 +677,83 @@ void DatasetPlot::setXStep(double value)
     refreshDetail();
 }
 
+void DatasetPlot::setXLog(bool logarithmic)
+{
+    if (xLog_ == logarithmic) {
+        return;
+    }
+    xLog_ = logarithmic;
+    dropFold();
+    emit xAxisChanged();
+    refreshDetail();
+}
+
+std::optional<LogColumns> DatasetPlot::foldWanted() const
+{
+    if (!xLog_ || drawn_.empty() || static_cast<int>(drawn_.size()) > kWindowedSeries ||
+        !std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
+        return {};
+    }
+    return logColumnsFor(viewMin_, viewMax_, paneBuckets());
+}
+
+bool DatasetPlot::foldServes() const
+{
+    return fold_.columns.has_value() && fold_.start == xStart_ && fold_.step == xStep_ &&
+           fold_.buckets == paneBuckets() &&
+           logColumnsServe(*fold_.columns, viewMin_, viewMax_, paneBuckets());
+}
+
+void DatasetPlot::dropFold() const
+{
+    retire(fold_.values);
+    retire(fold_.xs);
+    fold_.summarised.clear();
+    fold_.edges.clear();
+    fold_.columns.reset();
+}
+
+bool DatasetPlot::foldedLine(int series, PlotLine& line) const
+{
+    if (!foldWanted().has_value()) {
+        return false;
+    }
+    if (!foldServes()) {
+        // Another grid: a zoom that crossed an octave of density, a pan off the
+        // margin, or an axis that moved. Retired rather than freed, because the
+        // renderer is drawing the old one until it is handed this.
+        dropFold();
+        fold_.columns = logColumnsFor(viewMin_, viewMax_, paneBuckets());
+        fold_.start = xStart_;
+        fold_.step = xStep_;
+        fold_.buckets = paneBuckets();
+        edgesAlong(*fold_.columns, xStart_, xStep_, fold_.edges);
+    }
+
+    auto values = fold_.values.find(series);
+    if (values == fold_.values.end()) {
+        const auto pyramid = pyramids_.find(series);
+        if (pyramid == pyramids_.end() || pyramid->second.empty()) {
+            return false;
+        }
+        ColumnFold folded;
+        foldColumns(pyramid->second, fold_.edges, folded);
+        std::vector<double> xs(folded.positions.size());
+        for (std::size_t i = 0; i < xs.size(); ++i) {
+            xs[i] = xStart_ + folded.positions[i] * xStep_;
+        }
+        fold_.xs[series] = std::move(xs);
+        fold_.summarised[series] = folded.summarised;
+        values = fold_.values.insert_or_assign(series, std::move(folded.values)).first;
+    }
+    const std::vector<double>& xs = fold_.xs[series];
+    line.values = values->second.data();
+    line.xs = xs.data();
+    line.count = static_cast<qsizetype>(values->second.size());
+    line.summarised = fold_.summarised[series];
+    return true;
+}
+
 bool DatasetPlot::numeric() const
 {
     return table_->numeric();
@@ -680,6 +783,14 @@ PlotLine DatasetPlot::lineOf(int series) const
 {
     ensure();
     PlotLine line;
+
+    // On a logarithmic axis spanning an octave or more, the line folded onto
+    // the pane's own columns -- and nothing below is asked. See LogColumns: the
+    // runs and the summary are bucketed by element, which on that axis is the
+    // wrong question for all but one part of the pane.
+    if (foldedLine(series, line)) {
+        return line;
+    }
 
     // The closer look, while it covers what is on screen and this line has one.
     //
@@ -745,6 +856,33 @@ PlotAxis DatasetPlot::drawingAxis() const
 void DatasetPlot::setVisibleRange(double xMin, double xMax)
 {
     if (viewMin_ == xMin && viewMax_ == xMax) {
+        return;
+    }
+    // A logarithmic axis wide enough to be folded per column is its own path:
+    // the fold is memory, made in the frame that draws it, so the only question
+    // here is whether the one in hand still serves -- and a pan inside it does,
+    // which is what keeps a drag from refolding on every frame of it.
+    const bool wasFolded = foldWanted().has_value();
+    const double oldMin = viewMin_;
+    const double oldMax = viewMax_;
+    viewMin_ = xMin;
+    viewMax_ = xMax;
+    if (foldWanted().has_value()) {
+        if (!wasFolded || !foldServes()) {
+            emit changed();
+        }
+        return;
+    }
+    viewMin_ = oldMin;
+    viewMax_ = oldMax;
+    if (wasFolded) {
+        // Zoomed in under an octave: the runs take over from here, and the
+        // renderer is holding a fold that is about to stop being what lineOf()
+        // answers with.
+        viewMin_ = xMin;
+        viewMax_ = xMax;
+        refreshDetail();
+        emit changed();
         return;
     }
     // Whether the run in hand still covers the pane is a property of the view,
@@ -993,6 +1131,13 @@ std::optional<PlotWindow> DatasetPlot::detailWanted() const
 
 void DatasetPlot::refreshDetail()
 {
+    if (foldWanted().has_value()) {
+        // What is drawn is the fold, and nothing here would be looked at. The
+        // runs already held stay held for the moment the reader zooms back
+        // under an octave.
+        settle_.stop();
+        return;
+    }
     if (!detailFor(paneBuckets()).has_value()) {
         dropDetail();
         return;
