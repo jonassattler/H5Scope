@@ -131,6 +131,10 @@ public:
     /// go ahead. See CustomPlot::addDataset.
     Q_INVOKABLE void addDatasetTo(int index, const QString& path,
                                   bool confirmed = false);
+    /// Put a pipeline, written as a postproc::Script, into plot `index` as a
+    /// line of its own with postprocessing on. What the postprocessing
+    /// panel's add-to-custom-plot button does with what the views are drawing.
+    Q_INVOKABLE void addScriptTo(int index, const QString& script);
     /// Make `path` the time base of the tab at `index`. The whole of the
     /// dataset when it is a vector; its first line otherwise, which is the
     /// line the plot tab would have drawn first.

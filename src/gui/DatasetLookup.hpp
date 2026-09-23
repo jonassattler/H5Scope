@@ -164,6 +164,53 @@ private:
 [[nodiscard]] QString expressionProblem(const QString& text,
                                         const DatasetLookup& lookup);
 
+/// The same question of a postprocessed line, written as a postproc::Script.
+///
+/// Everything expressionProblem asks, through postproc::checkScript, and one
+/// thing more: the pipeline has to *end* on one dimension. A slice is checked
+/// for that as it is written, because a subscript that leaves two dimensions
+/// is visibly not a line; a pipeline can reach one by any road -- a 3-D slice
+/// reduced twice is as good a line as a 1-D one -- so the rule is asked of
+/// its output and said in terms of what it leaves.
+[[nodiscard]] QString scriptProblem(const QString& text, const DatasetLookup& lookup);
+
+/// What scriptProblem says of a pipeline that does not end on one dimension,
+/// given the shape it does end on. Its own function because the read says it
+/// too, having checked the script itself rather than through a lookup.
+[[nodiscard]] QString notOneLine(const std::vector<hsize_t>& output);
+
+/// expressionProblem or scriptProblem, whichever the line is written in. The
+/// one place a custom plot's line is checked, so a saved view and a row in the
+/// rail cannot disagree about one.
+[[nodiscard]] QString lineProblem(const QString& text, bool postprocess,
+                                  const DatasetLookup& lookup);
+
+/// The dataset a line names, whichever way it is written; empty when the text
+/// does not read far enough to say.
+[[nodiscard]] QString linePath(const QString& text, bool postprocess);
+
+/// A plain line, `path[subscript].member`, as the script that says the same
+/// thing, formatted -- what ticking "enable postprocessing" on a custom plot's
+/// line writes into its box. Empty when the line does not parse.
+///
+/// Exact, which takes one care: a plain subscript is over the dataset's own
+/// axes and the member's are appended after it, where a script with a bare
+/// `.select` has its slice over all of them. They differ only where an
+/// ellipsis would stretch over the member's axes too, and there the chain is
+/// given a subscript of its own, `[...]`, which puts the script on the plain
+/// line's reading.
+[[nodiscard]] QString scriptFromExpression(const QString& text);
+
+/// A script with no operations as the plain line that says the same thing --
+/// what unticking it writes back. Operations are not carried: a plain line
+/// has nowhere to put them, which the caller knows and says.
+///
+/// Uses what `lookup` knows about the dataset to move the member's axes back
+/// onto the chain, `path[0:5].samples[2]`, because a plain subscript does not
+/// reach them. With nothing known it writes the slice where it was, and the
+/// line says what is wrong with that once it is read.
+[[nodiscard]] QString expressionFromScript(const QString& text, const DatasetLookup& lookup);
+
 /// Resolve a subscript against a known shape into the per-dimension index
 /// lists a read takes, and say whether what it selects is one line.
 ///

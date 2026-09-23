@@ -252,6 +252,14 @@ ScriptCheck checkScript(const Script& script, const std::vector<hsize_t>& origin
                           .arg(script.member.mid(1), check.chain.error);
         return check;
     }
+    // The shapes before the question of numbers, so that a caller applying a
+    // script it has been told cannot run -- the panel does, and says why beside
+    // it -- still has the slice line to apply.
+    check.input = originShape;
+    check.input.insert(check.input.end(), check.chain.selection.dims.begin(),
+                       check.chain.selection.dims.end());
+    check.pipeline = pipelineOf(script, check.chain.folded, originShape.size());
+
     const h5core::TypeInfo& landed = check.chain.selection.type;
     if (!h5core::isNumeric(landed.cls)) {
         check.error = landed.cls == h5core::TypeClass::Compound
@@ -263,11 +271,6 @@ ScriptCheck checkScript(const Script& script, const std::vector<hsize_t>& origin
                                 .arg(QString::fromStdString(landed.description));
         return check;
     }
-
-    check.input = originShape;
-    check.input.insert(check.input.end(), check.chain.selection.dims.begin(),
-                       check.chain.selection.dims.end());
-    check.pipeline = pipelineOf(script, check.chain.folded, originShape.size());
 
     const Trace walked = trace(check.input, check.pipeline, check.pipeline.size());
     check.output = walked.output;

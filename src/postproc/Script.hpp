@@ -114,6 +114,8 @@ struct ScriptCheck {
     /// The chain, resolved: what it selects and the axes it appends.
     MemberChain chain;
     /// The pipeline, ready to run -- pipelineOf with the chain's subscripts.
+    /// Filled whenever the chain resolved, even when there are no numbers
+    /// under it to run on.
     std::vector<Step> pipeline;
     /// The shape the slice sees: the dataset's own, with the chain's axes.
     std::vector<hsize_t> input;

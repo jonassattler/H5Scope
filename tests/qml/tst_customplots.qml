@@ -430,6 +430,61 @@ TestCase {
         verify(plot.hasData, "a member named by Tab is a line like any other")
     }
 
+    function test_a_line_with_postprocessing_takes_a_pipeline_in_a_data_box() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "entryBox")[0]
+        box.forceActiveFocus()
+        box.text = "/matrix[:, 0]"
+        box.textEdited()
+        keyClick(Qt.Key_Return)
+        settleReads()
+
+        const label = findAllOf(view, "entryBoxLabel")[0]
+        compare(label.text, "slice")
+        const plot = AppController.customPlots.plotAt(0)
+        compare(plot.pointCount, 4)
+
+        // Ticked, the slice is rewritten as the script that says the same
+        // thing, and the box that shows it is the one that takes several lines.
+        mouseClick(findAllOf(view, "entryPostprocess")[0])
+        settleReads()
+        waitForRendering(win.contentItem)
+        compare(label.text, "data", "it is not just a slice any more")
+        verify(!box.visible)
+        const script = findAllOf(view, "entryScript")[0]
+        verify(script.visible)
+        compare(script.text, "/matrix\n.slice(:, 0)")
+        compare(plot.pointCount, 4, "and nothing drawn moved")
+
+        // A pipeline that leaves more than a line is warned about as it is
+        // typed, in the words of what it leaves.
+        script.forceEditing()
+        script.text = "/matrix\n.abs"
+        waitForRendering(win.contentItem)
+        verify(script.invalid, "the box must be marked")
+        const notes = findAllOf(view, "entryNote").filter((n) => n.visible)
+        compare(notes.length, 1)
+        verify(notes[0].text.indexOf("one dimension") >= 0,
+               "the reason must say what a line has to be: " + notes[0].text)
+
+        // ...and one that reduces to a line is drawn.
+        script.text = "/matrix\n.max(1)"
+        verify(!script.invalid)
+        keyClick(Qt.Key_Return)
+        settleReads()
+        compare(plot.maximum, 32)
+        compare(script.text, "/matrix\n.max(1)")
+    }
+
     function test_a_line_that_will_not_read_says_why_under_its_box() {
         const win = openWindow()
         win.addCustomTab()

@@ -1699,6 +1699,149 @@ TEST_CASE_METHOD(PlotFixture, "a saved view remembers the member it was drawing"
           == gui::CustomPlotSet::FullMatch);
 }
 
+TEST_CASE_METHOD(PlotFixture, "a line can be a pipeline", "[custom][postproc]")
+{
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    const auto expressionOf = [plot](int row) {
+        return plot->data(plot->index(row, 0), gui::CustomPlot::ExpressionRole).toString();
+    };
+    const auto postprocessed = [plot](int row) {
+        return plot->data(plot->index(row, 0), gui::CustomPlot::PostprocessRole).toBool();
+    };
+
+    SECTION("and draws what the pipeline leaves")
+    {
+        // /matrix is r*10 + c over 4 x 3, so the largest of each row is its
+        // last column: 2, 12, 22, 32.
+        REQUIRE(plot->addScript(QStringLiteral("/matrix.max(1)")) == 0);
+        settleAll();
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(postprocessed(0));
+        CHECK(plot->pointCount() == 4);
+        CHECK(plot->minimum() == 2.0);
+        CHECK(plot->maximum() == 32.0);
+        // Kept formatted, a step to a line, and named on one line in the
+        // legend, because a label that breaks is not a label.
+        CHECK(expressionOf(0) == QStringLiteral("/matrix\n.max(1)"));
+        CHECK(plot->seriesLabel(0) == QStringLiteral("/matrix.max(1)"));
+    }
+
+    SECTION("of a member, named with select")
+    {
+        // /compound's values are 1.5 and 2.5, so their running total ends on 4.
+        REQUIRE(plot->addScript(QStringLiteral("/compound\n.select(value)\n.cumsum")) == 0);
+        settleAll();
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(plot->pointCount() == 2);
+        CHECK(plot->maximum() == 4.0);
+    }
+
+    SECTION("and says so when what it leaves is not a line")
+    {
+        REQUIRE(plot->addScript(QStringLiteral("/matrix\n.abs")) == 0);
+        settleAll();
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("4 × 3"));
+        CHECK_THAT(errorOf(plot, 0).toStdString(), ContainsSubstring("one dimension"));
+        CHECK_FALSE(plot->hasData());
+
+        // ...and the box says it while it is typed, once the path is known.
+        CHECK_THAT(plot->entryError(0, QStringLiteral("/matrix\n.max(0)\n.max(0)"))
+                       .toStdString(),
+                   ContainsSubstring("single value"));
+        CHECK(plot->entryError(0, QStringLiteral("/matrix\n.max(0)")).isEmpty());
+    }
+
+    SECTION("ticking it rewrites the slice as the script that says the same thing")
+    {
+        add(plot, QStringLiteral("/series/a[0:10]"));
+        REQUIRE(plot->pointCount() == 10);
+        plot->setPostprocess(0, true);
+        settleAll();
+        CHECK(postprocessed(0));
+        CHECK(expressionOf(0) == QStringLiteral("/series/a\n.slice(0:10)"));
+        CHECK(errorOf(plot, 0).isEmpty());
+        CHECK(plot->pointCount() == 10);
+        CHECK(plot->maximum() == 9.0);
+
+        // /series/a is 0..63, so the running total of its first ten is 45.
+        plot->setExpression(0, expressionOf(0) + QStringLiteral(".cumsum"));
+        settleAll();
+        CHECK(plot->maximum() == 45.0);
+
+        SECTION("and unticking it writes the slice back, and ticking brings the steps back")
+        {
+            plot->setPostprocess(0, false);
+            settleAll();
+            CHECK_FALSE(postprocessed(0));
+            CHECK(expressionOf(0) == QStringLiteral("/series/a[0:10]"));
+            CHECK(plot->maximum() == 9.0);
+
+            plot->setPostprocess(0, true);
+            settleAll();
+            CHECK(expressionOf(0) == QStringLiteral("/series/a\n.slice(0:10)\n.cumsum"));
+            CHECK(plot->maximum() == 45.0);
+        }
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a pipeline of no steps costs what its slice costs",
+                 "[custom][postproc][cost]")
+{
+    // Ticking the box on a line must not change what reading it costs: a
+    // script with nothing but a slice in it is streamed as the slice is, never
+    // materialised. Read for read, as the member case is held.
+    gui::CustomPlot* plain = tab();
+    const long long beforePlain = gui::CustomPlot::hyperslabs();
+    add(plain, QStringLiteral("/trace[:]"));
+    const long long plainReads = gui::CustomPlot::hyperslabs() - beforePlain;
+
+    gui::CustomPlot* scripted = set()->plotAt(set()->addPlot());
+    settleAll();
+    REQUIRE(scripted != nullptr);
+    const long long beforeScript = gui::CustomPlot::hyperslabs();
+    REQUIRE(scripted->addScript(QStringLiteral("/trace\n.slice(:)")) == 0);
+    settleAll();
+    const long long scriptReads = gui::CustomPlot::hyperslabs() - beforeScript;
+
+    REQUIRE(errorOf(plain, 0).isEmpty());
+    REQUIRE(errorOf(scripted, 0).isEmpty());
+    CHECK(scriptReads == plainReads);
+    CHECK(scripted->minimum() == plain->minimum());
+    CHECK(scripted->maximum() == plain->maximum());
+    CHECK(scripted->pointCount() == plain->pointCount());
+    CHECK(scripted->sourcePointCount() == 20000);
+}
+
+TEST_CASE_METHOD(PlotFixture, "a saved view remembers which lines are pipelines",
+                 "[custom][postproc][views]")
+{
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot->addScript(QStringLiteral("/series/a\n.cumsum")) == 0);
+    add(plot, QStringLiteral("/series/b[:]"));
+    REQUIRE(plot->maximum() == 2016.0); // 0 + 1 + ... + 63
+    REQUIRE(set()->saveView(QStringLiteral("totals"), 0, {}).isEmpty());
+
+    plot->clearEntries();
+    settleAll();
+    set()->restoreView(QStringLiteral("totals"), 0);
+    settleAll();
+    REQUIRE(plot->sourceSeriesCount() == 2);
+    CHECK(plot->data(plot->index(0, 0), gui::CustomPlot::PostprocessRole).toBool());
+    CHECK_FALSE(plot->data(plot->index(1, 0), gui::CustomPlot::PostprocessRole).toBool());
+    CHECK(plot->maximum() == 2016.0);
+
+    // A slice is written down as it always was, with no flag beside it, so a
+    // view saved before any line could be a pipeline reads back unchanged.
+    const QVariantList rows = plot->state().value(QStringLiteral("entries")).toList();
+    CHECK(rows.at(0).toMap().value(QStringLiteral("postprocess")).toBool());
+    CHECK_FALSE(rows.at(1).toMap().contains(QStringLiteral("postprocess")));
+
+    set()->checkView(QStringLiteral("totals"));
+    settleAll();
+    CHECK(set()->stateOf(QStringLiteral("totals")) == gui::CustomPlotSet::FullMatch);
+}
+
 TEST_CASE_METHOD(PlotFixture, "the tabs belong to the file that is open", "[custom]")
 {
     gui::CustomPlot* plot = tab();
