@@ -25,6 +25,29 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.9
+
+**Zooming on a logarithmic x axis works.** The line used to be summarised in
+buckets of equal numbers of samples, which on a logarithmic axis left the left
+of the pane an order of magnitude coarser for every decade on screen: blank at
+first, then a few straight strokes, whatever the zoom. It is now summarised one
+envelope per pixel column, so the whole pane is drawn at the resolution the data
+allows, from the first sample the axis can place, on the Plot tab and on a
+custom tab alike, against a time base too. Zooming and panning read nothing
+from the file. The zoom now stops with the same handful of samples across the
+pane wherever the pointer is, rather than inside the gap between the first two
+samples at the left and a hundred and sixty samples short at the right. A
+logarithmic axis starts at the smallest value above zero in the data itself,
+where a time base counting from zero used to start its axis a bucket along.
+
+**The plot can be dragged past the ends of its data**, on either axis, as far
+as leaves a quarter of the pane on it. At the zoom a plot opens on it can now be
+dragged at all. A zoom after a drag stays where it is.
+
+**A publication picture pastes into Word on Windows as black ink on white.** It
+came through as a black rectangle with the numbers lost in it, because Word
+drops the transparency. The copy now also carries a PNG, which keeps it.
+
 ## 0.6.8
 
 **A line of a custom tab can have a y axis of its own.** Each card under Data
