@@ -818,6 +818,11 @@ double CustomPlot::maximum() const
     return maximum_;
 }
 
+double CustomPlot::positiveMinimum() const
+{
+    return hasPositive_ ? positiveMinimum_ : 0.0;
+}
+
 int CustomPlot::sourcePointCount() const
 {
     if (xMode_ == Dataset) {
@@ -1856,7 +1861,9 @@ void CustomPlot::recount()
     points_ = 0;
     minimum_ = 0.0;
     maximum_ = 0.0;
+    positiveMinimum_ = 0.0;
     hasFinite_ = false;
+    hasPositive_ = false;
     for (const Entry& entry : entries_) {
         if (!entry.drawn) {
             continue;
@@ -1874,6 +1881,12 @@ void CustomPlot::recount()
                 minimum_ = std::min(minimum_, value);
                 maximum_ = std::max(maximum_, value);
             }
+            // The other end a logarithmic axis needs, taken in the pass that
+            // is already touching every value.
+            if (value > 0.0) {
+                positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, value) : value;
+                hasPositive_ = true;
+            }
             ++points_;
         }
     }
@@ -1890,7 +1903,9 @@ void CustomPlot::recount()
     // the frame.
     xMinimum_ = 0.0;
     xMaximum_ = 1.0;
+    xPositiveMinimum_ = 0.0;
     bool seen = false;
+    bool seenPositive = false;
     for (const double value : axis_.values) {
         if (!std::isfinite(value)) {
             continue;
@@ -1903,6 +1918,13 @@ void CustomPlot::recount()
         else {
             xMinimum_ = std::min(xMinimum_, value);
             xMaximum_ = std::max(xMaximum_, value);
+        }
+        // Where a logarithmic x axis starts. The ends of the time base are the
+        // whole of the axis on a linear one; on a logarithmic one the end below
+        // zero is not an end it has.
+        if (value > 0.0) {
+            xPositiveMinimum_ = seenPositive ? std::min(xPositiveMinimum_, value) : value;
+            seenPositive = true;
         }
     }
     if (seen && xMaximum_ <= xMinimum_) {

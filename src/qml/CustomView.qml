@@ -281,6 +281,13 @@ Rectangle {
                     axisMaxX: internal.againstDataset ? root.plot.xMaximum
                             : internal.statedRange ? xAxis.maximum
                                                    : plotSurface.dataLength
+                    // Where a logarithmic x axis starts. A time base's is the
+                    // smallest x above zero it holds, which only the plot can
+                    // answer; the other two are a stated grid and the surface
+                    // works its own out. See PlotSurface.positiveMinX.
+                    positiveMinX: internal.againstDataset
+                                  ? root.plot.xPositiveMinimum
+                                  : plotSurface.gridPositiveMinX
 
                     idleReason: {
                         if (!root.plot)

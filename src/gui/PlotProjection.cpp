@@ -46,27 +46,59 @@ constexpr double kSamplesPerColumn = 4.0;
 // it is the only place in this file where the arithmetic is allowed to lie.
 constexpr double kFarAway = 1e7;
 
-/// The y axis, and whether it has a span to divide by at all.
-///
-/// A degenerate view -- a flat series with no padding, a bound that came
-/// through as NaN -- has no answer to "where does this value sit", and every
-/// caller has to notice that before it divides. One struct so that they all
-/// notice it the same way.
-struct YMapping
-{
-    double low = 0.0;
-    double high = 1.0;
-    bool usable = false;
-};
+} // namespace
 
-YMapping mappingFor(const PlotView& view)
+AxisMapping mappingOver(double low, double high, bool logarithmic, double base)
 {
-    const double low = view.yMin;
-    const double high = view.yMax;
-    return {low, high, std::isfinite(high - low) && std::abs(high - low) > 0.0};
+    AxisMapping mapping;
+    mapping.logarithmic = logarithmic;
+    mapping.base = base;
+    if (logarithmic) {
+        // Only a number above one is a base. At exactly one the logarithm is a
+        // division by zero and every value on the axis sits in the same place;
+        // below it the axis runs backwards, which is a different request from
+        // the one this answers. Refused rather than corrected, for the reason
+        // the bounds below are: there is no nearest legal base to fall back to,
+        // because the legal ones are open at one.
+        if (!std::isfinite(base) || !(base > 1.0)) {
+            return mapping;
+        }
+        // A bound at or below zero is not a bound this axis can be drawn
+        // between, and there is no nearest one worth falling back to: clamping
+        // it to some tiny positive number would put the whole of the data in
+        // the top few pixels of a pane whose lower half means nothing. The view
+        // is refused instead, exactly as a span of zero is, and the caller that
+        // chose the bounds is where a positive one has to come from.
+        if (!(low > 0.0) || !(high > 0.0)) {
+            return mapping;
+        }
+        mapping.low = logOf(low, base);
+        mapping.high = logOf(high, base);
+    }
+    else {
+        mapping.low = low;
+        mapping.high = high;
+    }
+    // A span, running upwards. Both halves are refusals rather than
+    // corrections: a collapsed axis has no place to put anything, and an
+    // inverted one is not a window the surface can produce -- every path that
+    // states a view sorts its bounds first (see PlotSurface.setViewRange). The
+    // x axis has always been held to exactly this; the y axis used to be held
+    // to the absolute span instead, which differed only in that it would have
+    // drawn an upside-down picture for a caller there is none of.
+    mapping.usable = std::isfinite(mapping.high - mapping.low) && mapping.high > mapping.low;
+    return mapping;
 }
 
-} // namespace
+AxisMapping xMappingOf(const PlotView& view)
+{
+    return mappingOver(view.xMin, view.xMax, view.xLog, view.xLogBase);
+}
+
+AxisMapping yMappingOf(const PlotView& view)
+{
+    return mappingOver(view.yMin, view.yMax, view.yLog, view.yLogBase);
+}
 
 std::optional<PlotWindow> windowFor(double low, double high, long long length, long long buckets)
 {
@@ -180,11 +212,12 @@ std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis)
 
 double yFractionOf(double value, const PlotView& view)
 {
-    const YMapping mapping = mappingFor(view);
-    if (!mapping.usable) {
-        return 0.0;
-    }
-    return (value - mapping.low) / (mapping.high - mapping.low);
+    return yMappingOf(view).fractionOf(value);
+}
+
+double xFractionOf(double x, const PlotView& view)
+{
+    return xMappingOf(view).fractionOf(x);
 }
 
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
@@ -202,12 +235,12 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     if (!(w > 0.0) || !(h > 0.0)) {
         return {};
     }
-    const double xSpan = view.xMax - view.xMin;
-    if (!(xSpan > 0.0)) {
+    const AxisMapping xMap = xMappingOf(view);
+    if (!xMap.usable) {
         return {};
     }
-    const YMapping mapping = mappingFor(view);
-    if (!mapping.usable) {
+    const AxisMapping yMap = yMappingOf(view);
+    if (!yMap.usable) {
         return {};
     }
 
@@ -215,9 +248,8 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // coordinate is ever cast down. That is the entire trick behind an epoch
     // timestamp drawing as a line here and as a staircase anywhere that casts
     // first.
-    const double ySpan = mapping.high - mapping.low;
-    const auto toY = [&](double value) { return h - (value - mapping.low) / ySpan * h; };
-    const auto toX = [&](double x) { return (x - view.xMin) / xSpan * w; };
+    const auto toY = [&](double value) { return h - yMap.fractionOf(value) * h; };
+    const auto toX = [&](double x) { return xMap.fractionOf(x) * w; };
 
     // Where the current run started, as an index into `points`.
     int open = -1;
@@ -261,7 +293,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         for (std::int64_t i = 0; i < count; ++i) {
             const double value = line.values[i];
             const double x = xOf(line, axis, i);
-            if (!std::isfinite(value) || !std::isfinite(x)) {
+            if (!yMap.draws(value) || !xMap.draws(x)) {
                 closeRun();
                 continue;
             }
@@ -279,6 +311,12 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 
     // x is affine in the sample index, so the window can be turned back into a
     // range of indices and the samples outside it never touched.
+    //
+    // Still true on a logarithmic x axis, and that is worth saying because it
+    // looks as though it should not be: the window's bounds are in the data's
+    // own units whichever scale the axis is drawn on -- the logarithm happens
+    // between a value and a *pixel*, not between the reader and the data -- so
+    // the inversion below is the same subtraction it always was.
     const double x0 = axis.start + line.positionStart * axis.step;
     const double dx = line.positionStep * axis.step;
 
@@ -324,11 +362,12 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         // there are values. Draw them.
         for (std::int64_t i = first; i <= last; ++i) {
             const double value = line.values[i];
-            if (!std::isfinite(value)) {
+            const double x = x0 + static_cast<double>(i) * dx;
+            if (!yMap.draws(value) || !xMap.draws(x)) {
                 closeRun();
                 continue;
             }
-            place(toX(x0 + static_cast<double>(i) * dx), toY(value));
+            place(toX(x), toY(value));
         }
         closeRun();
         // ...and they are samples only if the model did not summarise them on
@@ -363,6 +402,18 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // scan below touches the visible samples once, and the bucket size is
     // chosen so that there are between one and two buckets per column.
     //
+    // A logarithmic x axis is the one case where "a bucket is a column" stops
+    // being true, and the alternative is worse. Buckets are aligned in the
+    // data's index space and a decade near the origin holds very few indices,
+    // so on a log axis the leftmost buckets are wide on the pane and the
+    // rightmost are narrow: the left of such a plot is summarised more coarsely
+    // than the pane could show. That is honest -- those really are all the
+    // samples that decade has, and each bucket still carries both its extremes
+    // -- and it resolves the moment the reader zooms, because the run they are
+    // looking at is read again at a finer bucket like any other. Bucketing in
+    // log space instead would slide every boundary with the pan, which is the
+    // crawling this alignment exists to prevent.
+    //
     // Within a bucket the smallest and the largest are emitted in the order
     // they occur, so the stroke keeps the direction the data has -- and this is
     // what stride sampling cannot do at all. A spike one sample wide is the
@@ -392,7 +443,12 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         std::int64_t highIndex = -1;
         for (std::int64_t i = i0; i <= i1; ++i) {
             const double value = line.values[i];
-            if (!std::isfinite(value)) {
+            // The axis decides what counts, which on a logarithmic one takes
+            // the non-positive samples out of the extremes as well as out of
+            // the drawing. A bucket whose only large value cannot be drawn has
+            // not got that value; leaving it in would put the top of the
+            // envelope at a place the curve never reaches.
+            if (!yMap.draws(value)) {
                 continue;
             }
             if (value < lowest) {
@@ -414,9 +470,18 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         // is a pixel or two wide. Putting them at its start and its middle is
         // the nearest thing to where they were that costs nothing to say -- and
         // at a bucket of two samples it is exactly where they were.
-        const double atFirst = toX(x0 + static_cast<double>(i0) * dx);
-        const double atMiddle =
-            toX(x0 + (static_cast<double>(i0) + static_cast<double>(size) / 2.0) * dx);
+        const double xFirst = x0 + static_cast<double>(i0) * dx;
+        const double xMiddle =
+            x0 + (static_cast<double>(i0) + static_cast<double>(size) / 2.0) * dx;
+        if (!xMap.draws(xFirst) || !xMap.draws(xMiddle)) {
+            // Both stations of a bucket are on the axis or the bucket is not
+            // drawn, which on a logarithmic axis is every bucket at or below
+            // zero. A gap, for the reason every gap here is one.
+            closeRun();
+            continue;
+        }
+        const double atFirst = toX(xFirst);
+        const double atMiddle = toX(xMiddle);
         if (lowIndex == highIndex) {
             place(atFirst, toY(lowest));
         }

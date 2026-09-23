@@ -53,6 +53,18 @@ class PlotItem : public QQuickItem
     Q_PROPERTY(double yMin READ yMin WRITE setYMin NOTIFY viewChanged FINAL)
     Q_PROPERTY(double yMax READ yMax WRITE setYMax NOTIFY viewChanged FINAL)
 
+    /// Whether each axis places a value by its logarithm. The bounds above stay
+    /// in the data's own units either way -- see PlotView::xLog, which is what
+    /// these write.
+    Q_PROPERTY(bool xLog READ xLog WRITE setXLog NOTIFY viewChanged FINAL)
+    Q_PROPERTY(bool yLog READ yLog WRITE setYLog NOTIFY viewChanged FINAL)
+
+    /// What base each of those logarithms is taken to. See PlotView::xLogBase:
+    /// ten by default, and a view carrying anything at or below one draws
+    /// nothing rather than drawing something wrong.
+    Q_PROPERTY(double xLogBase READ xLogBase WRITE setXLogBase NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double yLogBase READ yLogBase WRITE setYLogBase NOTIFY viewChanged FINAL)
+
     /// Punctuation on the line: a dot at every sample.
     ///
     /// Only where the line is drawn sample for sample. Once anything is
@@ -155,6 +167,9 @@ public:
     /// again. The chrome's ticks go through these rather than deriving the
     /// mapping a second time, because a tick drawn where the curve is not is
     /// worse than no tick at all.
+    ///
+    /// All four answer to the axis's scale, which is the whole of why a
+    /// logarithmic axis needed no second set of them.
     [[nodiscard]] Q_INVOKABLE double yFraction(double value) const;
     [[nodiscard]] Q_INVOKABLE double valueAt(double fraction) const;
     [[nodiscard]] Q_INVOKABLE double xFraction(double x) const;
@@ -176,6 +191,10 @@ public:
     [[nodiscard]] double xMax() const { return view_.xMax; }
     [[nodiscard]] double yMin() const { return view_.yMin; }
     [[nodiscard]] double yMax() const { return view_.yMax; }
+    [[nodiscard]] bool xLog() const { return view_.xLog; }
+    [[nodiscard]] bool yLog() const { return view_.yLog; }
+    [[nodiscard]] double xLogBase() const { return view_.xLogBase; }
+    [[nodiscard]] double yLogBase() const { return view_.yLogBase; }
     [[nodiscard]] bool markers() const { return markers_; }
     [[nodiscard]] double markerSize() const { return markerSize_; }
     [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
@@ -185,6 +204,10 @@ public:
     void setXMax(double value);
     void setYMin(double value);
     void setYMax(double value);
+    void setXLog(bool on);
+    void setYLog(bool on);
+    void setXLogBase(double base);
+    void setYLogBase(double base);
     void setMarkers(bool on);
     void setMarkerSize(double size);
 

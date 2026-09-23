@@ -79,6 +79,10 @@ class CustomPlot : public QAbstractListModel
     /// particular -- which is most of why a reader reaches for one.
     Q_PROPERTY(double xMinimum READ xMinimum NOTIFY changed)
     Q_PROPERTY(double xMaximum READ xMaximum NOTIFY changed)
+    /// The smallest x above zero, or 0 when the time base has none. What a
+    /// logarithmic x axis runs from -- see DatasetPlot::positiveMinimum, which
+    /// is the same number about the other axis and makes the same argument.
+    Q_PROPERTY(double xPositiveMinimum READ xPositiveMinimum NOTIFY changed)
 
     // --- the DatasetPlot-shaped face the surface draws --------------------
     Q_PROPERTY(QVariantList drawnSeries READ drawnSeries NOTIFY changed)
@@ -93,6 +97,10 @@ class CustomPlot : public QAbstractListModel
     Q_PROPERTY(bool thinned READ thinned NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
+    /// The smallest value above zero, or 0 when there is none. What a
+    /// logarithmic y axis runs from; see DatasetPlot::positiveMinimum for why
+    /// it is a second number rather than `minimum` clamped.
+    Q_PROPERTY(double positiveMinimum READ positiveMinimum NOTIFY changed)
     /// How long the x axis is, in positions. What `len(data)` means here.
     Q_PROPERTY(int sourcePointCount READ sourcePointCount NOTIFY changed)
     Q_PROPERTY(double xStart READ xStart WRITE setXStart NOTIFY xAxisChanged)
@@ -174,6 +182,7 @@ public:
     [[nodiscard]] bool xReady() const { return !axis_.values.empty(); }
     [[nodiscard]] double xMinimum() const { return xMinimum_; }
     [[nodiscard]] double xMaximum() const { return xMaximum_; }
+    [[nodiscard]] double xPositiveMinimum() const { return xPositiveMinimum_; }
 
     /// Why a line typed into the time-base box will not read, checked without
     /// applying it. The counterpart of `entryError` for the one expression
@@ -257,6 +266,7 @@ public:
     [[nodiscard]] bool thinned() const;
     [[nodiscard]] double minimum() const;
     [[nodiscard]] double maximum() const;
+    [[nodiscard]] double positiveMinimum() const;
     [[nodiscard]] int sourcePointCount() const;
     [[nodiscard]] double xStart() const { return xStart_; }
     void setXStart(double value);
@@ -663,13 +673,16 @@ private:
 
     double xMinimum_ = 0.0;
     double xMaximum_ = 1.0;
+    double xPositiveMinimum_ = 0.0;
     double xStart_ = 0.0;
     double xStep_ = 1.0;
 
     int points_ = 0;
     double minimum_ = 0.0;
     double maximum_ = 0.0;
+    double positiveMinimum_ = 0.0;
     bool hasFinite_ = false;
+    bool hasPositive_ = false;
 
     /// What fill() last handed the entries to, so it can be emptied before
     /// they are freed.

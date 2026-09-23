@@ -487,7 +487,9 @@ void DatasetPlot::ensure() const
     sampled_ = true;
     minimum_ = 0.0;
     maximum_ = 0.0;
+    positiveMinimum_ = 0.0;
     hasFinite_ = false;
+    hasPositive_ = false;
     error_.clear();
 
     // What is no longer drawn is no longer held: the cache exists to spare a
@@ -541,6 +543,12 @@ void DatasetPlot::ensure() const
             else {
                 minimum_ = std::min(minimum_, value);
                 maximum_ = std::max(maximum_, value);
+            }
+            // The other end a logarithmic axis needs, taken here because this
+            // pass is already touching every value there is.
+            if (value > 0.0) {
+                positiveMinimum_ = hasPositive_ ? std::min(positiveMinimum_, value) : value;
+                hasPositive_ = true;
             }
         }
     }
@@ -605,6 +613,12 @@ double DatasetPlot::maximum() const
 {
     ensure();
     return hasFinite_ ? maximum_ : 0.0;
+}
+
+double DatasetPlot::positiveMinimum() const
+{
+    ensure();
+    return hasPositive_ ? positiveMinimum_ : 0.0;
 }
 
 int DatasetPlot::sourcePointCount() const

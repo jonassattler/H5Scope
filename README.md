@@ -13,6 +13,9 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
   index, a stated range, or another dataset read as a time series
 - Zoom a plot to a region you drag out, or to a range you type, and give it a
   title, axis names and a legend on the picture
+- Put either axis on a logarithmic scale — base 10, 2, e or your own — numbered
+  at the powers of its base and ruled at the subdivisions between them, which
+  can carry their own digits
 - Copy a plot to the clipboard as an image, from the panel or with Ctrl+C
 - Save an arrangement of lines as a named view and put it back on another file,
   which says up front how much of it that file still holds

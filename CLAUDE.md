@@ -146,6 +146,111 @@ Two rules hold across that boundary. **A tick is drawn where the curve was
 drawn, or it is a lie** — `PlotFrame.yFraction()` and `PlotItem::yFraction()`
 are two implementations of one rule and `tst_views` asserts they agree, over the
 window on screen and outside it.
+
+The base is the reader's — 10, 2, e or one they type (`xLogBaseMode` plus
+`xLogBaseCustom`, resolved by `baseFor`) — and **it moves nothing that is
+drawn**: where a value sits is a ratio of two logarithms, so the base cancels
+and base 2 puts every point exactly where base 10 does. It is a choice about
+the axis around the picture. Only a number above one is one, and that is a
+refusal rather than a clamp in both `usableBase` and `gui::mappingOver`,
+because the legal bases are open at one and there is no nearest legal value to
+correct a bad one to.
+
+That rule is also the whole of what a **logarithmic axis** costs. Where a value
+sits is one function per axis — `PlotFrame.fractionOn()` in QML and
+`gui::AxisMapping` in C++ — and nothing else ever subtracted two bounds for
+itself, so putting `log10` inside those two moved the curve, the ticks, the
+rules, the crosshair, the band and its readout at once. The bounds stay in the
+data's own units on either scale; only the map to a pixel changes. Three things
+do not follow from that and are written out:
+
+- **A value at or below zero is a gap**, for the reason a NaN is one: there is
+  no place on the pane that would be a true reading of it. It is not clamped to
+  a floor, which would draw a line down to a number the data never reached, and
+  it is left out of the envelope's extremes as well as out of the drawing. This
+  is matplotlib's `nonpositive="mask"`, and it is **not** matplotlib's default:
+  under `"clip"` a line through zero plunges off the bottom of the pane. The
+  one deliberate difference from its log axis that is not at an edge.
+- **The gestures are arithmetic over decades.** `PlotSurface.axisPosition` is
+  the one place that knows it, and `panX`/`panY` are in decades while their axis
+  is logarithmic — which is why changing a scale resets the view: a pan of forty
+  is four decades or it is forty units and there is no reading that is both.
+- **Which ticks, and which of them are numbered, is matplotlib's answer,
+  ported rather than reasoned out again** — `LogLocator` and
+  `LogFormatterSciNotation` as they stand in matplotlib 3.11, in
+  `PlotFrame.logLocate` and `logSublabels`/`logLabel`. Every time this file
+  reasoned its own way to an answer it came out a little different (a stride of
+  five where matplotlib takes four; a linear axis where matplotlib keeps its
+  multiples; a mark at three halves of an octave matplotlib never draws), so the
+  rule now is to port and to check against matplotlib itself. Majors are powers
+  of the base, strided by matplotlib's search for the largest count no more
+  than the room allows (`logTickRoom`, its `get_tick_space`, clipped to 2..9).
+  Minors are `arange(2, base)` times each power — none below base 3, e
+  included — and only while nothing is strided and fewer than ten powers are
+  crossed; they bunch towards the top of each power, which is the shape of the
+  scale. A power is always numbered; a multiple only on an axis crossing at most
+  one power (`minor_thresholds=(1, 0.4)`), and that crossing is counted with
+  matplotlib's `log(x)/log(b)` rather than `log10`, because the ulp by which
+  `log(0.001)/log(10)` misses −3 is visible on its axes. Labels are `10³`,
+  `2×10³`: the power in `Theme.readout`, the exponent raised
+  `Theme.plotExponentRaise` in `Theme.readoutMinor`, so the left gutter is sized
+  from measured widths (`labelWidth`) rather than string length.
+- **At most one tick in view falls back to round linear steps**, written as
+  multiples of a power (`1.02×10⁰`), and `tickValues` reports *whether the
+  logarithmic rule applied* so that the rules and the band's readout follow.
+  Two deliberate departures, both where matplotlib's answer is an axis with
+  nothing readable on it: the fallback is taken on every base (matplotlib takes
+  it only where a power holds two multiples, leaving base 2 or e zoomed inside a
+  power with no numbers), and a coefficient gets more than `%g`'s six figures
+  when six would print one label twice. The linear steps themselves are this
+  application's `niceStep` (1, 2, 5), not matplotlib's `MaxNLocator` (1, 2, 2.5,
+  5), so a zoomed-in log axis and a linear one number alike.
+- **The grid is matplotlib's too**: `dense` is every tick the locator places
+  (`grid(which="both")`) and `loose` is the numbered ones — its major grid, plus
+  the multiples an axis inside one power numbers. A **custom** step is read as a
+  factor rather than as an increment; ten gives the decades.
+- **What lies between two numbers can be numbered** (`minorNumbers`, off by
+  default) — this application's addition, not matplotlib's. Each digit says how
+  many times the power below it the mark is: 2 through 9 on base ten, the digits
+  log paper prints. It does nothing where matplotlib already numbers the
+  multiples, and nothing where a power holds a single multiple (base 3 would
+  print "2" beside every power). `minorNumbersOf` reads the grid's own values so
+  a number never appears without a rule under it, and keeps as many as fit taken
+  in order from the bottom, each clearing the numbered tick above as well as the
+  last one drawn. They are set in `Theme.readoutMinor`, this application's
+  smallest type, because they are marks on the way between two numbers rather
+  than a second set of numbers.
+
+Where such an axis starts is the caller's problem, not the mapping's: a bound at
+or below zero makes the whole view unusable, so `PlotSurface` takes the low end
+off the smallest *positive* value there is to show — `DatasetPlot::positiveMinimum`
+and `CustomPlot::positiveMinimum` / `xPositiveMinimum`, counted in the pass that
+already touches every value, and arithmetic over the three numbers of a stated x
+axis (`gridPositiveMinX`) so that a logarithmic x costs no read either.
+
+The edges are where this gets expensive, and where it is unsure it does what
+matplotlib does. Four rules cover them:
+
+- **Nothing above zero is one empty decade, never a NaN.** `padded` and
+  `xBounds` both fall back to 1..10, so every bound downstream is a number —
+  left at the bounds it could not use, the x axis reached `log10` of a negative
+  and the NaN travelled out through `setVisibleRange` into the model and out
+  through the footer. `logReason` therefore asks what the axes were *offered*
+  (`plot.maximum`, `positiveMinX`) rather than what they settled on, says so
+  over the pane, and takes the gestures out with it.
+- **A window below zero is clipped, not discarded** (`positiveSpan`), which is
+  matplotlib's answer to a limit it cannot use. The zero used to resolve to an
+  infinite span and a zoom of one, so asking for a hundredth of the axis showed
+  all of it.
+- **Air is a share of the decades** (matplotlib's margin, applied in the
+  transformed scale), and a flat line is first widened to the powers strictly
+  either side of it — matplotlib's `LogLocator.nonsingular`, so a line at 5
+  runs 1..10 and one at 10 runs 1..100 — where a linear one gets a unit.
+- **An envelope was folded without knowing the scale**, so a bucket that dips
+  to zero arrives with a smallest value the axis cannot place. The largest is
+  drawn and the smallest is a gap, which breaks the stroke for one station
+  wherever the data reached zero. That is the honest reading and the cheap one:
+  the alternative is re-reading the file whenever the box is ticked.
 And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
 their own cache and copy nothing, so no path may free or prune a held line
 without saying something about it first. There are two things it can say, and

@@ -94,6 +94,19 @@ class DatasetPlot : public QObject
     Q_PROPERTY(bool thinned READ thinned NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
+    /// The smallest value above zero, or 0 when there is none.
+    ///
+    /// What a logarithmic y axis runs from. Not `minimum` clamped, and that is
+    /// the whole reason it is a second number: a trace of a thousand readings
+    /// around a hundred with one zero sample in it has a minimum of zero, and
+    /// an axis that started at some invented floor under it would be nine
+    /// empty decades with the data in the top one. It starts at the smallest
+    /// reading there actually is instead, and the zero is a gap in the line --
+    /// which is what a value a logarithmic axis cannot place always is.
+    ///
+    /// Counted in the same pass as the other two, so it costs nothing: that
+    /// pass already touches every value that was read.
+    Q_PROPERTY(double positiveMinimum READ positiveMinimum NOTIFY changed)
     /// How long the data is along x, in table positions rather than in drawn
     /// points: the length the axis below is described against, and the one a
     /// reader means by len(data).
@@ -132,6 +145,7 @@ public:
     [[nodiscard]] bool thinned() const;
     [[nodiscard]] double minimum() const;
     [[nodiscard]] double maximum() const;
+    [[nodiscard]] double positiveMinimum() const;
     [[nodiscard]] int sourcePointCount() const;
     [[nodiscard]] double xStart() const { return xStart_; }
     void setXStart(double value);
@@ -568,7 +582,9 @@ private:
     int columns_ = kDefaultColumns;
     mutable double minimum_ = 0.0;
     mutable double maximum_ = 0.0;
+    mutable double positiveMinimum_ = 0.0;
     mutable bool hasFinite_ = false;
+    mutable bool hasPositive_ = false;
     mutable QString error_;
     mutable bool sampled_ = false;
     /// What fill() last handed the lines to, so that it can be emptied before

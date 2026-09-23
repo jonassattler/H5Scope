@@ -25,6 +25,31 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.6.7
+
+**Either axis can be logarithmic, and reads as matplotlib's does.** A new
+*scale* row under Plot Settings puts x, y or both on a logarithmic scale, on the
+Plot tab and on a custom tab alike, to **base 10, 2, e or one you type**. Which
+ticks the axis carries and which of them are numbered are matplotlib's own
+`LogLocator` and `LogFormatterSciNotation`, ported and checked against
+matplotlib 3.11 over some fourteen hundred windows: powers written `10³` with
+the exponent raised, strided as matplotlib strides them, with minor ticks at 2,
+3, … 9 times each decade, and those multiples numbered (`2×10⁰`) once the view
+is inside a single decade. `dense` rules at every tick and `loose` at the
+numbered ones. Zoomed until one tick at most is left, the axis is numbered in
+round linear steps, as matplotlib's is — on every base, where matplotlib leaves
+base 2 there without numbers. Under **number the subdivisions**, each unlabelled
+multiple carries its digit in small type, as on log paper. A *custom* step is a
+**factor**: ten gives the decades, two the doublings. Zoom and pan are measured
+in decades. A value at or below zero is drawn as a **gap**, exactly as missing
+data is, and the axis runs from the smallest reading it can draw, with
+matplotlib's margins; a flat line runs between the powers either side of it.
+The scale travels into a picture taken with "copy plot" and into a saved view.
+
+A linear axis zoomed far in, to a span under a ten-thousandth, now writes enough
+figures to tell its ticks apart rather than "1.0e+0" at every one of them, and
+no longer loses the tick at its own top to rounding.
+
 ## 0.6.6
 
 **A figure's size can be typed in centimetres.** Settings > Plot Settings
