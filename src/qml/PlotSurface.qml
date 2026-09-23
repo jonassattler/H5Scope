@@ -158,6 +158,12 @@ Item {
     /// the selected dataset that is a question about its datatype; a custom
     /// plot answers it for itself.
     property bool sourceUsable: AppController.datasetIsNumeric
+    /// Whether the lines are a bundle: alike, many, and read by where they
+    /// pile up, so drawn under full strength (see seriesOpacity). True for
+    /// the Plot tab, whose lines are the rows or columns of one dataset. A
+    /// custom tab says false -- its lines were each put there on purpose, and
+    /// a second one must not wash out the first.
+    property bool bundle: true
     readonly property bool drawable: active && surface.sourceUsable
                                      && surface.plot !== null
                                      && surface.plot !== undefined
@@ -674,11 +680,16 @@ Item {
     /// takes full strength; a bundle separates by overlap and is drawn under
     /// it. A highlighted line comes forward and the rest go further back, so
     /// the one being followed is the one that reads.
+    ///
+    /// Only a bundle is drawn under. A custom tab's lines used to be as well,
+    /// so adding a second line to one dimmed the first to 0.55 on the dark
+    /// theme -- two lines chosen one at a time, each drawn fainter than it was
+    /// alone, when there was no pile-up to show.
     function seriesOpacity(series, count) {
         if (surface.highlighted >= 0)
             return series === surface.highlighted ? 1.0
                                                   : Theme.plotSeriesOpacity / 2
-        return count > 1 ? Theme.plotSeriesOpacity : 1.0
+        return surface.bundle && count > 1 ? Theme.plotSeriesOpacity : 1.0
     }
 
     /// How heavily. A line being followed is drawn thicker as well as brighter:

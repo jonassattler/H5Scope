@@ -1028,6 +1028,36 @@ TestCase {
         }
     }
 
+    /// A second line leaves the first as it was.
+    ///
+    /// The Plot tab draws a bundle under full strength so that where its rows
+    /// pile up can be seen. A custom tab's lines were each put there on
+    /// purpose, and drawing them that way meant adding a second line dimmed
+    /// both -- to 0.55 on the dark theme.
+    function test_a_second_line_does_not_dim_the_first() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const lines = findAllOf(view, "plotLines")[0]
+        verify(lines, "the drawn lines must be reachable")
+        tryVerify(() => lines.lineCount() === 1, 5000, "one line is drawn")
+        const alone = lines.seriesOpacity(0)
+        compare(alone, 1.0, "a line on its own is drawn at full strength")
+
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        tryVerify(() => lines.lineCount() === 2, 5000, "two lines are drawn")
+        compare(lines.seriesOpacity(0), alone, "the first line keeps its strength")
+        compare(lines.seriesOpacity(1), alone, "and the second takes the same")
+    }
+
     // --- a line the reader colours -----------------------------------------
 
     /// A colour the reader gives one line beats the cycle, and only for that

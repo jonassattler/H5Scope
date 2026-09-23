@@ -179,6 +179,10 @@ public:
     /// under a palette, and it went unnoticed because the only witness was the
     /// screen.
     [[nodiscard]] Q_INVOKABLE QColor seriesColor(int index) const;
+    /// How strongly line `index` is going to be drawn, for seriesColor's
+    /// reason: adding a second line to a custom tab dimmed both, and the only
+    /// witness was the screen.
+    [[nodiscard]] Q_INVOKABLE double seriesOpacity(int index) const;
 
     /// Where `value` sits up the pane, as a fraction from the bottom, and back
     /// again. The chrome's ticks go through these rather than deriving the
