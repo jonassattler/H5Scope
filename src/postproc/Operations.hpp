@@ -22,6 +22,12 @@ namespace postproc {
 /// here that meant nearly that would be worse than no operation at all. Where
 /// this had a choice it took numpy's answer -- including the awkward ones, like
 /// a reduction over an empty axis being an error rather than an infinity.
+///
+/// Three of them are not numpy's, and say so where they are offered: `add` and
+/// `multiply` by a scalar are what `a + 2` and `a * 0.5` would be, and
+/// `normalize` is the linear map a reader otherwise writes out by hand. Their
+/// arguments are still read the numpy way, so nothing about how a call is
+/// written changes at the boundary between the two kinds.
 enum class OperationKind {
     Slice,
     Transpose,
@@ -29,6 +35,17 @@ enum class OperationKind {
     Max,
     Abs,
     Reshape,
+    Sum,
+    Prod,
+    CumSum,
+    CumProd,
+    Diff,
+    Clip,
+    Sqrt,
+    Pow,
+    Add,
+    Multiply,
+    Normalize,
 };
 
 /// One step of a pipeline: an operation and the argument it was given, kept as
@@ -84,6 +101,15 @@ struct ArrayResult {
 };
 
 [[nodiscard]] ArrayResult apply(const Step& step, const Array& input);
+
+/// Whether a step leaves whole numbers whole.
+///
+/// What decides whether a computed integer dataset goes on printing `3` rather
+/// than `3.000000`. The rearranging steps and the folds of whole numbers keep
+/// them; a square root, a normalisation, and a scalar or an exponent that is
+/// not itself whole do not. Asked of the argument as written, so it costs no
+/// element and answers the same way whatever the data turns out to hold.
+[[nodiscard]] bool preservesIntegers(const Step& step);
 
 /// `2 × 3 × 4`, or `scalar` for rank 0. The shape column of the panel, and the
 /// one place the multiplication sign is chosen.

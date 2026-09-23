@@ -31,17 +31,26 @@ namespace postproc {
 /// Information panels read them off the real dataset, which is still there.
 ///
 /// The element type follows the input's class rather than being `float64` for
-/// everything. All six operations preserve integrality -- a minimum, a maximum,
-/// an absolute value, a transpose, a reshape and a slice of whole numbers are
-/// whole numbers -- so an integer dataset keeps printing `3` rather than
-/// `3.000000` in the grid.
+/// everything. The six operations the pipeline started with all preserve
+/// integrality -- a minimum, a maximum, an absolute value, a transpose, a
+/// reshape and a slice of whole numbers are whole numbers -- so an integer
+/// dataset keeps printing `3` rather than `3.000000` in the grid. The ones
+/// added after them do not all: a square root, a normalisation, or a sum
+/// started from 0.5 turns whole numbers into fractions, and printing those as
+/// integers would round away what was computed. `integral` is the caller's
+/// statement of which kind of pipeline this came out of, read off the steps by
+/// `postproc::preservesIntegers`.
 class ComputedDataset : public h5core::DataSource
 {
 public:
     /// `origin` is the dataset this was computed from: its type class decides
     /// how the values print, and its path is what the result is named after.
+    ///
+    /// `integral` false says the steps may have left fractions, so the values
+    /// print as floats whatever the origin held.
     ComputedDataset(Array values, const h5core::DatasetInfo& origin,
-                    const std::string& originPath, const std::string& what);
+                    const std::string& originPath, const std::string& what,
+                    bool integral = true);
 
     [[nodiscard]] const h5core::DatasetInfo& info() const noexcept override
     {

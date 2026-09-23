@@ -14,6 +14,8 @@
 #include <QElapsedTimer>
 
 #include <cmath>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -502,7 +504,7 @@ TEST_CASE("a slice step drops what an integer subscript names", "[postproc][ops]
 
 TEST_CASE("the operations are what the panel offers", "[postproc][ops]")
 {
-    REQUIRE(postproc::operations().size() == 6);
+    REQUIRE(postproc::operations().size() == 17);
     for (const postproc::OperationInfo& info : postproc::operations()) {
         INFO(info.name.toStdString());
         REQUIRE_FALSE(info.name.isEmpty());
@@ -525,6 +527,141 @@ TEST_CASE("a shape reads as a shape", "[postproc][ops]")
     REQUIRE(describe({5}) == "5");
     REQUIRE(describe({2, 3, 4}) == "2 × 3 × 4");
     REQUIRE(describe({0}) == "0");
+}
+
+TEST_CASE("normalize puts the smallest finite element at one end and the largest "
+          "at the other",
+          "[postproc][ops]")
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    const auto run = [](const std::string& argument, std::vector<double> values) {
+        const auto length = static_cast<hsize_t>(values.size());
+        const Array input({length}, std::move(values));
+        const postproc::ArrayResult result =
+            postproc::apply(stepFor("normalize", argument), input);
+        REQUIRE(result.ok());
+        return result.array.values();
+    };
+
+    SECTION("onto 0..1 unless it is told otherwise")
+    {
+        const std::vector<double> out = run("", {2.0, 4.0, 6.0});
+        REQUIRE(out == std::vector<double>{0.0, 0.5, 1.0});
+        REQUIRE(run("-1, 1", {2.0, 4.0, 6.0}) == std::vector<double>{-1.0, 0.0, 1.0});
+        REQUIRE(run("max=10", {2.0, 4.0, 6.0}) == std::vector<double>{0.0, 5.0, 10.0});
+        // Reversed ends reverse the map, which is what they say.
+        REQUIRE(run("1, 0", {2.0, 4.0, 6.0}) == std::vector<double>{1.0, 0.5, 0.0});
+    }
+
+    SECTION("exactly onto the ends asked for, even where they do not subtract "
+            "exactly")
+    {
+        const std::vector<double> out = run("0.1, 0.3", {-7.0, 1.0, 5.0});
+        REQUIRE(out.front() == 0.1);
+        REQUIRE(out.back() == 0.3);
+    }
+
+    SECTION("over the finite elements, leaving the others as they are")
+    {
+        const std::vector<double> out = run("", {2.0, nan, 4.0, inf, -inf, 6.0});
+        REQUIRE(out[0] == 0.0);
+        REQUIRE(std::isnan(out[1]));
+        REQUIRE(out[2] == 0.5);
+        REQUIRE(out[3] == inf);
+        REQUIRE(out[4] == -inf);
+        REQUIRE(out[5] == 1.0);
+    }
+
+    SECTION("a flat line lands on the low end, and nothing finite stays as it was")
+    {
+        REQUIRE(run("3, 5", {7.0, 7.0, 7.0}) == std::vector<double>{3.0, 3.0, 3.0});
+        const std::vector<double> none = run("", {nan, inf});
+        REQUIRE(std::isnan(none[0]));
+        REQUIRE(none[1] == inf);
+    }
+}
+
+TEST_CASE("the operations with more than one argument read them as numpy does",
+          "[postproc][ops]")
+{
+    const std::vector<hsize_t> cube{2, 3, 4};
+    const auto shape = [&cube](const std::string& operation, const std::string& argument) {
+        return postproc::shapeAfter(stepFor(operation, argument), cube);
+    };
+    const auto refusal = [&shape](const std::string& operation, const std::string& argument) {
+        const postproc::ShapeResult result = shape(operation, argument);
+        INFO(operation << "(" << argument << ")");
+        REQUIRE_FALSE(result.ok());
+        return result.error.toStdString();
+    };
+
+    SECTION("by position, by name, or both")
+    {
+        REQUIRE(shape("diff", "1, 0").shape == std::vector<hsize_t>{1, 3, 4});
+        REQUIRE(shape("diff", "axis=0").shape == std::vector<hsize_t>{1, 3, 4});
+        REQUIRE(shape("diff", "2, axis=1").shape == std::vector<hsize_t>{2, 1, 4});
+        REQUIRE(shape("sum", "0, 1, initial=5").shape == std::vector<hsize_t>{4});
+        REQUIRE(shape("sum", "axis=(0, 1)").shape == std::vector<hsize_t>{4});
+        // min and max take the keyword too, so every fold is written alike.
+        REQUIRE(shape("max", "axis=0").shape == std::vector<hsize_t>{3, 4});
+        REQUIRE(shape("clip", "None, 1").ok());
+        REQUIRE(shape("clip", "a_max=1").ok());
+    }
+
+    SECTION("and refuse what Python would refuse")
+    {
+        REQUIRE_THAT(refusal("sum", "0, axis=1"), ContainsSubstring("given twice"));
+        REQUIRE_THAT(refusal("sum", "initial=1, 0"), ContainsSubstring("positional"));
+        REQUIRE_THAT(refusal("clip", "low=0"), ContainsSubstring("not an argument"));
+        REQUIRE_THAT(refusal("diff", "1, 0, 2"), ContainsSubstring("at most 2"));
+        REQUIRE_THAT(refusal("sqrt", "2"), ContainsSubstring("no arguments"));
+        REQUIRE_THAT(refusal("abs", "2"), ContainsSubstring("no arguments"));
+    }
+
+    SECTION("a number is asked for where one is needed")
+    {
+        REQUIRE_THAT(refusal("pow", ""), ContainsSubstring("enter a number"));
+        REQUIRE_THAT(refusal("add", "two"), ContainsSubstring("not a number"));
+        REQUIRE_THAT(refusal("sum", "initial=x"), ContainsSubstring("not a number"));
+        REQUIRE_THAT(refusal("diff", "1.5"), ContainsSubstring("whole number"));
+        REQUIRE_THAT(refusal("diff", "-1"), ContainsSubstring("non-negative"));
+        REQUIRE(shape("multiply", "inf").ok());
+        REQUIRE(shape("add", "-1e-3").ok());
+    }
+
+    SECTION("a tuple and a list of axes are two spellings, not one")
+    {
+        REQUIRE_THAT(refusal("sum", "(0, 1), 2"), ContainsSubstring("not both"));
+    }
+}
+
+TEST_CASE("a computed integer stays one only while the steps keep it whole",
+          "[postproc][ops]")
+{
+    const auto whole = [](const std::string& operation, const std::string& argument) {
+        return postproc::preservesIntegers(stepFor(operation, argument));
+    };
+    REQUIRE(whole("sum", ""));
+    REQUIRE(whole("sum", "0, initial=3"));
+    REQUIRE_FALSE(whole("sum", "initial=0.5"));
+    REQUIRE(whole("cumprod", ""));
+    REQUIRE(whole("diff", "2"));
+    REQUIRE(whole("pow", "2"));
+    REQUIRE_FALSE(whole("pow", "0.5"));
+    REQUIRE_FALSE(whole("pow", "-1"));
+    REQUIRE(whole("add", "4"));
+    REQUIRE_FALSE(whole("add", "1.5"));
+    REQUIRE(whole("clip", "0, None"));
+    REQUIRE_FALSE(whole("clip", "0, 2.5"));
+    REQUIRE_FALSE(whole("sqrt", ""));
+    REQUIRE_FALSE(whole("normalize", ""));
+
+    const std::vector<Step> steps = {stepFor("slice", ":"), stepFor("sum", ""),
+                                     stepFor("sqrt", "")};
+    REQUIRE(postproc::preservesIntegers(steps, 2));
+    REQUIRE_FALSE(postproc::preservesIntegers(steps, 3));
 }
 
 // ---------------------------------------------------------------------------

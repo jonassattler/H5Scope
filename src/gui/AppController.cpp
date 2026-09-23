@@ -376,7 +376,8 @@ void AppController::applyDataSource()
 
             auto computed = std::make_shared<postproc::ComputedDataset>(
                 result.array, dataset->info(), dataset->path(),
-                computedSuffix.toStdString());
+                computedSuffix.toStdString(),
+                postproc::preservesIntegers(steps, result.ran));
             source.present = true;
             source.computed = true;
             source.info = computed->info();

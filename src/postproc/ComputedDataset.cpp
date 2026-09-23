@@ -30,7 +30,7 @@ bool wholeNumber(double value)
 
 ComputedDataset::ComputedDataset(Array values, const h5core::DatasetInfo& origin,
                                  const std::string& originPath,
-                                 const std::string& what)
+                                 const std::string& what, bool integral)
     : values_(std::move(values)), path_(originPath + " " + what)
 {
     info_.shape = values_.shape();
@@ -42,8 +42,9 @@ ComputedDataset::ComputedDataset(Array values, const h5core::DatasetInfo& origin
 
     // The class carries over; the width does not, because there is only one
     // width in memory. An integer dataset that has been sliced and transposed
-    // still holds integers and should still print as one.
-    integral_ = origin.type.cls == h5core::TypeClass::Integer;
+    // still holds integers and should still print as one -- unless a step on
+    // the way made fractions of them, which the caller says.
+    integral_ = integral && origin.type.cls == h5core::TypeClass::Integer;
     info_.type.cls = integral_ ? h5core::TypeClass::Integer : h5core::TypeClass::Float;
     info_.type.size = sizeof(double);
     info_.type.isSigned = true;
