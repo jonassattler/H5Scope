@@ -292,10 +292,16 @@ Item {
                 // after it -- the argument's name, then the box -- lines up
                 // down the panel. Reading a column is the whole way this panel
                 // is meant to be read.
+                //
+                // The path takes whatever the row has, up to the shape at its
+                // end. It used to be capped at the width of the word column,
+                // which elided an ordinary path to its last few characters
+                // beside a rail of empty space: the input row has no argument
+                // and no box, so there is no column for it to line up with and
+                // nothing to leave room for.
+                Layout.fillWidth: row.kind === PostprocessModel.Input
                 Layout.preferredWidth: row.kind === PostprocessModel.Input
-                                       ? -1 : Theme.s13
-                Layout.maximumWidth: row.kind === PostprocessModel.Input
-                                     ? Theme.s13 : -1
+                                       ? implicitWidth : Theme.s13
                 text: row.label
                 font: row.kind === PostprocessModel.Input ? Theme.mono
                                                           : Theme.bodySmall
@@ -402,7 +408,8 @@ Item {
                 }
             }
 
-            Item { Layout.fillWidth: true }
+            // The input row's path fills this space itself.
+            Item { Layout.fillWidth: row.kind !== PostprocessModel.Input }
 
             // The shape after this row's operation, which read down the rows
             // is what the panel is for. Blank on a row that did not run: a
