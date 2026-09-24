@@ -66,6 +66,15 @@ Ink inkFor(const PlotLine& line)
             static_cast<uchar>(std::lround(alpha * 255.0))};
 }
 
+/// Delete every node under `root`. removeAllChildNodes() only unlinks them, and
+/// a node this item built is owned by nothing else.
+void dropChildren(QSGNode* root)
+{
+    while (QSGNode* child = root->firstChild()) {
+        delete child; // a node's destructor takes it out of its parent
+    }
+}
+
 } // namespace
 
 PlotItem::PlotItem(QQuickItem* parent) : QQuickItem(parent)
@@ -560,7 +569,7 @@ QSGNode* PlotItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
     const Drawn wanted = software ? Drawn::Painted : Drawn::Geometry;
     if (drawn_ != wanted) {
-        root->removeAllChildNodes();
+        dropChildren(root);
         drawn_ = wanted;
     }
 
@@ -600,6 +609,32 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
         strips > 0 ? 2 * static_cast<int>(points_.size()) + kMarkerSides * marked + 2 * (strips - 1)
                    : 0;
 
+    // Nothing to draw is no node at all, rather than a node with no vertices
+    // in it -- and the difference is a plot that stays blank.
+    //
+    // Qt's batch renderer leaves an element with no vertices out of every
+    // batch it builds, and when that element's geometry is later marked dirty
+    // it only re-uploads the batch the element is in. An element in no batch
+    // asks for no rebuild, so a node emptied for one frame and then refilled
+    // was never drawn again until something else in the window happened to
+    // force one. That is exactly what re-reading a line does: the model
+    // releases the item while the read is out (see DatasetPlot::releaseDrawing)
+    // and hands it the same values when it lands. Ticking a custom line's
+    // postprocessing off and on rewrites it into the other grammar and reads
+    // it again, and both lines of a two-line plot went blank and stayed blank
+    // -- a resize brought them back. When the refill changed the axes, their
+    // labels changed too and rebuilt the batches along the way, which is why
+    // nearly every other re-read got away with it.
+    //
+    // A node that is added is always batched, so deleting the empty one and
+    // building a fresh one on the next fill makes the rebuild this depends on.
+    // The software renderer draws every frame from scratch and never had this
+    // problem, which is also why the QML suite could not see it.
+    if (vertices == 0) {
+        dropChildren(root);
+        return root;
+    }
+
     if (root->childCount() == 0) {
         auto* fresh = new QSGGeometryNode;
         auto* geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
@@ -613,10 +648,6 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
     auto* node = static_cast<QSGGeometryNode*>(root->firstChild());
     QSGGeometry* geometry = node->geometry();
     geometry->allocate(vertices);
-    if (vertices == 0) {
-        node->markDirty(QSGNode::DirtyGeometry);
-        return root;
-    }
 
     auto* vertex = geometry->vertexDataAsColoredPoint2D();
     int at = 0;
