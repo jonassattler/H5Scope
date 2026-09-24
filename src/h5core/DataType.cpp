@@ -70,6 +70,23 @@ std::string describeFloatName(std::size_t size)
     }
 }
 
+/// One value of type `T` out of the bytes at `data`.
+///
+/// Copied rather than dereferenced. `data` is wherever an element happens to
+/// sit in a buffer of bytes -- a member of a compound at its offset, the nth
+/// element of an array member, a slot of a value picked out of a member's own
+/// axes -- and nothing about a `const void*` promises it is aligned for `T`,
+/// or that the bytes there were ever a `T` as far as the language is
+/// concerned. A copy is both of those promises kept, and it compiles to the
+/// same single load.
+template<typename T>
+[[nodiscard]] T load(const void* data)
+{
+    T value{};
+    std::memcpy(&value, data, sizeof(T));
+    return value;
+}
+
 /// IEEE 754 binary16 to double, decoded by hand rather than through a
 /// `_Float16` the standard does not have until C++23 and MSVC does not have
 /// at all. HDF5 2.x reads and writes half precision, so a viewer meets it.
@@ -99,7 +116,7 @@ std::string readStringElement(hid_t type, const void* data)
 {
     if (H5Tis_variable_str(type) > 0) {
         // Element is a char* owned by HDF5 until reclaimed.
-        const char* ptr = *static_cast<const char* const*>(data);
+        const auto* ptr = load<const char*>(data);
         return (ptr != nullptr) ? std::string(ptr) : std::string{};
     }
 
@@ -121,10 +138,10 @@ std::string formatInteger(hid_t type, const void* data)
     if (isSigned) {
         std::int64_t value = 0;
         switch (size) {
-        case 1: value = *static_cast<const std::int8_t*>(data); break;
-        case 2: value = *static_cast<const std::int16_t*>(data); break;
-        case 4: value = *static_cast<const std::int32_t*>(data); break;
-        case 8: value = *static_cast<const std::int64_t*>(data); break;
+        case 1: value = load<std::int8_t>(data); break;
+        case 2: value = load<std::int16_t>(data); break;
+        case 4: value = load<std::int32_t>(data); break;
+        case 8: value = load<std::int64_t>(data); break;
         default: return "<unsupported int width>";
         }
         return std::format("{}", value);
@@ -132,10 +149,10 @@ std::string formatInteger(hid_t type, const void* data)
 
     std::uint64_t value = 0;
     switch (size) {
-    case 1: value = *static_cast<const std::uint8_t*>(data); break;
-    case 2: value = *static_cast<const std::uint16_t*>(data); break;
-    case 4: value = *static_cast<const std::uint32_t*>(data); break;
-    case 8: value = *static_cast<const std::uint64_t*>(data); break;
+    case 1: value = load<std::uint8_t>(data); break;
+    case 2: value = load<std::uint16_t>(data); break;
+    case 4: value = load<std::uint32_t>(data); break;
+    case 8: value = load<std::uint64_t>(data); break;
     default: return "<unsupported int width>";
     }
     return std::format("{}", value);
@@ -145,10 +162,9 @@ std::string formatFloat(hid_t type, const void* data)
 {
     switch (H5Tget_size(type)) {
     case 2:  return std::format("{}", halfToDouble(data));
-    case 4:  return std::format("{}", *static_cast<const float*>(data));
-    case 8:  return std::format("{}", *static_cast<const double*>(data));
-    case 16: return std::format("{}", static_cast<double>(
-                 *static_cast<const long double*>(data)));
+    case 4:  return std::format("{}", load<float>(data));
+    case 8:  return std::format("{}", load<double>(data));
+    case 16: return std::format("{}", static_cast<double>(load<long double>(data)));
     default: return "<unsupported float width>";
     }
 }
@@ -511,21 +527,20 @@ std::string formatElement(hid_t type, const void* data)
         return out.str();
     }
     case TypeClass::VarLen: {
-        const auto* vl = static_cast<const hvl_t*>(data);
+        const auto vl = load<hvl_t>(data);
         Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || vl->p == nullptr) {
+        if (!base.valid() || vl.p == nullptr) {
             return "[]";
         }
         const std::size_t stride = H5Tget_size(base.get());
 
         std::ostringstream out;
         out << "[";
-        for (std::size_t i = 0; i < vl->len; ++i) {
+        for (std::size_t i = 0; i < vl.len; ++i) {
             if (i > 0) {
                 out << ", ";
             }
-            out << formatElement(base.get(),
-                                 static_cast<const unsigned char*>(vl->p) + i * stride);
+            out << formatElement(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride);
         }
         out << "]";
         return out.str();
@@ -586,10 +601,9 @@ std::string toJson(hid_t type, const void* data, int depth)
     case TypeClass::Float: {
         switch (H5Tget_size(type)) {
         case 2:  return numberJson(halfToDouble(data));
-        case 4:  return numberJson(*static_cast<const float*>(data));
-        case 8:  return numberJson(*static_cast<const double*>(data));
-        case 16: return numberJson(
-            static_cast<double>(*static_cast<const long double*>(data)));
+        case 4:  return numberJson(load<float>(data));
+        case 8:  return numberJson(load<double>(data));
+        case 16: return numberJson(static_cast<double>(load<long double>(data)));
         default: return quoteJson(formatFloat(type, data));
         }
     }
@@ -672,9 +686,9 @@ std::string toJson(hid_t type, const void* data, int depth)
         return out.str();
     }
     case TypeClass::VarLen: {
-        const auto* vl = static_cast<const hvl_t*>(data);
+        const auto vl = load<hvl_t>(data);
         Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || vl->p == nullptr || vl->len == 0) {
+        if (!base.valid() || vl.p == nullptr || vl.len == 0) {
             H5Eclear2(H5E_DEFAULT);
             return "[]";
         }
@@ -683,7 +697,7 @@ std::string toJson(hid_t type, const void* data, int depth)
 
         std::ostringstream out;
         out << "[";
-        for (std::size_t i = 0; i < vl->len; ++i) {
+        for (std::size_t i = 0; i < vl.len; ++i) {
             if (i > 0) {
                 out << ",";
             }
@@ -692,8 +706,7 @@ std::string toJson(hid_t type, const void* data, int depth)
             } else if (i > 0) {
                 out << " ";
             }
-            out << toJson(base.get(),
-                          static_cast<const unsigned char*>(vl->p) + i * stride,
+            out << toJson(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
                           broken ? depth + 1 : depth);
         }
         if (broken) {
@@ -728,6 +741,15 @@ std::string toJson(hid_t type, const void* data, int depth)
     // Everything the format keeps as bytes. There is no JSON number for a
     // bitfield, and the hex is what the grid shows for it too.
     return quoteJson(formatElement(type, data));
+}
+
+std::optional<std::size_t> bufferBytes(hsize_t elements, std::size_t elementSize) noexcept
+{
+    constexpr auto kLargest = std::numeric_limits<std::size_t>::max();
+    if (elementSize != 0 && elements > kLargest / elementSize) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(elements) * elementSize;
 }
 
 VlenGuard::VlenGuard(hid_t type, hid_t space, void* buffer) noexcept

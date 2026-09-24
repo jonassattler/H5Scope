@@ -13,6 +13,16 @@
 namespace h5core {
 namespace {
 
+/// The most an Image-spec attribute is read into memory for.
+///
+/// Every one of them is a scalar or a pair, and this is asked of every dataset
+/// row a viewport passes over, so an attribute that claims a dataspace of
+/// millions is refused rather than read: it is not the tag the specification
+/// describes, and reading it whole to take its first element is a cost the
+/// tree would pay per row. A megabyte is far past any string a writer means
+/// as a tag and far short of anything that stalls a scroll.
+constexpr std::size_t kMaxTagBytes = std::size_t{1} << 20;
+
 /// One attribute read as text, whatever string flavour the writer used.
 /// Returns nothing when the attribute is absent or is not a string -- both of
 /// which are states a file is allowed to be in, and neither of which is worth
@@ -53,7 +63,14 @@ std::optional<std::string> stringAttribute(hid_t object, const char* name)
         H5Eclear2(H5E_DEFAULT);
         return std::nullopt;
     }
-    std::vector<unsigned char> buffer(static_cast<std::size_t>(elements) * elementSize);
+    // ...and a count the file states is multiplied with a check, because a
+    // product that wraps is the same overrun by another route. See bufferBytes.
+    const std::optional<std::size_t> bytes =
+        bufferBytes(static_cast<hsize_t>(elements), elementSize);
+    if (!bytes.has_value() || *bytes > kMaxTagBytes) {
+        return std::nullopt;
+    }
+    std::vector<unsigned char> buffer(*bytes);
     if (H5Aread(attribute.get(), native.get(), buffer.data()) < 0) {
         H5Eclear2(H5E_DEFAULT);
         return std::nullopt;
@@ -80,6 +97,14 @@ std::vector<double> numericAttribute(hid_t object, const char* name, std::size_t
     const hssize_t elements = H5Sget_simple_extent_npoints(space.get());
     if (elements < static_cast<hssize_t>(count)) {
         H5Eclear2(H5E_DEFAULT);
+        return {};
+    }
+    // The whole attribute is read, for stringAttribute's reason, so its size is
+    // bounded for the same one. Two numbers are asked for; an attribute holding
+    // more than a tag's worth of them is not the one the spec describes.
+    const std::optional<std::size_t> bytes =
+        bufferBytes(static_cast<hsize_t>(elements), sizeof(double));
+    if (!bytes.has_value() || *bytes > kMaxTagBytes) {
         return {};
     }
 

@@ -8,9 +8,22 @@
 #include <hdf5.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace h5core {
+
+/// `elements` of `elementSize` bytes each, as a byte count -- or nothing when
+/// the product does not fit in `std::size_t`.
+///
+/// Every read here sizes its buffer from a count the *file* states, and
+/// H5Aread and H5Dread then fill that buffer with every element there is.
+/// A product that wraps is a small buffer and a large write into it, so the
+/// multiplication is checked rather than trusted: a file is allowed to claim a
+/// dataspace no machine could hold, and this is not allowed to be an overrun
+/// when it does.
+[[nodiscard]] std::optional<std::size_t> bufferBytes(hsize_t elements,
+                                                     std::size_t elementSize) noexcept;
 
 /// Describe an HDF5 datatype without taking ownership of `type`.
 TypeInfo describeType(hid_t type);

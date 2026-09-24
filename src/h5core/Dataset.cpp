@@ -328,8 +328,12 @@ DataWindow Dataset::readWindow(const std::vector<hsize_t>& offset,
         throwError("Datatype has zero size");
     }
 
-    std::vector<unsigned char> buffer(
-        static_cast<std::size_t>(selection.elements) * elementSize);
+    const std::optional<std::size_t> bytes = bufferBytes(selection.elements, elementSize);
+    if (!bytes.has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  selection.elements, path_));
+    }
+    std::vector<unsigned char> buffer(*bytes);
     check(H5Dread(dataset_.get(), nativeType.get(), selection.memorySpace.get(),
                   selection.fileSpace.get(), H5P_DEFAULT, buffer.data()),
           std::format("Failed to read '{}'", path_));

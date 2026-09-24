@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -902,4 +903,123 @@ TEST_CASE("an image tag written as an array is read, not overrun",
         // honoured rather than merely reported.
         REQUIRE(dataset.info().image->shapeMatches);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Attributes that hold nothing
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// One group carrying three attributes whose dataspace is H5S_NULL -- one
+/// numeric, one fixed-length string, one variable-length string -- and one
+/// ordinary scalar beside them, so the listing is known to have gone on past
+/// the empty ones.
+void writeNullAttributes(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hid_t group = H5Gcreate2(file, "holder", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(group >= 0);
+
+    const hid_t nothing = H5Screate(H5S_NULL);
+    REQUIRE(nothing >= 0);
+    const auto empty = [&](const char* name, hid_t type) {
+        const hid_t attribute = H5Acreate2(group, name, type, nothing, H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(attribute >= 0);
+        H5Aclose(attribute);
+    };
+
+    empty("a_number", H5T_NATIVE_INT32);
+    const hid_t fixed = H5Tcopy(H5T_C_S1);
+    REQUIRE(H5Tset_size(fixed, 8) >= 0);
+    empty("b_fixed", fixed);
+    const hid_t variable = H5Tcopy(H5T_C_S1);
+    REQUIRE(H5Tset_size(variable, H5T_VARIABLE) >= 0);
+    empty("c_variable", variable);
+
+    const hid_t scalar = H5Screate(H5S_SCALAR);
+    const hid_t present =
+        H5Acreate2(group, "d_present", H5T_NATIVE_INT32, scalar, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(present >= 0);
+    const std::int32_t seven = 7;
+    REQUIRE(H5Awrite(present, H5T_NATIVE_INT32, &seven) >= 0);
+
+    H5Aclose(present);
+    H5Sclose(scalar);
+    H5Tclose(variable);
+    H5Tclose(fixed);
+    H5Sclose(nothing);
+    H5Gclose(group);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("an attribute with a null dataspace reads as nothing, not as a zero",
+          "[h5core][attribute]")
+{
+    // A null dataspace has rank 0, as a scalar does, and the product of an
+    // empty shape is one. Counting the elements that way read one element out
+    // of an attribute that holds none -- into a zeroed buffer -- and printed
+    // the 0 it found there as though the file had said it.
+    h5test::TempFile temp{"nullattrs"};
+    writeNullAttributes(temp.path());
+
+    const h5core::File file(temp.path());
+    const auto attrs = h5core::readAttributes(file, "/holder");
+    REQUIRE(attrs.size() == 4);
+
+    CHECK(attrs[0].name == "a_number");
+    CHECK(attrs[0].value == "[]");
+    CHECK(attrs[0].type.cls == h5core::TypeClass::Integer);
+    CHECK(attrs[1].name == "b_fixed");
+    CHECK(attrs[1].value == "[]");
+    CHECK(attrs[2].name == "c_variable");
+    CHECK(attrs[2].value == "[]");
+
+    // ...and the one that does hold something is still read.
+    CHECK(attrs[3].name == "d_present");
+    CHECK(attrs[3].value == "7");
+}
+
+TEST_CASE("a buffer is sized by a product that cannot wrap", "[h5core][memory]")
+{
+    CHECK(h5core::bufferBytes(0, 8) == std::optional<std::size_t>{0});
+    CHECK(h5core::bufferBytes(1000, 0) == std::optional<std::size_t>{0});
+    CHECK(h5core::bufferBytes(1000, 8) == std::optional<std::size_t>{8000});
+
+    // A dataspace a file may state and no machine may hold: two to the
+    // sixty-first elements of eight bytes is two to the sixty-fourth, which
+    // wraps to nothing at all -- a zero-byte buffer for H5Aread to fill.
+    const hsize_t huge = hsize_t{1} << 61;
+    CHECK_FALSE(h5core::bufferBytes(huge, 8).has_value());
+    CHECK(h5core::bufferBytes(huge, 4) == std::optional<std::size_t>{std::size_t{1} << 63});
+}
+
+TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
+{
+    // A member of a packed compound, or the nth element of an array of odd
+    // width, sits at whatever byte the layout puts it on. Each of these is
+    // written one byte past an aligned address, which is a misaligned load
+    // for every width but one if the formatter dereferences rather than copies.
+    alignas(16) unsigned char bytes[32] = {};
+    unsigned char* at = bytes + 1;
+
+    const std::int64_t large = -1234567890123LL;
+    std::memcpy(at, &large, sizeof(large));
+    CHECK(h5core::formatElement(H5T_NATIVE_INT64, at) == "-1234567890123");
+
+    const std::uint32_t word = 4000000000U;
+    std::memcpy(at, &word, sizeof(word));
+    CHECK(h5core::formatElement(H5T_NATIVE_UINT32, at) == "4000000000");
+
+    const double value = 0.25;
+    std::memcpy(at, &value, sizeof(value));
+    CHECK(h5core::formatElement(H5T_NATIVE_DOUBLE, at) == "0.25");
+    CHECK(h5core::toJson(H5T_NATIVE_DOUBLE, at) == "0.25");
+
+    const float single = -1.5F;
+    std::memcpy(at, &single, sizeof(single));
+    CHECK(h5core::formatElement(H5T_NATIVE_FLOAT, at) == "-1.5");
 }

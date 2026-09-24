@@ -268,7 +268,12 @@ FieldDataset::Extract FieldDataset::extract(const std::vector<hsize_t>& offset,
     }
 
     read.memorySpace = std::move(selection.memorySpace);
-    read.values.resize(static_cast<std::size_t>(read.leading) * read.stride);
+    const std::optional<std::size_t> bytes = bufferBytes(read.leading, read.stride);
+    if (!bytes.has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  read.leading, name_));
+    }
+    read.values.resize(*bytes);
     check(H5Dread(dataset_.get(), read.memoryType.get(), read.memorySpace.get(),
                   selection.fileSpace.get(), H5P_DEFAULT, read.values.data()),
           std::format("Failed to read '{}'", name_));
