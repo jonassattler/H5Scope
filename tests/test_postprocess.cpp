@@ -582,6 +582,17 @@ TEST_CASE("normalize puts the smallest finite element at one end and the largest
         REQUIRE(std::isnan(none[0]));
         REQUIRE(none[1] == inf);
     }
+
+    SECTION("an extent wider than a double still has two ends and a middle")
+    {
+        // Every element here is finite and the distance from the smallest to
+        // the largest is not. Divided by that infinity, the middle went to the
+        // low end and the largest -- whose own distance overflows too -- to
+        // inf/inf: a NaN out of nothing but finite numbers.
+        const double big = std::numeric_limits<double>::max();
+        const std::vector<double> out = run("", {-big, 0.0, big});
+        REQUIRE(out == std::vector<double>{0.0, 0.5, 1.0});
+    }
 }
 
 TEST_CASE("the operations with more than one argument read them as numpy does",
@@ -884,6 +895,48 @@ TEST_CASE("a whole dimension parses in time proportional to itself",
         const postproc::IndexExpression down =
             postproc::parseIndexExpression(QStringLiteral("::-1"), 5);
         REQUIRE(down.indices == std::vector<hsize_t>{4, 3, 2, 1, 0});
+    }
+}
+
+TEST_CASE("a step as large as a step can be is still a step", "[postproc][subscripts]")
+{
+    // Python takes any step at all, and a step longer than the dimension names
+    // the one element it starts on. The count of a run used to be worked out
+    // as (reach + step - 1) / step in signed arithmetic, which overflows on the
+    // largest step there is, and |step| of the smallest, which has no positive
+    // counterpart -- both undefined, and both came out as "selects no
+    // indices". What Python answers is the element the run starts from.
+    struct Case
+    {
+        const char* text;
+        std::vector<hsize_t> indices;
+    };
+    const std::vector<Case> cases{
+        {"::9223372036854775807", {0}},
+        {"5:10:9223372036854775807", {5}},
+        {"::-9223372036854775807", {9}},
+        {"::-9223372036854775808", {9}},
+        {"3::-9223372036854775808", {3}},
+        // ...and the steps either side of the dimension, which were right
+        // before and must stay so.
+        {"::9", {0, 9}},
+        {"::10", {0}},
+        {"::-9", {9, 0}},
+        {"1::4", {1, 5, 9}},
+    };
+    for (const Case& c : cases) {
+        INFO(c.text);
+        const postproc::IndexExpression parsed =
+            postproc::parseIndexExpression(QString::fromLatin1(c.text), 10);
+        REQUIRE(parsed.valid());
+        CHECK(parsed.indices == c.indices);
+
+        // The shape path counts what the resolving path writes down.
+        std::vector<postproc::SubscriptCount> counted;
+        QString error;
+        REQUIRE(postproc::countSubscripts(QString::fromLatin1(c.text), {10}, counted, error));
+        REQUIRE(counted.size() == 1);
+        CHECK(counted.front().count == c.indices.size());
     }
 }
 
