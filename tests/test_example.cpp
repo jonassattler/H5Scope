@@ -1241,6 +1241,33 @@ TEST_CASE("the viewer draws a member of a compound", "[example][member]")
         CHECK(controller.sliceText() == QStringLiteral(":, 2"));
     }
 
+    SECTION("the line the slice bar prints is a line it reads back")
+    {
+        // The bar prints this and hands it straight back on Return, so it has
+        // to be a line applySelection reads as the same selection. It used to
+        // print the whole slice in front of the chain -- `[:, 2].samples` --
+        // where a subscript is about the dataset's own axes, and its own line
+        // came back as "3 subscripts for 2 dimensions".
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applySelection(QStringLiteral("[1:4].samples[2]")).isEmpty());
+        CHECK(controller.selectionText() == QStringLiteral("[1:4].samples[2]"));
+        CHECK(controller.selectionError(controller.selectionText()).isEmpty());
+        // What the tooltip over the path shows, and what pastes into a custom
+        // plot: the chain is part of what is on screen.
+        CHECK(controller.sliceExpression()
+              == QStringLiteral("/types/compound/nested[1:4].samples[2]"));
+
+        const QString before = controller.selectionText();
+        REQUIRE(controller.applySelection(controller.selectionText()).isEmpty());
+        CHECK(controller.selectionText() == before);
+        CHECK(controller.sliceText() == QStringLiteral("1:4, 2"));
+
+        // A member whose axes are all whole is written bare.
+        REQUIRE(controller.applySelection(QStringLiteral("[:].samples")).isEmpty());
+        CHECK(controller.selectionText() == QStringLiteral("[:].samples"));
+    }
+
     SECTION("a chain keeps the slice the reader had already set up")
     {
         REQUIRE(h5test::selectAndSettle(controller,

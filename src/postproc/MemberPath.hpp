@@ -57,6 +57,14 @@ struct MemberChain {
     /// row for an axis called "samples" is worth more than one called "dim 1".
     QStringList dimNames;
 
+    /// How many of the appended axes each link contributed, one entry per link
+    /// in `selection.links`, and how many came before any link -- from a
+    /// dataset whose own type is an array of compounds, which no member name
+    /// can carry. Together they say which link a subscript has to be written
+    /// on to read back as the axis it is about; see writeSelection.
+    std::vector<std::size_t> linkAxes;
+    std::size_t leadingAxes = 0;
+
     QString error;
 
     [[nodiscard]] bool valid() const { return error.isEmpty(); }
@@ -111,6 +119,29 @@ struct MemberChain {
 /// A chain printed back: ".position.x". What the member box shows, and what
 /// `path()` puts after the dataset's own name.
 [[nodiscard]] QString writeMemberChain(const std::vector<MemberStep>& chain);
+
+/// A selection written as one line that reads back as the same selection:
+/// `[:].samples[2]`, not `[:, 2].samples`.
+///
+/// `terms` is the slice over the whole derived shape, one per axis, as the
+/// slice line holds it. The first `originRank` of them are the dataset's own
+/// and go in front of the chain; each of the rest goes on the link that
+/// appended its axis, because a subscript written before a chain binds to the
+/// dataset's axes and one written after `.b` binds to the axes `b` appended --
+/// the rule sliceLineFor reads by. A link whose axes are all whole is written
+/// bare, so a plain `[:].samples` stays as short as it was.
+///
+/// It is the other half of sliceLineFor, and the reason it exists is that the
+/// slice bar used to print the derived slice in front of the chain -- a
+/// spelling nothing in this program reads. `[:, 2].samples` over a rank-1
+/// table came back from Return as "3 subscripts for 2 dimensions", so the one
+/// box that prints a compound's selection printed a line it would then refuse.
+///
+/// The chain's own text, vlen index included, is `chain.selection.text`. A
+/// chain with leading axes cannot be written this way -- no member carries
+/// them -- and comes back with every term in front of it, as before.
+[[nodiscard]] QString writeSelection(const QStringList& terms, std::size_t originRank,
+                                     const MemberChain& chain);
 
 /// How many chains a type is opened out into before the listing stops.
 ///

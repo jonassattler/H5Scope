@@ -1528,6 +1528,29 @@ TestCase {
         AppController.applyMember("")
     }
 
+    /// The one-line box stands against its path and is as wide as its line.
+    ///
+    /// The two brackets of the other form were hidden and still a bracket wide
+    /// each, so the box stood two characters clear of the path; and it was held
+    /// open to the width of its `[:].member` hint, so `[:]` had a member's
+    /// worth of nothing after it.
+    function test_a_compound_line_reads_as_one_line() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const path = findChild(win.contentItem, "slicePath")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const well = box.parent
+        compare(box.text, "[:]")
+        compare(well.x, path.x + path.width, "no gap between the path and the box")
+        verify(well.width < box.contentWidth + Theme.gapM,
+               "the box is as wide as `[:]`, not as `[:].member`: " + well.width
+               + " against " + box.contentWidth)
+    }
+
     /// A line that does not read is left in the box, in amber, with the
     /// reason -- the bracketed box's contract, because it is the same
     /// contract. Neither half of it is applied: a selection is one statement.

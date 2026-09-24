@@ -394,7 +394,7 @@ Four pieces:
   reason already written over that one. Resolving is arithmetic over a
   `TypeInfo`, so it costs no read and answers on every keystroke.
 - **The three entry points.** Over a compound the slice bar makes *everything
-  after the path* one box — `[:, 2].samples`, brackets and all — and keeps the
+  after the path* one box — `[:].samples[2]`, brackets and all — and keeps the
   bracketed `path[ box ]` form for everything else. `sliceText` and `memberText`
   keep their exact meanings underneath, which is what leaves the pipeline's
   slice row alone; `selectionText` / `applySelection` / `selectionError` are the

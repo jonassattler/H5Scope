@@ -587,6 +587,12 @@ QString AppController::sliceExpression() const
     if (!datasetTabVisible_) {
         return QStringLiteral("\u2014");
     }
+    // A member is written with its chain, so the line still names what is on
+    // screen and still pastes: without it, `/events[:, 2]` over a rank-1 table
+    // was the selection with the one word that made it readable taken out.
+    if (!memberText_.isEmpty()) {
+        return currentPath_ + selectionText();
+    }
     // A scalar has no axes to subscript, so it is written as itself.
     const QString body = tableSetupModel_->sliceText();
     if (body.isEmpty()) {
@@ -911,7 +917,26 @@ QString AppController::selectionText() const
     const QString body = tableSetupModel_->sliceText();
     const QString brackets =
         body.isEmpty() ? QString() : QStringLiteral("[") + body + QStringLiteral("]");
-    return brackets + memberText_;
+    if (memberText_.isEmpty()) {
+        return brackets;
+    }
+    // Each term on the axes it is about: the dataset's in front of the chain
+    // and a member's after it, which is how readSelection will read the line
+    // when it comes back. See postproc::writeSelection for what printing the
+    // whole slice in front used to do. Resolved again rather than kept,
+    // because the chain is arithmetic over a type already in hand.
+    const postproc::MemberChain chain =
+        postproc::resolveMemberChain(memberText_, originInfo_.type);
+    QStringList terms;
+    QString ignored;
+    if (!chain.valid()
+        || (!body.isEmpty() && !postproc::splitSubscripts(body, terms, ignored))) {
+        return brackets + memberText_;
+    }
+    for (QString& term : terms) {
+        term = term.trimmed();
+    }
+    return postproc::writeSelection(terms, originInfo_.shape.size(), chain);
 }
 
 QString AppController::readSelection(const QString& text, QString& chainText,
