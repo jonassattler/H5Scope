@@ -238,6 +238,31 @@ double xFractionOf(double x, const PlotView& view)
     return xMappingOf(view).fractionOf(x);
 }
 
+PlotView uprightView(const PlotView& view)
+{
+    if (!view.transposed) {
+        return view;
+    }
+    PlotView upright = view;
+    upright.width = view.height;
+    upright.height = view.width;
+    upright.transposed = false;
+    return upright;
+}
+
+QPointF transposedPoint(const QPointF& upright, const PlotView& view)
+{
+    // Upright, x = fx * height and y = (1 - fy) * width. On the pane, x is to
+    // be fy * width and y (1 - fx) * height -- which is each of those taken
+    // away from the side it was measured against.
+    return {view.width - upright.y(), view.height - upright.x()};
+}
+
+QPointF uprightPoint(const QPointF& onPane, const PlotView& view)
+{
+    return {view.height - onPane.y(), view.width - onPane.x()};
+}
+
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
                           std::vector<QPointF>& points, std::vector<PlotRun>& runs)
 {

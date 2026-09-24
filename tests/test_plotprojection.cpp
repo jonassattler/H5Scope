@@ -749,6 +749,67 @@ TEST_CASE("a pane of device pixels is summarised at the resolution it has", "[pl
     CHECK(project(line, axis, broken).points.size() == coarse.points.size());
 }
 
+TEST_CASE("a transposed pane draws x up it and y across it", "[plot][flip]")
+{
+    // The same picture with the axes swapped, and not a rotation of it: the
+    // origin stays in the bottom-left corner, x grows up the pane and y grows
+    // to the right. A line at a quarter of its y range, drawn upright as a
+    // level stroke a quarter of the way up, is a vertical stroke a quarter of
+    // the way across.
+    std::vector<double> values(11, 0.25);
+    gui::PlotView pane = paneOver(0.0, 10.0, 0.0, 1.0); // 1000 across, 500 up
+    pane.transposed = true;
+
+    const gui::PlotView upright = gui::uprightView(pane);
+    CHECK(upright.width == 500.0);
+    CHECK(upright.height == 1000.0);
+    CHECK_FALSE(upright.transposed);
+
+    Projected drawn = project(lineOver(values), gui::PlotAxis{}, upright);
+    for (QPointF& point : drawn.points) {
+        point = gui::transposedPoint(point, pane);
+    }
+    REQUIRE(drawn.points.size() == values.size());
+    for (std::size_t i = 0; i < drawn.points.size(); ++i) {
+        CHECK(drawn.points[i].x() == Approx(250.0));
+        // Sample i is at x = i of 0..10, a tenth of the way up per sample,
+        // from the bottom of a pane 500 high.
+        CHECK(drawn.points[i].y() == Approx(500.0 - static_cast<double>(i) * 50.0));
+    }
+
+    // And the pointer is taken back the same way, which is what the
+    // crosshair's snapping is searched in.
+    for (const QPointF& point : {QPointF(0, 0), QPointF(123.5, 456.25), QPointF(1000, 500)}) {
+        const QPointF back = gui::transposedPoint(gui::uprightPoint(point, pane), pane);
+        CHECK(back.x() == Approx(point.x()));
+        CHECK(back.y() == Approx(point.y()));
+    }
+
+    // Upright views are untouched, so nothing that never asked for a flip
+    // pays for one.
+    const gui::PlotView plain = paneOver(0.0, 10.0, 0.0, 1.0);
+    CHECK(gui::uprightView(plain).width == plain.width);
+}
+
+TEST_CASE("a transposed pane is summarised along its height", "[plot][flip]")
+{
+    // The envelope folds a line into one bucket per column *along x*, and on a
+    // transposed pane x runs up it. Summarising to the width would give a pane
+    // 1000 across and 500 up twice the points it can show.
+    std::vector<double> values(1000000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = std::sin(static_cast<double>(i) / 97.0);
+    }
+    gui::PlotView pane = paneOver(0.0, 1000000.0, -1.0, 1.0);
+    const Projected across = project(lineOver(values), gui::PlotAxis{}, pane);
+    pane.transposed = true;
+    const Projected up = project(lineOver(values), gui::PlotAxis{}, gui::uprightView(pane));
+
+    REQUIRE(across.points.size() > 1000);
+    CHECK(up.points.size() <= 1002);
+    CHECK(up.points.size() > 900);
+}
+
 // --- where a sample sits along x ------------------------------------------
 
 TEST_CASE("a stride makes each drawn point cover the elements it skipped", "[plot]")

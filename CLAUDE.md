@@ -138,6 +138,23 @@ from `PlotSettingsPanel.ownAxes`, counted rather than listed, because
 `separateAxes` is a new list on every frame of a zoom and a box rebuilt under
 the reader loses what they typed.
 
+A custom tab can also be drawn **flipped** — x up the pane, y across it, as
+`plot(y, x)` draws it (`PlotSurface.flipped`, saved with the view). The rule
+that holds it up: **only where things are drawn changes.** The window is still
+a window onto x and onto y, so nothing is re-read and the zoom survives it.
+`PlotView::transposed` projects every line upright into a pane of the swapped
+size and reflects each point onto the real one (`uprightView`,
+`transposedPoint`), so the envelope still folds along x — which is now the
+pane's height, and what `pushColumns` reports. `PlotFrame` names every tick
+list after its *data* axis and lays them out through `left*`/`foot*`
+properties, which are the one place the swap is decided; the side axes become
+rows along the foot. The numbers up the side come only from lists measured up
+the pane (`xValuesUp`/`yValuesUp`): the left gutter sizes the pane's width, and
+a tick list that could depend on that width in either orientation is a cycle
+across the two that Qt reports on every flip. Gestures arrive in pixels, so
+`zoomAt`, `panBy`, `zoomToRegion` and `dataXAt`/`dataYAt` read each axis off
+the coordinate it runs along; the zoom modifiers name the pane's directions.
+
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without

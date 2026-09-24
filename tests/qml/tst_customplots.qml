@@ -2062,4 +2062,104 @@ TestCase {
         compare(findAllOf(view, "plotAxisLabelField")[0], fields[0])
         compare(fields[0].text, "temper")
     }
+
+    // --- a plot with its axes swapped ----------------------------------------
+
+    /// The same lines with x up the pane and y across it. Nothing about the
+    /// window changes -- the zoom is still about x and about y -- so what is
+    /// asserted here is where things land and which way the gestures go.
+    function test_a_flipped_plot_draws_x_up_the_pane_and_y_across_it() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        // 100 - i over 64 samples: it falls as x grows, so it is not its own
+        // mirror image and a flip that was a rotation would be caught.
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const lines = findAllOf(view, "plotLines")[0]
+        const frame = lines.parent
+        const points = plot.pointCount
+
+        mouseClick(findAllOf(view, "customPlotButton")[0])
+        waitForRendering(win.contentItem)
+        const box = findAllOf(view, "flipAxesBox")[0]
+        verify(box && box.visible, "a custom tab offers the flip")
+        mouseClick(box)
+        settleReads()
+        waitForRendering(win.contentItem)
+        verify(surface.flipped)
+        verify(frame.transposed)
+        verify(lines.transposed)
+        compare(plot.pointCount, points, "the same lines")
+
+        // x's numbers down the left and y's along the foot.
+        compare(JSON.stringify(frame.leftTicks), JSON.stringify(frame.xTicks))
+        compare(JSON.stringify(frame.footTicks), JSON.stringify(frame.yTicks))
+
+        // The first sample -- x 0, the line at its highest -- is at the
+        // bottom and to the right; the last is at the top and to the left.
+        const first = lines.nearestSample(lines.width, lines.height)
+        const last = lines.nearestSample(0, 0)
+        compare(first.x, 0)
+        compare(last.x, 63)
+        verify(first.py > last.py, "x runs up the pane")
+        verify(first.px > last.px, "and y across it")
+
+        // The pane's own directions for the modifiers: Ctrl zooms what runs
+        // up the pane, which is x.
+        const area = surface.plotRect
+        surface.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 2.0,
+                       surface.zoomAxesFor(Qt.ControlModifier))
+        compare(surface.zoomX, 2.0)
+        compare(surface.zoomY, 1.0)
+        surface.resetView()
+
+        // A band over the top half of the pane is the top half of x.
+        verify(surface.zoomToRegion(area.x, area.y,
+                                    area.x + area.width, area.y + area.height / 2))
+        fuzzyCompare(surface.viewMinX, (surface.axisLowX + surface.axisHighX) / 2, 1e-6)
+        fuzzyCompare(surface.viewMaxX, surface.axisHighX, 1e-6)
+        compare(surface.zoomY, 1.0)
+        surface.resetView()
+
+        // A drag upwards moves the lines up, so the view goes down x.
+        surface.panBy(0, -area.height / 4)
+        verify(surface.viewMinX < surface.axisLowX, "dragged up, the view shows lower x")
+        surface.resetView()
+
+        // An axis of its own is a row along the foot rather than a column.
+        plot.addExpression("/series/a[:]")
+        settleReads()
+        plot.setSeparateAxis(1, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+        tryVerify(() => findAllOf(view, "plotSideAxisRow").length === 1, 2000)
+        compare(sideAxes(view).length, 0)
+        const row = findAllOf(view, "plotSideAxisRow")[0]
+        verify(row.y > frame.area.y + frame.area.height, "under the pane")
+        const tick = row.ticks[1]
+        fuzzyCompare(tick.at, lines.seriesYFraction(1, Number(tick.text)), 1e-9)
+
+        // The picture that leaves is a second frame, and is flipped as well.
+        verify(surface.copyImage(), "a drawn plot must accept the request")
+        const drawn = findChild(surface.picture, "pictureLines")
+        verify(drawn, "the picture's own lines must be reachable")
+        verify(drawn.transposed, "the picture is drawn the way the pane is")
+        verify(drawn.parent.transposed)
+        compare(drawn.parent.sideRows.length, 1)
+        tryVerify(() => surface.picture === null, 10000, "the grab must answer")
+
+        // It is kept with the view.
+        const settings = surface.drawingSettings()
+        verify(settings.flipped)
+        surface.flipped = false
+        surface.applyDrawingSettings(settings)
+        verify(surface.flipped)
+    }
 }

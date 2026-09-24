@@ -131,9 +131,25 @@ Item {
     /// The lines drawn against axes of their own, as PlotSurface.separateAxes
     /// lists them: `{ line, low, high, colour, paperColour, label }` apiece,
     /// in drawing order. Each is numbered in a column of its own to the left
-    /// of the common axis, in the colour of the line it is the axis of, and
-    /// named beside its numbers in that colour when `label` says something.
+    /// of the common axis -- or, transposed, in a row of its own under it --
+    /// in the colour of the line it is the axis of, and named beside its
+    /// numbers in that colour when `label` says something.
     property var sideAxes: []
+
+    /// Whether x runs up the pane and y across it: the same picture with its
+    /// axes swapped, for a custom tab that asks for it.
+    ///
+    /// Everything above stays named for the *data* axis it describes -- the
+    /// x window, the x label, the x ticks are still about x wherever x is
+    /// drawn -- so nothing that hands this frame a value has to know. What
+    /// changes is which screen direction each one is laid out along, and that
+    /// is decided in one place: the left and foot properties below, which
+    /// every repeater that places a number or a rule reads instead of reading
+    /// x or y. The lines are the renderer's business (PlotItem.transposed).
+    ///
+    /// The axes of their own follow the values: upright they are columns to
+    /// the left of the common y axis, transposed they are rows under it.
+    property bool transposed: false
 
     /// Which of each side axis's two colours to draw it in. The picture that
     /// leaves for a page is the light scope's (see PlotPicture.qml), and an
@@ -181,16 +197,18 @@ Item {
     /// ticks go through -- a crosshair drawn where the curve is not would be
     /// the tick lie in another form.
     function placeReading(taken) {
+        const along = plotLines.xFraction(taken.x)
+        // Through the line's own axis when it has one, which is the only
+        // place its curve is.
+        const up = plotLines.seriesYFraction(taken.line, taken.y)
         return ({
             valid: true,
             line: taken.line,
             x: taken.x,
             y: taken.y,
-            px: plotLines.xFraction(taken.x) * plotLines.width,
-            // Through the line's own axis when it has one, which is the only
-            // place its curve is.
+            px: (frame.transposed ? up : along) * plotLines.width,
             py: plotLines.height
-                - plotLines.seriesYFraction(taken.line, taken.y) * plotLines.height
+                - (frame.transposed ? along : up) * plotLines.height
         })
     }
 
@@ -305,57 +323,138 @@ Item {
     /// the pane's own left rule.
     readonly property int gutterLeft: frame.sideWidth + frame.commonWidth
 
-    /// The common axis's share of the left gutter.
-    readonly property int commonWidth: !frame.commonAxis ? Theme.gapS
+    /// The common axis's share of the left gutter -- the x axis's, when the
+    /// pane is transposed.
+    readonly property int commonWidth: !frame.leftNumbered ? Theme.gapS
         : Math.max(Theme.plotLabelMargin,
-                   Math.ceil(frame.widestYLabel) + Theme.gapM)
-          + (frame.yLabel === ""
+                   Math.ceil(frame.widestLeftLabel) + Theme.gapM)
+          + (frame.leftName === ""
              ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
+
+    // --- which axis is laid out where -------------------------------------
+    // Upright, y down the left and x along the foot; transposed, the other
+    // way round. Every repeater below that places a number, a rule or a name
+    // reads these rather than x or y, so the swap is decided here and nowhere
+    // else. The y axis is the one that can be absent (commonAxis), so whether
+    // a side is numbered follows it round.
+    /// Whether the left gutter and the foot carry numbers.
+    readonly property bool leftNumbered: frame.transposed || frame.commonAxis
+    readonly property bool footNumbered: !frame.transposed || frame.commonAxis
+    /// What each side is called. A name follows its axis: the x label names x
+    /// wherever x is drawn.
+    readonly property string leftName: frame.transposed ? frame.xLabel
+                                     : frame.commonAxis ? frame.yLabel : ""
+    readonly property string footName: !frame.transposed ? frame.xLabel
+                                     : frame.commonAxis ? frame.yLabel : ""
+    /// The numbers, the rules and the subdivision digits of each side. The
+    /// numbers up the side are taken from the lists measured up the pane and
+    /// nothing else -- see xValuesUp for the cycle that is.
+    readonly property var leftTicks: frame.transposed
+        ? frame.ticksOf(frame.xValuesUp, false)
+        : frame.ticksOf(frame.yValuesUp, true)
+    readonly property var footTicks: frame.transposed ? frame.yTicks : frame.xTicks
+    readonly property var leftMinorTicks:
+        frame.transposed ? frame.xMinorTicks : frame.yMinorTicks
+    readonly property var footMinorTicks:
+        frame.transposed ? frame.yMinorTicks : frame.xMinorTicks
+    /// Rules across the pane sit at a place up it, rules down it at a place
+    /// along it: the grid of whichever axis runs that way.
+    readonly property var acrossRules: frame.transposed ? frame.xGrid : frame.yGrid
+    readonly property var downRules: frame.transposed ? frame.yGrid : frame.xGrid
+
+    /// The ticks of a side axis over `extent` pixels of pane, and the widest
+    /// of their numbers. Linear always, and placed by the same fractionOn the
+    /// common axis's are, over the window the renderer was handed for that
+    /// line -- so a side axis's tick is drawn where its line's curve is.
+    function sideTicks(axis, extent, vertical) {
+        const found = frame.tickValues(axis.low, axis.high, false, 10, extent, vertical)
+        const ticks = []
+        let widest = 0
+        for (let k = 0; k < found.values.length; ++k) {
+            const written = found.texts[k]
+            const width = frame.labelWidth(written)
+            widest = Math.max(widest, width)
+            ticks.push({ at: frame.fractionOn(found.values[k], axis.low,
+                                              axis.high, false, 10),
+                         text: written.text, base: written.base,
+                         exponent: written.exponent, width: width })
+        }
+        return ({ ticks: ticks, widest: widest })
+    }
 
     // --- the axes of their own --------------------------------------------
     /// Each side axis, laid out: where its column starts, how wide it is, its
     /// ticks and its name, as `{ line, colour, x, width, ticks, label }`.
+    /// Upright only; transposed, they are sideRows.
     ///
     /// A column is its name, its numbers, a gap, a tick and a rule, right to
-    /// left from the rule; a gap between one column and the next is what keeps two
-    /// axes reading as two. Its numbers are placed by the same fractionOn the
-    /// common axis's are, over the window the renderer was handed for that
-    /// line -- linear, always -- so a side axis's tick is drawn where its
-    /// line's curve is, which PlotItem.seriesYFraction answers too and the
-    /// suite holds them to.
+    /// left from the rule; a gap between one column and the next is what
+    /// keeps two axes reading as two. Its ticks come from sideTicks, which
+    /// PlotItem.seriesYFraction answers too and the suite holds them to.
     ///
     /// The name is on the outside, rotated as the common axis's is and for
     /// the same reason: what it costs sideways is a line's height and not its
     /// length, and nothing is reserved for it while there is no name.
     readonly property var sideColumns: {
         const out = []
+        if (frame.transposed)
+            return out
         let at = 0
         for (let i = 0; i < frame.sideAxes.length; ++i) {
             const axis = frame.sideAxes[i]
-            const found = frame.tickValues(axis.low, axis.high, false, 10,
-                                           frame.areaHeight, true)
-            const ticks = []
-            let widest = 0
-            for (let k = 0; k < found.values.length; ++k) {
-                const written = found.texts[k]
-                const width = frame.labelWidth(written)
-                widest = Math.max(widest, width)
-                ticks.push({ at: frame.fractionOn(found.values[k], axis.low,
-                                                  axis.high, false, 10),
-                             text: written.text, base: written.base,
-                             exponent: written.exponent, width: width })
-            }
+            const found = frame.sideTicks(axis, frame.areaHeight, true)
             const label = axis.label ? axis.label : ""
             const width = (label === ""
                            ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
-                          + Math.ceil(widest) + Theme.gapS + Theme.s3
+                          + Math.ceil(found.widest) + Theme.gapS + Theme.s3
                           + Theme.borderWidthAccent
             out.push({ line: axis.line,
                        colour: frame.paperAxes ? axis.paperColour : axis.colour,
-                       x: at, width: width, ticks: ticks, label: label })
+                       x: at, width: width, ticks: found.ticks, label: label })
             at += width + Theme.gapM
         }
         return out
+    }
+
+    /// Each side axis, laid out along the foot of a transposed pane: where its
+    /// row starts under the common axis's numbers, how tall it is, and its
+    /// name, as `{ line, colour, low, high, y, height, label }`.
+    ///
+    /// A row is a rule, a tick, its numbers and its name, top to bottom. The
+    /// ticks are not here but in the row itself, and that is not tidiness: they
+    /// are measured over the pane's width, the width depends on the left
+    /// gutter, the left gutter on the x numbers, the x numbers on the pane's
+    /// height -- and the height on this. What decides the foot has to be how
+    /// many rows there are and whether each is named, and nothing about the
+    /// numbers in them.
+    readonly property var sideRows: {
+        const out = []
+        if (!frame.transposed)
+            return out
+        const numbers = Theme.borderWidthAccent + Theme.s3 + Math.ceil(tickMetrics.height)
+        let at = 0
+        for (let i = 0; i < frame.sideAxes.length; ++i) {
+            const axis = frame.sideAxes[i]
+            const label = axis.label ? axis.label : ""
+            const height = numbers + (label === ""
+                                      ? 0 : Theme.gapXS + Math.ceil(axisNameMetrics.height))
+            out.push({ line: axis.line,
+                       colour: frame.paperAxes ? axis.paperColour : axis.colour,
+                       low: axis.low, high: axis.high,
+                       y: at, height: height, label: label })
+            at += height + Theme.gapM
+        }
+        return out
+    }
+
+    /// How much of the foot the side axes take, the air after the last of
+    /// them included.
+    readonly property int sideHeight: {
+        const rows = frame.sideRows
+        if (rows.length === 0)
+            return 0
+        const last = rows[rows.length - 1]
+        return Math.ceil(last.y + last.height + Theme.gapS)
     }
 
     /// How much of the left gutter the side axes take, the gap after the last
@@ -368,10 +467,10 @@ Item {
         return Math.ceil(last.x + last.width + Theme.gapM)
     }
 
-    readonly property real widestYLabel: {
+    readonly property real widestLeftLabel: {
         let widest = 0
-        for (let i = 0; i < frame.yTicks.length; ++i)
-            widest = Math.max(widest, frame.yTicks[i].width)
+        for (let i = 0; i < frame.leftTicks.length; ++i)
+            widest = Math.max(widest, frame.leftTicks[i].width)
         return widest
     }
 
@@ -399,9 +498,16 @@ Item {
     /// plotMargin exactly; drawn here, the same number put the last two pixels
     /// of every x label past the bottom of the frame.
     ///
-    /// The axis's name goes under the numbers, and only when it has one.
-    readonly property int gutterBottom: Math.ceil(tickMetrics.height) + Theme.gapS
-        + (frame.xLabel === ""
+    /// The axis's name goes under the numbers, and only when it has one; the
+    /// rows of a transposed pane's side axes go under all of it.
+    readonly property int gutterBottom: frame.footCommonHeight + frame.sideHeight
+
+    /// The common foot: the x axis's numbers and name, or the y axis's when
+    /// the pane is transposed -- and a gap's worth of air when that is the
+    /// y axis and there is none.
+    readonly property int footCommonHeight:
+        (frame.footNumbered ? Math.ceil(tickMetrics.height) + Theme.gapS : Theme.gapS)
+        + (frame.footName === ""
            ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
 
     TextMetrics {
@@ -967,15 +1073,41 @@ Item {
                   ticks: values, logarithmic: false, fallback: false })
     }
 
-    readonly property var xTickValues:
-        frame.tickValues(frame.viewMinX, frame.viewMaxX, frame.xLog, frame.xLogBase,
-                         frame.area.width, false)
-    // None with no common axis: its window is then a nominal one, and the
-    // numbers, the rules and the digits between them all read this list.
-    readonly property var yTickValues: frame.commonAxis
-        ? frame.tickValues(frame.viewMinY, frame.viewMaxY, frame.yLog, frame.yLogBase,
+    readonly property var xTickValues: frame.transposed ? frame.xValuesUp
+                                                        : frame.xValuesAcross
+    readonly property var yTickValues: frame.transposed ? frame.yValuesAcross
+                                                        : frame.yValuesUp
+
+    // Each axis's numbers over the extent it is laid out along -- the width
+    // for whichever runs across the pane, the height for whichever runs up it
+    // -- as two lists, one of which is always empty.
+    //
+    // Two rather than one choosing its extent, and the reason is the left
+    // gutter. Its width is measured off the numbers up the side, and the
+    // width is the pane's -- so the numbers up the side must not depend on the
+    // width, which areaHeight does not. One list per axis that picked its
+    // extent was right in either orientation and a cycle across the two: at
+    // the moment of a flip the x list still depended on the width it was
+    // about to decide, and Qt reported a binding loop on every flip. A list
+    // that is only ever measured up the pane has no path to the width at all.
+    readonly property var xValuesAcross: frame.transposed ? frame.noTicks
+        : frame.tickValues(frame.viewMinX, frame.viewMaxX, frame.xLog, frame.xLogBase,
+                           frame.area.width, false)
+    readonly property var xValuesUp: !frame.transposed ? frame.noTicks
+        : frame.tickValues(frame.viewMinX, frame.viewMaxX, frame.xLog, frame.xLogBase,
                            frame.areaHeight, true)
-        : ({ values: [], texts: [], ticks: [], logarithmic: false, fallback: false })
+    // None with no common axis: its window is then a nominal one, and the
+    // numbers, the rules and the digits between them all read these lists.
+    readonly property var yValuesAcross: !frame.transposed || !frame.commonAxis
+        ? frame.noTicks
+        : frame.tickValues(frame.viewMinY, frame.viewMaxY, frame.yLog, frame.yLogBase,
+                           frame.area.width, false)
+    readonly property var yValuesUp: frame.transposed || !frame.commonAxis
+        ? frame.noTicks
+        : frame.tickValues(frame.viewMinY, frame.viewMaxY, frame.yLog, frame.yLogBase,
+                           frame.areaHeight, true)
+    readonly property var noTicks:
+        ({ values: [], texts: [], ticks: [], logarithmic: false, fallback: false })
 
     /// Whether each axis's ticks came out the logarithmic way. Read by the
     /// band's readout, which writes its own numbers the way the ticks beside
@@ -1215,15 +1347,23 @@ Item {
         return out
     }
 
-    readonly property var xMinorTicks: frame.minorNumbersOf(
-        frame.xGridValues, frame.xTickValues,
-        frame.viewMinX, frame.viewMaxX, frame.xLogBase,
-        frame.area.width, Theme.gapS, minorMetrics.width)
+    // Spaced by the direction they are read along: across the pane a digit
+    // needs its own width clear of the next, up it a line's height.
+    readonly property var xMinorTicks: frame.transposed
+        ? frame.minorNumbersOf(frame.xGridValues, frame.xTickValues,
+                               frame.viewMinX, frame.viewMaxX, frame.xLogBase,
+                               frame.area.height, Math.ceil(minorMetrics.height), 0)
+        : frame.minorNumbersOf(frame.xGridValues, frame.xTickValues,
+                               frame.viewMinX, frame.viewMaxX, frame.xLogBase,
+                               frame.area.width, Theme.gapS, minorMetrics.width)
 
-    readonly property var yMinorTicks: frame.minorNumbersOf(
-        frame.yGridValues, frame.yTickValues,
-        frame.viewMinY, frame.viewMaxY, frame.yLogBase,
-        frame.area.height, Math.ceil(minorMetrics.height), 0)
+    readonly property var yMinorTicks: frame.transposed
+        ? frame.minorNumbersOf(frame.yGridValues, frame.yTickValues,
+                               frame.viewMinY, frame.viewMaxY, frame.yLogBase,
+                               frame.area.width, Theme.gapS, minorMetrics.width)
+        : frame.minorNumbersOf(frame.yGridValues, frame.yTickValues,
+                               frame.viewMinY, frame.viewMaxY, frame.yLogBase,
+                               frame.area.height, Math.ceil(minorMetrics.height), 0)
 
     /// Whether `value` is one of `values`, to within what two ways of
     /// computing one number can differ by.
@@ -1309,7 +1449,7 @@ Item {
     // the majors' weight a dense grid reads as a hatch with a curve somewhere
     // in it.
     Repeater {
-        model: frame.yGrid
+        model: frame.acrossRules
 
         Rectangle {
             required property var modelData
@@ -1323,7 +1463,7 @@ Item {
     }
 
     Repeater {
-        model: frame.xGrid
+        model: frame.downRules
 
         Rectangle {
             required property var modelData
@@ -1384,6 +1524,7 @@ Item {
         yLog: frame.yLog
         xLogBase: frame.xLogBase
         yLogBase: frame.yLogBase
+        transposed: frame.transposed
         markers: frame.markers
         markerSize: frame.markerSize
 
@@ -1488,7 +1629,7 @@ Item {
     }
 
     Repeater {
-        model: frame.yTicks
+        model: frame.leftTicks
 
         TickLabel {
             x: frame.area.x - width - Theme.gapS
@@ -1586,8 +1727,88 @@ Item {
         }
     }
 
+    // The same axes along the foot of a transposed pane: a rule the width of
+    // the pane, a tick down from it at each number, the numbers, and the name
+    // under them, all in the line's colour. See sideRows for why the ticks
+    // are worked out here rather than there.
     Repeater {
-        model: frame.xTicks
+        model: frame.sideRows
+
+        Item {
+            id: sideRow
+
+            required property var modelData
+
+            objectName: "plotSideAxisRow"
+            readonly property int line: modelData.line
+            readonly property color colour: modelData.colour
+            readonly property string label: modelData.label
+            readonly property var ticks:
+                frame.sideTicks(modelData, frame.area.width, false).ticks
+
+            x: frame.area.x
+            y: frame.area.y + frame.area.height + frame.footCommonHeight + modelData.y
+            width: frame.area.width
+            height: modelData.height
+
+            Rectangle {
+                width: sideRow.width + Theme.hairline
+                height: Theme.borderWidthAccent
+                color: sideRow.colour
+            }
+
+            Repeater {
+                model: sideRow.ticks
+
+                Item {
+                    required property var modelData
+
+                    x: Math.round(modelData.at * sideRow.width)
+
+                    Rectangle {
+                        y: Theme.borderWidthAccent
+                        width: Theme.hairline
+                        height: Theme.s3
+                        color: sideRow.colour
+                    }
+
+                    TickLabel {
+                        modelData: parent.modelData
+                        ink: sideRow.colour
+                        x: -width / 2
+                        y: Theme.borderWidthAccent + Theme.s3
+                    }
+                }
+            }
+
+            Text {
+                id: rowName
+
+                objectName: "plotSideAxisName"
+
+                y: Theme.borderWidthAccent + Theme.s3 + Math.ceil(tickMetrics.height)
+                   + Theme.gapXS
+                width: sideRow.width
+                visible: sideRow.label !== ""
+                text: sideRow.label
+                font: Theme.bodySmall
+                color: sideRow.colour
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+
+                HoverHandler { id: rowNameHover }
+
+                AppToolTip {
+                    shown: rowNameHover.hovered && rowName.truncated
+                    verbatim: true
+                    text: sideRow.label
+                }
+            }
+        }
+    }
+
+    Repeater {
+        model: frame.footTicks
 
         TickLabel {
             x: Math.round(frame.area.x + modelData.at * frame.area.width) - width / 2
@@ -1609,7 +1830,7 @@ Item {
     // keeps them apart by measuring, and this keeps the order right if it ever
     // fails to.
     Repeater {
-        model: frame.yMinorTicks
+        model: frame.leftMinorTicks
 
         Text {
             required property var modelData
@@ -1625,7 +1846,7 @@ Item {
     }
 
     Repeater {
-        model: frame.xMinorTicks
+        model: frame.footMinorTicks
 
         Text {
             required property var modelData
@@ -1671,54 +1892,56 @@ Item {
     }
 
     Text {
-        id: xNameText
+        id: footNameText
 
         x: frame.area.x
-        y: frame.area.y + frame.area.height + Theme.s3
-           + Math.ceil(tickMetrics.height) + Theme.gapXS
+        y: frame.area.y + frame.area.height
+           + (frame.footNumbered ? Theme.s3 + Math.ceil(tickMetrics.height) : 0)
+           + Theme.gapXS
         width: frame.area.width
-        visible: frame.xLabel !== ""
-        text: frame.xLabel
+        visible: frame.footName !== ""
+        text: frame.footName
         font: Theme.bodySmall
         color: frame.ink
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
 
-        HoverHandler { id: xNameHover }
+        HoverHandler { id: footNameHover }
 
         AppToolTip {
-            shown: xNameHover.hovered && xNameText.truncated
+            shown: footNameHover.hovered && footNameText.truncated
             verbatim: true
-            text: frame.xLabel
+            text: frame.footName
         }
     }
 
     // Turned a quarter, reading upwards, which is where every plot in every
-    // field puts the name of a y axis. Rotation about the item's own centre,
+    // field puts the name of the axis up its side -- y's, or x's on a
+    // transposed pane. Rotation about the item's own centre,
     // so the arithmetic is "put the centre where the middle of the pane's left
     // edge is": the box is laid out as wide as the pane is tall and then
     // turned, which is also what gives `elide` the right width to measure
     // against.
     Text {
-        id: yNameText
+        id: leftNameText
 
         width: frame.area.height
         x: frame.sideWidth + Math.ceil(axisNameMetrics.height) / 2 - width / 2
         y: frame.area.y + frame.area.height / 2 - height / 2
         rotation: -90
-        visible: frame.yLabel !== "" && frame.commonAxis
-        text: frame.yLabel
+        visible: frame.leftName !== ""
+        text: frame.leftName
         font: Theme.bodySmall
         color: frame.ink
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
 
-        HoverHandler { id: yNameHover }
+        HoverHandler { id: leftNameHover }
 
         AppToolTip {
-            shown: yNameHover.hovered && yNameText.truncated
+            shown: leftNameHover.hovered && leftNameText.truncated
             verbatim: true
-            text: frame.yLabel
+            text: frame.leftName
         }
     }
 }

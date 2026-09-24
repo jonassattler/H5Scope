@@ -95,14 +95,17 @@ Item {
     /// `active`: a band nobody is drawing is two stale points, and reading a
     /// stale point costs a subtraction. A surface that has not been handed one
     /// has no axes to ask, which is the case worth a branch.
+    ///
+    /// Both coordinates of each corner go to both questions, because on a
+    /// flipped pane x is read off the height and y off the width.
     readonly property real startValueX:
-        readout.target ? readout.target.dataXAt(readout.from.x) : 0
+        readout.target ? readout.target.dataXAt(readout.from.x, readout.from.y) : 0
     readonly property real startValueY:
-        readout.target ? readout.target.dataYAt(readout.from.y) : 0
+        readout.target ? readout.target.dataYAt(readout.from.y, readout.from.x) : 0
     readonly property real endValueX:
-        readout.target ? readout.target.dataXAt(readout.to.x) : 0
+        readout.target ? readout.target.dataXAt(readout.to.x, readout.to.y) : 0
     readonly property real endValueY:
-        readout.target ? readout.target.dataYAt(readout.to.y) : 0
+        readout.target ? readout.target.dataYAt(readout.to.y, readout.to.x) : 0
 
     /// A corner, written. Two numbers and a comma, which is how a coordinate
     /// is written everywhere else -- which axis is which is said by where the
@@ -144,16 +147,26 @@ Item {
         readout.coordinateText(readout.startValueX, readout.startValueY)
     readonly property string endText:
         readout.coordinateText(readout.endValueX, readout.endValueY)
-    readonly property string widthText:
+    /// How far the band runs in x and in y, each written by its own axis --
+    /// and none for a y with no common axis, for coordinateText's reason.
+    readonly property string xSpanText:
         readout.target ? readout.lengthText(
                              Math.abs(readout.endValueX - readout.startValueX),
                              readout.target.xNumber)
                        : ""
-    readonly property string heightText:
+    readonly property string ySpanText:
         readout.target && readout.target.sharedAxis ? readout.lengthText(
                              Math.abs(readout.endValueY - readout.startValueY),
                              readout.target.yNumber)
                        : ""
+    /// ...and which of them is written along which edge: the band's width is
+    /// a length of whichever axis runs across the pane, which on a flipped one
+    /// is y.
+    readonly property bool flipped: readout.target ? !!readout.target.flipped : false
+    readonly property string widthText: readout.flipped ? readout.ySpanText
+                                                        : readout.xSpanText
+    readonly property string heightText: readout.flipped ? readout.xSpanText
+                                                         : readout.ySpanText
 
     // The four of them measured before any of them is placed: where a number
     // goes depends on how big it is, and a box laid out first and measured
@@ -374,7 +387,8 @@ Item {
         const heightSize = { width: written.height, height: written.width }
         const midX = (readout.bandLeft + readout.bandRight) / 2
         const midY = (readout.bandTop + readout.bandBottom) / 2
-        if (widthSize.width <= readout.bandRect.width) {
+        if (readout.widthText !== ""
+                && widthSize.width <= readout.bandRect.width) {
             candidates.push({ key: "widthAbove", text: readout.widthText,
                               x: midX - widthSize.width / 2,
                               y: readout.bandTop - gap - widthSize.height,

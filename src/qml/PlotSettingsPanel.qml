@@ -28,6 +28,11 @@ SettingsPanel {
     /// Whether the two source rows are shown. See the note above.
     property bool showXAxis: true
     property bool showOrientation: true
+    /// Whether the plot can be drawn with its axes swapped. A custom tab only:
+    /// the Plot tab's lines are the rows or columns of a table, and which of
+    /// those runs along x is already the "one line per" row's question.
+    property bool showFlip: false
+
     /// The lines drawn on a y axis of their own, in the order those axes are
     /// numbered: `{ series, position, count }` apiece, `position` being the
     /// line's place among the `count` drawn -- what seriesColor is asked with.
@@ -563,6 +568,31 @@ SettingsPanel {
         target: panel.plot
 
         function onChanged() { panel.copyResult = "" }
+    }
+
+    // --- which way round the axes are ------------------------------------
+    // Above the scales, because it is the larger question: which way x runs
+    // decides what the scales below are scales *of* on the screen. It changes
+    // nothing that is read and nothing about the window -- see
+    // PlotSurface.flipped -- so the zoom the reader is at survives it.
+    SettingRow {
+        label: qsTr("axes")
+        visible: panel.showFlip
+
+        AppCheckBox {
+            objectName: "flipAxesBox"
+
+            text: qsTr("flip x and y")
+            enabled: !!panel.target
+            checked: panel.target ? panel.target.flipped : false
+            onToggled: { if (panel.target) panel.target.flipped = checked }
+
+            AppToolTip {
+                shown: parent.hovered
+                text: qsTr("Draw x up the plot and y across it: the same lines, "
+                           + "with the axes swapped.")
+            }
+        }
     }
 
     // --- which scale each axis is on --------------------------------------

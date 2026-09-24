@@ -340,6 +340,15 @@ void PlotItem::setYLogBase(double base)
     }
 }
 
+void PlotItem::setTransposed(bool on)
+{
+    if (view_.transposed != on) {
+        view_.transposed = on;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
 void PlotItem::setMarkers(bool on)
 {
     if (markers_ != on) {
@@ -385,8 +394,20 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     QVariantMap answer;
     answer.insert(QStringLiteral("valid"), false);
 
-    const double w = width();
-    const double h = height();
+    // Searched upright, as the lines were projected, with the pointer moved
+    // there first and the answer moved back: on a transposed pane the pointer's
+    // height is what says which x it is over. See PlotView::transposed.
+    PlotView pane = view_;
+    pane.width = width();
+    pane.height = height();
+    const PlotView upright = uprightView(pane);
+    if (pane.transposed) {
+        const QPointF at = uprightPoint(QPointF(px, py), pane);
+        px = at.x();
+        py = at.y();
+    }
+    const double w = upright.width;
+    const double h = upright.height;
     const AxisMapping xMap = xMappingOf(view_);
     if (!(w > 0.0) || !(h > 0.0) || !xMap.usable || lines_.empty()) {
         return answer;
@@ -496,6 +517,11 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     if (bestLine < 0) {
         return answer;
     }
+    if (pane.transposed) {
+        const QPointF drawn = transposedPoint(QPointF(bestPx, bestPy), pane);
+        bestPx = drawn.x();
+        bestPy = drawn.y();
+    }
     answer.insert(QStringLiteral("valid"), true);
     answer.insert(QStringLiteral("line"), bestLine);
     answer.insert(QStringLiteral("x"), bestX);
@@ -536,7 +562,10 @@ void PlotItem::projectAll()
     runs_.clear();
 
     const auto lines = static_cast<std::size_t>(lineCount());
-    const PlotView view = viewForFrame();
+    const PlotView pane = viewForFrame();
+    // Projected upright and then reflected, so that the envelope and the gaps
+    // are worked out exactly as they always were. See PlotView::transposed.
+    const PlotView view = uprightView(pane);
     lineRuns_.assign(lines + 1, 0);
     lineDecimated_.assign(lines, false);
     for (std::size_t line = 0; line < lines; ++line) {
@@ -546,6 +575,11 @@ void PlotItem::projectAll()
                 .decimated;
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
+    if (pane.transposed) {
+        for (QPointF& point : points_) {
+            point = transposedPoint(point, pane);
+        }
+    }
 
     drawnPoints_ = static_cast<int>(points_.size());
     drawnRuns_ = static_cast<int>(runs_.size());
