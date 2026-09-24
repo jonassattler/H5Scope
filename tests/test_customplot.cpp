@@ -35,8 +35,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <QAbstractItemModel>
 #include <QColor>
 #include <QCoreApplication>
+#include <QPointer>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
@@ -2836,4 +2838,206 @@ TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
         CHECK(highest == 9.0);
         CHECK(at == Approx(54321.0).margin(64.0));
     }
+}
+
+// ---------------------------------------------------------------------------
+// A tab closed while it was waiting
+// ---------------------------------------------------------------------------
+
+TEST_CASE_METHOD(PlotFixture, "a tab closed while its lookup is out is let go of, not written to",
+                 "[custom][lifetime]")
+{
+    // The lookup a tab asks through belongs to the set, not to the tab, so its
+    // reply arrives whether or not the tab it was asked for is still there. A
+    // path nobody has looked at yet is a round trip, and a reader who closes
+    // the tab in that time -- the thread busy reading something large is all
+    // it takes -- used to have the answer written into a tab already freed.
+    gui::CustomPlotSet* plots = set();
+    const int index = plots->addPlot();
+    settleAll();
+    QPointer<gui::CustomPlot> going = plots->plotAt(index);
+    REQUIRE_FALSE(going.isNull());
+
+    QString asked;
+    SECTION("adding a dataset's lines")
+    {
+        asked = QStringLiteral("/cube");
+        REQUIRE_FALSE(plots->lookup()->knows(asked));
+        going->addDataset(asked);
+    }
+
+    SECTION("naming a time base")
+    {
+        asked = QStringLiteral("/series/time");
+        REQUIRE_FALSE(plots->lookup()->knows(asked));
+        plots->setTimeSeriesOf(index, asked);
+    }
+
+    plots->removePlot(index);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    REQUIRE(going.isNull());
+
+    // The answer lands here, for a tab that no longer exists -- and it did
+    // land, which is what makes this a test of the reply rather than of a
+    // question never asked.
+    settleAll();
+    CHECK(plots->lookup()->knows(asked));
+    CHECK(plots->count() == 0);
+
+    // ...and the set goes on working: the next tab is an ordinary tab.
+    gui::CustomPlot* next = tab();
+    REQUIRE(next != nullptr);
+    add(next, QStringLiteral("/series/a[:]"));
+    CHECK(next->sourceSeriesCount() == 1);
+    CHECK(next->hasData());
+}
+
+TEST_CASE_METHOD(PlotFixture, "what was being looked up when the file went is not remembered",
+                 "[custom][lifetime]")
+{
+    // Forgetting the file disowned the lookups in flight only when something
+    // was already known -- and while the first question about a file is out,
+    // nothing is. That answer then landed after the next file had opened and
+    // was kept as a fact about it: a shape and a datatype for a path the new
+    // file may not have, and which nothing would ever ask about again, because
+    // the path was now known.
+    gui::CustomPlotSet* plots = set();
+    const int index = plots->addPlot();
+    settleAll();
+    REQUIRE_FALSE(plots->lookup()->knows(QStringLiteral("/cube")));
+
+    plots->plotAt(index)->addDataset(QStringLiteral("/cube"));
+    plots->clear();
+    settleAll();
+
+    CHECK_FALSE(plots->lookup()->knows(QStringLiteral("/cube")));
+    CHECK(plots->count() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Files shaped to catch what the shared fixture cannot
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A compound `/run` with one member called `3`, and beside it a dataset
+/// called `run.3` -- the two readings of the same text that the entry grammar
+/// keeps apart -- and `/hollow`, a table with no rows at all.
+void writeAmbiguousNames(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+
+    constexpr hsize_t kLength = 8;
+    const hid_t line = H5Screate_simple(1, &kLength, nullptr);
+
+    const hid_t record = H5Tcreate(H5T_COMPOUND, sizeof(double));
+    REQUIRE(H5Tinsert(record, "3", 0, H5T_NATIVE_DOUBLE) >= 0);
+    const hid_t run = H5Dcreate2(file, "run", record, line, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(run >= 0);
+    std::vector<double> ascending(kLength);
+    for (hsize_t i = 0; i < kLength; ++i) {
+        ascending[i] = static_cast<double>(i);
+    }
+    REQUIRE(H5Dwrite(run, record, H5S_ALL, H5S_ALL, H5P_DEFAULT, ascending.data()) >= 0);
+
+    const hid_t dotted =
+        H5Dcreate2(file, "run.3", H5T_NATIVE_DOUBLE, line, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dotted >= 0);
+    std::vector<double> high(kLength);
+    for (hsize_t i = 0; i < kLength; ++i) {
+        high[i] = 100.0 + static_cast<double>(i);
+    }
+    REQUIRE(H5Dwrite(dotted, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, high.data()) >= 0);
+
+    const hsize_t hollowShape[2] = {0, 5};
+    const hid_t hollowSpace = H5Screate_simple(2, hollowShape, nullptr);
+    const hid_t hollow = H5Dcreate2(file, "hollow", H5T_NATIVE_INT32, hollowSpace, H5P_DEFAULT,
+                                    H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(hollow >= 0);
+
+    H5Dclose(hollow);
+    H5Sclose(hollowSpace);
+    H5Dclose(dotted);
+    H5Dclose(run);
+    H5Tclose(record);
+    H5Sclose(line);
+    H5Fclose(file);
+}
+
+struct AmbiguousFixture
+{
+    h5test::TempFile temp{"ambiguous"};
+    gui::AppController controller;
+
+    AmbiguousFixture()
+    {
+        h5test::onH5([&] { writeAmbiguousNames(temp.path()); });
+        REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(temp.path())));
+    }
+
+    gui::CustomPlot* tab()
+    {
+        const int index = controller.customPlots()->addPlot();
+        PlotFixture::settleAll();
+        return controller.customPlots()->plotAt(index);
+    }
+};
+
+} // namespace
+
+TEST_CASE_METHOD(AmbiguousFixture,
+                 "a member called 3 and a dataset called run.3 are two lines, not one",
+                 "[custom][member]")
+{
+    // The session keeps a tab's datasets open between reads, keyed by what was
+    // read. The key used to be the path and the chain run together, and
+    // `/run` through `.3` and `/run.3` through nothing run together into the
+    // same text -- so whichever was read first was handed back for the other.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    PlotFixture::add(plot, QStringLiteral("/run[:].3"));
+    PlotFixture::add(plot, QStringLiteral("/run.3[:]"));
+
+    REQUIRE(plot->sourceSeriesCount() == 2);
+    CHECK(PlotFixture::errorOf(plot, 0).isEmpty());
+    CHECK(PlotFixture::errorOf(plot, 1).isEmpty());
+
+    const QList<QPointF> member = PlotFixture::drawn(plot, 0);
+    const QList<QPointF> dataset = PlotFixture::drawn(plot, 1);
+    REQUIRE(member.size() == 8);
+    REQUIRE(dataset.size() == 8);
+    CHECK(member.front().y() == 0.0);
+    CHECK(member.back().y() == 7.0);
+    CHECK(dataset.front().y() == 100.0);
+    CHECK(dataset.back().y() == 107.0);
+
+    // ...in the other order too, which is the order that got the member
+    // handed the dataset.
+    gui::CustomPlot* reversed = tab();
+    PlotFixture::add(reversed, QStringLiteral("/run.3[:]"));
+    PlotFixture::add(reversed, QStringLiteral("/run[:].3"));
+    REQUIRE(reversed->sourceSeriesCount() == 2);
+    CHECK(PlotFixture::drawn(reversed, 0).front().y() == 100.0);
+    CHECK(PlotFixture::drawn(reversed, 1).front().y() == 0.0);
+}
+
+TEST_CASE_METHOD(AmbiguousFixture, "a dataset with no rows adds no lines, and says so", "[custom]")
+{
+    // A table of shape (0, 5) is five columns of nothing: no line to draw.
+    // Adding it used to insert the rows first through first - 1, a range whose
+    // end comes before its start -- which Qt's views are entitled to assert on,
+    // and a debug build of Qt does.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    QSignalSpy said(plot, &gui::CustomPlot::notice);
+    QSignalSpy inserted(plot, &QAbstractItemModel::rowsAboutToBeInserted);
+
+    plot->addDataset(QStringLiteral("/hollow"));
+    PlotFixture::settleAll();
+
+    CHECK(plot->sourceSeriesCount() == 0);
+    CHECK(inserted.count() == 0);
+    REQUIRE(said.count() == 1);
+    CHECK_THAT(said.at(0).at(0).toString().toStdString(), ContainsSubstring("empty dimension"));
 }

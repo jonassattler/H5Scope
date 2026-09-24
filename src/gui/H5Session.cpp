@@ -79,7 +79,15 @@ h5core::Dataset* H5Session::dataset(const std::string& path)
 h5core::Dataset* H5Session::held(const std::string& path,
                                  const h5core::MemberSelection& member)
 {
-    const std::string key = path + member.text;
+    // Separated by a NUL rather than run together. A link name holds a '.' as
+    // freely as any other character, so `/run` read through `.3` and the
+    // dataset `/run.3` spell the same string once they are concatenated -- and
+    // a tab drawing one would have been handed the other, read at whatever rank
+    // it happened to have. HDF5 names are C strings and cannot hold a NUL, so
+    // nothing in a path can reach across it.
+    std::string key = path;
+    key.push_back('\0');
+    key += member.text;
     for (auto& [name, dataset] : heldDatasets_) {
         if (name == key) {
             return dataset.get();

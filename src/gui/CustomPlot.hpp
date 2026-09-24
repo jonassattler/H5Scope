@@ -730,6 +730,11 @@ private:
     /// being a reading of anything: a row removed, a row retyped, the whole tab
     /// replaced. Everywhere else retire() is what keeps the contract.
     void releaseDrawing();
+    /// The second half of addDataset, once the lookup knows `path`'s shape.
+    /// Split out so that the half that runs a turn later can be reached through
+    /// a guard on this object rather than through a `this` captured before the
+    /// tab could have been closed.
+    void addLinesOf(const QString& path, bool confirmed);
     /// Empty the renderer and read everything again. The four places where the
     /// line on screen is about to become the wrong line rather than a coarser
     /// one.

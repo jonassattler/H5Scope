@@ -18,6 +18,7 @@
 #include "postproc/Script.hpp"
 
 #include <QPointF>
+#include <QPointer>
 
 #include <algorithm>
 #include <atomic>
@@ -720,67 +721,97 @@ void CustomPlot::addDataset(const QString& path, bool confirmed)
     // The shape decides how many lines this is, so it has to be known first.
     // resolve() runs the continuation immediately when it already is, which is
     // the usual case: the tree had to describe the row to draw it.
-    lookup_->resolve({path}, [this, path, confirmed] {
-        const PathFacts* facts = lookup_->facts(path);
-        if (facts == nullptr) {
+    //
+    // When it is not, the answer comes back a turn or more later, and it comes
+    // back through the *set's* lookup -- whose requests outlive this tab. A tab
+    // closed in between is deleted by then, so `this` is guarded rather than
+    // trusted: a reply for a tab nobody has any more is dropped, not written
+    // into freed memory.
+    lookup_->resolve({path}, [self = QPointer<CustomPlot>(this), path, confirmed] {
+        if (self.isNull()) {
             return;
         }
-        if (!facts->usable) {
-            emit notice(facts->problem);
-            return;
-        }
-
-        // The lines the plot tab would draw: the last dimension runs along x
-        // and every other one is spread over the lines, which is exactly what
-        // the default table layout does with a rank-n dataset.
-        const std::vector<hsize_t>& shape = facts->shape;
-        const std::size_t last = shape.size() - 1;
-        hsize_t lines = 1;
-        for (std::size_t d = 0; d < last; ++d) {
-            lines *= shape[d];
-        }
-
-        // Asked about rather than clipped. A dataset of two thousand runs is
-        // a thing a reader may genuinely want the shape of; what they must not
-        // get is two thousand strokes they did not ask for, or a silent
-        // sixty-four out of two thousand, which is the worst of both -- a
-        // picture that looks complete and is not.
-        if (!confirmed && lines > static_cast<hsize_t>(kCrowdedLines)) {
-            emit crowding(path, static_cast<int>(lines));
-            return;
-        }
-
-        std::vector<QString> written;
-        written.reserve(static_cast<std::size_t>(lines));
-        std::vector<hsize_t> cursor(last, 0);
-        for (hsize_t line = 0; line < lines; ++line) {
-            QStringList parts;
-            for (std::size_t d = 0; d < last; ++d) {
-                parts << QString::number(cursor[d]);
-            }
-            parts << QStringLiteral(":");
-            written.push_back(path + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
-                              QStringLiteral("]"));
-            // Odometer over the leading dimensions, fastest on the right --
-            // row-major, the same order the grid lists its rows in.
-            for (std::size_t d = last; d-- > 0;) {
-                if (++cursor[d] < shape[d]) {
-                    break;
-                }
-                cursor[d] = 0;
-            }
-        }
-
-        const int first = static_cast<int>(entries_.size());
-        beginInsertRows({}, first, first + static_cast<int>(written.size()) - 1);
-        for (QString& text : written) {
-            Entry entry;
-            entry.expression = std::move(text);
-            entries_.push_back(std::move(entry));
-        }
-        endInsertRows();
-        invalidate();
+        self->addLinesOf(path, confirmed);
     });
+}
+
+void CustomPlot::addLinesOf(const QString& path, bool confirmed)
+{
+    const PathFacts* facts = lookup_->facts(path);
+    if (facts == nullptr) {
+        return;
+    }
+    if (!facts->usable) {
+        emit notice(facts->problem);
+        return;
+    }
+
+    // The lines the plot tab would draw: the last dimension runs along x
+    // and every other one is spread over the lines, which is exactly what
+    // the default table layout does with a rank-n dataset.
+    const std::vector<hsize_t>& shape = facts->shape;
+    if (shape.empty()) {
+        return; // a scalar is not usable, so this is only ever a guard
+    }
+    const std::size_t last = shape.size() - 1;
+    // Saturating, for the reason postproc::elementCount gives.
+    const hsize_t lines = postproc::elementCount(
+        std::vector<hsize_t>(shape.begin(), shape.begin() + static_cast<std::ptrdiff_t>(last)));
+
+    // An empty leading dimension leaves no lines at all, and an insertion of
+    // none is a range whose last row comes before its first -- which Qt's
+    // views are entitled to assert on, and a debug build of Qt does.
+    if (lines == 0) {
+        emit notice(tr("%1 has an empty dimension, so there is no line in it to draw").arg(path));
+        return;
+    }
+    // A row is an int, however many lines were confirmed.
+    const auto room = static_cast<hsize_t>(std::numeric_limits<int>::max()) - entries_.size();
+    if (lines > room) {
+        emit notice(tr("%1 is %2 lines, more than one plot can hold").arg(path).arg(lines));
+        return;
+    }
+
+    // Asked about rather than clipped. A dataset of two thousand runs is
+    // a thing a reader may genuinely want the shape of; what they must not
+    // get is two thousand strokes they did not ask for, or a silent
+    // sixty-four out of two thousand, which is the worst of both -- a
+    // picture that looks complete and is not.
+    if (!confirmed && lines > static_cast<hsize_t>(kCrowdedLines)) {
+        emit crowding(path, static_cast<int>(lines));
+        return;
+    }
+
+    std::vector<QString> written;
+    written.reserve(static_cast<std::size_t>(lines));
+    std::vector<hsize_t> cursor(last, 0);
+    for (hsize_t line = 0; line < lines; ++line) {
+        QStringList parts;
+        for (std::size_t d = 0; d < last; ++d) {
+            parts << QString::number(cursor[d]);
+        }
+        parts << QStringLiteral(":");
+        written.push_back(path + QStringLiteral("[") + parts.join(QStringLiteral(", ")) +
+                          QStringLiteral("]"));
+        // Odometer over the leading dimensions, fastest on the right --
+        // row-major, the same order the grid lists its rows in.
+        for (std::size_t d = last; d-- > 0;) {
+            if (++cursor[d] < shape[d]) {
+                break;
+            }
+            cursor[d] = 0;
+        }
+    }
+
+    const int first = static_cast<int>(entries_.size());
+    beginInsertRows({}, first, first + static_cast<int>(written.size()) - 1);
+    for (QString& text : written) {
+        Entry entry;
+        entry.expression = std::move(text);
+        entries_.push_back(std::move(entry));
+    }
+    endInsertRows();
+    invalidate();
 }
 
 void CustomPlot::removeEntry(int row)
