@@ -2345,6 +2345,42 @@ TEST_CASE_METHOD(PlotFixture, "a line can be read against a y axis of its own", 
         CHECK(restored->seriesAxis(1).value(QStringLiteral("separate")).toBool());
         CHECK(restored->sharedSeriesCount() == 1);
     }
+
+    SECTION("an axis of its own can be named, and the name stays with its line")
+    {
+        plot->setSeparateAxis(1, true);
+        QSignalSpy changed(plot, &gui::CustomPlot::changed);
+        const long long before = gui::CustomPlot::hyperslabs();
+
+        plot->setAxisLabel(1, QStringLiteral("  pressure / hPa "));
+        CHECK(plot->seriesAxis(1).value(QStringLiteral("label")).toString()
+              == QStringLiteral("pressure / hPa"));
+        CHECK(plot->data(plot->index(1, 0), gui::CustomPlot::AxisLabelRole).toString()
+              == QStringLiteral("pressure / hPa"));
+        CHECK(plot->seriesAxis(0).value(QStringLiteral("label")).toString().isEmpty());
+        // A word beside an axis: the surface is told, and nothing is read.
+        CHECK(changed.count() >= 1);
+        CHECK(gui::CustomPlot::hyperslabs() == before);
+
+        // Moving the line moves its name with it, because it is the line's.
+        plot->moveEntry(1, 0);
+        CHECK(plot->seriesAxis(0).value(QStringLiteral("label")).toString()
+              == QStringLiteral("pressure / hPa"));
+
+        // Saved only where there is one, and read back.
+        const QVariantMap state = plot->state();
+        const QVariantList rows = state.value(QStringLiteral("entries")).toList();
+        REQUIRE(rows.size() == 2);
+        CHECK(rows.at(0).toMap().value(QStringLiteral("axisLabel")).toString()
+              == QStringLiteral("pressure / hPa"));
+        CHECK_FALSE(rows.at(1).toMap().contains(QStringLiteral("axisLabel")));
+
+        gui::CustomPlot* restored = plots->plotAt(plots->addPlot());
+        restored->setState(state);
+        settleAll();
+        CHECK(restored->seriesAxis(0).value(QStringLiteral("label")).toString()
+              == QStringLiteral("pressure / hPa"));
+    }
 }
 
 TEST_CASE_METHOD(PlotFixture, "a time base can be named from the tree", "[custom]")

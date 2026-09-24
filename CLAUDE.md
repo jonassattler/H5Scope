@@ -129,6 +129,15 @@ side axis's ticks cannot disagree. Four rules hold it up:
   early when nothing is separate — it is re-evaluated on every frame of a zoom,
   and the Plot tab can be ten thousand lines.
 
+Such an axis can be **named** (`Entry::axisLabel`, `setAxisLabel`, reported by
+`seriesAxis` as `label`): "y label 2" onwards in the plot settings, drawn beside
+the axis in its line's colour. It is typed where the common axis's name is and
+kept on the line, for the colour's reason — the axis *is* the line's, so the
+name follows it through a reorder and into a saved view. The boxes are built
+from `PlotSettingsPanel.ownAxes`, counted rather than listed, because
+`separateAxes` is a new list on every frame of a zoom and a box rebuilt under
+the reader loses what they typed.
+
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without

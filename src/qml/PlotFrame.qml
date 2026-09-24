@@ -129,9 +129,10 @@ Item {
     property bool commonAxis: true
 
     /// The lines drawn against axes of their own, as PlotSurface.separateAxes
-    /// lists them: `{ line, low, high, colour, paperColour }` apiece, in
-    /// drawing order. Each is numbered in a column of its own to the left of
-    /// the common axis, in the colour of the line it is the axis of.
+    /// lists them: `{ line, low, high, colour, paperColour, label }` apiece,
+    /// in drawing order. Each is numbered in a column of its own to the left
+    /// of the common axis, in the colour of the line it is the axis of, and
+    /// named beside its numbers in that colour when `label` says something.
     property var sideAxes: []
 
     /// Which of each side axis's two colours to draw it in. The picture that
@@ -312,16 +313,20 @@ Item {
              ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
 
     // --- the axes of their own --------------------------------------------
-    /// Each side axis, laid out: where its column starts, how wide it is, and
-    /// its ticks, as `{ line, colour, x, width, ticks }`.
+    /// Each side axis, laid out: where its column starts, how wide it is, its
+    /// ticks and its name, as `{ line, colour, x, width, ticks, label }`.
     ///
-    /// A column is its numbers, a gap, a tick and a rule, right to left from
-    /// the rule; a gap between one column and the next is what keeps two
+    /// A column is its name, its numbers, a gap, a tick and a rule, right to
+    /// left from the rule; a gap between one column and the next is what keeps two
     /// axes reading as two. Its numbers are placed by the same fractionOn the
     /// common axis's are, over the window the renderer was handed for that
     /// line -- linear, always -- so a side axis's tick is drawn where its
     /// line's curve is, which PlotItem.seriesYFraction answers too and the
     /// suite holds them to.
+    ///
+    /// The name is on the outside, rotated as the common axis's is and for
+    /// the same reason: what it costs sideways is a line's height and not its
+    /// length, and nothing is reserved for it while there is no name.
     readonly property var sideColumns: {
         const out = []
         let at = 0
@@ -340,11 +345,14 @@ Item {
                              text: written.text, base: written.base,
                              exponent: written.exponent, width: width })
             }
-            const width = Math.ceil(widest) + Theme.gapS + Theme.s3
+            const label = axis.label ? axis.label : ""
+            const width = (label === ""
+                           ? 0 : Math.ceil(axisNameMetrics.height) + Theme.gapXS)
+                          + Math.ceil(widest) + Theme.gapS + Theme.s3
                           + Theme.borderWidthAccent
             out.push({ line: axis.line,
                        colour: frame.paperAxes ? axis.paperColour : axis.colour,
-                       x: at, width: width, ticks: ticks })
+                       x: at, width: width, ticks: ticks, label: label })
             at += width + Theme.gapM
         }
         return out
@@ -1508,11 +1516,41 @@ Item {
             readonly property int line: modelData.line
             readonly property color colour: modelData.colour
             readonly property var ticks: modelData.ticks
+            readonly property string label: modelData.label
 
             x: modelData.x
             y: frame.area.y
             width: modelData.width
             height: frame.area.height
+
+            // The axis's name, outermost and turned as the common axis's is,
+            // in the colour everything else about this axis is in: the name is
+            // how a reader who has lost track of the colours finds out which
+            // axis is which. See sideColumns for the room it is given.
+            Text {
+                id: sideName
+
+                objectName: "plotSideAxisName"
+
+                width: sideColumn.height
+                x: Math.ceil(axisNameMetrics.height) / 2 - width / 2
+                y: sideColumn.height / 2 - height / 2
+                rotation: -90
+                visible: sideColumn.label !== ""
+                text: sideColumn.label
+                font: Theme.bodySmall
+                color: sideColumn.colour
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+
+                HoverHandler { id: sideNameHover }
+
+                AppToolTip {
+                    shown: sideNameHover.hovered && sideName.truncated
+                    verbatim: true
+                    text: sideColumn.label
+                }
+            }
 
             Rectangle {
                 x: sideColumn.width - width

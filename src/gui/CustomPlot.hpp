@@ -177,6 +177,9 @@ public:
         /// Whether that axis stays at the whole of its line while the reader
         /// zooms and pans in y.
         AxisFixedRole,
+        /// What that axis is called: the "y label 2" of the plot settings,
+        /// drawn beside the axis in the line's colour. Empty draws nothing.
+        AxisLabelRole,
         /// Whether the line is a postprocessing pipeline -- a postproc::Script
         /// -- rather than a slice. What turns the card's SLICE box into a DATA
         /// box that takes several lines.
@@ -296,11 +299,21 @@ public:
     /// its extent is recounted here, from values already in hand.
     Q_INVOKABLE void setSeparateAxis(int row, bool on);
     Q_INVOKABLE void setAxisFixed(int row, bool on);
+    /// Name the y axis of its own that line `row` is drawn against.
+    ///
+    /// Kept on the line rather than on the plot settings beside the common
+    /// axis's label, although that is where it is typed: an axis of its own
+    /// *is* the line's, so its name belongs with the line's colour and alias.
+    /// That is what keeps it with the right axis when lines are reordered,
+    /// ticked off and on, or saved in a view -- and a line put back on the
+    /// common axis keeps it, for the reason the request is kept.
+    Q_INVOKABLE void setAxisLabel(int row, const QString& text);
 
     /// The y axis line `series` is drawn against, as
-    /// `{ separate, fixed, finite, low, high }` -- `low` and `high` being the
-    /// extent of that line alone, which is the range the axis would have if it
-    /// were the only line on the plot.
+    /// `{ separate, fixed, finite, low, high, label }` -- `low` and `high`
+    /// being the extent of that line alone, which is the range the axis would
+    /// have if it were the only line on the plot, and `label` what the reader
+    /// called it (see setAxisLabel).
     ///
     /// `separate` is whether the axis is *in force*, which is the request and
     /// more than one drawn line: a plot of one line has only the one axis
@@ -460,6 +473,8 @@ private:
         /// force; `ownAxis` below is whether one is.
         bool separateAxis = false;
         bool axisFixed = false;
+        /// What that axis is called. See setAxisLabel.
+        QString axisLabel;
         /// Whether `expression` is a pipeline rather than a slice. See
         /// setPostprocess, and readLine, which is the one place it changes
         /// how anything is read.

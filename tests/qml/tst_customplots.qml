@@ -1992,4 +1992,74 @@ TestCase {
 
         tryVerify(() => surface.picture === null, 10000, "the grab must answer")
     }
+
+    // --- a name for each axis of its own ------------------------------------
+
+    /// "y label 2" names the first axis of its own. It is typed beside the
+    /// common axis's name in the plot settings, kept on the line whose axis it
+    /// is, and drawn beside that axis in the line's colour.
+    function test_an_axis_of_its_own_is_named_in_its_own_colour() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        mouseClick(findAllOf(view, "customPlotButton")[0])
+        waitForRendering(win.contentItem)
+        compare(findAllOf(view, "plotAxisLabelField").length, 0,
+                "a plot with one y axis has no second one to name")
+
+        plot.setSeparateAxis(1, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+        tryVerify(() => findAllOf(view, "plotAxisLabelField").length === 1, 2000)
+        let fields = findAllOf(view, "plotAxisLabelField")
+        compare(fields[0].placeholderText, "y label 2")
+
+        tryVerify(() => sideAxes(view).length === 1, 2000)
+        const widthBefore = sideAxes(view)[0].width
+
+        fields[0].forceActiveFocus()
+        fields[0].text = "pressure"
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(plot.seriesAxis(1).label, "pressure", "the name is the line's")
+
+        tryVerify(() => {
+            const names = findAllOf(sideAxes(view)[0], "plotSideAxisName")
+            return names.length === 1 && names[0].visible
+        }, 2000, "the name is drawn beside its axis")
+        const axis = sideAxes(view)[0]
+        const name = findAllOf(axis, "plotSideAxisName")[0]
+        compare(name.text, "pressure")
+        compare(String(name.color), String(axis.colour), "in the colour of its line")
+        verify(axis.width > widthBefore, "and the column made room for it")
+
+        // A second axis of its own is a second box, and the name stays with
+        // the line it was given to rather than with the first box.
+        plot.setSeparateAxis(0, true)
+        settleReads()
+        waitForRendering(win.contentItem)
+        tryVerify(() => findAllOf(view, "plotAxisLabelField").length === 2, 2000)
+        fields = findAllOf(view, "plotAxisLabelField")
+        compare(fields[1].placeholderText, "y label 3")
+        compare(fields[1].text, "pressure")
+        compare(fields[0].text, "")
+
+        // A zoom re-lists the axes on every frame; the box being typed in is
+        // not rebuilt under the reader, and keeps what they typed.
+        fields[0].forceActiveFocus()
+        fields[0].text = "temper"
+        const area = surface.plotRect
+        surface.zoomAt(area.x + area.width / 2, area.y + area.height / 2, 2.0, "both")
+        waitForRendering(win.contentItem)
+        compare(findAllOf(view, "plotAxisLabelField")[0], fields[0])
+        compare(fields[0].text, "temper")
+    }
 }

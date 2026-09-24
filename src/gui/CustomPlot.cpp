@@ -568,6 +568,8 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
         return entry.separateAxis;
     case AxisFixedRole:
         return entry.axisFixed;
+    case AxisLabelRole:
+        return entry.axisLabel;
     case PostprocessRole:
         return entry.postprocess;
     default:
@@ -588,6 +590,7 @@ QHash<int, QByteArray> CustomPlot::roleNames() const
             {ColourRole, "colour"},
             {SeparateAxisRole, "separateAxis"},
             {AxisFixedRole, "axisFixed"},
+            {AxisLabelRole, "axisLabel"},
             {PostprocessRole, "postprocess"}};
 }
 
@@ -952,6 +955,23 @@ void CustomPlot::setAxisFixed(int row, bool on)
     announce();
 }
 
+void CustomPlot::setAxisLabel(int row, const QString& text)
+{
+    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+        return;
+    }
+    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    const QString trimmed = text.trimmed();
+    if (entry.axisLabel == trimmed) {
+        return;
+    }
+    entry.axisLabel = trimmed;
+    touch(row, {AxisLabelRole});
+    // A word beside an axis. Nothing is re-read, no point moves and no extent
+    // changes; `changed` is what the surface asks seriesAxis() again on.
+    announce();
+}
+
 QVariantMap CustomPlot::seriesAxis(int series) const
 {
     if (series < 0 || series >= static_cast<int>(entries_.size())) {
@@ -962,7 +982,8 @@ QVariantMap CustomPlot::seriesAxis(int series) const
             {QStringLiteral("fixed"), entry.ownAxis && entry.axisFixed},
             {QStringLiteral("finite"), entry.finite},
             {QStringLiteral("low"), entry.low},
-            {QStringLiteral("high"), entry.high}};
+            {QStringLiteral("high"), entry.high},
+            {QStringLiteral("label"), entry.axisLabel}};
 }
 
 void CustomPlot::setScaling(int row, Scaling scaling)
@@ -2560,6 +2581,9 @@ QVariantMap CustomPlot::state() const
         if (entry.axisFixed) {
             fields.insert(QStringLiteral("axisFixed"), true);
         }
+        if (!entry.axisLabel.isEmpty()) {
+            fields.insert(QStringLiteral("axisLabel"), entry.axisLabel);
+        }
         // Again only where it says something, so every view saved before a
         // line could be a pipeline is a view of slices, which it is.
         if (entry.postprocess) {
@@ -2616,6 +2640,7 @@ void CustomPlot::setState(const QVariantMap& state)
         }
         entry.separateAxis = fields.value(QStringLiteral("separateAxis"), false).toBool();
         entry.axisFixed = fields.value(QStringLiteral("axisFixed"), false).toBool();
+        entry.axisLabel = fields.value(QStringLiteral("axisLabel")).toString().trimmed();
         entry.postprocess = fields.value(QStringLiteral("postprocess"), false).toBool();
         entries_.push_back(std::move(entry));
     }

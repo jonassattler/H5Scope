@@ -434,8 +434,9 @@ Item {
     }
 
     /// Every drawn line that is on an axis of its own, in drawing order, as
-    /// `{ series, line, fixed, low, high, colour, paperColour }` -- `line`
-    /// being its place in what the item was handed and `series` its row.
+    /// `{ series, line, fixed, low, high, label, colour, paperColour }` --
+    /// `line` being its place in what the item was handed, `series` its row,
+    /// and `label` the name the reader gave the axis (CustomPlot::setAxisLabel).
     ///
     /// **A separate axis zooms by the common axis's fractions.** Its whole
     /// is the line's own extent, with the air a lone line would get, so it is
@@ -487,6 +488,7 @@ Item {
                 fixed: axis.fixed,
                 low: whole.low + bottom * span,
                 high: whole.low + top * span,
+                label: axis.label ? axis.label : "",
                 colour: surface.seriesColor(drawn[i], i, drawn.length, false),
                 paperColour: surface.seriesColor(drawn[i], i, drawn.length, true)
             })
