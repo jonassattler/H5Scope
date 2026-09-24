@@ -430,6 +430,60 @@ TestCase {
         verify(plot.hasData, "a member named by Tab is a line like any other")
     }
 
+    /// A row the reader moved onto is taken by Return and by a click, in this
+    /// box as in the slice bar's: it is the same list. Return applies the line
+    /// only once nothing is chosen.
+    function test_the_entry_box_takes_the_chosen_row_on_return_and_on_a_click() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        mouseClick(findAllOf(view, "addEntry")[0])
+        waitForRendering(win.contentItem)
+
+        const box = findAllOf(view, "entryBox")[0]
+        const list = findChild(box, "entryCompletion")
+        verify(list, "the box must have its list")
+        mouseClick(box)
+
+        typeInto(box, "/series/trace_pairs[:]")
+        tryVerify(() => AppController.completions("/series/trace_pairs[:]").length === 2,
+                  10000, "the datatype must arrive")
+        box.textEdited()
+        waitForRendering(win.contentItem)
+        verify(list.visible)
+
+        keyClick(Qt.Key_Down)
+        keyClick(Qt.Key_Down)
+        const chosen = list.chosen
+        verify(chosen.startsWith("/series/trace_pairs[:]."), chosen)
+        keyClick(Qt.Key_Return)
+        compare(box.text, chosen, "Return takes the row the reader moved onto")
+        const plot = AppController.customPlots.plotAt(0)
+        const committed = () => plot.data(plot.index(0, 0), CustomPlot.ExpressionRole)
+        compare(committed(), "", "and commits nothing")
+
+        // A click on a row, with the box keeping the keyboard.
+        typeInto(box, "/series/trace_pairs[:]")
+        waitForRendering(win.contentItem)
+        verify(list.visible)
+        const row = list.contentItem.itemAtIndex(0)
+        verify(row)
+        const clicked = row.modelData
+        mouseClick(row)
+        waitForRendering(win.contentItem)
+        compare(box.text, clicked)
+        verify(box.activeFocus, "the box is still being written in")
+
+        keyClick(Qt.Key_Return)
+        settleReads()
+        compare(committed(), clicked, "and Return with nothing chosen commits")
+        verify(plot.hasData)
+    }
+
     function test_a_line_with_postprocessing_takes_a_pipeline_in_a_data_box() {
         const win = openWindow()
         win.addCustomTab()

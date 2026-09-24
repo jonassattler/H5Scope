@@ -50,8 +50,9 @@ ScrollView {
 
     /// A CompletionPopup this box drives from the keyboard, or null. Tab
     /// writes as much as every candidate shares and only then chooses; Up and
-    /// Down move through the list while it is showing and the caret otherwise.
-    /// With nothing to take, Tab is let through and moves focus on, as it does
+    /// Down move through the list while it is showing and the caret otherwise,
+    /// and a row they have moved onto is what Tab and Return then take. With
+    /// nothing to take, Tab is let through and moves focus on, as it does
     /// everywhere else in this window.
     property var completion: null
 
@@ -119,6 +120,11 @@ ScrollView {
             return
         }
         event.accepted = true
+        // A row of the list the reader moved onto is what Return takes, as in
+        // every box with a list; the script is committed only when there is
+        // none. See CompletionPopup.
+        if (field.completion !== null && field.completion.takeChosen())
+            return
         field.accepted()
     }
 }

@@ -28,6 +28,23 @@ void FocusRelease::setWindow(QQuickWindow* window)
     emit windowChanged();
 }
 
+bool FocusRelease::keepsTextFocus(const QQuickItem* item, const QPointF& scene)
+{
+    // Only down through what is under the pointer, so this costs the depth of
+    // the scene at that point and not the size of it. That is enough for what
+    // it is looking for: a completion list is a popup, popups live in the
+    // overlay, and the overlay covers the whole window.
+    for (const QQuickItem* child : item->childItems()) {
+        if (!child->isVisible() || !child->contains(child->mapFromScene(scene))) {
+            continue;
+        }
+        if (child->property("keepsTextFocus").toBool() || keepsTextFocus(child, scene)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool FocusRelease::isTextEntry(const QQuickItem* item)
 {
     if (item == nullptr) {
@@ -56,6 +73,16 @@ bool FocusRelease::eventFilter(QObject* watched, QEvent* event)
     // nudged without losing the keyboard.
     const auto* press = static_cast<QMouseEvent*>(event);
     if (focused->contains(focused->mapFromScene(press->scenePosition()))) {
+        return QObject::eventFilter(watched, event);
+    }
+
+    // Nor is the list of what could be written in it. It hangs under the box
+    // and is drawn outside it, and it is only up while the box has the
+    // keyboard -- so letting go here closed it on the press, and the row the
+    // reader was clicking had gone before the release could reach it. That
+    // was the whole of why a click in a completion list did nothing.
+    if (QQuickItem* content = window_->contentItem();
+        content != nullptr && keepsTextFocus(content, press->scenePosition())) {
         return QObject::eventFilter(watched, event);
     }
 

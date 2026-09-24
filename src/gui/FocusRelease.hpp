@@ -55,6 +55,14 @@ public:
     /// Whether `item` is something a caret can sit in.
     [[nodiscard]] static bool isTextEntry(const QQuickItem* item);
 
+    /// Whether anything under `scene`, below `item`, is part of the box being
+    /// edited rather than somewhere else: an item that declares
+    /// `keepsTextFocus: true`. Asked by what an item *says* rather than by its
+    /// type, for isTextEntry's reason. CompletionPopup's list is the one that
+    /// says it -- a press there picks what goes in the box, and must not be
+    /// what ends the edit.
+    [[nodiscard]] static bool keepsTextFocus(const QQuickItem* item, const QPointF& scene);
+
 signals:
     void windowChanged();
 
