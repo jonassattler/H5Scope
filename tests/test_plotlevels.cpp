@@ -508,6 +508,82 @@ TEST_CASE("the whole-line summary comes out of the pyramid", "[levels][pyramid]"
     }
 }
 
+TEST_CASE("a pyramid streamed in pieces is the pyramid of the whole line", "[levels][pyramid]")
+{
+    // Both plots build their pyramids this way -- a read at a time, of up to
+    // kReadRun elements, with whatever does not fill a bucket carried into the
+    // next read -- and nothing asserted it against the one-buffer build. A
+    // carry that dropped or doubled one element would shift every bucket after
+    // it by one, and draw a line that is nearly right everywhere.
+    const std::vector<double> line = testLine(50000);
+    const auto length = static_cast<long long>(line.size());
+
+    for (const long long base : {1LL, 4LL, 16LL}) {
+        // Pieces that land on bucket boundaries, pieces that never do, and one
+        // element at a time.
+        for (const long long piece : {4096LL, 1000LL, 7LL, 1LL}) {
+            INFO("base " << base << " piece " << piece);
+            gui::PyramidBuilder builder(length, base);
+            for (long long at = 0; at < length; at += piece) {
+                builder.add(line.data() + at, std::min(piece, length - at));
+            }
+            CHECK(builder.taken() == length);
+            const gui::LinePyramid streamed = builder.finish();
+            const gui::LinePyramid whole = gui::pyramidOf(line.data(), length, base);
+
+            REQUIRE(streamed.length == whole.length);
+            REQUIRE(streamed.levels.size() == whole.levels.size());
+            for (std::size_t level = 0; level < whole.levels.size(); ++level) {
+                INFO("level " << level);
+                CHECK(streamed.levels[level].bucket == whole.levels[level].bucket);
+                same(streamed.levels[level].values, whole.levels[level].values);
+            }
+        }
+    }
+}
+
+TEST_CASE("a pyramid whose reads stopped short answers only for what it holds", "[levels][pyramid]")
+{
+    // A pyramid is built for the length the line was said to have, and every
+    // fold, column and extreme afterwards indexes its base up to that length.
+    // A walk that stopped part of the way -- a read that failed on the third
+    // hyperslab of ten -- left a base shorter than the length it carried, and
+    // those reads went off the end of it. The length is now what was handed
+    // in, so what is answered is the part of the line that exists.
+    const std::vector<double> line = testLine(20000);
+    constexpr long long kPromised = 50000;
+
+    for (const long long base : {1LL, 8LL}) {
+        INFO("base " << base);
+        gui::PyramidBuilder builder(kPromised, base);
+        builder.add(line.data(), static_cast<long long>(line.size()));
+        const gui::LinePyramid pyramid = builder.finish();
+
+        CHECK(pyramid.length == 20000);
+
+        // The whole-line summary is of the part there is...
+        long long stride = 0;
+        double step = 0.0;
+        std::vector<double> got;
+        REQUIRE(gui::fillWhole(pyramid, 512, got, stride, step));
+        same(got, readWould(line, 0, 20000, stride));
+
+        // ...a run reaching past it stops where it does...
+        std::vector<double> run;
+        REQUIRE(gui::fillWindow(pyramid, gui::PlotWindow{16384, 16384, 16, 1024}, run));
+        same(run, readWould(line, 16384, 16384, 16));
+
+        // ...and the extremes of a range over the end are the extremes of
+        // what is inside it.
+        const gui::Extremes found = gui::extremesOver(pyramid, 19000, kPromised);
+        REQUIRE(found.found());
+        std::vector<double> tail;
+        gui::reduceBuckets(line.data() + 19000, 1000, 1000, tail);
+        CHECK(std::min(tail[0], tail[1]) == found.lowest);
+        CHECK(std::max(tail[0], tail[1]) == found.highest);
+    }
+}
+
 TEST_CASE("the base bucket is the finest the budget affords", "[levels][pyramid]")
 {
     // A pyramid costs its base and a third again, so the budget decides how

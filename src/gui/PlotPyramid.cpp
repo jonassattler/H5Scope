@@ -243,6 +243,14 @@ LinePyramid PyramidBuilder::finish()
         }
         carry_.clear();
     }
+    // The length is what was handed in, not what was promised. Everything that
+    // reads a pyramid -- a fold, a column, the extremes over a run -- indexes
+    // its base up to `length` and trusts the base to be that long, so a line
+    // whose reads stopped short of the length it was built for would otherwise
+    // be read past the end of the buffer holding it. The caller that stops
+    // early on purpose used to have to say so by hand afterwards; now nothing
+    // can forget to.
+    pyramid_.length = std::min(pyramid_.length, taken_);
     // The levels above the base are built here, whole and over the machine,
     // rather than a chunk at a time as each read lands.
     //

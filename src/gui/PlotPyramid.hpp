@@ -163,6 +163,10 @@ public:
 
     /// Close the base's last bucket, build every level above it, and hand the
     /// pyramid over.
+    ///
+    /// Its length is what was added, where that is less than the length it was
+    /// built for: a line whose reads stopped part of the way is that much of a
+    /// line, and never a promise of elements the base does not hold.
     [[nodiscard]] LinePyramid finish();
 
 private:
