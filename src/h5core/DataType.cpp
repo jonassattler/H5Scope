@@ -461,9 +461,19 @@ TypeInfo describeTypeAt(hid_t type, int depth)
 
 } // namespace
 
-std::string formatElement(hid_t type, const void* data)
+namespace {
+
+/// What a value nested past kMaxTypeDepth is written as.
+constexpr std::string_view kTooDeep = "<nested too deep>";
+
+std::string formatElementAt(hid_t type, const void* data, int level)
 {
-    thread::check(__func__);
+    // Bounded for describeType's reason: the recursion is driven by bytes off
+    // a disk, and a value that runs out of stack is a worse answer than one
+    // that stops.
+    if (level > kMaxTypeDepth) {
+        return std::string(kTooDeep);
+    }
     switch (classOf(H5Tget_class(type))) {
     case TypeClass::Integer:
         return formatInteger(type, data);
@@ -490,8 +500,8 @@ std::string formatElement(hid_t type, const void* data)
                 H5free_memory(name);
             }
             if (member.valid()) {
-                out << formatElement(member.get(),
-                                     static_cast<const unsigned char*>(data) + offset);
+                out << formatElementAt(member.get(),
+                                       static_cast<const unsigned char*>(data) + offset, level + 1);
             }
         }
         out << "}";
@@ -520,8 +530,8 @@ std::string formatElement(hid_t type, const void* data)
             if (i > 0) {
                 out << ", ";
             }
-            out << formatElement(base.get(),
-                                 static_cast<const unsigned char*>(data) + i * stride);
+            out << formatElementAt(base.get(), static_cast<const unsigned char*>(data) + i * stride,
+                                   level + 1);
         }
         out << "]";
         return out.str();
@@ -540,7 +550,8 @@ std::string formatElement(hid_t type, const void* data)
             if (i > 0) {
                 out << ", ";
             }
-            out << formatElement(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride);
+            out << formatElementAt(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
+                                   level + 1);
         }
         out << "]";
         return out.str();
@@ -556,6 +567,14 @@ std::string formatElement(hid_t type, const void* data)
         break;
     }
     return formatBytes(data, H5Tget_size(type));
+}
+
+} // namespace
+
+std::string formatElement(hid_t type, const void* data)
+{
+    thread::check(__func__);
+    return formatElementAt(type, data, 0);
 }
 
 std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
@@ -590,9 +609,13 @@ std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
     return fields;
 }
 
-std::string toJson(hid_t type, const void* data, int depth)
+namespace {
+
+std::string toJsonAt(hid_t type, const void* data, int depth, int level)
 {
-    thread::check(__func__);
+    if (level > kMaxTypeDepth) {
+        return quoteJson(kTooDeep);
+    }
     switch (classOf(H5Tget_class(type))) {
     case TypeClass::Integer:
         // Straight through: an integer is already a JSON number, and putting
@@ -637,9 +660,8 @@ std::string toJson(hid_t type, const void* data, int depth)
                 H5free_memory(name);
             }
             out << (member.valid()
-                        ? toJson(member.get(),
-                                 static_cast<const unsigned char*>(data) + offset,
-                                 depth + 1)
+                        ? toJsonAt(member.get(), static_cast<const unsigned char*>(data) + offset,
+                                   depth + 1, level + 1)
                         : std::string("null"));
         }
         out << "\n" << jsonLead(depth) << "}";
@@ -675,9 +697,8 @@ std::string toJson(hid_t type, const void* data, int depth)
             } else if (i > 0) {
                 out << " ";
             }
-            out << toJson(base.get(),
-                          static_cast<const unsigned char*>(data) + i * stride,
-                          broken ? depth + 1 : depth);
+            out << toJsonAt(base.get(), static_cast<const unsigned char*>(data) + i * stride,
+                            broken ? depth + 1 : depth, level + 1);
         }
         if (broken) {
             out << "\n" << jsonLead(depth);
@@ -706,8 +727,8 @@ std::string toJson(hid_t type, const void* data, int depth)
             } else if (i > 0) {
                 out << " ";
             }
-            out << toJson(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
-                          broken ? depth + 1 : depth);
+            out << toJsonAt(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
+                            broken ? depth + 1 : depth, level + 1);
         }
         if (broken) {
             out << "\n" << jsonLead(depth);
@@ -721,15 +742,14 @@ std::string toJson(hid_t type, const void* data, int depth)
         Handle base(H5Tget_super(type), &H5Tclose);
         if (!base.valid()) {
             H5Eclear2(H5E_DEFAULT);
-            return quoteJson(formatElement(type, data));
+            return quoteJson(formatElementAt(type, data, level));
         }
         const std::size_t part = H5Tget_size(base.get());
         // On one line whatever the depth: two numbers with fixed names are one
         // value, and breaking them apart says they are a struct to look up.
         return std::format(
-            "{{\"re\": {}, \"im\": {}}}", toJson(base.get(), data, depth),
-            toJson(base.get(), static_cast<const unsigned char*>(data) + part,
-                   depth));
+            "{{\"re\": {}, \"im\": {}}}", toJsonAt(base.get(), data, depth, level + 1),
+            toJsonAt(base.get(), static_cast<const unsigned char*>(data) + part, depth, level + 1));
     }
     case TypeClass::Bitfield:
     case TypeClass::Opaque:
@@ -740,7 +760,15 @@ std::string toJson(hid_t type, const void* data, int depth)
     }
     // Everything the format keeps as bytes. There is no JSON number for a
     // bitfield, and the hex is what the grid shows for it too.
-    return quoteJson(formatElement(type, data));
+    return quoteJson(formatElementAt(type, data, level));
+}
+
+} // namespace
+
+std::string toJson(hid_t type, const void* data, int depth)
+{
+    thread::check(__func__);
+    return toJsonAt(type, data, depth, 0);
 }
 
 std::optional<std::size_t> bufferBytes(hsize_t elements, std::size_t elementSize) noexcept

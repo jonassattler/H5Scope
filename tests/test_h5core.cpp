@@ -1246,6 +1246,32 @@ TEST_CASE("a member chain whose dimensions are not the file's is refused", "[h5c
     CHECK_THROWS_AS(h5core::FieldDataset(file, "/records", stale), h5core::H5Error);
 }
 
+TEST_CASE("a value nested past the type depth bound is cut off, not recursed into",
+          "[h5core][format]")
+{
+    // describeType stopped at a bound and formatting did not: the recursion is
+    // driven by the datatype a file states, and one nested deep enough ran
+    // formatElement and toJson out of stack. Forty structs of one member each,
+    // the innermost holding an int32.
+    h5core::Handle type(H5Tcopy(H5T_NATIVE_INT32), &H5Tclose);
+    for (int level = 0; level < 40; ++level) {
+        h5core::Handle wrapper(H5Tcreate(H5T_COMPOUND, sizeof(std::int32_t)), &H5Tclose);
+        REQUIRE(H5Tinsert(wrapper.get(), "inner", 0, type.get()) >= 0);
+        type = std::move(wrapper);
+    }
+    const std::int32_t value = 7;
+
+    const std::string text = h5core::formatElement(type.get(), &value);
+    CHECK_THAT(text, ContainsSubstring("<nested too deep>"));
+    CHECK_THAT(text, !ContainsSubstring("7"));
+    CHECK_THAT(h5core::toJson(type.get(), &value), ContainsSubstring("<nested too deep>"));
+
+    // ...and a shallow one is written out in full.
+    h5core::Handle shallow(H5Tcreate(H5T_COMPOUND, sizeof(std::int32_t)), &H5Tclose);
+    REQUIRE(H5Tinsert(shallow.get(), "inner", 0, H5T_NATIVE_INT32) >= 0);
+    CHECK(h5core::formatElement(shallow.get(), &value) == "{inner=7}");
+}
+
 TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
 {
     // A member of a packed compound, or the nth element of an array of odd
