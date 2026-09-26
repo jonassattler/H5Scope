@@ -663,9 +663,7 @@ std::optional<LogColumns> DatasetPlot::foldWanted() const
 
 bool DatasetPlot::foldServes() const
 {
-    return fold_.columns.has_value() && fold_.start == xStart_ && fold_.step == xStep_ &&
-           fold_.buckets == paneBuckets() &&
-           logColumnsServe(*fold_.columns, viewMin_, viewMax_, paneBuckets());
+    return fold_.grid.serves(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
 }
 
 void DatasetPlot::dropFold() const
@@ -674,7 +672,7 @@ void DatasetPlot::dropFold() const
     retire(fold_.xs);
     fold_.summarised.clear();
     fold_.edges.clear();
-    fold_.columns.reset();
+    fold_.grid.clear();
 }
 
 bool DatasetPlot::foldedLine(int series, PlotLine& line) const
@@ -687,11 +685,11 @@ bool DatasetPlot::foldedLine(int series, PlotLine& line) const
         // margin, or an axis that moved. Retired rather than freed, because the
         // renderer is drawing the old one until it is handed this.
         dropFold();
-        fold_.columns = logColumnsFor(viewMin_, viewMax_, paneBuckets());
-        fold_.start = xStart_;
-        fold_.step = xStep_;
-        fold_.buckets = paneBuckets();
-        edgesAlong(*fold_.columns, xStart_, xStep_, fold_.edges);
+        fold_.grid.remake(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
+        if (!fold_.grid.columns.has_value()) {
+            return false;
+        }
+        edgesAlong(*fold_.grid.columns, xStart_, xStep_, fold_.edges);
     }
 
     auto values = fold_.values.find(series);

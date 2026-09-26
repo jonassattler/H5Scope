@@ -587,13 +587,8 @@ private:
     /// `lines_` is, keyed as it is, and pruned and retired with it.
     struct LogFold
     {
-        std::optional<LogColumns> columns;
-        /// What the x of every point was worked out with. A fold is of one
-        /// axis; moving the axis is a fold that no longer says where anything
-        /// is.
-        double start = 0.0;
-        double step = 1.0;
-        int buckets = 0;
+        /// The grid it was made on, and the axis it was made against.
+        LogFoldGrid grid;
         /// The column edges in table positions, shared by every line.
         std::vector<double> edges;
         std::map<int, std::vector<double>> values;

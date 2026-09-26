@@ -1050,3 +1050,30 @@ TEST_CASE("a zoom focus is a finite point and a direction, or none", "[levels][f
     focus.clear();
     CHECK_FALSE(focus.active);
 }
+
+TEST_CASE("a log fold's grid serves the axis it was made on and no other", "[levels][fold]")
+{
+    gui::LogFoldGrid grid;
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+
+    grid.remake(0.0, 1.0, 0, 1024, 1.0, 1e6);
+    REQUIRE(grid.columns.has_value());
+    CHECK(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+    // A pan inside the margin is the same grid.
+    CHECK(grid.serves(0.0, 1.0, 0, 1024, 2.0, 2e6));
+
+    // Anything that changes where a point's x comes from is another grid.
+    CHECK_FALSE(grid.serves(5.0, 1.0, 0, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 2.0, 0, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 1.0, 1, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 512, 1.0, 1e6));
+
+    // Under an octave there is no grid at all.
+    grid.remake(0.0, 1.0, 0, 1024, 10.0, 15.0);
+    CHECK_FALSE(grid.columns.has_value());
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 10.0, 15.0));
+
+    grid.remake(0.0, 1.0, 0, 1024, 1.0, 1e6);
+    grid.clear();
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+}

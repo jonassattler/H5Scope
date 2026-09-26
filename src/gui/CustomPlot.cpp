@@ -1162,9 +1162,8 @@ std::optional<LogColumns> CustomPlot::foldWanted() const
 
 bool CustomPlot::foldServes() const
 {
-    return foldColumns_.has_value() && foldStart_ == xStart_ && foldStep_ == xStep_ &&
-           foldMode_ == static_cast<int>(xMode_) && foldBuckets_ == bucketBudget() &&
-           logColumnsServe(*foldColumns_, viewMin_, viewMax_, bucketBudget());
+    return foldGrid_.serves(xStart_, xStep_, static_cast<int>(xMode_), bucketBudget(), viewMin_,
+                            viewMax_);
 }
 
 void CustomPlot::dropFold() const
@@ -1174,7 +1173,7 @@ void CustomPlot::dropFold() const
         retire(entry.foldXs);
         entry.foldGeneration = -1;
     }
-    foldColumns_.reset();
+    foldGrid_.clear();
     ++foldGeneration_;
 }
 
@@ -1259,11 +1258,11 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
         // retired rather than freed, because the renderer is drawing them
         // until it is handed these.
         dropFold();
-        foldColumns_ = logColumnsFor(viewMin_, viewMax_, bucketBudget());
-        foldStart_ = xStart_;
-        foldStep_ = xStep_;
-        foldMode_ = static_cast<int>(xMode_);
-        foldBuckets_ = bucketBudget();
+        foldGrid_.remake(xStart_, xStep_, static_cast<int>(xMode_), bucketBudget(), viewMin_,
+                         viewMax_);
+    }
+    if (!foldGrid_.columns.has_value()) {
+        return false;
     }
     if (entry.foldGeneration != foldGeneration_) {
         retire(entry.foldValues);
@@ -1273,10 +1272,10 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
         const double scale = stretchScale(entry);
         std::vector<double> edges;
         if (xMode_ == Dataset) {
-            timeEdges(*foldColumns_, scale, edges);
+            timeEdges(*foldGrid_.columns, scale, edges);
         }
         else {
-            edgesAlong(*foldColumns_, xStart_, xStep_ * scale, edges);
+            edgesAlong(*foldGrid_.columns, xStart_, xStep_ * scale, edges);
         }
         ColumnFold folded;
         foldColumns(entry.pyramid, edges, folded);

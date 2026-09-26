@@ -815,11 +815,7 @@ private:
 
     /// The grid every entry's fold was made on, and what each point's x was
     /// worked out with. See Entry::foldValues.
-    mutable std::optional<LogColumns> foldColumns_;
-    mutable double foldStart_ = 0.0;
-    mutable double foldStep_ = 1.0;
-    mutable int foldBuckets_ = 0;
-    mutable int foldMode_ = -1;
+    mutable LogFoldGrid foldGrid_;
     mutable long long foldGeneration_ = 0;
     /// Whether the held time base runs one way, asked once per time base
     /// rather than once per fold: the answer is a walk of every element.

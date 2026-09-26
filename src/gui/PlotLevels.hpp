@@ -469,6 +469,34 @@ struct LogColumns
 /// a reach that covers it. What a model asks before it folds again.
 [[nodiscard]] bool logColumnsServe(const LogColumns& held, double low, double high, int columns);
 
+/// The grid a model's logarithmic fold was made on, and the axis it was made
+/// against.
+///
+/// A fold is of one axis: every point's x was worked out from `start` and
+/// `step` (and, on a custom tab, from which kind of axis it is), so moving the
+/// axis is a fold that no longer says where anything is, and so is a pane that
+/// now wants a different number of columns. Both plots kept these fields and
+/// asked the same question of them; this is that question.
+struct LogFoldGrid
+{
+    std::optional<LogColumns> columns;
+    double start = 0.0;
+    double step = 1.0;
+    int buckets = 0;
+    /// Which kind of x axis the fold was made against, for a model that has
+    /// more than one way of turning a position into an x. Zero otherwise.
+    int mode = 0;
+
+    /// Whether this grid still serves a view of `low`..`high` over `buckets`
+    /// columns, on an axis of `start`, `step` and `mode`.
+    [[nodiscard]] bool serves(double atStart, double atStep, int atMode, int atBuckets, double low,
+                              double high) const;
+    /// Make this the grid for that view. `columns` is empty afterwards when
+    /// the view has none -- under an octave, or not a window at all.
+    void remake(double atStart, double atStep, int atMode, int atBuckets, double low, double high);
+    void clear() { columns.reset(); }
+};
+
 /// The edges of `columns` as positions along a line whose position `p` sits at
 /// `x = start + p * step`, ascending, into `out`.
 ///

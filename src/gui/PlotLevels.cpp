@@ -402,6 +402,23 @@ bool logColumnsServe(const LogColumns& held, double low, double high, int column
     return wanted.has_value() && wanted->density == held.density && held.covers(low, high);
 }
 
+bool LogFoldGrid::serves(double atStart, double atStep, int atMode, int atBuckets, double low,
+                         double high) const
+{
+    return columns.has_value() && start == atStart && step == atStep && mode == atMode &&
+           buckets == atBuckets && logColumnsServe(*columns, low, high, atBuckets);
+}
+
+void LogFoldGrid::remake(double atStart, double atStep, int atMode, int atBuckets, double low,
+                         double high)
+{
+    columns = logColumnsFor(low, high, atBuckets);
+    start = atStart;
+    step = atStep;
+    mode = atMode;
+    buckets = atBuckets;
+}
+
 void edgesAlong(const LogColumns& columns, double start, double step, std::vector<double>& out)
 {
     out.clear();
