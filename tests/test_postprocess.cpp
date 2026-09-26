@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -221,6 +222,17 @@ TEST_CASE("every operation answers what numpy answers", "[postproc][numpy]")
 // ---------------------------------------------------------------------------
 // The array engine
 // ---------------------------------------------------------------------------
+
+TEST_CASE("an array whose values do not fill its shape is refused", "[postprocess][array]")
+{
+    // Every read walks the shape and trusts the buffer to reach; a shape that
+    // claims more than the values hold was a read past the end in whichever
+    // operation came next.
+    CHECK_NOTHROW(postproc::Array({2, 3}, std::vector<double>(6, 1.0)));
+    CHECK_NOTHROW(postproc::Array({0}, {}));
+    CHECK_THROWS_AS(postproc::Array({2, 3}, std::vector<double>(5, 1.0)), std::invalid_argument);
+    CHECK_THROWS_AS(postproc::Array({2, 3}, std::vector<double>(7, 1.0)), std::invalid_argument);
+}
 
 TEST_CASE("a shape is counted without overflowing", "[postproc][array]")
 {

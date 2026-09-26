@@ -36,8 +36,8 @@ public:
     Array();
 
     /// Take ownership of `values` as a contiguous row-major array of `shape`.
-    /// The caller is responsible for the two agreeing; `valid()` says whether
-    /// they do.
+    /// Throws std::invalid_argument when the two disagree: every later read
+    /// trusts the buffer to reach as far as the shape says.
     Array(std::vector<hsize_t> shape, std::vector<double> values);
 
     [[nodiscard]] const std::vector<hsize_t>& shape() const noexcept { return shape_; }
