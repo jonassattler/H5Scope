@@ -685,10 +685,29 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
 
     auto* vertex = geometry->vertexDataAsColoredPoint2D();
     int at = 0;
+    // Every write goes through here and is checked against the count. The
+    // count above is exact, and test_plotprojection holds strokeRun and
+    // markerAt to it -- but the buffer is the GPU's, and a change that emitted
+    // one vertex more than it counted would write past it rather than fail a
+    // test. Stopping short costs one wrong frame; overrunning is a heap write.
+    const auto put = [&](const QSGGeometry::ColoredPoint2D& written) {
+        Q_ASSERT(at < vertices);
+        if (at < vertices) {
+            vertex[at] = written;
+            ++at;
+        }
+    };
     const auto place = [&](const QPointF& point, const Ink& ink) {
-        vertex[at].set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
-                       ink.green, ink.blue, ink.alpha);
-        ++at;
+        QSGGeometry::ColoredPoint2D written{};
+        written.set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
+                    ink.green, ink.blue, ink.alpha);
+        put(written);
+    };
+    // The bridge between two strips: the last vertex again.
+    const auto repeatLast = [&] {
+        if (at > 0) {
+            put(vertex[at - 1]);
+        }
     };
 
     bool started = false;
@@ -708,8 +727,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                               if (opening) {
                                   opening = false;
                                   if (started) {
-                                      vertex[at] = vertex[at - 1];
-                                      ++at;
+                                      repeatLast();
                                       place(QPointF(x, y), ink);
                                   }
                               }
@@ -735,8 +753,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                 markerAt(points_[static_cast<std::size_t>(run.first + i)], markerSize_ / 2.0,
                          stroke_);
                 if (started) {
-                    vertex[at] = vertex[at - 1];
-                    ++at;
+                    repeatLast();
                     place(stroke_.front(), ink);
                 }
                 for (const QPointF& point : stroke_) {
