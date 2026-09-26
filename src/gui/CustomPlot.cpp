@@ -2266,6 +2266,16 @@ void CustomPlot::fill(PlotItem* target)
     if (target == nullptr) {
         return;
     }
+    // A different item is being handed the lines, so the one that had them is
+    // emptied first. Only one item is ever recorded as reading this plot, and
+    // everything below frees on that record: the retired store at the end of
+    // this call, and every later retire() and releaseDrawing(). An item left
+    // holding pointers it was given before would go on drawing through them
+    // after they were freed -- a detached custom tab is drawn by a second
+    // PlotSurface, and the one it left behind in the tab bar was exactly that.
+    if (drawing_ != nullptr && drawing_ != target) {
+        drawing_->clear();
+    }
     std::vector<PlotLine> lines;
     lines.reserve(entries_.size());
     for (std::size_t i = 0; i < entries_.size(); ++i) {

@@ -2607,6 +2607,35 @@ TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is
 
 }
 
+TEST_CASE_METHOD(PlotFixture, "a custom plot filled into a second item empties the first",
+                 "[custom]")
+{
+    // A detached tab is drawn by the window's surface, and the surface it left
+    // in the tab bar still held what it was last handed. Only one item is ever
+    // recorded as the reader, so everything freed afterwards was freed from
+    // under the other one.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+
+    gui::PlotItem tabbed;
+    gui::PlotItem windowed;
+    plot->fill(&tabbed);
+    REQUIRE(tabbed.lineCount() == 1);
+
+    plot->fill(&windowed);
+    CHECK(windowed.lineCount() == 1);
+    CHECK(tabbed.lineCount() == 0);
+
+    // ...and back again, when the window closes.
+    plot->fill(&tabbed);
+    CHECK(tabbed.lineCount() == 1);
+    CHECK(windowed.lineCount() == 0);
+
+    // The same item filled twice keeps what it was given.
+    plot->fill(&tabbed);
+    CHECK(tabbed.lineCount() == 1);
+}
+
 TEST_CASE_METHOD(PlotFixture,
                  "what a custom plot filled goes on being drawn until it is replaced", "[custom]")
 {

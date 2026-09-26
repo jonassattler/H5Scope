@@ -2334,6 +2334,29 @@ TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture, "the plot filled into a second item empties the first",
+                 "[plot]")
+{
+    // Only one item is recorded as reading the plot, and every later free is
+    // decided on that record, so an item it has stopped handing lines to must
+    // stop drawing them.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+
+    gui::PlotItem first;
+    gui::PlotItem second;
+    plot->fill(&first);
+    REQUIRE(first.lineCount() == 6);
+
+    plot->fill(&second);
+    CHECK(second.lineCount() == 6);
+    CHECK(first.lineCount() == 0);
+
+    plot->fill(&second);
+    CHECK(second.lineCount() == 6);
+}
+
 TEST_CASE_METHOD(ControllerFixture, "what the plot filled is emptied before it is freed",
                  "[plot]")
 {
