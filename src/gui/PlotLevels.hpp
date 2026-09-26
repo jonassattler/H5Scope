@@ -285,6 +285,57 @@ inline constexpr int kSettleMilliseconds = 150;
 /// one run of each line, a resize re-reads all of every one.
 inline constexpr int kResizeMilliseconds = 200;
 
+/// The pane width a plot reads against, and the one it has been asked for.
+///
+/// Both plots took the surface's width the same way -- rounded down to
+/// kColumnQuantum, held until the drag that is changing it stops, taken at once
+/// the first time because that is a measurement and not a gesture -- and each
+/// carried its own copy of the three fields and the branches over them. This is
+/// that arithmetic without the timer, which is the plot's: request() says what
+/// to do with it and apply() is what the timer's end amounts to.
+struct PaneColumns
+{
+    /// What the caller should do with its resize timer.
+    enum class Step
+    {
+        Nothing, ///< the same width again: leave the timer as it is
+        Cancel,  ///< dragged out and back inside one gesture: stop it
+        Apply,   ///< the first measurement: stop it and apply now
+        Wait,    ///< a gesture in progress: restart it, and apply when it fires
+    };
+
+    /// The width reads are made against.
+    int applied = kDefaultColumns;
+    /// The width the surface last asked for, rounded.
+    int wanted = kDefaultColumns;
+    /// Whether the surface has ever said how wide the pane is.
+    bool measured = false;
+
+    /// The surface's width, `columns` device pixels.
+    Step request(int columns);
+    /// Take the width asked for. False when it is the one already applied,
+    /// which is not a change and costs no read.
+    bool apply();
+};
+
+/// Where a reader is zooming, in the x the axis prints.
+///
+/// Kept in x rather than as a position, because everything that changes how a
+/// position becomes an x -- a different start or step, a time base -- would
+/// otherwise leave it pointing somewhere the reader never was. Each plot turns
+/// it into a PlotFocus over its own lines.
+struct ZoomFocus
+{
+    double x = 0.0;
+    bool inward = true;
+    bool active = false;
+
+    /// A zoom by `factor` about `x`. A factor above one is in; anything not a
+    /// finite positive factor at a finite x is no focus at all.
+    void set(double atX, double factor);
+    void clear() { active = false; }
+};
+
 /// How far out a run is read before the reader has asked for it.
 ///
 /// The two directions of a zoom are not the same shape, and this is the one

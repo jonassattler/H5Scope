@@ -204,7 +204,7 @@ void DatasetPlot::selectAll()
 int DatasetPlot::pointsFor(int lines) const
 {
     // A bucket is a column, and a bucket answers with two values.
-    const int pane = 2 * columns_;
+    const int pane = 2 * pane_.applied;
     if (lines <= 0) {
         return std::clamp(pane, kMinPoints, kMaxPoints);
     }
@@ -239,10 +239,9 @@ void DatasetPlot::applyCap(int cap)
 
 void DatasetPlot::applyColumns()
 {
-    if (wantedColumns_ == columns_) {
+    if (!pane_.apply()) {
         return;
     }
-    columns_ = wantedColumns_;
     const int cap = pointsFor(static_cast<int>(drawn_.size()));
     if (cap == cap_) {
         // A wider pane that asks for the same number of points is not a
@@ -256,34 +255,22 @@ void DatasetPlot::applyColumns()
 
 void DatasetPlot::setPaneColumns(int columns)
 {
-    // Down to the quantum, and never to nothing. See kColumnQuantum for why
-    // down rather than to the nearest.
-    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
-                                     kMinPoints / 2, kMaxPoints / 2);
-    if (quantised == wantedColumns_) {
-        return;
-    }
-    wantedColumns_ = quantised;
-    if (wantedColumns_ == columns_) {
-        // Dragged out and back again inside one gesture. Nothing to do, and
-        // nothing to wait for either.
+    // Rounded down to the quantum, taken at once the first time and at the end
+    // of a drag after that. See PaneColumns.
+    switch (pane_.request(columns)) {
+    case PaneColumns::Step::Nothing:
+        break;
+    case PaneColumns::Step::Cancel:
         resize_.stop();
-        return;
-    }
-    if (!measured_) {
-        // The surface measuring itself for the first time. There is no gesture
-        // to wait out and nothing for the wait to protect: whatever has been
-        // read so far was read at an assumed width, so making this one wait
-        // would open every plot at the wrong resolution and re-read every line
-        // of it a fifth of a second later.
-        measured_ = true;
+        break;
+    case PaneColumns::Step::Apply:
         resize_.stop();
         applyColumns();
-        return;
+        break;
+    case PaneColumns::Step::Wait:
+        resize_.start();
+        break;
     }
-    // Otherwise nothing happens here. See the note on the declaration: the read
-    // is at the end of the drag, not once per sixty-four pixels of it.
-    resize_.start();
 }
 
 void DatasetPlot::selectFirst(int count)
@@ -877,13 +864,7 @@ void DatasetPlot::setVisibleRange(double xMin, double xMax)
 
 void DatasetPlot::setZoomFocus(double x, double factor)
 {
-    if (!std::isfinite(x) || !std::isfinite(factor) || !(factor > 0.0)) {
-        clearZoomFocus();
-        return;
-    }
-    focusX_ = x;
-    focusInward_ = factor > 1.0;
-    focusActive_ = true;
+    zoom_.set(x, factor);
     // Not a read of its own: setVisibleRange arrives in the same turn of the
     // event loop with the range this zoom produced, and that is what decides
     // whether anything is worth reading. This only says which way it went.
@@ -891,24 +872,24 @@ void DatasetPlot::setZoomFocus(double x, double factor)
 
 void DatasetPlot::clearZoomFocus()
 {
-    focusActive_ = false;
+    zoom_.clear();
 }
 
 PlotFocus DatasetPlot::focusFor() const
 {
     PlotFocus focus;
-    if (!focusActive_ || !std::isfinite(xStart_) || !std::isfinite(xStep_) ||
+    if (!zoom_.active || !std::isfinite(xStart_) || !std::isfinite(xStep_) ||
         !(std::abs(xStep_) > 0.0)) {
         return focus;
     }
     // x = start + position * step, so a position is the same arithmetic run
     // backwards -- the mapping visiblePositions() uses, over one value.
-    const double position = (focusX_ - xStart_) / xStep_;
+    const double position = (zoom_.x - xStart_) / xStep_;
     if (!std::isfinite(position)) {
         return focus;
     }
     focus.position = position;
-    focus.inward = focusInward_;
+    focus.inward = zoom_.inward;
     focus.active = true;
     return focus;
 }
@@ -1184,7 +1165,7 @@ void DatasetPlot::refreshDetail()
         settle_.stop();
         return;
     }
-    if (focusActive_) {
+    if (zoom_.active) {
         // A zoom reads at once rather than waiting the gesture out.
         //
         // The settle was protecting a thread that can only run one job after

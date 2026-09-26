@@ -1411,7 +1411,7 @@ void CustomPlot::selectFirst(int count)
 
 int CustomPlot::bucketBudget() const
 {
-    return std::clamp(columns_, kMinPoints / 2, kMaxPoints / 2);
+    return std::clamp(pane_.applied, kMinPoints / 2, kMaxPoints / 2);
 }
 
 int CustomPlot::closerBuckets() const
@@ -1435,41 +1435,29 @@ int CustomPlot::closerBuckets() const
 
 void CustomPlot::setPaneColumns(int columns)
 {
-    // Down to the quantum, for the reason DatasetPlot::kColumnQuantum gives:
-    // handing the renderer more than two points per column makes it summarise
-    // again, in powers of two, and a hair too many costs half the resolution.
-    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
-                                     kMinPoints / 2, kMaxPoints / 2);
-    if (quantised == wantedColumns_) {
-        return;
-    }
-    wantedColumns_ = quantised;
-    if (wantedColumns_ == columns_) {
-        // Dragged out and back again inside one gesture. Nothing to do, and
-        // nothing to wait for either.
+    // Rounded down to the quantum, taken at once the first time and at the end
+    // of a drag after that. See PaneColumns.
+    switch (pane_.request(columns)) {
+    case PaneColumns::Step::Nothing:
+        break;
+    case PaneColumns::Step::Cancel:
         resize_.stop();
-        return;
-    }
-    if (!measured_) {
-        // The surface measuring itself for the first time. There is no gesture
-        // to wait out and nothing for the wait to protect -- whatever has been
-        // read so far was read at an assumed width.
-        measured_ = true;
+        break;
+    case PaneColumns::Step::Apply:
         resize_.stop();
         applyColumns();
-        return;
+        break;
+    case PaneColumns::Step::Wait:
+        resize_.start();
+        break;
     }
-    // Otherwise nothing happens here. See the note on the declaration: the read
-    // is at the end of the drag, not once per sixty-four pixels of it.
-    resize_.start();
 }
 
 void CustomPlot::applyColumns()
 {
-    if (wantedColumns_ == columns_) {
+    if (!pane_.apply()) {
         return;
     }
-    columns_ = wantedColumns_;
     // Every entry was reduced against the old width, so every entry is read
     // again -- and what is on screen goes on being drawn until the answer
     // lands.
@@ -1609,10 +1597,10 @@ void CustomPlot::recomputeView()
         viewLow_ = low - lowResolution;
         viewHigh_ = high + highResolution;
         viewUsable_ = std::isfinite(viewLow_) && std::isfinite(viewHigh_) && viewHigh_ > viewLow_;
-        if (focusActive_) {
+        if (zoom_.active) {
             double at = 0.0;
             double ignored = 1.0;
-            focusUsable_ = axisPositionOf(focusX_, at, ignored);
+            focusUsable_ = axisPositionOf(zoom_.x, at, ignored);
             focusPosition_ = at;
         }
         return;
@@ -1632,8 +1620,8 @@ void CustomPlot::recomputeView()
     viewLow_ = low;
     viewHigh_ = high;
     viewUsable_ = true;
-    if (focusActive_) {
-        const double at = (focusX_ - xStart_) / xStep_;
+    if (zoom_.active) {
+        const double at = (zoom_.x - xStart_) / xStep_;
         focusUsable_ = std::isfinite(at);
         focusPosition_ = at;
     }
@@ -1660,24 +1648,18 @@ bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) cons
 
 void CustomPlot::setZoomFocus(double x, double factor)
 {
-    if (!std::isfinite(x) || !std::isfinite(factor) || !(factor > 0.0)) {
-        clearZoomFocus();
-        return;
-    }
-    focusX_ = x;
-    focusInward_ = factor > 1.0;
-    focusActive_ = true;
+    zoom_.set(x, factor);
 }
 
 void CustomPlot::clearZoomFocus()
 {
-    focusActive_ = false;
+    zoom_.clear();
 }
 
 PlotFocus CustomPlot::focusFor(const Entry& entry) const
 {
     PlotFocus focus;
-    if (!focusActive_ || !focusUsable_) {
+    if (!zoom_.active || !focusUsable_) {
         return focus;
     }
     const double scale = stretchScale(entry);
@@ -1689,7 +1671,7 @@ PlotFocus CustomPlot::focusFor(const Entry& entry) const
         return focus;
     }
     focus.position = position;
-    focus.inward = focusInward_;
+    focus.inward = zoom_.inward;
     focus.active = true;
     return focus;
 }
@@ -1960,7 +1942,7 @@ void CustomPlot::refreshCloser()
             wanted = true;
         }
     }
-    if (wanted && focusActive_) {
+    if (wanted && zoom_.active) {
         // A zoom reads at once rather than waiting the gesture out. See
         // DatasetPlot::refreshDetail, which argues it: what bounds the cost is
         // one read at a time, not a wait. A pan has no focus and still settles.

@@ -775,9 +775,7 @@ private:
     /// for the reason DatasetPlot keeps it that way -- and mapped onto each
     /// entry's own elements by focusFor(), because a tab's entries need not be
     /// the same length as one another or as the axis.
-    double focusX_ = 0.0;
-    bool focusInward_ = true;
-    bool focusActive_ = false;
+    ZoomFocus zoom_;
     /// Whether a closer look is out. One at a time; see DatasetPlot::inFlight_.
     bool closerInFlight_ = false;
 
@@ -845,13 +843,9 @@ private:
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;
     double viewMax_ = 0.0;
-    /// Columns the pane has, quantised, until the surface says otherwise.
-    int columns_ = kDefaultColumns;
-    /// ...and the width the surface last pushed, waiting for the drag to stop.
-    int wantedColumns_ = kDefaultColumns;
-    /// Whether the surface has ever said how wide the pane is. The first time
-    /// it does is not a gesture and does not wait; see setPaneColumns.
-    bool measured_ = false;
+    /// Columns the pane has, quantised, and the width the surface last pushed,
+    /// waiting for the drag to stop. See PaneColumns.
+    PaneColumns pane_;
 
     H5Requests requests_;
     /// The closer looks in flight, disowned separately from the reads above: a

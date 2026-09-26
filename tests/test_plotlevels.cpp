@@ -978,3 +978,75 @@ TEST_CASE("the smallest value above zero comes out of the line, not out of its s
         CHECK_FALSE(gui::smallestPositive(pyramid, smallest));
     }
 }
+
+TEST_CASE("a pane's width is taken at once the first time and at the end of a drag after that",
+          "[levels][pane]")
+{
+    using Step = gui::PaneColumns::Step;
+    gui::PaneColumns pane;
+    REQUIRE(pane.applied == gui::kDefaultColumns);
+
+    SECTION("the first measurement is applied without waiting")
+    {
+        CHECK(pane.request(1000) == Step::Apply);
+        CHECK(pane.wanted == 960); // rounded down to the quantum
+        CHECK(pane.apply());
+        CHECK(pane.applied == 960);
+        CHECK_FALSE(pane.apply()); // the same width again is not a change
+    }
+
+    SECTION("after that a new width waits, and the same one again does nothing")
+    {
+        REQUIRE(pane.request(1000) == Step::Apply);
+        REQUIRE(pane.apply());
+        CHECK(pane.request(1300) == Step::Wait);
+        CHECK(pane.request(1310) == Step::Nothing); // inside the same quantum
+        CHECK(pane.apply());
+        CHECK(pane.applied == 1280);
+    }
+
+    SECTION("dragged out and back inside one gesture cancels the wait")
+    {
+        REQUIRE(pane.request(1000) == Step::Apply);
+        REQUIRE(pane.apply());
+        REQUIRE(pane.request(1300) == Step::Wait);
+        CHECK(pane.request(970) == Step::Cancel);
+        CHECK_FALSE(pane.apply());
+        CHECK(pane.applied == 960);
+    }
+
+    SECTION("a width is never nothing and never past the most a line is thinned to")
+    {
+        REQUIRE(pane.request(0) == Step::Apply);
+        CHECK(pane.wanted == gui::kMinPoints / 2);
+        pane.apply();
+        CHECK(pane.request(1 << 20) == Step::Wait);
+        CHECK(pane.wanted == gui::kMaxPoints / 2);
+    }
+}
+
+TEST_CASE("a zoom focus is a finite point and a direction, or none", "[levels][focus]")
+{
+    gui::ZoomFocus focus;
+    CHECK_FALSE(focus.active);
+
+    focus.set(12.5, 2.0);
+    CHECK(focus.active);
+    CHECK(focus.x == 12.5);
+    CHECK(focus.inward);
+
+    focus.set(3.0, 0.5);
+    CHECK(focus.active);
+    CHECK_FALSE(focus.inward);
+
+    focus.set(std::numeric_limits<double>::quiet_NaN(), 2.0);
+    CHECK_FALSE(focus.active);
+    focus.set(1.0, 0.0);
+    CHECK_FALSE(focus.active);
+    focus.set(1.0, std::numeric_limits<double>::infinity());
+    CHECK_FALSE(focus.active);
+
+    focus.set(1.0, 2.0);
+    focus.clear();
+    CHECK_FALSE(focus.active);
+}

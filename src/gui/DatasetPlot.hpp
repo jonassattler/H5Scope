@@ -649,11 +649,6 @@ private:
     /// the drawn set changes in bulk -- see selectFirst -- and not when a
     /// single line is ticked, so the legend stays cheap.
     int cap_ = 2 * kDefaultColumns;
-    /// Columns the pane has, quantised. Until the surface says otherwise this
-    /// is kDefaultColumns, which is about the plot area of a window as it first
-    /// opens -- so a plot nobody has measured is drawn at the resolution one
-    /// would have.
-    int columns_ = kDefaultColumns;
     mutable double minimum_ = 0.0;
     mutable double maximum_ = 0.0;
     mutable double positiveMinimum_ = 0.0;
@@ -666,11 +661,12 @@ private:
     /// retire() keeps alive, releaseDrawing() empties.
     mutable BorrowedLines lent_;
 
-    /// The pane width the surface last pushed, waiting for the drag to stop.
-    int wantedColumns_ = kDefaultColumns;
-    /// Whether the surface has ever said how wide the pane is. The first time
-    /// it does is not a gesture and does not wait; see setPaneColumns.
-    bool measured_ = false;
+    /// Columns the pane has, quantised, and the width the surface last pushed,
+    /// waiting for the drag to stop. Until the surface says otherwise both are
+    /// kDefaultColumns, which is about the plot area of a window as it first
+    /// opens -- so a plot nobody has measured is drawn at the resolution one
+    /// would have. See setPaneColumns.
+    PaneColumns pane_;
     /// Fires once the pane has stopped changing width. See setPaneColumns.
     QTimer resize_;
 
@@ -694,9 +690,7 @@ private:
     /// everything that changes how a position becomes an x -- the axis moving,
     /// a different start or step -- would otherwise leave this pointing
     /// somewhere the reader never was.
-    double focusX_ = 0.0;
-    bool focusInward_ = true;
-    bool focusActive_ = false;
+    ZoomFocus zoom_;
     /// Whether a read is out. One at a time, and the reply arms the next: a
     /// zoom no longer waits out the settle, so without this a wheel spun
     /// through six octaves would queue six reads of runs the reader has already
