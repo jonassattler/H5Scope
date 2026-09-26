@@ -76,8 +76,7 @@ void collectFilters(hid_t createProps, DatasetInfo& info)
         const H5Z_filter_t id =
             H5Pget_filter2(createProps, static_cast<unsigned>(i), &flags, &valueCount,
                            values, sizeof(name), name, &filterConfig);
-        if (id < 0) {
-            H5Eclear2(H5E_DEFAULT);
+        if (failed(id)) {
             continue;
         }
 
@@ -125,10 +124,8 @@ void collectStorageSources(hid_t createProps, DatasetInfo& info)
             // long and no pointer to one converts.
             HDoff_t offset = 0;
             hsize_t size = 0;
-            if (H5Pget_external(createProps, static_cast<unsigned>(i), sizeof(name), name,
-                                &offset, &size)
-                < 0) {
-                H5Eclear2(H5E_DEFAULT);
+            if (failed(H5Pget_external(createProps, static_cast<unsigned>(i), sizeof(name), name,
+                                       &offset, &size))) {
                 continue;
             }
             info.externalFiles.emplace_back(name);
@@ -141,8 +138,7 @@ void collectStorageSources(hid_t createProps, DatasetInfo& info)
         return;
     }
     std::size_t mappings = 0;
-    if (H5Pget_virtual_count(createProps, &mappings) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Pget_virtual_count(createProps, &mappings))) {
         return;
     }
     for (std::size_t i = 0; i < mappings; ++i) {
@@ -215,8 +211,7 @@ Dataset::Dataset(const File& file, const std::string& path) : path_(path)
         info_.layout = layoutOf(createProps.get());
         if (info_.layout == Layout::Chunked) {
             info_.chunk.resize(static_cast<std::size_t>(rank));
-            if (H5Pget_chunk(createProps.get(), rank, info_.chunk.data()) < 0) {
-                H5Eclear2(H5E_DEFAULT);
+            if (failed(H5Pget_chunk(createProps.get(), rank, info_.chunk.data()))) {
                 info_.chunk.clear();
             }
         }

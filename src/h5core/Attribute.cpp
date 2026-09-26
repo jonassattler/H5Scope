@@ -41,8 +41,7 @@ std::string renderValue(hid_t attribute, hid_t nativeType, hid_t space, std::siz
     // held. The count is also the number H5Aread fills the buffer with, which
     // is the only number the buffer may be sized by.
     const hssize_t points = H5Sget_simple_extent_npoints(space);
-    if (points < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(points)) {
         return "<unreadable>";
     }
     const auto total = static_cast<std::size_t>(points);
@@ -59,8 +58,7 @@ std::string renderValue(hid_t attribute, hid_t nativeType, hid_t space, std::siz
         return "<too large to read>";
     }
     std::vector<unsigned char> buffer(*bytes);
-    if (H5Aread(attribute, nativeType, buffer.data()) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Aread(attribute, nativeType, buffer.data()))) {
         return "<unreadable>";
     }
     VlenGuard reclaim(nativeType, space, buffer.data());
@@ -93,8 +91,7 @@ AttributeInfo describeAttribute(hid_t location, const char* name, std::size_t ma
     attr.name = name;
 
     Handle handle(H5Aopen(location, name, H5P_DEFAULT), &H5Aclose);
-    if (!handle.valid()) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(handle)) {
         attr.value = "<unreadable>";
         return attr;
     }
@@ -112,8 +109,7 @@ AttributeInfo describeAttribute(hid_t location, const char* name, std::size_t ma
     const int rank = H5Sget_simple_extent_ndims(space.get());
     if (rank > 0) {
         attr.shape.resize(static_cast<std::size_t>(rank));
-        if (H5Sget_simple_extent_dims(space.get(), attr.shape.data(), nullptr) < 0) {
-            H5Eclear2(H5E_DEFAULT);
+        if (failed(H5Sget_simple_extent_dims(space.get(), attr.shape.data(), nullptr))) {
             attr.shape.clear();
         }
     }

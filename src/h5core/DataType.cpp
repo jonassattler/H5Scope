@@ -173,8 +173,7 @@ std::string formatFloat(hid_t type, const void* data)
 std::string formatComplex(hid_t type, const void* data)
 {
     Handle base(H5Tget_super(type), &H5Tclose);
-    if (!base.valid()) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(base)) {
         return "<complex>";
     }
     const std::size_t part = H5Tget_size(base.get());
@@ -734,8 +733,7 @@ std::string toJsonAt(hid_t type, const void* data, int depth, int level)
         // An object rather than "1+2i": JSON's job is to be taken apart again,
         // and a reader pasting this somewhere wants two numbers.
         Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid()) {
-            H5Eclear2(H5E_DEFAULT);
+        if (failed(base)) {
             return quoteJson(formatElementAt(type, data, level));
         }
         const std::size_t part = H5Tget_size(base.get());

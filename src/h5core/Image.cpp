@@ -4,6 +4,7 @@
 #include "Image.hpp"
 
 #include "DataType.hpp"
+#include "Error.hpp"
 #include "Handle.hpp"
 
 #include <algorithm>
@@ -72,8 +73,7 @@ std::optional<std::string> stringAttribute(hid_t object, const char* name)
         return std::nullopt;
     }
     std::vector<unsigned char> buffer(*bytes);
-    if (H5Aread(attribute.get(), native.get(), buffer.data()) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Aread(attribute.get(), native.get(), buffer.data()))) {
         return std::nullopt;
     }
     VlenGuard reclaim(native.get(), space.get(), buffer.data());
@@ -112,8 +112,7 @@ std::vector<double> numericAttribute(hid_t object, const char* name, std::size_t
     // H5T_NATIVE_DOUBLE as the memory type, so the library widens whatever
     // integer or float the writer chose and this file has no switch over them.
     std::vector<double> values(static_cast<std::size_t>(elements));
-    if (H5Aread(attribute.get(), H5T_NATIVE_DOUBLE, values.data()) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Aread(attribute.get(), H5T_NATIVE_DOUBLE, values.data()))) {
         return {};
     }
     values.resize(count);
