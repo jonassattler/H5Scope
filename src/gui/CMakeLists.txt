@@ -3,6 +3,7 @@
 
 qt_add_library(gui STATIC
   AppController.cpp
+  BorrowedLines.cpp
   H5Thread.cpp
   H5Session.cpp
   H5TreeModel.cpp

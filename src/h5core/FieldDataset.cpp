@@ -10,19 +10,11 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
-#include <functional>
 #include <limits>
-#include <numeric>
 
 namespace h5core {
 
 namespace {
-
-hsize_t product(const std::vector<hsize_t>& dims)
-{
-    return std::accumulate(dims.begin(), dims.end(), static_cast<hsize_t>(1),
-                           std::multiplies<>{});
-}
 
 /// One level of the walk down a chain: the member's type, and the array
 /// dimensions it was wrapped in if it had any.
@@ -31,17 +23,16 @@ struct Level {
     std::vector<hsize_t> dims; ///< empty unless the member is an H5T_ARRAY
 };
 
-std::vector<hsize_t> arrayDimsOf(hid_t type)
+/// Every dimension of `type` and of the arrays nested inside it, outermost
+/// first -- what an array contributes to a chain's shape.
+void appendArrayDims(hid_t type, std::vector<hsize_t>& dims)
 {
-    if (H5Tget_class(type) != H5T_ARRAY) {
-        return {};
+    Handle current(H5Tcopy(type), &H5Tclose);
+    while (current.valid() && H5Tget_class(current.get()) == H5T_ARRAY) {
+        const std::vector<hsize_t> own = arrayDims(current.get());
+        dims.insert(dims.end(), own.begin(), own.end());
+        current = Handle(H5Tget_super(current.get()), &H5Tclose);
     }
-    const int rank = H5Tget_array_ndims(type);
-    std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
-    if (rank > 0) {
-        H5Tget_array_dims2(type, dims.data());
-    }
-    return dims;
 }
 
 /// Walk a chain down a dataset's datatype, opening each member on the way.
@@ -50,11 +41,20 @@ std::vector<hsize_t> arrayDimsOf(hid_t type)
 /// against a TypeInfo -- a description, made earlier, of what may by now be a
 /// different file -- and a member index that still exists under a different
 /// name is the one way this could read the wrong field and say nothing at all.
+///
+/// So are the dimensions, for the same reason and a worse consequence. Every
+/// read sizes a value's slot in the buffer as the member's bytes over the
+/// product of `member.dims`, so dimensions that no longer match the file put
+/// the last slot of the last record past the end of the buffer. They are
+/// collected exactly as postproc's resolver collects them -- every array met
+/// on the way, nested ones included, the dataset's own first -- and compared.
 std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
                              const std::string& path)
 {
     std::vector<Level> levels;
     Handle current(H5Tcopy(fileType), &H5Tclose);
+    std::vector<hsize_t> dims;
+    appendArrayDims(fileType, dims);
 
     for (const MemberLink& link : member.links) {
         // A chain may pass through an array of compounds, in which case the
@@ -71,11 +71,7 @@ std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
         if (link.index >= static_cast<unsigned>(std::max(count, 0))) {
             throw H5Error(std::format("'{}' has no member '{}'", path, link.name));
         }
-        char* found = H5Tget_member_name(current.get(), link.index);
-        const std::string name = (found != nullptr) ? std::string(found) : std::string{};
-        if (found != nullptr) {
-            H5free_memory(found);
-        }
+        const std::string name = memberName(current.get(), link.index).value_or(std::string{});
         if (name != link.name) {
             throw H5Error(std::format("'{}' member {} is '{}', not '{}'", path,
                                       link.index, name, link.name));
@@ -85,9 +81,14 @@ std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
         if (!memberType.valid()) {
             throwError(std::format("Cannot read the type of '{}.{}'", path, link.name));
         }
-        levels.push_back(Level{Handle(H5Tcopy(memberType.get()), &H5Tclose),
-                               arrayDimsOf(memberType.get())});
+        levels.push_back(
+            Level{Handle(H5Tcopy(memberType.get()), &H5Tclose), arrayDims(memberType.get())});
+        appendArrayDims(memberType.get(), dims);
         current = std::move(memberType);
+    }
+    if (dims != member.dims) {
+        throw H5Error(
+            std::format("'{}{}' no longer has the shape it was selected with", path, member.text));
     }
     return levels;
 }
@@ -253,22 +254,26 @@ FieldDataset::Extract FieldDataset::extract(const std::vector<hsize_t>& offset,
 
     read.memoryType = memoryTypeFor(asDouble);
     read.stride = H5Tget_size(read.memoryType.get());
-    const auto perElement = static_cast<std::size_t>(std::max<hsize_t>(
-        product(member_.dims), 1));
+    const auto perElement =
+        static_cast<std::size_t>(std::max<hsize_t>(elementCount(member_.dims), 1));
     read.width = read.stride / perElement;
 
     // What one value is, for formatting: the vlen itself when the whole list is
     // the value, its base when an index has picked one element out of it.
     read.valueType = valueTypeOf(read.memoryType.get());
 
-    if (!selection.memorySpace.valid() || read.leading == 0
-        || product(read.trailCount) == 0) {
+    if (!selection.memorySpace.valid() || read.leading == 0 || elementCount(read.trailCount) == 0) {
         read.leading = 0;
         return read;
     }
 
     read.memorySpace = std::move(selection.memorySpace);
-    read.values.resize(static_cast<std::size_t>(read.leading) * read.stride);
+    const std::optional<std::size_t> bytes = bufferBytes(read.leading, read.stride);
+    if (!bytes.has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  read.leading, name_));
+    }
+    read.values.resize(*bytes);
     check(H5Dread(dataset_.get(), read.memoryType.get(), read.memorySpace.get(),
                   selection.fileSpace.get(), H5P_DEFAULT, read.values.data()),
           std::format("Failed to read '{}'", name_));
@@ -320,6 +325,24 @@ const unsigned char* FieldDataset::valueAt(const Extract& read, hsize_t element,
            + static_cast<std::size_t>(*index) * H5Tget_size(read.valueType.get());
 }
 
+std::vector<hsize_t> FieldDataset::Extract::count() const
+{
+    std::vector<hsize_t> shape = leadCount;
+    shape.insert(shape.end(), trailCount.begin(), trailCount.end());
+    return shape;
+}
+
+template<typename Take>
+void FieldDataset::forEachValue(const Extract& read, Take&& take) const
+{
+    for (hsize_t e = 0; e < read.leading; ++e) {
+        std::vector<hsize_t> step(read.trailCount.size(), 0);
+        do {
+            take(valueAt(read, e, flatten(member_.dims, read.trailOffset, step)));
+        } while (advance(step, read.trailCount));
+    }
+}
+
 DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
                                     const std::vector<hsize_t>& count) const
 {
@@ -328,9 +351,7 @@ DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
 
     DataWindow window;
     window.offset = offset;
-    window.count = read.leadCount;
-    window.count.insert(window.count.end(), read.trailCount.begin(),
-                        read.trailCount.end());
+    window.count = read.count();
     if (read.leading == 0) {
         return window;
     }
@@ -338,19 +359,11 @@ DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.cells.reserve(static_cast<std::size_t>(read.leading)
-                         * static_cast<std::size_t>(product(read.trailCount)));
-    for (hsize_t e = 0; e < read.leading; ++e) {
-        std::vector<hsize_t> step(read.trailCount.size(), 0);
-        do {
-            const hsize_t slot =
-                flatten(member_.dims, read.trailOffset, step);
-            const unsigned char* at = valueAt(read, e, slot);
-            window.cells.push_back(at != nullptr
-                                       ? formatElement(read.valueType.get(), at)
-                                       : std::string{});
-        } while (advance(step, read.trailCount));
-    }
+    window.cells.reserve(static_cast<std::size_t>(elementCount(window.count)));
+    forEachValue(read, [&](const unsigned char* at) {
+        window.cells.push_back(at != nullptr ? formatElement(read.valueType.get(), at)
+                                             : std::string{});
+    });
     return window;
 }
 
@@ -366,9 +379,7 @@ NumericWindow FieldDataset::readNumericWindow(const std::vector<hsize_t>& offset
 
     NumericWindow window;
     window.offset = offset;
-    window.count = read.leadCount;
-    window.count.insert(window.count.end(), read.trailCount.begin(),
-                        read.trailCount.end());
+    window.count = read.count();
     if (read.leading == 0) {
         return window;
     }
@@ -376,23 +387,17 @@ NumericWindow FieldDataset::readNumericWindow(const std::vector<hsize_t>& offset
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.values.reserve(static_cast<std::size_t>(read.leading)
-                          * static_cast<std::size_t>(product(read.trailCount)));
-    for (hsize_t e = 0; e < read.leading; ++e) {
-        std::vector<hsize_t> step(read.trailCount.size(), 0);
-        do {
-            const hsize_t slot = flatten(member_.dims, read.trailOffset, step);
-            const unsigned char* at = valueAt(read, e, slot);
-            // A record whose vlen is too short has no value here, and a NaN is
-            // what says so to a plot: PlotProjection already ends a stroke on
-            // one rather than drawing a line through nothing.
-            double value = std::numeric_limits<double>::quiet_NaN();
-            if (at != nullptr) {
-                std::memcpy(&value, at, sizeof(double));
-            }
-            window.values.push_back(value);
-        } while (advance(step, read.trailCount));
-    }
+    window.values.reserve(static_cast<std::size_t>(elementCount(window.count)));
+    forEachValue(read, [&](const unsigned char* at) {
+        // A record whose vlen is too short has no value here, and a NaN is
+        // what says so to a plot: PlotProjection already ends a stroke on one
+        // rather than drawing a line through nothing.
+        double value = std::numeric_limits<double>::quiet_NaN();
+        if (at != nullptr) {
+            std::memcpy(&value, at, sizeof(double));
+        }
+        window.values.push_back(value);
+    });
     return window;
 }
 

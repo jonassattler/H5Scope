@@ -244,6 +244,71 @@ TEST_CASE("a member subscript folds onto the slice line", "[member][resolve]")
     }
 }
 
+TEST_CASE("a selection is written back on the axes each term is about", "[member][write]")
+{
+    // The slice bar prints the selection it is showing and reads the same box
+    // back on Return, so what it prints has to be a line it reads. It used to
+    // print the whole derived slice in front of the chain -- `[:, 2].samples`
+    // over a rank-1 table -- and a subscript in front of a chain is about the
+    // dataset's own axes, so its own line came back as "3 subscripts for 2
+    // dimensions".
+    const auto write = [](const QStringList& terms, std::size_t rank, const QString& chain) {
+        return postproc::writeSelection(terms, rank, read(chain));
+    };
+
+    SECTION("a member's term goes after the member that appended its axis")
+    {
+        CHECK(write({":", "2"}, 1, ".samples") == "[:].samples[2]");
+        CHECK(write({"0:10", "1:3"}, 1, ".samples") == "[0:10].samples[1:3]");
+    }
+
+    SECTION("a member whose axes are whole is written bare")
+    {
+        CHECK(write({":", ":"}, 1, ".samples") == "[:].samples");
+        CHECK(write({"4"}, 1, ".position.x") == "[4].position.x");
+    }
+
+    SECTION("a ragged member keeps its index, which has no axis to go on")
+    {
+        CHECK(write({"1:4"}, 1, ".tags[3]") == "[1:4].tags[3]");
+    }
+
+    SECTION("an array of structs carries its term on the array, not the leaf")
+    {
+        const TypeInfo track = compound({
+            TypeMember{"trail",
+                       arrayOf(compound({TypeMember{"x", kDouble, 0},
+                                         TypeMember{"y", kDouble, 8}}),
+                               {3}),
+                       0},
+        });
+        const auto chain = postproc::resolveMemberChain(".trail.x", track);
+        REQUIRE(chain.valid());
+        CHECK(postproc::writeSelection({"0", "1"}, 1, chain) == "[0].trail[1].x");
+    }
+
+    SECTION("what is written reads back as the slice it was written from")
+    {
+        // The identity, both ways: the member's terms go back onto the slice
+        // line in the places they were taken from.
+        const auto chain = read(".samples[2]");
+        REQUIRE(chain.valid());
+        CHECK(postproc::sliceLineFor(":", chain.folded, 1) == ":, 2");
+        CHECK(write({":", "2"}, 1, ".samples") == "[:]" + QStringLiteral(".samples[2]"));
+    }
+
+    SECTION("axes no member carries are written in front, as before")
+    {
+        // A dataset whose own type is an array of structs appends axes nobody
+        // named, and there is no member to put their terms on.
+        const TypeInfo grid = arrayOf(compound({TypeMember{"a", kDouble, 0}}), {2, 3});
+        const auto chain = postproc::resolveMemberChain(".a", grid);
+        REQUIRE(chain.valid());
+        CHECK(chain.leadingAxes == 2);
+        CHECK(postproc::writeSelection({":", "0", ":"}, 1, chain) == "[:, 0, :].a");
+    }
+}
+
 TEST_CASE("a ragged member is indexable and not sliceable", "[member][vlen]")
 {
     // A vlen has a different length in every element, and every view in this

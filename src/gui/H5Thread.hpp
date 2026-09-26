@@ -153,7 +153,19 @@ public:
                     emit jobFailed(failure);
                     return;
                 }
-                then(std::move(*result));
+                // The same catch on this side, for the same reason. This runs
+                // inside the requester's event loop, and a continuation is
+                // ordinary code that allocates -- a listing of a group of a
+                // million names builds a million rows here -- so what it throws
+                // would otherwise unwind through Qt and end the process. It is
+                // reported where a failed job is, and the reader keeps a window.
+                try {
+                    then(std::move(*result));
+                } catch (const std::exception& error) {
+                    emit jobFailed(QString::fromUtf8(error.what()));
+                } catch (...) {
+                    emit jobFailed(QStringLiteral("unknown failure answering the HDF5 thread"));
+                }
             });
         });
     }
@@ -236,7 +248,9 @@ signals:
     void busyChanged();
     /// A submitted job threw. Delivered on the requester's thread, in place of
     /// its continuation, and only while the requester is still asking -- so a
-    /// failure is reported exactly where the answer would have gone.
+    /// failure is reported exactly where the answer would have gone. Also
+    /// emitted when the continuation itself throws, after it has run as far as
+    /// it got.
     void jobFailed(const QString& message);
 
 private:

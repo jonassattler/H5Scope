@@ -402,6 +402,23 @@ bool logColumnsServe(const LogColumns& held, double low, double high, int column
     return wanted.has_value() && wanted->density == held.density && held.covers(low, high);
 }
 
+bool LogFoldGrid::serves(double atStart, double atStep, int atMode, int atBuckets, double low,
+                         double high) const
+{
+    return columns.has_value() && start == atStart && step == atStep && mode == atMode &&
+           buckets == atBuckets && logColumnsServe(*columns, low, high, atBuckets);
+}
+
+void LogFoldGrid::remake(double atStart, double atStep, int atMode, int atBuckets, double low,
+                         double high)
+{
+    columns = logColumnsFor(low, high, atBuckets);
+    start = atStart;
+    step = atStep;
+    mode = atMode;
+    buckets = atBuckets;
+}
+
 void edgesAlong(const LogColumns& columns, double start, double step, std::vector<double>& out)
 {
     out.clear();
@@ -416,6 +433,51 @@ void edgesAlong(const LogColumns& columns, double start, double step, std::vecto
     if (step < 0.0) {
         std::reverse(out.begin(), out.end());
     }
+}
+
+PaneColumns::Step PaneColumns::request(int columns)
+{
+    // Down to the quantum, and never to nothing. See kColumnQuantum for why
+    // down rather than to the nearest.
+    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
+                                     kMinPoints / 2, kMaxPoints / 2);
+    if (quantised == wanted) {
+        return Step::Nothing;
+    }
+    wanted = quantised;
+    if (wanted == applied) {
+        return Step::Cancel;
+    }
+    if (!measured) {
+        // The surface measuring itself for the first time. There is no gesture
+        // to wait out: whatever has been read so far was read at an assumed
+        // width, so waiting would open every plot at the wrong resolution and
+        // re-read every line of it a fifth of a second later.
+        measured = true;
+        return Step::Apply;
+    }
+    // The read is at the end of the drag, not once per sixty-four pixels of it.
+    return Step::Wait;
+}
+
+bool PaneColumns::apply()
+{
+    if (wanted == applied) {
+        return false;
+    }
+    applied = wanted;
+    return true;
+}
+
+void ZoomFocus::set(double atX, double factor)
+{
+    if (!std::isfinite(atX) || !std::isfinite(factor) || !(factor > 0.0)) {
+        clear();
+        return;
+    }
+    x = atX;
+    inward = factor > 1.0;
+    active = true;
 }
 
 } // namespace gui

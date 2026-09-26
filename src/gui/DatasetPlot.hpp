@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "BorrowedLines.hpp"
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
@@ -385,7 +386,7 @@ private:
     /// retired vector goes on naming the same doubles at the same address and
     /// every pointer the item holds stays good. The keys are dropped on the way
     /// in -- nothing ever looks a retired line up, it only has to stay alive --
-    /// and that is deliberate rather than incidental. See `retired_`.
+    /// and that is deliberate rather than incidental. See BorrowedLines.
     ///
     /// The maps themselves are safe to insert into meanwhile for the related
     /// reason: a std::map relinks nodes rather than moving them, so everything
@@ -586,13 +587,8 @@ private:
     /// `lines_` is, keyed as it is, and pruned and retired with it.
     struct LogFold
     {
-        std::optional<LogColumns> columns;
-        /// What the x of every point was worked out with. A fold is of one
-        /// axis; moving the axis is a fold that no longer says where anything
-        /// is.
-        double start = 0.0;
-        double step = 1.0;
-        int buckets = 0;
+        /// The grid it was made on, and the axis it was made against.
+        LogFoldGrid grid;
         /// The column edges in table positions, shared by every line.
         std::vector<double> edges;
         std::map<int, std::vector<double>> values;
@@ -648,11 +644,6 @@ private:
     /// the drawn set changes in bulk -- see selectFirst -- and not when a
     /// single line is ticked, so the legend stays cheap.
     int cap_ = 2 * kDefaultColumns;
-    /// Columns the pane has, quantised. Until the surface says otherwise this
-    /// is kDefaultColumns, which is about the plot area of a window as it first
-    /// opens -- so a plot nobody has measured is drawn at the resolution one
-    /// would have.
-    int columns_ = kDefaultColumns;
     mutable double minimum_ = 0.0;
     mutable double maximum_ = 0.0;
     mutable double positiveMinimum_ = 0.0;
@@ -660,32 +651,17 @@ private:
     mutable bool hasPositive_ = false;
     mutable QString error_;
     mutable bool sampled_ = false;
-    /// What fill() last handed the lines to, so that it can be emptied before
-    /// they are freed. A QPointer because the item belongs to a QML scene that
-    /// is torn down and rebuilt without telling this object.
-    mutable QPointer<PlotItem> drawing_;
-    /// Values the renderer may still be reading, kept alive until it is handed
-    /// their replacement. See retire(); fill() is what empties this.
-    ///
-    /// The bare vectors rather than the maps they came out of, which is the
-    /// same shape CustomPlot::retired_ has. That is not tidying: this store
-    /// held `std::map`s, and growing a std::vector of those took the copy that
-    /// std::move_if_noexcept falls back on -- see Detail above for why -- so
-    /// the store whose whole job is to keep the borrowed doubles alive was
-    /// itself freeing them on Windows. A std::vector<double> move is noexcept
-    /// on every implementation, so this one can only ever be moved.
-    mutable std::vector<std::vector<double>> retired_;
+    /// Which item is drawing `lines_` and the rest, and what it may still be
+    /// drawing that this has replaced. See BorrowedLines; fill() lends,
+    /// retire() keeps alive, releaseDrawing() empties.
+    mutable BorrowedLines lent_;
 
-    // Stated against the member rather than against the type it happens to hold
-    // today, so that changing it is what has to answer for this.
-    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
-                  "the retired store must relocate by moving, or it frees what it holds alive");
-
-    /// The pane width the surface last pushed, waiting for the drag to stop.
-    int wantedColumns_ = kDefaultColumns;
-    /// Whether the surface has ever said how wide the pane is. The first time
-    /// it does is not a gesture and does not wait; see setPaneColumns.
-    bool measured_ = false;
+    /// Columns the pane has, quantised, and the width the surface last pushed,
+    /// waiting for the drag to stop. Until the surface says otherwise both are
+    /// kDefaultColumns, which is about the plot area of a window as it first
+    /// opens -- so a plot nobody has measured is drawn at the resolution one
+    /// would have. See setPaneColumns.
+    PaneColumns pane_;
     /// Fires once the pane has stopped changing width. See setPaneColumns.
     QTimer resize_;
 
@@ -709,9 +685,7 @@ private:
     /// everything that changes how a position becomes an x -- the axis moving,
     /// a different start or step -- would otherwise leave this pointing
     /// somewhere the reader never was.
-    double focusX_ = 0.0;
-    bool focusInward_ = true;
-    bool focusActive_ = false;
+    ZoomFocus zoom_;
     /// Whether a read is out. One at a time, and the reply arms the next: a
     /// zoom no longer waits out the settle, so without this a wheel spun
     /// through six octaves would queue six reads of runs the reader has already

@@ -350,6 +350,18 @@ struct PlotView
     /// the arithmetic it would have had.
     double pixelRatio = 1.0;
 
+    /// Whether x runs up the pane and y across it: the same picture with its
+    /// axes swapped, which is what a custom tab's "flip x and y" asks for.
+    ///
+    /// Nothing below projects transposed. A line is projected upright into a
+    /// pane of the swapped size (uprightView) and every point is then moved
+    /// onto the real one (transposedPoint) -- so the envelope, which folds a
+    /// line into one bucket per column *along x*, gets one per pixel of the
+    /// pane's height, which is the extent x now runs along. Every decision the
+    /// projection makes stays a decision about x and y, and the flip is one
+    /// reflection at the end rather than a second copy of all of it.
+    bool transposed = false;
+
     /// Most envelope columns one line may spend, or 0 for one per pixel.
     ///
     /// The envelope bounds each *line* by the pane's width, which is the whole
@@ -505,6 +517,24 @@ struct PlotProjected
 /// rather than letting QML derive the mapping a second time.
 [[nodiscard]] double yFractionOf(double value, const PlotView& view);
 [[nodiscard]] double xFractionOf(double x, const PlotView& view);
+
+/// The pane a transposed view is projected into: the real one with its sides
+/// swapped and the flag cleared, so that x runs along what is the pane's height
+/// and y up what is its width. A view that is not transposed comes back as it
+/// was. See PlotView::transposed.
+[[nodiscard]] PlotView uprightView(const PlotView& view);
+
+/// Where a point projected into uprightView(`view`) lands on the pane `view`
+/// describes, and the way back.
+///
+/// A reflection in the pane's anti-diagonal: the x fraction that was the
+/// distance from the left becomes the distance up from the bottom, and the y
+/// fraction that was the distance up from the bottom becomes the distance from
+/// the left. So x still grows away from the origin and so does y, and the
+/// origin is still the bottom-left corner -- which is what "the same plot with
+/// x and y swapped" means, and what a rotation would not have given.
+[[nodiscard]] QPointF transposedPoint(const QPointF& upright, const PlotView& view);
+[[nodiscard]] QPointF uprightPoint(const QPointF& onPane, const PlotView& view);
 
 /// Project `line` into `points` in item coordinates, splitting the strokes at
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a

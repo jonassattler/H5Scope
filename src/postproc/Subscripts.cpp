@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdlib>
 #include <optional>
 #include <unordered_set>
 
@@ -172,10 +171,19 @@ bool resolveTerm(QStringView term, hsize_t extent, Run& run, QString& error)
     // How many the run names, by arithmetic rather than by counting them out:
     // ceil((to - from) / step) in the direction of travel, and none at all when
     // the bounds are the wrong way round for it.
+    //
+    // Unsigned, and as 1 + (reach - 1) / size rather than the usual
+    // (reach + size - 1) / size. The step is whatever was typed, and Python
+    // takes any step at all: `::9223372036854775807` is the first element, and
+    // so is `::-9223372036854775808` the last. The textbook ceiling overflows on
+    // the first -- a signed overflow, which is undefined rather than wrong -- and
+    // std::abs is undefined on the second, since its magnitude has no qint64.
+    // Both happened to come out as "selects no indices".
     const qint64 reach = (step > 0) ? to - from : from - to;
-    const qint64 size = std::abs(step);
+    const quint64 size =
+        step > 0 ? static_cast<quint64>(step) : quint64{0} - static_cast<quint64>(step);
     const hsize_t taken =
-        reach > 0 ? static_cast<hsize_t>((reach + size - 1) / size) : hsize_t{0};
+        reach > 0 ? hsize_t{1} + (static_cast<quint64>(reach) - 1) / size : hsize_t{0};
 
     // A step-1 slice is a run, and a run is something the data settings panel
     // can draw with its own two boxes. Anything else -- a stride, a descent --
@@ -198,9 +206,11 @@ bool parseTerm(QStringView term, hsize_t extent, std::vector<hsize_t>& out,
         return false;
     }
     out.reserve(out.size() + static_cast<std::size_t>(run.count));
-    qint64 at = run.from;
-    for (hsize_t i = 0; i < run.count; ++i, at += run.step) {
-        out.push_back(static_cast<hsize_t>(at));
+    // Each index from the start rather than by adding the step to the last:
+    // every one of them lies inside the dimension, but one step past the last
+    // need not lie inside a qint64 when the step is as large as one can be.
+    for (hsize_t i = 0; i < run.count; ++i) {
+        out.push_back(static_cast<hsize_t>(run.from + static_cast<qint64>(i) * run.step));
     }
     form = run.form;
     return true;

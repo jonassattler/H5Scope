@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "h5core/Types.hpp"
+
 #include <hdf5.h>
 
 #include <cstddef>
@@ -36,8 +38,8 @@ public:
     Array();
 
     /// Take ownership of `values` as a contiguous row-major array of `shape`.
-    /// The caller is responsible for the two agreeing; `valid()` says whether
-    /// they do.
+    /// Throws std::invalid_argument when the two disagree: every later read
+    /// trusts the buffer to reach as far as the shape says.
     Array(std::vector<hsize_t> shape, std::vector<double> values);
 
     [[nodiscard]] const std::vector<hsize_t>& shape() const noexcept { return shape_; }
@@ -134,6 +136,10 @@ struct Progression {
 /// The product of `shape`, saturating rather than wrapping: a rank-12 dataset
 /// of plausible extents overflows a 64-bit count, and a wrapped product would
 /// report a huge selection as a small one and then read it.
-[[nodiscard]] hsize_t elementCount(const std::vector<hsize_t>& shape);
+///
+/// h5core's, and not a second one: the two layers each had their own, one of
+/// which wrapped, and the caps compared against the wrapping one were
+/// compared against the wrapped number.
+using h5core::elementCount;
 
 } // namespace postproc

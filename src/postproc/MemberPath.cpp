@@ -238,6 +238,50 @@ QString writeMemberChain(const std::vector<MemberStep>& chain)
     return out;
 }
 
+QString writeSelection(const QStringList& terms, std::size_t originRank,
+                       const MemberChain& chain)
+{
+    const auto bracketed = [](const QStringList& body) {
+        return QLatin1Char('[') + body.join(QStringLiteral(", ")) + QLatin1Char(']');
+    };
+    const auto whole = [](const QStringList& body) {
+        return std::all_of(body.begin(), body.end(), [](const QString& term) {
+            return term.trimmed() == QStringLiteral(":");
+        });
+    };
+    const auto rank = static_cast<qsizetype>(originRank);
+    const QString chainText = QString::fromStdString(chain.selection.text);
+
+    std::size_t appended = 0;
+    for (const std::size_t axes : chain.linkAxes) {
+        appended += axes;
+    }
+    // Every term accounted for, or the line is not one this can split: a chain
+    // with axes no member carries, or a slice of some other shape. Both are
+    // written the old way, which is at worst the line the bar always printed.
+    if (chain.leadingAxes > 0 || chain.linkAxes.size() != chain.selection.links.size()
+        || terms.size() != rank + static_cast<qsizetype>(appended)) {
+        return (terms.isEmpty() ? QString() : bracketed(terms)) + chainText;
+    }
+
+    QString out = rank > 0 ? bracketed(terms.mid(0, rank)) : QString();
+    qsizetype at = rank;
+    for (std::size_t i = 0; i < chain.selection.links.size(); ++i) {
+        const h5core::MemberLink& link = chain.selection.links[i];
+        out += QLatin1Char('.') + QString::fromStdString(link.name);
+        if (link.vlenIndex.has_value()) {
+            out += QLatin1Char('[') + QString::number(*link.vlenIndex) + QLatin1Char(']');
+        }
+        const auto axes = static_cast<qsizetype>(chain.linkAxes[i]);
+        const QStringList own = terms.mid(at, axes);
+        if (!own.isEmpty() && !whole(own)) {
+            out += bracketed(own);
+        }
+        at += axes;
+    }
+    return out;
+}
+
 MemberChain resolveMemberChain(const QString& text, const h5core::TypeInfo& type)
 {
     std::vector<MemberStep> chain;
@@ -278,6 +322,7 @@ MemberChain resolveMemberChain(const std::vector<MemberStep>& chain,
     // A dataset whose own type is an array of compounds: those dimensions are
     // the result's too, and nobody named a member to call them after.
     std::tie(level, std::ignore) = unwrap(level, QString{});
+    result.leadingAxes = result.selection.dims.size();
 
     for (std::size_t i = 0; i < chain.size(); ++i) {
         const MemberStep& step = chain[i];
@@ -310,6 +355,7 @@ MemberChain resolveMemberChain(const std::vector<MemberStep>& chain,
                                found->name, std::nullopt});
 
         const auto [landed, appended] = unwrap(&found->type, step.name);
+        result.linkAxes.push_back(appended.size());
 
         if (landed->cls == h5core::TypeClass::VarLen) {
             if (!appended.empty()) {

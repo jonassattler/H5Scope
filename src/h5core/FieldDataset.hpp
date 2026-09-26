@@ -138,6 +138,9 @@ private:
         hsize_t leading = 0;    ///< dataset elements selected
         std::size_t stride = 0; ///< bytes per dataset element after extraction
         std::size_t width = 0;  ///< bytes per value within one of those
+
+        /// The window's shape: the dataset's axes, then the member's.
+        [[nodiscard]] std::vector<hsize_t> count() const;
     };
 
     /// Build the nested partial-compound memory type. `asDouble` replaces the
@@ -157,6 +160,12 @@ private:
     /// when this record's vlen is too short to have one.
     [[nodiscard]] const unsigned char* valueAt(const Extract& read, hsize_t element,
                                                hsize_t slot) const;
+
+    /// Hand `take` every value of `read` in row-major order, as valueAt
+    /// answers for it: the dataset's axes outermost, the member's inside. Both
+    /// public reads are this walk with a different `take`.
+    template<typename Take>
+    void forEachValue(const Extract& read, Take&& take) const;
 
     MemberSelection member_;
     std::string name_;

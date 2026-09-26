@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "BorrowedLines.hpp"
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
 #include "PlotBudget.hpp"
@@ -177,6 +178,9 @@ public:
         /// Whether that axis stays at the whole of its line while the reader
         /// zooms and pans in y.
         AxisFixedRole,
+        /// What that axis is called: the "y label 2" of the plot settings,
+        /// drawn beside the axis in the line's colour. Empty draws nothing.
+        AxisLabelRole,
         /// Whether the line is a postprocessing pipeline -- a postproc::Script
         /// -- rather than a slice. What turns the card's SLICE box into a DATA
         /// box that takes several lines.
@@ -296,11 +300,21 @@ public:
     /// its extent is recounted here, from values already in hand.
     Q_INVOKABLE void setSeparateAxis(int row, bool on);
     Q_INVOKABLE void setAxisFixed(int row, bool on);
+    /// Name the y axis of its own that line `row` is drawn against.
+    ///
+    /// Kept on the line rather than on the plot settings beside the common
+    /// axis's label, although that is where it is typed: an axis of its own
+    /// *is* the line's, so its name belongs with the line's colour and alias.
+    /// That is what keeps it with the right axis when lines are reordered,
+    /// ticked off and on, or saved in a view -- and a line put back on the
+    /// common axis keeps it, for the reason the request is kept.
+    Q_INVOKABLE void setAxisLabel(int row, const QString& text);
 
     /// The y axis line `series` is drawn against, as
-    /// `{ separate, fixed, finite, low, high }` -- `low` and `high` being the
-    /// extent of that line alone, which is the range the axis would have if it
-    /// were the only line on the plot.
+    /// `{ separate, fixed, finite, low, high, label }` -- `low` and `high`
+    /// being the extent of that line alone, which is the range the axis would
+    /// have if it were the only line on the plot, and `label` what the reader
+    /// called it (see setAxisLabel).
     ///
     /// `separate` is whether the axis is *in force*, which is the request and
     /// more than one drawn line: a plot of one line has only the one axis
@@ -460,6 +474,8 @@ private:
         /// force; `ownAxis` below is whether one is.
         bool separateAxis = false;
         bool axisFixed = false;
+        /// What that axis is called. See setAxisLabel.
+        QString axisLabel;
         /// Whether `expression` is a pipeline rather than a slice. See
         /// setPostprocess, and readLine, which is the one place it changes
         /// how anything is read.
@@ -715,6 +731,15 @@ private:
     /// being a reading of anything: a row removed, a row retyped, the whole tab
     /// replaced. Everywhere else retire() is what keeps the contract.
     void releaseDrawing();
+    /// The entry at `row`, or null when there is none. Every public method
+    /// taking a row or a series index asks here, so the bound is written once.
+    [[nodiscard]] Entry* entryAt(int row);
+    [[nodiscard]] const Entry* entryAt(int row) const;
+    /// The second half of addDataset, once the lookup knows `path`'s shape.
+    /// Split out so that the half that runs a turn later can be reached through
+    /// a guard on this object rather than through a `this` captured before the
+    /// tab could have been closed.
+    void addLinesOf(const QString& path, bool confirmed);
     /// Empty the renderer and read everything again. The four places where the
     /// line on screen is about to become the wrong line rather than a coarser
     /// one.
@@ -754,9 +779,7 @@ private:
     /// for the reason DatasetPlot keeps it that way -- and mapped onto each
     /// entry's own elements by focusFor(), because a tab's entries need not be
     /// the same length as one another or as the axis.
-    double focusX_ = 0.0;
-    bool focusInward_ = true;
-    bool focusActive_ = false;
+    ZoomFocus zoom_;
     /// Whether a closer look is out. One at a time; see DatasetPlot::inFlight_.
     bool closerInFlight_ = false;
 
@@ -796,11 +819,7 @@ private:
 
     /// The grid every entry's fold was made on, and what each point's x was
     /// worked out with. See Entry::foldValues.
-    mutable std::optional<LogColumns> foldColumns_;
-    mutable double foldStart_ = 0.0;
-    mutable double foldStep_ = 1.0;
-    mutable int foldBuckets_ = 0;
-    mutable int foldMode_ = -1;
+    mutable LogFoldGrid foldGrid_;
     mutable long long foldGeneration_ = 0;
     /// Whether the held time base runs one way, asked once per time base
     /// rather than once per fold: the answer is a walk of every element.
@@ -817,29 +836,16 @@ private:
     /// Drawn lines on the common y axis; see sharedSeriesCount.
     int sharedSeries_ = 0;
 
-    /// What fill() last handed the entries to, so it can be emptied before
-    /// they are freed.
-    mutable QPointer<PlotItem> drawing_;
-    /// Values the renderer may still be reading, kept alive until it is handed
-    /// their replacement. See retire(); fill() is what empties this.
-    mutable std::vector<std::vector<double>> retired_;
-
-    // The bare buffers rather than whatever they came out of, for the reason
-    // DatasetPlot::retired_ now gives: growing this must move them, and a
-    // std::vector<double> move is noexcept on every implementation.
-    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
-                  "the retired store must relocate by moving, or it frees what it holds alive");
+    /// Which item is drawing the entries' values, and what it may still be
+    /// drawing that this has replaced. See BorrowedLines.
+    mutable BorrowedLines lent_;
 
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;
     double viewMax_ = 0.0;
-    /// Columns the pane has, quantised, until the surface says otherwise.
-    int columns_ = kDefaultColumns;
-    /// ...and the width the surface last pushed, waiting for the drag to stop.
-    int wantedColumns_ = kDefaultColumns;
-    /// Whether the surface has ever said how wide the pane is. The first time
-    /// it does is not a gesture and does not wait; see setPaneColumns.
-    bool measured_ = false;
+    /// Columns the pane has, quantised, and the width the surface last pushed,
+    /// waiting for the drag to stop. See PaneColumns.
+    PaneColumns pane_;
 
     H5Requests requests_;
     /// The closer looks in flight, disowned separately from the reads above: a

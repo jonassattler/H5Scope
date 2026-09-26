@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPointer>
 #include <QSettings>
 
 #include <algorithm>
@@ -404,7 +405,14 @@ void CustomPlotSet::setTimeSeriesOf(int index, const QString& path)
     if (plot == nullptr) {
         return;
     }
-    lookup_.resolve({path}, [this, plot, path] {
+    // The tab is guarded rather than captured bare. The lookup outlives every
+    // tab -- it is this set's -- so its reply arrives whether or not the tab it
+    // was asked for is still there, and a tab closed while the time base was
+    // being looked up is deleted by the time the answer lands.
+    lookup_.resolve({path}, [this, plot = QPointer<CustomPlot>(plot), path] {
+        if (plot.isNull()) {
+            return;
+        }
         const PathFacts* facts = lookup_.facts(path);
         if (facts == nullptr) {
             return;

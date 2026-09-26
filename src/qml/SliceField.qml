@@ -23,16 +23,16 @@ import H5Scope.Backend
 /// path is the box:
 ///
 ///     ┌──────────────────────────────────┐
-///     │ /events[:, 2].samples            │
+///     │ /events[:].samples[2]            │
 ///     └──────────────────────────────────┘
 ///       fixed  editable            room to grow
 ///
 /// It began the other way, with a second box for the chain after the closing
 /// bracket, and that shape was wrong for the job in a way only a reader meets.
-/// A chain and the subscript it appends axes to are one statement --
-/// `.samples[2]` belongs on the slice and `[:, 2].samples` is the same
-/// selection written the other way round -- so rearranging one is usually
-/// rearranging both, and two boxes made that two commits with a shape nobody
+/// A chain and the subscript over the axes it appends are one statement --
+/// the `2` in `[:].samples[2]` subscripts an axis the chain made, and moving
+/// it or the chain is one edit -- so rearranging one is usually rearranging
+/// both, and two boxes made that two commits with a shape nobody
 /// asked for in between. Two boxes also meant two targets, and the second was
 /// a few characters wide with a grey `.member` standing in it, which reads as
 /// a value that has been chosen rather than as a box that is empty.
@@ -212,10 +212,22 @@ Rectangle {
     /// therefore inside the box like everything else after the path.
     readonly property real bracketsWidth: (field.editable && !field.oneLine)
         ? openBracket.implicitWidth + closeBracket.implicitWidth : 0
-    /// What the one-line box would like: whichever is wider of what is in it
-    /// and the hint standing in for it, so an empty box is still a box.
+    /// What the one-line box would like: what is in it, and the hint standing
+    /// in for it only while there is nothing, so an empty box is still a box.
+    ///
+    /// Not the wider of the two. The hint is `[:].member`, and a box held open
+    /// to that width put a member's worth of nothing after `[:]` -- the dead
+    /// space inside the line this file exists to avoid, on every compound that
+    /// had not had a member named yet, which is every compound on arrival.
+    ///
+    /// Measured off the font, as the path is, rather than off the box: a
+    /// binding that reads a TextInput's text and then its implicit width makes
+    /// the box lay itself out in the middle of the binding, which reports its
+    /// width changing while the binding is still reading it -- a binding loop,
+    /// on every keystroke.
     readonly property real selectionWanted: field.oneLine
-        ? Math.max(selection.implicitWidth, selectionHint.implicitWidth) + Theme.gapXS
+        ? (selection.text === "" ? selectionHint.implicitWidth
+                                 : Math.ceil(selectionMetrics.advanceWidth)) + Theme.gapXS
         : 0
     /// What the line wants: the path, the subscripts, and both brackets. The
     /// slack after the closing bracket is not part of it -- that is room to
@@ -290,6 +302,14 @@ Rectangle {
         text: AppController.currentPath
     }
 
+    /// The one-line box's text at its full length. See selectionWanted.
+    TextMetrics {
+        id: selectionMetrics
+
+        font: Theme.mono
+        text: selection.text
+    }
+
     /// Put back the line the table is showing, and drop any complaint about
     /// what was in the box. Called whenever the selection or the layout moves
     /// under the box -- including by the box's own commit, which is what
@@ -333,11 +353,11 @@ Rectangle {
 
     /// Apply an edited selection line: the subscript and the chain at once.
     ///
-    /// Read back afterwards for the slice box's own reason and a louder one: a
-    /// subscript written on the chain moves onto the slice in front of it, so
-    /// `[:].samples[2]` comes back as `[:, 2].samples`. What was typed has
-    /// moved rather than gone, which is the difference between this and a box
-    /// that argues.
+    /// Read back afterwards for the slice box's own reason and a louder one:
+    /// what the views resolved is spelled out, so `.samples[2]` comes back as
+    /// `[:].samples[2]`. What was typed has been completed rather than
+    /// changed, and it reads back as itself -- see postproc::writeSelection for
+    /// the spelling this used to print, which did not.
     function commitSelection() {
         if (!field.oneLine || selection.text === AppController.selectionText) {
             internal.selectionError = ""
@@ -411,6 +431,12 @@ Rectangle {
             }
         }
 
+        // A bracket that is not drawn takes no width either. The parts are
+        // anchored end to end, and an anchor does not care whether the item it
+        // hangs off is visible: in the one-line form both brackets were hidden
+        // and still a bracket wide each, so the compound's box stood two
+        // characters clear of its path -- `/events  [:]` -- and ran that far
+        // past the width the arithmetic above had given it.
         Text {
             id: openBracket
 
@@ -419,6 +445,7 @@ Rectangle {
             anchors.left: pathLabel.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            width: openBracket.visible ? openBracket.implicitWidth : 0
             visible: field.editable && !field.oneLine
             text: "["
             font: Theme.mono
@@ -464,6 +491,7 @@ Rectangle {
             anchors.left: body.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            width: closeBracket.visible ? closeBracket.implicitWidth : 0
             visible: field.editable && !field.oneLine
             text: "]"
             font: Theme.mono
@@ -574,6 +602,14 @@ Rectangle {
                     internal.selectionDismissed = false
                     field.refreshSelectionOptions()
                     event.accepted = selectionCompletion.take()
+                }
+                // A row the reader moved onto is taken rather than the line
+                // applied; with none, Return falls through to onAccepted.
+                Keys.onReturnPressed: (event) => {
+                    event.accepted = selectionCompletion.takeChosen()
+                }
+                Keys.onEnterPressed: (event) => {
+                    event.accepted = selectionCompletion.takeChosen()
                 }
                 Keys.onUpPressed: (event) => {
                     event.accepted = selectionCompletion.visible

@@ -22,9 +22,13 @@
 #include <hdf5.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -902,4 +906,395 @@ TEST_CASE("an image tag written as an array is read, not overrun",
         // honoured rather than merely reported.
         REQUIRE(dataset.info().image->shapeMatches);
     }
+}
+
+namespace {
+
+/// A 4x4 grayscale image whose IMAGE_MINMAXRANGE is `low, high`.
+void writeImageWithRange(const std::string& path, double low, double high)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+
+    const std::vector<hsize_t> dims{4, 4};
+    const std::vector<std::uint8_t> pixels(16, 0);
+    const hid_t space = H5Screate_simple(2, dims.data(), nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "img", H5T_NATIVE_UINT8, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_NATIVE_UINT8, H5S_ALL, H5S_ALL, H5P_DEFAULT, pixels.data()) >= 0);
+
+    const auto text = [&](const char* name, const char* value) {
+        const hid_t type = H5Tcopy(H5T_C_S1);
+        REQUIRE(H5Tset_size(type, std::strlen(value) + 1) >= 0);
+        const hid_t scalar = H5Screate(H5S_SCALAR);
+        const hid_t attribute = H5Acreate2(dataset, name, type, scalar, H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(attribute >= 0);
+        REQUIRE(H5Awrite(attribute, type, value) >= 0);
+        H5Aclose(attribute);
+        H5Sclose(scalar);
+        H5Tclose(type);
+    };
+    text("CLASS", "IMAGE");
+    text("IMAGE_SUBCLASS", "IMAGE_GRAYSCALE");
+
+    const hsize_t two = 2;
+    const double range[2] = {low, high};
+    const hid_t rangeSpace = H5Screate_simple(1, &two, nullptr);
+    const hid_t attribute = H5Acreate2(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_DOUBLE, rangeSpace,
+                                       H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(attribute >= 0);
+    REQUIRE(H5Awrite(attribute, H5T_NATIVE_DOUBLE, range) >= 0);
+    H5Aclose(attribute);
+    H5Sclose(rangeSpace);
+
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("an image range that reaches an infinity is not a range", "[h5core][image]")
+{
+    // `-inf < inf` is true, so ordering alone let this through, and a span
+    // between the two puts every pixel at inf / inf -- a NaN the colour ramp
+    // then used as an index.
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    const auto [low, high] = GENERATE_COPY(std::pair{-inf, inf}, std::pair{-inf, 0.0},
+                                           std::pair{0.0, inf}, std::pair{0.0, std::nan("")});
+    h5test::TempFile temp{"infrange"};
+    writeImageWithRange(temp.path(), low, high);
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/img");
+    REQUIRE(dataset.info().image.has_value());
+    CHECK_FALSE(dataset.info().image->minimum.has_value());
+    CHECK_FALSE(dataset.info().image->maximum.has_value());
+}
+
+TEST_CASE("a finite image range is still the range", "[h5core][image]")
+{
+    h5test::TempFile temp{"finiterange"};
+    writeImageWithRange(temp.path(), -2.5, 300.0);
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/img");
+    REQUIRE(dataset.info().image.has_value());
+    CHECK(dataset.info().image->minimum == std::optional<double>{-2.5});
+    CHECK(dataset.info().image->maximum == std::optional<double>{300.0});
+}
+
+// ---------------------------------------------------------------------------
+// Attributes that hold nothing
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// One group carrying three attributes whose dataspace is H5S_NULL -- one
+/// numeric, one fixed-length string, one variable-length string -- and one
+/// ordinary scalar beside them, so the listing is known to have gone on past
+/// the empty ones.
+void writeNullAttributes(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hid_t group = H5Gcreate2(file, "holder", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(group >= 0);
+
+    const hid_t nothing = H5Screate(H5S_NULL);
+    REQUIRE(nothing >= 0);
+    const auto empty = [&](const char* name, hid_t type) {
+        const hid_t attribute = H5Acreate2(group, name, type, nothing, H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(attribute >= 0);
+        H5Aclose(attribute);
+    };
+
+    empty("a_number", H5T_NATIVE_INT32);
+    const hid_t fixed = H5Tcopy(H5T_C_S1);
+    REQUIRE(H5Tset_size(fixed, 8) >= 0);
+    empty("b_fixed", fixed);
+    const hid_t variable = H5Tcopy(H5T_C_S1);
+    REQUIRE(H5Tset_size(variable, H5T_VARIABLE) >= 0);
+    empty("c_variable", variable);
+
+    const hid_t scalar = H5Screate(H5S_SCALAR);
+    const hid_t present =
+        H5Acreate2(group, "d_present", H5T_NATIVE_INT32, scalar, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(present >= 0);
+    const std::int32_t seven = 7;
+    REQUIRE(H5Awrite(present, H5T_NATIVE_INT32, &seven) >= 0);
+
+    H5Aclose(present);
+    H5Sclose(scalar);
+    H5Tclose(variable);
+    H5Tclose(fixed);
+    H5Sclose(nothing);
+    H5Gclose(group);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("an attribute with a null dataspace reads as nothing, not as a zero",
+          "[h5core][attribute]")
+{
+    // A null dataspace has rank 0, as a scalar does, and the product of an
+    // empty shape is one. Counting the elements that way read one element out
+    // of an attribute that holds none -- into a zeroed buffer -- and printed
+    // the 0 it found there as though the file had said it.
+    h5test::TempFile temp{"nullattrs"};
+    writeNullAttributes(temp.path());
+
+    const h5core::File file(temp.path());
+    const auto attrs = h5core::readAttributes(file, "/holder");
+    REQUIRE(attrs.size() == 4);
+
+    CHECK(attrs[0].name == "a_number");
+    CHECK(attrs[0].value == "[]");
+    CHECK(attrs[0].type.cls == h5core::TypeClass::Integer);
+    CHECK(attrs[1].name == "b_fixed");
+    CHECK(attrs[1].value == "[]");
+    CHECK(attrs[2].name == "c_variable");
+    CHECK(attrs[2].value == "[]");
+
+    // ...and the one that does hold something is still read.
+    CHECK(attrs[3].name == "d_present");
+    CHECK(attrs[3].value == "7");
+}
+
+TEST_CASE("a buffer is sized by a product that cannot wrap", "[h5core][memory]")
+{
+    CHECK(h5core::bufferBytes(0, 8) == std::optional<std::size_t>{0});
+    CHECK(h5core::bufferBytes(1000, 0) == std::optional<std::size_t>{0});
+    CHECK(h5core::bufferBytes(1000, 8) == std::optional<std::size_t>{8000});
+
+    // A dataspace a file may state and no machine may hold: two to the
+    // sixty-first elements of eight bytes is two to the sixty-fourth, which
+    // wraps to nothing at all -- a zero-byte buffer for H5Aread to fill.
+    const hsize_t huge = hsize_t{1} << 61;
+    CHECK_FALSE(h5core::bufferBytes(huge, 8).has_value());
+    CHECK(h5core::bufferBytes(huge, 4) == std::optional<std::size_t>{std::size_t{1} << 63});
+}
+
+TEST_CASE("an element count saturates rather than wrapping", "[h5core][memory]")
+{
+    CHECK(h5core::elementCount({}) == 1);
+    CHECK(h5core::elementCount({0}) == 0);
+    CHECK(h5core::elementCount({2, 3, 4}) == 24);
+
+    // Eight thousand along each of five axes is 2^65, which wraps to zero:
+    // exactly what HDF5's own count of such a dataspace reports.
+    const std::vector<hsize_t> five(5, 8192);
+    CHECK(h5core::elementCount(five) == h5core::kCountSaturated);
+
+    // One that wraps to something small is the dangerous one: a buffer sized
+    // for 2^24 elements and a selection of 2^64 + 2^24 of them.
+    CHECK(h5core::elementCount({(hsize_t{1} << 40) + 1, hsize_t{1} << 24}) ==
+          h5core::kCountSaturated);
+
+    // An empty axis anywhere is nothing, even after the rest has saturated.
+    CHECK(h5core::elementCount({hsize_t{1} << 40, hsize_t{1} << 40, 0}) == 0);
+}
+
+namespace {
+
+/// A chunked dataset whose extents multiply past 2^64 to a small number.
+/// Chunked and never written, so the file is a few kilobytes: HDF5 allocates
+/// nothing for chunks nobody wrote, and counts the dataspace without looking.
+void writeWrappingDataset(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t dims[2] = {(hsize_t{1} << 40) + 1, hsize_t{1} << 24};
+    const hsize_t chunk[2] = {1, 1024};
+    const hid_t space = H5Screate_simple(2, dims, nullptr);
+    REQUIRE(space >= 0);
+    const hid_t create = H5Pcreate(H5P_DATASET_CREATE);
+    REQUIRE(H5Pset_chunk(create, 2, chunk) >= 0);
+    const hid_t dataset =
+        H5Dcreate2(file, "wraps", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, create, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    H5Dclose(dataset);
+    H5Pclose(create);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a dataset whose extents wrap a 64-bit count is refused, not read", "[h5core][memory]")
+{
+    h5test::TempFile temp{"wraps"};
+    writeWrappingDataset(temp.path());
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/wraps");
+    CHECK(dataset.info().elementCount() == h5core::kCountSaturated);
+
+    // The whole of it, which is what a full read and a pipeline ask for.
+    const std::vector<hsize_t> origin{0, 0};
+    CHECK_THROWS_AS(dataset.readAll(1u << 24), h5core::H5Error);
+    CHECK_THROWS_AS(dataset.readNumericWindow(origin, dataset.info().shape), h5core::H5Error);
+    CHECK_THROWS_AS(dataset.readWindow(origin, dataset.info().shape), h5core::H5Error);
+
+    // ...while a window of it is still an ordinary read, of fill values.
+    const h5core::NumericWindow window = dataset.readNumericWindow(origin, {2, 3});
+    CHECK(window.values == std::vector<double>(6, 0.0));
+}
+
+namespace {
+
+/// A dataset of four new-style object references, each to the root group.
+void writeReferences(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    H5R_ref_t refs[4];
+    for (H5R_ref_t& ref : refs) {
+        REQUIRE(H5Rcreate_object(file, "/", H5P_DEFAULT, &ref) >= 0);
+    }
+    const hsize_t four = 4;
+    const hid_t space = H5Screate_simple(1, &four, nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "refs", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_STD_REF, H5S_ALL, H5S_ALL, H5P_DEFAULT, refs) >= 0);
+    for (H5R_ref_t& ref : refs) {
+        H5Rdestroy(&ref);
+    }
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a read of references hands them back", "[h5core][memory]")
+{
+    // A reference read into memory is an H5R_ref_t, which HDF5 allocates and
+    // which holds a count on the file it names. H5Treclaim releases both, and
+    // the guard only asked for it when the type held a string or a vlen.
+    h5test::TempFile temp{"refs"};
+    writeReferences(temp.path());
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/refs");
+    REQUIRE(dataset.info().type.cls == h5core::TypeClass::Reference);
+
+    const int before = H5Iget_ref(file.id());
+    for (int i = 0; i < 3; ++i) {
+        const h5core::DataWindow window = dataset.readWindow({0}, {4});
+        REQUIRE(window.cells.size() == 4);
+        (void)dataset.readElement({2});
+    }
+    CHECK(H5Iget_ref(file.id()) == before);
+}
+
+namespace {
+
+/// Three records of `{ samples: array[4] of float64 }`, record r holding
+/// 10r, 10r+1, 10r+2, 10r+3.
+void writeArrayMember(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t four = 4;
+    const hid_t samples = H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, &four);
+    const hid_t record = H5Tcreate(H5T_COMPOUND, 4 * sizeof(double));
+    REQUIRE(H5Tinsert(record, "samples", 0, samples) >= 0);
+    std::vector<double> values(12);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = static_cast<double>((i / 4) * 10 + i % 4);
+    }
+    const hsize_t three = 3;
+    const hid_t space = H5Screate_simple(1, &three, nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "records", record, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, record, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Tclose(record);
+    H5Tclose(samples);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a member chain whose dimensions are not the file's is refused", "[h5core][member]")
+{
+    // A slot in the buffer is the member's bytes over the product of the
+    // chain's dimensions. A chain resolved against a description that no
+    // longer matches -- the TypeInfo is made earlier, and may be of another
+    // file by now -- read its last slot past the end of the buffer.
+    h5test::TempFile temp{"arraymember"};
+    writeArrayMember(temp.path());
+    const h5core::File file(temp.path());
+    const h5core::Dataset whole(file, "/records");
+
+    const h5core::MemberSelection chain = h5test::chainOf(whole.info().type, {"samples"});
+    REQUIRE(chain.dims == std::vector<hsize_t>{4});
+    const h5core::FieldDataset samples(file, "/records", chain);
+    CHECK(samples.readNumericWindow({2, 0}, {1, 4}).values ==
+          std::vector<double>{20.0, 21.0, 22.0, 23.0});
+
+    h5core::MemberSelection stale = chain;
+    stale.dims = {8};
+    CHECK_THROWS_AS(h5core::FieldDataset(file, "/records", stale), h5core::H5Error);
+    stale.dims = {2, 2};
+    CHECK_THROWS_AS(h5core::FieldDataset(file, "/records", stale), h5core::H5Error);
+}
+
+TEST_CASE("a value nested past the type depth bound is cut off, not recursed into",
+          "[h5core][format]")
+{
+    // describeType stopped at a bound and formatting did not: the recursion is
+    // driven by the datatype a file states, and one nested deep enough ran
+    // formatElement and toJson out of stack. Forty structs of one member each,
+    // the innermost holding an int32.
+    h5core::Handle type(H5Tcopy(H5T_NATIVE_INT32), &H5Tclose);
+    for (int level = 0; level < 40; ++level) {
+        h5core::Handle wrapper(H5Tcreate(H5T_COMPOUND, sizeof(std::int32_t)), &H5Tclose);
+        REQUIRE(H5Tinsert(wrapper.get(), "inner", 0, type.get()) >= 0);
+        type = std::move(wrapper);
+    }
+    const std::int32_t value = 7;
+
+    const std::string text = h5core::formatElement(type.get(), &value);
+    CHECK_THAT(text, ContainsSubstring("<nested too deep>"));
+    CHECK_THAT(text, !ContainsSubstring("7"));
+    CHECK_THAT(h5core::toJson(type.get(), &value), ContainsSubstring("<nested too deep>"));
+
+    // ...and a shallow one is written out in full.
+    h5core::Handle shallow(H5Tcreate(H5T_COMPOUND, sizeof(std::int32_t)), &H5Tclose);
+    REQUIRE(H5Tinsert(shallow.get(), "inner", 0, H5T_NATIVE_INT32) >= 0);
+    CHECK(h5core::formatElement(shallow.get(), &value) == "{inner=7}");
+}
+
+TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
+{
+    // A member of a packed compound, or the nth element of an array of odd
+    // width, sits at whatever byte the layout puts it on. Each of these is
+    // written one byte past an aligned address, which is a misaligned load
+    // for every width but one if the formatter dereferences rather than copies.
+    alignas(16) unsigned char bytes[32] = {};
+    unsigned char* at = bytes + 1;
+
+    const std::int64_t large = -1234567890123LL;
+    std::memcpy(at, &large, sizeof(large));
+    CHECK(h5core::formatElement(H5T_NATIVE_INT64, at) == "-1234567890123");
+
+    const std::uint32_t word = 4000000000U;
+    std::memcpy(at, &word, sizeof(word));
+    CHECK(h5core::formatElement(H5T_NATIVE_UINT32, at) == "4000000000");
+
+    const double value = 0.25;
+    std::memcpy(at, &value, sizeof(value));
+    CHECK(h5core::formatElement(H5T_NATIVE_DOUBLE, at) == "0.25");
+    CHECK(h5core::toJson(H5T_NATIVE_DOUBLE, at) == "0.25");
+
+    const float single = -1.5F;
+    std::memcpy(at, &single, sizeof(single));
+    CHECK(h5core::formatElement(H5T_NATIVE_FLOAT, at) == "-1.5");
 }

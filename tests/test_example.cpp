@@ -37,6 +37,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <QColor>
 #include <QImage>
 #include <QVariantMap>
 
@@ -44,6 +45,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -637,6 +639,33 @@ TEST_CASE("the image defaults come from the metadata, not from the data", "[exam
         CHECK_FALSE(image->invert());
         CHECK(image->autoRange());
     }
+}
+
+TEST_CASE("an end of the range that is not a number is refused", "[example][images]")
+{
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
+    auto* image = controller.datasetImage();
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/images/gray_512x512")));
+    REQUIRE_FALSE(image->autoRange());
+
+    // An infinite end made the span infinite and every position inf / inf,
+    // and the ramp turned that NaN into an index into its stops.
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    image->setRangeMinimum(-inf);
+    image->setRangeMaximum(inf);
+    image->setRangeMinimum(std::nan(""));
+    CHECK(image->rangeMinimum() == 0.0);
+    CHECK(image->rangeMaximum() == 255.0);
+
+    // ...and a finite one is still taken.
+    image->setRangeMaximum(128.0);
+    CHECK(image->rangeMaximum() == 128.0);
+
+    // With a ramp of several stops, which is the path that indexed.
+    image->setRamp(QVariantList{QColor(Qt::black), QColor(Qt::red), QColor(Qt::white)});
+    const QImage painted = image->render();
+    CHECK_FALSE(painted.isNull());
 }
 
 TEST_CASE("only the colours the reader kept are painted", "[example][images]")
@@ -1239,6 +1268,33 @@ TEST_CASE("the viewer draws a member of a compound", "[example][member]")
 
         CHECK(controller.memberText() == QStringLiteral(".samples"));
         CHECK(controller.sliceText() == QStringLiteral(":, 2"));
+    }
+
+    SECTION("the line the slice bar prints is a line it reads back")
+    {
+        // The bar prints this and hands it straight back on Return, so it has
+        // to be a line applySelection reads as the same selection. It used to
+        // print the whole slice in front of the chain -- `[:, 2].samples` --
+        // where a subscript is about the dataset's own axes, and its own line
+        // came back as "3 subscripts for 2 dimensions".
+        REQUIRE(h5test::selectAndSettle(controller,
+                                        QStringLiteral("/types/compound/nested")));
+        REQUIRE(controller.applySelection(QStringLiteral("[1:4].samples[2]")).isEmpty());
+        CHECK(controller.selectionText() == QStringLiteral("[1:4].samples[2]"));
+        CHECK(controller.selectionError(controller.selectionText()).isEmpty());
+        // What the tooltip over the path shows, and what pastes into a custom
+        // plot: the chain is part of what is on screen.
+        CHECK(controller.sliceExpression()
+              == QStringLiteral("/types/compound/nested[1:4].samples[2]"));
+
+        const QString before = controller.selectionText();
+        REQUIRE(controller.applySelection(controller.selectionText()).isEmpty());
+        CHECK(controller.selectionText() == before);
+        CHECK(controller.sliceText() == QStringLiteral("1:4, 2"));
+
+        // A member whose axes are all whole is written bare.
+        REQUIRE(controller.applySelection(QStringLiteral("[:].samples")).isEmpty());
+        CHECK(controller.selectionText() == QStringLiteral("[:].samples"));
     }
 
     SECTION("a chain keeps the slice the reader had already set up")

@@ -73,6 +73,13 @@ DatasetPlot::~DatasetPlot()
     // how long the line is, through a table that is already gone.
     disconnect(&PlotBudget::instance(), nullptr, this, nullptr);
     PlotBudget::instance().leave();
+
+    // The item this last filled is borrowing values this object owns, and
+    // nothing orders the two deaths: a plot is deleted later than the row that
+    // held it, and the item is QML's to destroy whenever the delegate goes.
+    // Emptied here, so an item that outlives this -- by one frame, or for good
+    // in a window nobody closed -- has nothing left to read.
+    releaseDrawing();
 }
 
 void DatasetPlot::applyBudget()
@@ -96,13 +103,11 @@ void DatasetPlot::applyBudget()
     const long long budget = pyramidBudget();
     bool refine = false;
     for (auto it = pyramids_.begin(); it != pyramids_.end();) {
-        const long long wanted = baseBucketFor(it->second.length, budget);
-        if (wanted < it->second.baseBucket()) {
+        if (!fitToBudget(it->second, budget)) {
             it = pyramids_.erase(it);
             refine = true;
             continue;
         }
-        coarsenTo(it->second, wanted);
         ++it;
     }
     if (refine) {
@@ -114,54 +119,25 @@ void DatasetPlot::applyBudget()
 
 void DatasetPlot::releaseDrawing() const
 {
-    if (drawing_ != nullptr) {
-        drawing_->clear();
-        drawing_ = nullptr;
-    }
+    lent_.release();
 }
 
 void DatasetPlot::retire(std::map<int, std::vector<double>>& cache) const
 {
-    if (cache.empty()) {
-        return;
-    }
-    if (drawing_ == nullptr) {
-        // Nothing is reading it, so there is nothing to keep it alive for. This
-        // is also what bounds the store: without it a plot nobody is drawing --
-        // headless, or on a tab that is not on screen -- would accumulate one
-        // cache per change until something filled a renderer.
-        cache.clear();
-        return;
-    }
     // The values out of the map rather than the map itself, and that is the
-    // whole of what a retired line is: a buffer nothing must free yet. Moving a
-    // std::vector takes the buffer with it, so every pointer the renderer was
-    // given goes on naming the same doubles -- and a std::vector<double> move
-    // is noexcept, so growing the store can only ever move them too. Keeping
-    // the maps here meant growing a std::vector of std::map, which takes the
-    // copy on a library whose map move is not noexcept and frees what this
-    // exists to protect. See the note on Detail.
-    //
-    // `drawing_` is deliberately left alone -- the item is still reading these
-    // values and is still the thing that has to be emptied if they ever do have
-    // to go.
-    retired_.reserve(retired_.size() + cache.size());
+    // whole of what a retired line is: a buffer nothing must free yet. Keeping
+    // the maps meant growing a std::vector of std::map, which takes the copy on
+    // a library whose map move is not noexcept and frees what this exists to
+    // protect. See the note on Detail, and BorrowedLines for the rest.
     for (auto& held : cache) {
-        if (!held.second.empty()) {
-            retired_.push_back(std::move(held.second));
-        }
+        lent_.retire(held.second);
     }
     cache.clear();
 }
 
 void DatasetPlot::retire(std::vector<double>& values) const
 {
-    if (values.empty() || drawing_ == nullptr) {
-        values.clear();
-        return;
-    }
-    retired_.push_back(std::move(values));
-    values.clear();
+    lent_.retire(values);
 }
 
 void DatasetPlot::invalidate()
@@ -176,7 +152,6 @@ void DatasetPlot::invalidate()
     // dataset's elements; carrying it into another would be drawing the wrong
     // file, which is the same thing releaseDrawing() above is here to prevent.
     pyramids_.clear();
-    retired_.clear();
     // And the closer look with them. A new table is a new window onto it: what
     // was being looked at closely was a run of the old one, and the range the
     // surface last pushed is in the old table's x. Both are forgotten here and
@@ -227,7 +202,7 @@ void DatasetPlot::selectAll()
 int DatasetPlot::pointsFor(int lines) const
 {
     // A bucket is a column, and a bucket answers with two values.
-    const int pane = 2 * columns_;
+    const int pane = 2 * pane_.applied;
     if (lines <= 0) {
         return std::clamp(pane, kMinPoints, kMaxPoints);
     }
@@ -262,10 +237,9 @@ void DatasetPlot::applyCap(int cap)
 
 void DatasetPlot::applyColumns()
 {
-    if (wantedColumns_ == columns_) {
+    if (!pane_.apply()) {
         return;
     }
-    columns_ = wantedColumns_;
     const int cap = pointsFor(static_cast<int>(drawn_.size()));
     if (cap == cap_) {
         // A wider pane that asks for the same number of points is not a
@@ -279,34 +253,22 @@ void DatasetPlot::applyColumns()
 
 void DatasetPlot::setPaneColumns(int columns)
 {
-    // Down to the quantum, and never to nothing. See kColumnQuantum for why
-    // down rather than to the nearest.
-    const int quantised = std::clamp((std::max(columns, 0) / kColumnQuantum) * kColumnQuantum,
-                                     kMinPoints / 2, kMaxPoints / 2);
-    if (quantised == wantedColumns_) {
-        return;
-    }
-    wantedColumns_ = quantised;
-    if (wantedColumns_ == columns_) {
-        // Dragged out and back again inside one gesture. Nothing to do, and
-        // nothing to wait for either.
+    // Rounded down to the quantum, taken at once the first time and at the end
+    // of a drag after that. See PaneColumns.
+    switch (pane_.request(columns)) {
+    case PaneColumns::Step::Nothing:
+        break;
+    case PaneColumns::Step::Cancel:
         resize_.stop();
-        return;
-    }
-    if (!measured_) {
-        // The surface measuring itself for the first time. There is no gesture
-        // to wait out and nothing for the wait to protect: whatever has been
-        // read so far was read at an assumed width, so making this one wait
-        // would open every plot at the wrong resolution and re-read every line
-        // of it a fifth of a second later.
-        measured_ = true;
+        break;
+    case PaneColumns::Step::Apply:
         resize_.stop();
         applyColumns();
-        return;
+        break;
+    case PaneColumns::Step::Wait:
+        resize_.start();
+        break;
     }
-    // Otherwise nothing happens here. See the note on the declaration: the read
-    // is at the end of the drag, not once per sixty-four pixels of it.
-    resize_.start();
 }
 
 void DatasetPlot::selectFirst(int count)
@@ -699,9 +661,7 @@ std::optional<LogColumns> DatasetPlot::foldWanted() const
 
 bool DatasetPlot::foldServes() const
 {
-    return fold_.columns.has_value() && fold_.start == xStart_ && fold_.step == xStep_ &&
-           fold_.buckets == paneBuckets() &&
-           logColumnsServe(*fold_.columns, viewMin_, viewMax_, paneBuckets());
+    return fold_.grid.serves(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
 }
 
 void DatasetPlot::dropFold() const
@@ -710,7 +670,7 @@ void DatasetPlot::dropFold() const
     retire(fold_.xs);
     fold_.summarised.clear();
     fold_.edges.clear();
-    fold_.columns.reset();
+    fold_.grid.clear();
 }
 
 bool DatasetPlot::foldedLine(int series, PlotLine& line) const
@@ -723,11 +683,11 @@ bool DatasetPlot::foldedLine(int series, PlotLine& line) const
         // margin, or an axis that moved. Retired rather than freed, because the
         // renderer is drawing the old one until it is handed this.
         dropFold();
-        fold_.columns = logColumnsFor(viewMin_, viewMax_, paneBuckets());
-        fold_.start = xStart_;
-        fold_.step = xStep_;
-        fold_.buckets = paneBuckets();
-        edgesAlong(*fold_.columns, xStart_, xStep_, fold_.edges);
+        fold_.grid.remake(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
+        if (!fold_.grid.columns.has_value()) {
+            return false;
+        }
+        edgesAlong(*fold_.grid.columns, xStart_, xStep_, fold_.edges);
     }
 
     auto values = fold_.values.find(series);
@@ -900,13 +860,7 @@ void DatasetPlot::setVisibleRange(double xMin, double xMax)
 
 void DatasetPlot::setZoomFocus(double x, double factor)
 {
-    if (!std::isfinite(x) || !std::isfinite(factor) || !(factor > 0.0)) {
-        clearZoomFocus();
-        return;
-    }
-    focusX_ = x;
-    focusInward_ = factor > 1.0;
-    focusActive_ = true;
+    zoom_.set(x, factor);
     // Not a read of its own: setVisibleRange arrives in the same turn of the
     // event loop with the range this zoom produced, and that is what decides
     // whether anything is worth reading. This only says which way it went.
@@ -914,24 +868,24 @@ void DatasetPlot::setZoomFocus(double x, double factor)
 
 void DatasetPlot::clearZoomFocus()
 {
-    focusActive_ = false;
+    zoom_.clear();
 }
 
 PlotFocus DatasetPlot::focusFor() const
 {
     PlotFocus focus;
-    if (!focusActive_ || !std::isfinite(xStart_) || !std::isfinite(xStep_) ||
+    if (!zoom_.active || !std::isfinite(xStart_) || !std::isfinite(xStep_) ||
         !(std::abs(xStep_) > 0.0)) {
         return focus;
     }
     // x = start + position * step, so a position is the same arithmetic run
     // backwards -- the mapping visiblePositions() uses, over one value.
-    const double position = (focusX_ - xStart_) / xStep_;
+    const double position = (zoom_.x - xStart_) / xStep_;
     if (!std::isfinite(position)) {
         return focus;
     }
     focus.position = position;
-    focus.inward = focusInward_;
+    focus.inward = zoom_.inward;
     focus.active = true;
     return focus;
 }
@@ -1012,11 +966,7 @@ int DatasetPlot::detailBuckets() const
 
 long long DatasetPlot::retiredDoubles() const
 {
-    long long held = 0;
-    for (const std::vector<double>& values : retired_) {
-        held += static_cast<long long>(values.size());
-    }
-    return held;
+    return lent_.retiredDoubles();
 }
 
 long long DatasetPlot::heldDoubles() const
@@ -1211,7 +1161,7 @@ void DatasetPlot::refreshDetail()
         settle_.stop();
         return;
     }
-    if (focusActive_) {
+    if (zoom_.active) {
         // A zoom reads at once rather than waiting the gesture out.
         //
         // The settle was protecting a thread that can only run one job after
@@ -1458,12 +1408,9 @@ void DatasetPlot::fill(PlotItem* target)
     for (const int series : drawn_) {
         lines.push_back(lineOf(series));
     }
-    target->setLines(std::move(lines), drawingAxis());
-    drawing_ = target;
-    // ...and now, and only now, is nothing reading what was retired. This is
-    // the one place those vectors are freed, because it is the one place a
-    // renderer that was borrowing them has just been given something else.
-    retired_.clear();
+    // The one place the retired store is let go, because it is the one place a
+    // renderer that was borrowing it has just been given something else.
+    lent_.lend(target, std::move(lines), drawingAxis());
 }
 
 } // namespace gui

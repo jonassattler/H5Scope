@@ -4,14 +4,26 @@
 #include "Image.hpp"
 
 #include "DataType.hpp"
+#include "Error.hpp"
 #include "Handle.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
 namespace h5core {
 namespace {
+
+/// The most an Image-spec attribute is read into memory for.
+///
+/// Every one of them is a scalar or a pair, and this is asked of every dataset
+/// row a viewport passes over, so an attribute that claims a dataspace of
+/// millions is refused rather than read: it is not the tag the specification
+/// describes, and reading it whole to take its first element is a cost the
+/// tree would pay per row. A megabyte is far past any string a writer means
+/// as a tag and far short of anything that stalls a scroll.
+constexpr std::size_t kMaxTagBytes = std::size_t{1} << 20;
 
 /// One attribute read as text, whatever string flavour the writer used.
 /// Returns nothing when the attribute is absent or is not a string -- both of
@@ -53,9 +65,15 @@ std::optional<std::string> stringAttribute(hid_t object, const char* name)
         H5Eclear2(H5E_DEFAULT);
         return std::nullopt;
     }
-    std::vector<unsigned char> buffer(static_cast<std::size_t>(elements) * elementSize);
-    if (H5Aread(attribute.get(), native.get(), buffer.data()) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    // ...and a count the file states is multiplied with a check, because a
+    // product that wraps is the same overrun by another route. See bufferBytes.
+    const std::optional<std::size_t> bytes =
+        bufferBytes(static_cast<hsize_t>(elements), elementSize);
+    if (!bytes.has_value() || *bytes > kMaxTagBytes) {
+        return std::nullopt;
+    }
+    std::vector<unsigned char> buffer(*bytes);
+    if (failed(H5Aread(attribute.get(), native.get(), buffer.data()))) {
         return std::nullopt;
     }
     VlenGuard reclaim(native.get(), space.get(), buffer.data());
@@ -82,12 +100,19 @@ std::vector<double> numericAttribute(hid_t object, const char* name, std::size_t
         H5Eclear2(H5E_DEFAULT);
         return {};
     }
+    // The whole attribute is read, for stringAttribute's reason, so its size is
+    // bounded for the same one. Two numbers are asked for; an attribute holding
+    // more than a tag's worth of them is not the one the spec describes.
+    const std::optional<std::size_t> bytes =
+        bufferBytes(static_cast<hsize_t>(elements), sizeof(double));
+    if (!bytes.has_value() || *bytes > kMaxTagBytes) {
+        return {};
+    }
 
     // H5T_NATIVE_DOUBLE as the memory type, so the library widens whatever
     // integer or float the writer chose and this file has no switch over them.
     std::vector<double> values(static_cast<std::size_t>(elements));
-    if (H5Aread(attribute.get(), H5T_NATIVE_DOUBLE, values.data()) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Aread(attribute.get(), H5T_NATIVE_DOUBLE, values.data()))) {
         return {};
     }
     values.resize(count);
@@ -173,8 +198,13 @@ std::optional<ImageInfo> readImageInfo(hid_t dataset, const std::vector<hsize_t>
         info.shapeMatches = shape.size() == 2;
     }
 
+    // Both ends finite as well as ordered. `-inf < inf` holds, and a range
+    // between the two is a span no value can be placed on: every position on
+    // it is inf / inf. The file is then treated as though it stated nothing,
+    // which is what it has usefully said.
     const auto range = numericAttribute(dataset, "IMAGE_MINMAXRANGE", 2);
-    if (range.size() == 2 && range[0] < range[1]) {
+    if (range.size() == 2 && std::isfinite(range[0]) && std::isfinite(range[1]) &&
+        range[0] < range[1]) {
         info.minimum = range[0];
         info.maximum = range[1];
     }

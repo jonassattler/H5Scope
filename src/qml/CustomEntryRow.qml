@@ -408,6 +408,14 @@ Rectangle {
                     row.refreshOptions()
                     event.accepted = completion.take()
                 }
+                // A row the reader moved onto is taken rather than the line
+                // committed; with none, Return falls through to onAccepted.
+                Keys.onReturnPressed: (event) => {
+                    event.accepted = completion.takeChosen()
+                }
+                Keys.onEnterPressed: (event) => {
+                    event.accepted = completion.takeChosen()
+                }
                 Keys.onUpPressed: (event) => {
                     event.accepted = completion.visible
                     if (event.accepted)

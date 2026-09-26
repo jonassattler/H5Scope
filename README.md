@@ -10,7 +10,9 @@ A featureful and performant HDF5 viewer. Written in C++ and based on Qt.
 - Search through complex HDF5 files with wildcards
 - Visualize datasets as spreadsheets, plots or images
 - Draw slices of several datasets together on one pair of axes, against the
-  index, a stated range, or another dataset read as a time series
+  index, a stated range, or another dataset read as a time series -- with a
+  named y axis of its own for any line, and x and y swapped if the data is a
+  profile read downwards
 - Zoom a plot to a region you drag out, or to a range you type, and give it a
   title, axis names and a legend on the picture
 - Put either axis on a logarithmic scale — base 10, 2, e or your own — numbered

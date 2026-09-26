@@ -118,19 +118,25 @@ QList<Shot> shots()
         {"information",
          {QStringLiteral("/images")},
          "/images/rgb_planar_3x256x256",
-         "info"},
+         "info",
+         {},
+         {}},
         // The Plot view, on the smallest dataset that still looks like data:
         // 48 float64 readings, which draw as one line with room for its axes.
         {"plot",
          {QStringLiteral("/committed")},
          "/committed/morning",
-         "plot"},
+         "plot",
+         {},
+         {}},
         // The Image view, on a dataset with an alpha channel, so the
         // checkerboard behind a transparent picture is in the picture too.
         {"image",
          {QStringLiteral("/images")},
          "/images/rgba_128x128x4",
-         "image"},
+         "image",
+         {},
+         {}},
         // A custom plot, which is the one tab that is not about the selection:
         // two runs of the same length from two different datasets, drawn
         // together. The same pair the Plot view's picture is taken on, so a

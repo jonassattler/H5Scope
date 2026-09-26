@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace postproc {
@@ -35,22 +37,6 @@ reach(std::ptrdiff_t offset, const std::vector<hsize_t>& shape,
 }
 
 } // namespace
-
-hsize_t elementCount(const std::vector<hsize_t>& shape)
-{
-    constexpr hsize_t kMax = std::numeric_limits<hsize_t>::max();
-    hsize_t total = 1;
-    for (const hsize_t extent : shape) {
-        if (extent == 0) {
-            return 0;
-        }
-        if (total > kMax / extent) {
-            return kMax;
-        }
-        total *= extent;
-    }
-    return total;
-}
 
 Progression asProgression(const std::vector<hsize_t>& indices)
 {
@@ -94,6 +80,18 @@ Array::Array(std::vector<hsize_t> shape, std::vector<double> values)
       shape_(std::move(shape)),
       strides_(rowMajorStrides(shape_))
 {
+    // Checked rather than left to the caller. Every read of an Array walks
+    // its shape through its strides and trusts the buffer to reach, so a shape
+    // that claims more than the values hold is a read past the end in
+    // whichever operation comes next -- far from the one that built it. The
+    // pipeline's own read already refuses a short read in words; this is for
+    // an operation that miscounts, which is a programming error and is thrown
+    // as one.
+    if (storage_->size() != static_cast<std::size_t>(elementCount(shape_))) {
+        throw std::invalid_argument("postproc::Array: " + std::to_string(storage_->size()) +
+                                    " values for a shape of " +
+                                    std::to_string(elementCount(shape_)) + " elements");
+    }
 }
 
 hsize_t Array::size() const noexcept { return elementCount(shape_); }

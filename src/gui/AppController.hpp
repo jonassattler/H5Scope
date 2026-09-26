@@ -281,14 +281,14 @@ private:
     /// the two of them mean.
     Q_PROPERTY(QString memberText READ memberText NOTIFY tableLayoutChanged)
     /// The two of them as one line, the way a reader would type it:
-    /// `[:, 2].samples`.
+    /// `[:].samples[2]`.
     ///
     /// What the slice bar makes editable over a **compound**, where the split
     /// into two boxes was the wrong shape for the job. A chain and the
-    /// subscript it appends axes to are one statement -- `.samples[2]` belongs
-    /// on the slice and `[:, 2].samples` is the same selection written the
-    /// other way round -- so a reader rearranging one of them is usually
-    /// rearranging both, and two boxes made that two commits with a shape they
+    /// subscript over the axes it appends are one statement -- the `2` in
+    /// `[:].samples[2]` is a subscript like the `:` in front of it, and is
+    /// only after the chain because it is about an axis the chain made -- so
+    /// a reader rearranging one of them is usually rearranging both, and two boxes made that two commits with a shape they
     /// did not ask for in between. One line is also the only form that can be
     /// *pasted*: it is what `sliceExpression` prints, less the path.
     Q_PROPERTY(QString selectionText READ selectionText NOTIFY tableLayoutChanged)
@@ -511,7 +511,11 @@ public:
     /// keystroke without opening anything.
     Q_INVOKABLE QString memberError(const QString& text) const;
 
-    /// The subscript and the chain as one line: `[:, 2].samples`.
+    /// The subscript and the chain as one line: `[:].samples[2]`. Each term is
+    /// written on the axes it is about -- the dataset's in front of the chain,
+    /// a member's after the member that appended it -- because that is how
+    /// applySelection reads a line, and this is the line the box hands back to
+    /// it. See postproc::writeSelection.
     [[nodiscard]] QString selectionText() const;
     /// Apply one. The chain first, because it is what decides the shape the
     /// subscript is against -- and both are read before either is applied, so
@@ -519,9 +523,10 @@ public:
     ///
     /// The subscript may be left off (`.energy` alone is the whole of the
     /// dataset through that member) and so may the chain (`[0:100]` alone is
-    /// the struct itself). What comes back is always the canonical pair, which
-    /// is where a chain's own subscripts have moved onto the slice: type
-    /// `[:].samples[2]` and the box prints `[:, 2].samples`.
+    /// the struct itself). What comes back is always the canonical line, which
+    /// is where the views have resolved what was typed: type `.samples[2]` and
+    /// the box prints `[:].samples[2]`, and a line the box printed is a line
+    /// this reads back as the same selection.
     Q_INVOKABLE QString applySelection(const QString& text);
     /// Why one cannot be read, or empty when it can. Checks without applying,
     /// as every other box in this window does.

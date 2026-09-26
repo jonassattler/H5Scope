@@ -2334,6 +2334,51 @@ TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture, "the plot filled into a second item empties the first",
+                 "[plot]")
+{
+    // Only one item is recorded as reading the plot, and every later free is
+    // decided on that record, so an item it has stopped handing lines to must
+    // stop drawing them.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+
+    gui::PlotItem first;
+    gui::PlotItem second;
+    plot->fill(&first);
+    REQUIRE(first.lineCount() == 6);
+
+    plot->fill(&second);
+    CHECK(second.lineCount() == 6);
+    CHECK(first.lineCount() == 0);
+
+    plot->fill(&second);
+    CHECK(second.lineCount() == 6);
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a plot that is destroyed empties the item it filled", "[plot]")
+{
+    // The item is QML's and the plot is not, and nothing orders the two
+    // deaths. An item that outlived its plot held pointers into the plot's
+    // own vectors after they were freed.
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+    auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+    REQUIRE(table != nullptr);
+
+    gui::PlotItem item;
+    {
+        gui::DatasetPlot plot(table);
+        // Built after the selection, so it has no reset to seed its lines
+        // from; asked for them instead.
+        plot.selectFirst(6);
+        h5test::settle();
+        plot.fill(&item);
+        REQUIRE(item.lineCount() == 6);
+    }
+    CHECK(item.lineCount() == 0);
+}
+
 TEST_CASE_METHOD(ControllerFixture, "what the plot filled is emptied before it is freed",
                  "[plot]")
 {

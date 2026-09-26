@@ -252,12 +252,17 @@ const PathFacts* DatasetLookup::facts(const QString& path) const
 
 void DatasetLookup::clear()
 {
+    // Answers about the file that was open are answers about nothing now --
+    // including the ones still on their way. Disowned before the early return
+    // rather than after it: nothing known is exactly the state a lookup is in
+    // while its *first* question is out, and a reply let through then landed
+    // after the next file had opened and was filed as a fact about that one,
+    // under a path it may never have had and a shape it certainly did not.
+    requests_.reset();
     if (known_.isEmpty()) {
         return;
     }
     known_.clear();
-    // Answers about the file that was open are answers about nothing now.
-    requests_.reset();
     emit changed();
 }
 

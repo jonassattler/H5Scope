@@ -1030,12 +1030,21 @@ Array normalized(const Array& input, double low, double high)
     // the second misses `high` by a rounding whenever the two do not subtract
     // exactly -- 0.1 and 0.3 give 0.30000000000000004 -- and a reader who asked
     // for the largest element at 0.3 should find it there.
-    const double span = largest - smallest;
+    //
+    // Halved first when the extent itself overflows: -1e308 and 1e308 are both
+    // finite and their difference is not, and dividing by an infinity put every
+    // element but the largest at `low` -- and the largest, whose own distance
+    // from the smallest overflows too, at inf/inf, a NaN out of a finite
+    // input. Halving both sides is exact for every double not already at the
+    // bottom of the subnormals, and changes nothing where the span fits.
+    const bool halved = !std::isfinite(largest - smallest);
+    const double scale = halved ? 0.5 : 1.0;
+    const double span = largest * scale - smallest * scale;
     for (double& value : values) {
         if (!std::isfinite(value)) {
             continue;
         }
-        const double t = span > 0.0 ? (value - smallest) / span : 0.0;
+        const double t = span > 0.0 ? (value * scale - smallest * scale) / span : 0.0;
         value = (1.0 - t) * low + t * high;
     }
     return Array(input.shape(), std::move(values));

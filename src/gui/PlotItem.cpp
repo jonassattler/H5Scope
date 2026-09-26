@@ -66,6 +66,15 @@ Ink inkFor(const PlotLine& line)
             static_cast<uchar>(std::lround(alpha * 255.0))};
 }
 
+/// Delete every node under `root`. removeAllChildNodes() only unlinks them, and
+/// a node this item built is owned by nothing else.
+void dropChildren(QSGNode* root)
+{
+    while (QSGNode* child = root->firstChild()) {
+        delete child; // a node's destructor takes it out of its parent
+    }
+}
+
 } // namespace
 
 PlotItem::PlotItem(QQuickItem* parent) : QQuickItem(parent)
@@ -331,6 +340,15 @@ void PlotItem::setYLogBase(double base)
     }
 }
 
+void PlotItem::setTransposed(bool on)
+{
+    if (view_.transposed != on) {
+        view_.transposed = on;
+        Q_EMIT viewChanged();
+        update();
+    }
+}
+
 void PlotItem::setMarkers(bool on)
 {
     if (markers_ != on) {
@@ -376,8 +394,20 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     QVariantMap answer;
     answer.insert(QStringLiteral("valid"), false);
 
-    const double w = width();
-    const double h = height();
+    // Searched upright, as the lines were projected, with the pointer moved
+    // there first and the answer moved back: on a transposed pane the pointer's
+    // height is what says which x it is over. See PlotView::transposed.
+    PlotView pane = view_;
+    pane.width = width();
+    pane.height = height();
+    const PlotView upright = uprightView(pane);
+    if (pane.transposed) {
+        const QPointF at = uprightPoint(QPointF(px, py), pane);
+        px = at.x();
+        py = at.y();
+    }
+    const double w = upright.width;
+    const double h = upright.height;
     const AxisMapping xMap = xMappingOf(view_);
     if (!(w > 0.0) || !(h > 0.0) || !xMap.usable || lines_.empty()) {
         return answer;
@@ -487,6 +517,11 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     if (bestLine < 0) {
         return answer;
     }
+    if (pane.transposed) {
+        const QPointF drawn = transposedPoint(QPointF(bestPx, bestPy), pane);
+        bestPx = drawn.x();
+        bestPy = drawn.y();
+    }
     answer.insert(QStringLiteral("valid"), true);
     answer.insert(QStringLiteral("line"), bestLine);
     answer.insert(QStringLiteral("x"), bestX);
@@ -527,7 +562,10 @@ void PlotItem::projectAll()
     runs_.clear();
 
     const auto lines = static_cast<std::size_t>(lineCount());
-    const PlotView view = viewForFrame();
+    const PlotView pane = viewForFrame();
+    // Projected upright and then reflected, so that the envelope and the gaps
+    // are worked out exactly as they always were. See PlotView::transposed.
+    const PlotView view = uprightView(pane);
     lineRuns_.assign(lines + 1, 0);
     lineDecimated_.assign(lines, false);
     for (std::size_t line = 0; line < lines; ++line) {
@@ -537,6 +575,11 @@ void PlotItem::projectAll()
                 .decimated;
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
+    if (pane.transposed) {
+        for (QPointF& point : points_) {
+            point = transposedPoint(point, pane);
+        }
+    }
 
     drawnPoints_ = static_cast<int>(points_.size());
     drawnRuns_ = static_cast<int>(runs_.size());
@@ -560,7 +603,7 @@ QSGNode* PlotItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
     const Drawn wanted = software ? Drawn::Painted : Drawn::Geometry;
     if (drawn_ != wanted) {
-        root->removeAllChildNodes();
+        dropChildren(root);
         drawn_ = wanted;
     }
 
@@ -600,6 +643,32 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
         strips > 0 ? 2 * static_cast<int>(points_.size()) + kMarkerSides * marked + 2 * (strips - 1)
                    : 0;
 
+    // Nothing to draw is no node at all, rather than a node with no vertices
+    // in it -- and the difference is a plot that stays blank.
+    //
+    // Qt's batch renderer leaves an element with no vertices out of every
+    // batch it builds, and when that element's geometry is later marked dirty
+    // it only re-uploads the batch the element is in. An element in no batch
+    // asks for no rebuild, so a node emptied for one frame and then refilled
+    // was never drawn again until something else in the window happened to
+    // force one. That is exactly what re-reading a line does: the model
+    // releases the item while the read is out (see DatasetPlot::releaseDrawing)
+    // and hands it the same values when it lands. Ticking a custom line's
+    // postprocessing off and on rewrites it into the other grammar and reads
+    // it again, and both lines of a two-line plot went blank and stayed blank
+    // -- a resize brought them back. When the refill changed the axes, their
+    // labels changed too and rebuilt the batches along the way, which is why
+    // nearly every other re-read got away with it.
+    //
+    // A node that is added is always batched, so deleting the empty one and
+    // building a fresh one on the next fill makes the rebuild this depends on.
+    // The software renderer draws every frame from scratch and never had this
+    // problem, which is also why the QML suite could not see it.
+    if (vertices == 0) {
+        dropChildren(root);
+        return root;
+    }
+
     if (root->childCount() == 0) {
         auto* fresh = new QSGGeometryNode;
         auto* geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
@@ -613,17 +682,32 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
     auto* node = static_cast<QSGGeometryNode*>(root->firstChild());
     QSGGeometry* geometry = node->geometry();
     geometry->allocate(vertices);
-    if (vertices == 0) {
-        node->markDirty(QSGNode::DirtyGeometry);
-        return root;
-    }
 
     auto* vertex = geometry->vertexDataAsColoredPoint2D();
     int at = 0;
+    // Every write goes through here and is checked against the count. The
+    // count above is exact, and test_plotprojection holds strokeRun and
+    // markerAt to it -- but the buffer is the GPU's, and a change that emitted
+    // one vertex more than it counted would write past it rather than fail a
+    // test. Stopping short costs one wrong frame; overrunning is a heap write.
+    const auto put = [&](const QSGGeometry::ColoredPoint2D& written) {
+        Q_ASSERT(at < vertices);
+        if (at < vertices) {
+            vertex[at] = written;
+            ++at;
+        }
+    };
     const auto place = [&](const QPointF& point, const Ink& ink) {
-        vertex[at].set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
-                       ink.green, ink.blue, ink.alpha);
-        ++at;
+        QSGGeometry::ColoredPoint2D written{};
+        written.set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
+                    ink.green, ink.blue, ink.alpha);
+        put(written);
+    };
+    // The bridge between two strips: the last vertex again.
+    const auto repeatLast = [&] {
+        if (at > 0) {
+            put(vertex[at - 1]);
+        }
     };
 
     bool started = false;
@@ -643,8 +727,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                               if (opening) {
                                   opening = false;
                                   if (started) {
-                                      vertex[at] = vertex[at - 1];
-                                      ++at;
+                                      repeatLast();
                                       place(QPointF(x, y), ink);
                                   }
                               }
@@ -670,8 +753,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                 markerAt(points_[static_cast<std::size_t>(run.first + i)], markerSize_ / 2.0,
                          stroke_);
                 if (started) {
-                    vertex[at] = vertex[at - 1];
-                    ++at;
+                    repeatLast();
                     place(stroke_.front(), ink);
                 }
                 for (const QPointF& point : stroke_) {

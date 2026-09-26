@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QMetaObject>
+#include <QScopeGuard>
 #include <QSemaphore>
 
 namespace gui {
@@ -126,8 +127,12 @@ void H5Thread::reply(std::function<void()> continuation)
     QMetaObject::invokeMethod(
         this,
         [this, continuation = std::move(continuation)]() mutable {
+            // Counted down however the continuation leaves. A reply that was
+            // delivered and then threw is still a reply that arrived, and a
+            // count left one too high is a window that says it is reading
+            // forever.
+            const auto done = qScopeGuard([this] { finished(); });
             continuation();
-            finished();
         },
         Qt::QueuedConnection);
 }

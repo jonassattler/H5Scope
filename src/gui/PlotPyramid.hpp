@@ -134,6 +134,16 @@ void buildLevels(LinePyramid& pyramid);
 /// than a blank pane.
 bool coarsenTo(LinePyramid& pyramid, long long base);
 
+/// Hold `pyramid` to what `budget` doubles afford, and say whether it can be.
+///
+/// Both directions of a budget change in one question, which both plots asked
+/// of every pyramid they hold. A budget that affords the base already held, or
+/// a coarser one, is honoured here by coarsenTo(), exactly and in this call.
+/// One that affords a *finer* base returns false and changes nothing: that is
+/// elements this pyramid no longer has, and only reading the line again gives
+/// them back -- which is the caller's to arrange.
+[[nodiscard]] bool fitToBudget(LinePyramid& pyramid, long long budget);
+
 /// A pyramid built a hyperslab at a time, while the elements are still warm.
 ///
 /// The streaming form, and the one both plots read through: a line of a hundred
@@ -163,6 +173,10 @@ public:
 
     /// Close the base's last bucket, build every level above it, and hand the
     /// pyramid over.
+    ///
+    /// Its length is what was added, where that is less than the length it was
+    /// built for: a line whose reads stopped part of the way is that much of a
+    /// line, and never a promise of elements the base does not hold.
     [[nodiscard]] LinePyramid finish();
 
 private:

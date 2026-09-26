@@ -370,6 +370,10 @@ Rectangle {
                     // to read one way round or the other.
                     showXAxis: false
                     showOrientation: false
+                    // A line of a custom tab can be a profile read downwards,
+                    // a depth or a height against a measurement, and that is
+                    // drawn with its axes swapped.
+                    showFlip: true
                 }
             }
         }

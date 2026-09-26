@@ -9,6 +9,7 @@
 #include "Thread.hpp"
 
 #include <cstring>
+#include <exception>
 #include <format>
 
 namespace h5core {
@@ -23,6 +24,9 @@ struct IterateContext {
     /// without opening the object it names. Hard links never leave their file,
     /// so this is that object's file number too.
     unsigned long fileNumber = 0;
+    /// What stopped the listing from inside the callback, to be thrown once
+    /// HDF5's frames are no longer in the way. See linkCallback.
+    std::exception_ptr failure;
 };
 
 /// Reduce an object token to an integer, purely so the tree can spot a hard
@@ -59,8 +63,7 @@ void describeLink(hid_t location, const char* name, const H5L_info2_t& info,
     node.link = (info.type == H5L_TYPE_EXTERNAL) ? LinkType::External : LinkType::Soft;
 
     std::vector<char> value(info.u.val_size + 1, '\0');
-    if (H5Lget_val(location, name, value.data(), info.u.val_size, H5P_DEFAULT) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Lget_val(location, name, value.data(), info.u.val_size, H5P_DEFAULT))) {
         return;
     }
 
@@ -72,8 +75,7 @@ void describeLink(hid_t location, const char* name, const H5L_info2_t& info,
     unsigned flags = 0;
     const char* file = nullptr;
     const char* object = nullptr;
-    if (H5Lunpack_elink_val(value.data(), info.u.val_size, &flags, &file, &object) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Lunpack_elink_val(value.data(), info.u.val_size, &flags, &file, &object))) {
         return;
     }
     node.linkFile = (file != nullptr) ? file : "";
@@ -102,10 +104,8 @@ void resolveObject(hid_t location, const char* name, NodeInfo& node)
     // BASIC and NUM_ATTRS out of one read. The attribute count is in the
     // object header beside the type, and every tree row wants both.
     H5O_info2_t objectInfo{};
-    if (H5Oget_info_by_name3(location, name, &objectInfo,
-                             H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS, H5P_DEFAULT)
-        < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Oget_info_by_name3(location, name, &objectInfo,
+                                    H5O_INFO_BASIC | H5O_INFO_NUM_ATTRS, H5P_DEFAULT))) {
         node.kind = NodeKind::Unresolved;
         return;
     }
@@ -118,30 +118,42 @@ void resolveObject(hid_t location, const char* name, NodeInfo& node)
 
 /// H5Literate2 callback. Never throws: HDF5 unwinds C frames between us and
 /// the caller, so a link that will not resolve is recorded as such instead.
-herr_t linkCallback(hid_t group, const char* name, const H5L_info2_t* info, void* opData)
+///
+/// And nothing else may throw through it either. Every name costs a few
+/// allocations -- the name, the path, a soft link's target, whose length is
+/// whatever the file says it is -- and an exception let out of here unwinds
+/// through H5Literate2, which is undefined behaviour rather than an error. So
+/// whatever does escape is caught at the boundary, the walk is stopped, and
+/// children() throws it again on its own side.
+herr_t linkCallback(hid_t group, const char* name, const H5L_info2_t* info, void* opData) noexcept
 {
     auto* ctx = static_cast<IterateContext*>(opData);
     if (ctx == nullptr || name == nullptr || info == nullptr) {
         return 0;
     }
 
-    NodeInfo node;
-    node.name = name;
-    node.path = joinPath(ctx->parentPath, name);
+    try {
+        NodeInfo node;
+        node.name = name;
+        node.path = joinPath(ctx->parentPath, name);
 
-    describeLink(group, name, *info, node);
-    if (ctx->resolve == File::Resolve::Objects) {
-        resolveObject(group, name, node);
-    } else if (info->type == H5L_TYPE_HARD) {
-        // The link table already holds the object's token for a hard link, so
-        // identity costs nothing here even though the kind is not being
-        // fetched. That is what keeps cycle detection at listing time: a group
-        // that closes a loop is caught before anything is opened.
-        node.fileNumber = ctx->fileNumber;
-        node.address = identityOf(info->u.token);
+        describeLink(group, name, *info, node);
+        if (ctx->resolve == File::Resolve::Objects) {
+            resolveObject(group, name, node);
+        } else if (info->type == H5L_TYPE_HARD) {
+            // The link table already holds the object's token for a hard link,
+            // so identity costs nothing here even though the kind is not being
+            // fetched. That is what keeps cycle detection at listing time: a
+            // group that closes a loop is caught before anything is opened.
+            node.fileNumber = ctx->fileNumber;
+            node.address = identityOf(info->u.token);
+        }
+
+        ctx->out->push_back(std::move(node));
+    } catch (...) {
+        ctx->failure = std::current_exception();
+        return -1;
     }
-
-    ctx->out->push_back(std::move(node));
     return 0;
 }
 
@@ -159,8 +171,7 @@ bool File::isHDF5(const std::string& path)
 {
     thread::check(__func__);
     const htri_t result = H5Fis_accessible(path.c_str(), H5P_DEFAULT);
-    if (result < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(result)) {
         return false;
     }
     return result > 0;
@@ -178,8 +189,7 @@ File::File(const std::string& path) : path_(path)
 
     // Asked once and kept, so that listing a group can record a hard link's
     // identity without opening what it names -- see IterateContext.
-    if (H5Fget_fileno(file_.get(), &fileNumber_) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Fget_fileno(file_.get(), &fileNumber_))) {
         fileNumber_ = 0;
     }
 }
@@ -191,8 +201,7 @@ bool File::exists(const std::string& path) const
         return true;
     }
     const htri_t result = H5Oexists_by_name(file_.get(), path.c_str(), H5P_DEFAULT);
-    if (result < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(result)) {
         return false;
     }
     return result > 0;
@@ -207,7 +216,7 @@ std::vector<NodeInfo> File::children(const std::string& path, Resolve resolve) c
     }
 
     std::vector<NodeInfo> result;
-    IterateContext ctx{this, path, &result, resolve, fileNumber_};
+    IterateContext ctx{this, path, &result, resolve, fileNumber_, {}};
 
     // The count is free -- it is in the group's own header, which is open --
     // and reserving on it saves a listing of eight thousand names some
@@ -222,7 +231,13 @@ std::vector<NodeInfo> File::children(const std::string& path, Resolve resolve) c
     hsize_t index = 0;
     // Increasing-name order keeps the tree stable between runs; HDF5's native
     // link order is creation order, which varies between writers.
-    if (H5Literate2(group.get(), H5_INDEX_NAME, H5_ITER_INC, &index, &linkCallback, &ctx) < 0) {
+    const herr_t walked =
+        H5Literate2(group.get(), H5_INDEX_NAME, H5_ITER_INC, &index, &linkCallback, &ctx);
+    if (ctx.failure) {
+        H5Eclear2(H5E_DEFAULT);
+        std::rethrow_exception(ctx.failure);
+    }
+    if (walked < 0) {
         throwError(std::format("Failed to list children of '{}'", path));
     }
 
@@ -268,8 +283,7 @@ DatasetOutline File::datasetOutline(const std::string& path, bool mayBeImage) co
     const int rank = H5Sget_simple_extent_ndims(space.get());
     if (rank > 0) {
         outline.shape.resize(static_cast<std::size_t>(rank));
-        if (H5Sget_simple_extent_dims(space.get(), outline.shape.data(), nullptr) < 0) {
-            H5Eclear2(H5E_DEFAULT);
+        if (failed(H5Sget_simple_extent_dims(space.get(), outline.shape.data(), nullptr))) {
             outline.shape.clear();
         }
     }
@@ -293,8 +307,7 @@ bool File::hasLink(const std::string& path) const
         return true;
     }
     const htri_t result = H5Lexists(file_.get(), path.c_str(), H5P_DEFAULT);
-    if (result < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(result)) {
         return false;
     }
     return result > 0;

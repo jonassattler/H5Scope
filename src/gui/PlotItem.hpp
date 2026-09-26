@@ -65,6 +65,11 @@ class PlotItem : public QQuickItem
     Q_PROPERTY(double xLogBase READ xLogBase WRITE setXLogBase NOTIFY viewChanged FINAL)
     Q_PROPERTY(double yLogBase READ yLogBase WRITE setYLogBase NOTIFY viewChanged FINAL)
 
+    /// Whether x runs up the pane and y across it. See PlotView::transposed:
+    /// the lines are projected upright and reflected onto the pane, and
+    /// nearestSample answers about the pane the reader is pointing at.
+    Q_PROPERTY(bool transposed READ transposed WRITE setTransposed NOTIFY viewChanged FINAL)
+
     /// Punctuation on the line: a dot at every sample.
     ///
     /// Only where the line is drawn sample for sample. Once anything is
@@ -216,6 +221,7 @@ public:
     [[nodiscard]] bool yLog() const { return view_.yLog; }
     [[nodiscard]] double xLogBase() const { return view_.xLogBase; }
     [[nodiscard]] double yLogBase() const { return view_.yLogBase; }
+    [[nodiscard]] bool transposed() const { return view_.transposed; }
     [[nodiscard]] bool markers() const { return markers_; }
     [[nodiscard]] double markerSize() const { return markerSize_; }
     [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
@@ -229,6 +235,7 @@ public:
     void setYLog(bool on);
     void setXLogBase(double base);
     void setYLogBase(double base);
+    void setTransposed(bool on);
     void setMarkers(bool on);
     void setMarkerSize(double size);
 

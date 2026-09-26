@@ -76,23 +76,30 @@ h5core::Dataset* H5Session::dataset(const std::string& path)
     return dataset_.get();
 }
 
-h5core::Dataset* H5Session::held(const std::string& path,
-                                 const h5core::MemberSelection& member)
+std::shared_ptr<h5core::Dataset> H5Session::held(const std::string& path,
+                                                 const h5core::MemberSelection& member)
 {
-    const std::string key = path + member.text;
+    // Separated by a NUL rather than run together. A link name holds a '.' as
+    // freely as any other character, so `/run` read through `.3` and the
+    // dataset `/run.3` spell the same string once they are concatenated -- and
+    // a tab drawing one would have been handed the other, read at whatever rank
+    // it happened to have. HDF5 names are C strings and cannot hold a NUL, so
+    // nothing in a path can reach across it.
+    std::string key = path;
+    key.push_back('\0');
+    key += member.text;
     for (auto& [name, dataset] : heldDatasets_) {
         if (name == key) {
-            return dataset.get();
+            return dataset;
         }
     }
     if (file_ == nullptr) {
         return nullptr;
     }
-    std::unique_ptr<h5core::Dataset> opened;
+    std::shared_ptr<h5core::Dataset> opened;
     try {
-        opened = member.empty()
-                     ? std::make_unique<h5core::Dataset>(*file_, path)
-                     : std::make_unique<h5core::FieldDataset>(*file_, path, member);
+        opened = member.empty() ? std::make_shared<h5core::Dataset>(*file_, path)
+                                : std::make_shared<h5core::FieldDataset>(*file_, path, member);
     } catch (const h5core::H5Error&) {
         // Null is the answer, as it is in dataset(): the caller asked whether
         // this path is a readable dataset and is about to say so in the entry's
@@ -102,8 +109,8 @@ h5core::Dataset* H5Session::held(const std::string& path,
     if (heldDatasets_.size() >= kHeldDatasets) {
         heldDatasets_.erase(heldDatasets_.begin());
     }
-    heldDatasets_.emplace_back(key, std::move(opened));
-    return heldDatasets_.back().second.get();
+    heldDatasets_.emplace_back(key, opened);
+    return opened;
 }
 
 void H5Session::setComputed(std::shared_ptr<const h5core::DataSource> computed)

@@ -508,6 +508,82 @@ TEST_CASE("the whole-line summary comes out of the pyramid", "[levels][pyramid]"
     }
 }
 
+TEST_CASE("a pyramid streamed in pieces is the pyramid of the whole line", "[levels][pyramid]")
+{
+    // Both plots build their pyramids this way -- a read at a time, of up to
+    // kReadRun elements, with whatever does not fill a bucket carried into the
+    // next read -- and nothing asserted it against the one-buffer build. A
+    // carry that dropped or doubled one element would shift every bucket after
+    // it by one, and draw a line that is nearly right everywhere.
+    const std::vector<double> line = testLine(50000);
+    const auto length = static_cast<long long>(line.size());
+
+    for (const long long base : {1LL, 4LL, 16LL}) {
+        // Pieces that land on bucket boundaries, pieces that never do, and one
+        // element at a time.
+        for (const long long piece : {4096LL, 1000LL, 7LL, 1LL}) {
+            INFO("base " << base << " piece " << piece);
+            gui::PyramidBuilder builder(length, base);
+            for (long long at = 0; at < length; at += piece) {
+                builder.add(line.data() + at, std::min(piece, length - at));
+            }
+            CHECK(builder.taken() == length);
+            const gui::LinePyramid streamed = builder.finish();
+            const gui::LinePyramid whole = gui::pyramidOf(line.data(), length, base);
+
+            REQUIRE(streamed.length == whole.length);
+            REQUIRE(streamed.levels.size() == whole.levels.size());
+            for (std::size_t level = 0; level < whole.levels.size(); ++level) {
+                INFO("level " << level);
+                CHECK(streamed.levels[level].bucket == whole.levels[level].bucket);
+                same(streamed.levels[level].values, whole.levels[level].values);
+            }
+        }
+    }
+}
+
+TEST_CASE("a pyramid whose reads stopped short answers only for what it holds", "[levels][pyramid]")
+{
+    // A pyramid is built for the length the line was said to have, and every
+    // fold, column and extreme afterwards indexes its base up to that length.
+    // A walk that stopped part of the way -- a read that failed on the third
+    // hyperslab of ten -- left a base shorter than the length it carried, and
+    // those reads went off the end of it. The length is now what was handed
+    // in, so what is answered is the part of the line that exists.
+    const std::vector<double> line = testLine(20000);
+    constexpr long long kPromised = 50000;
+
+    for (const long long base : {1LL, 8LL}) {
+        INFO("base " << base);
+        gui::PyramidBuilder builder(kPromised, base);
+        builder.add(line.data(), static_cast<long long>(line.size()));
+        const gui::LinePyramid pyramid = builder.finish();
+
+        CHECK(pyramid.length == 20000);
+
+        // The whole-line summary is of the part there is...
+        long long stride = 0;
+        double step = 0.0;
+        std::vector<double> got;
+        REQUIRE(gui::fillWhole(pyramid, 512, got, stride, step));
+        same(got, readWould(line, 0, 20000, stride));
+
+        // ...a run reaching past it stops where it does...
+        std::vector<double> run;
+        REQUIRE(gui::fillWindow(pyramid, gui::PlotWindow{16384, 16384, 16, 1024}, run));
+        same(run, readWould(line, 16384, 16384, 16));
+
+        // ...and the extremes of a range over the end are the extremes of
+        // what is inside it.
+        const gui::Extremes found = gui::extremesOver(pyramid, 19000, kPromised);
+        REQUIRE(found.found());
+        std::vector<double> tail;
+        gui::reduceBuckets(line.data() + 19000, 1000, 1000, tail);
+        CHECK(std::min(tail[0], tail[1]) == found.lowest);
+        CHECK(std::max(tail[0], tail[1]) == found.highest);
+    }
+}
+
 TEST_CASE("the base bucket is the finest the budget affords", "[levels][pyramid]")
 {
     // A pyramid costs its base and a third again, so the budget decides how
@@ -901,4 +977,127 @@ TEST_CASE("the smallest value above zero comes out of the line, not out of its s
         double smallest = 42.0;
         CHECK_FALSE(gui::smallestPositive(pyramid, smallest));
     }
+}
+
+TEST_CASE("a pane's width is taken at once the first time and at the end of a drag after that",
+          "[levels][pane]")
+{
+    using Step = gui::PaneColumns::Step;
+    gui::PaneColumns pane;
+    REQUIRE(pane.applied == gui::kDefaultColumns);
+
+    SECTION("the first measurement is applied without waiting")
+    {
+        CHECK(pane.request(1000) == Step::Apply);
+        CHECK(pane.wanted == 960); // rounded down to the quantum
+        CHECK(pane.apply());
+        CHECK(pane.applied == 960);
+        CHECK_FALSE(pane.apply()); // the same width again is not a change
+    }
+
+    SECTION("after that a new width waits, and the same one again does nothing")
+    {
+        REQUIRE(pane.request(1000) == Step::Apply);
+        REQUIRE(pane.apply());
+        CHECK(pane.request(1300) == Step::Wait);
+        CHECK(pane.request(1310) == Step::Nothing); // inside the same quantum
+        CHECK(pane.apply());
+        CHECK(pane.applied == 1280);
+    }
+
+    SECTION("dragged out and back inside one gesture cancels the wait")
+    {
+        REQUIRE(pane.request(1000) == Step::Apply);
+        REQUIRE(pane.apply());
+        REQUIRE(pane.request(1300) == Step::Wait);
+        CHECK(pane.request(970) == Step::Cancel);
+        CHECK_FALSE(pane.apply());
+        CHECK(pane.applied == 960);
+    }
+
+    SECTION("a width is never nothing and never past the most a line is thinned to")
+    {
+        REQUIRE(pane.request(0) == Step::Apply);
+        CHECK(pane.wanted == gui::kMinPoints / 2);
+        pane.apply();
+        CHECK(pane.request(1 << 20) == Step::Wait);
+        CHECK(pane.wanted == gui::kMaxPoints / 2);
+    }
+}
+
+TEST_CASE("a zoom focus is a finite point and a direction, or none", "[levels][focus]")
+{
+    gui::ZoomFocus focus;
+    CHECK_FALSE(focus.active);
+
+    focus.set(12.5, 2.0);
+    CHECK(focus.active);
+    CHECK(focus.x == 12.5);
+    CHECK(focus.inward);
+
+    focus.set(3.0, 0.5);
+    CHECK(focus.active);
+    CHECK_FALSE(focus.inward);
+
+    focus.set(std::numeric_limits<double>::quiet_NaN(), 2.0);
+    CHECK_FALSE(focus.active);
+    focus.set(1.0, 0.0);
+    CHECK_FALSE(focus.active);
+    focus.set(1.0, std::numeric_limits<double>::infinity());
+    CHECK_FALSE(focus.active);
+
+    focus.set(1.0, 2.0);
+    focus.clear();
+    CHECK_FALSE(focus.active);
+}
+
+TEST_CASE("a log fold's grid serves the axis it was made on and no other", "[levels][fold]")
+{
+    gui::LogFoldGrid grid;
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+
+    grid.remake(0.0, 1.0, 0, 1024, 1.0, 1e6);
+    REQUIRE(grid.columns.has_value());
+    CHECK(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+    // A pan inside the margin is the same grid.
+    CHECK(grid.serves(0.0, 1.0, 0, 1024, 2.0, 2e6));
+
+    // Anything that changes where a point's x comes from is another grid.
+    CHECK_FALSE(grid.serves(5.0, 1.0, 0, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 2.0, 0, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 1.0, 1, 1024, 1.0, 1e6));
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 512, 1.0, 1e6));
+
+    // Under an octave there is no grid at all.
+    grid.remake(0.0, 1.0, 0, 1024, 10.0, 15.0);
+    CHECK_FALSE(grid.columns.has_value());
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 10.0, 15.0));
+
+    grid.remake(0.0, 1.0, 0, 1024, 1.0, 1e6);
+    grid.clear();
+    CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
+}
+
+TEST_CASE("a pyramid is coarsened to a smaller budget and refuses a larger one",
+          "[levels][pyramid][budget]")
+{
+    const std::vector<double> line = testLine(30000);
+    gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 30000, 1);
+    REQUIRE(pyramid.baseBucket() == 1);
+
+    // Enough for the base it has: nothing to do.
+    CHECK(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK(pyramid.baseBucket() == 1);
+
+    // Less: coarsened in the call, to the base the budget affords.
+    const long long small = gui::pyramidDoubles(30000, 16);
+    CHECK(gui::fitToBudget(pyramid, small));
+    CHECK(pyramid.baseBucket() == gui::baseBucketFor(30000, small));
+    CHECK(pyramid.baseBucket() > 1);
+
+    // More again: a finer base is elements this no longer has, so it says so
+    // and leaves the pyramid as it is.
+    const long long coarse = pyramid.baseBucket();
+    CHECK_FALSE(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK(pyramid.baseBucket() == coarse);
 }

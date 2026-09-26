@@ -28,6 +28,33 @@ SettingsPanel {
     /// Whether the two source rows are shown. See the note above.
     property bool showXAxis: true
     property bool showOrientation: true
+    /// Whether the plot can be drawn with its axes swapped. A custom tab only:
+    /// the Plot tab's lines are the rows or columns of a table, and which of
+    /// those runs along x is already the "one line per" row's question.
+    property bool showFlip: false
+
+    /// The lines drawn on a y axis of their own, in the order those axes are
+    /// numbered: `{ series, position, count }` apiece, `position` being the
+    /// line's place among the `count` drawn -- what seriesColor is asked with.
+    ///
+    /// Off the plot rather than off the surface's separateAxes, which is the
+    /// same list with the window on each axis in it and so is a new list on
+    /// every frame of a zoom. The label boxes below are built from this, and a
+    /// box rebuilt while the reader is typing in it loses what they typed.
+    readonly property var ownAxes: {
+        const plot = panel.plot
+        if (!panel.target || !plot)
+            return []
+        const drawn = plot.drawnSeries
+        if (plot.sharedSeriesCount >= drawn.length)
+            return []
+        const out = []
+        for (let i = 0; i < drawn.length; ++i) {
+            if (plot.seriesAxis(drawn[i]).separate)
+                out.push({ series: drawn[i], position: i, count: drawn.length })
+        }
+        return out
+    }
 
     title: qsTr("plot settings")
 
@@ -95,6 +122,95 @@ SettingsPanel {
             onActiveFocusChanged: {
                 if (!yLabelField.activeFocus)
                     panel.commitLabel(yLabelField, "yLabel")
+            }
+        }
+
+        // A name for each y axis of its own, numbered after the common one:
+        // "y label 2" is the first axis to the left of it. Drawn beside that
+        // axis in the colour of its line, which is what the stroke beside each
+        // box shows. The name is the line's (CustomPlot::setAxisLabel), so it
+        // follows the line when lines are reordered and is kept in a saved view.
+        //
+        // Counted rather than listed: a box is built per axis and told which
+        // line it is for, so a list handed over again -- the plot announces on
+        // every read -- does not rebuild the box the reader is typing in. What
+        // a box shows is put back from the plot only while nobody is in it.
+        Repeater {
+            model: panel.ownAxes.length
+
+            RowLayout {
+                id: axisName
+
+                required property int index
+                readonly property var axis: panel.ownAxes[axisName.index]
+                readonly property int series: axis ? axis.series : -1
+
+                width: parent ? parent.width : 0
+                spacing: Theme.gapS
+
+                function stored() {
+                    return panel.plot && axisName.series >= 0
+                        ? (panel.plot.seriesAxis(axisName.series).label || "") : ""
+                }
+
+                function commit() {
+                    if (panel.plot && axisName.series >= 0)
+                        panel.plot.setAxisLabel(axisName.series, axisLabelField.text)
+                    axisLabelField.text = axisName.stored()
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: Theme.gapL
+                    Layout.preferredHeight: Theme.borderWidthAccent * 2
+                    radius: Theme.radiusS
+                    color: {
+                        if (!panel.target || !axisName.axis)
+                            return Theme.accent
+                        // Named so that this binding depends on them: a call
+                        // creates no dependency on what it reads, and the
+                        // stroke would go on showing the cycle before.
+                        const cycle = panel.target.colorMode
+                        const reversed = panel.target.colorsReversed
+                        return panel.target.seriesColor(axisName.series,
+                                                        axisName.axis.position,
+                                                        axisName.axis.count)
+                    }
+                }
+
+                FilterInput {
+                    id: axisLabelField
+
+                    objectName: "plotAxisLabelField"
+
+                    Layout.fillWidth: true
+                    implicitHeight: Theme.smallControlHeight
+                    font: Theme.body
+                    placeholderText: qsTr("y label %1").arg(axisName.index + 2)
+                    onAccepted: axisName.commit()
+                    onActiveFocusChanged: {
+                        if (!axisLabelField.activeFocus)
+                            axisName.commit()
+                    }
+                    Keys.onEscapePressed: {
+                        axisLabelField.text = axisName.stored()
+                        axisLabelField.focus = false
+                    }
+                }
+
+                Component.onCompleted: axisLabelField.text = axisName.stored()
+                onSeriesChanged: {
+                    if (!axisLabelField.activeFocus)
+                        axisLabelField.text = axisName.stored()
+                }
+
+                Connections {
+                    target: panel.plot
+
+                    function onChanged() {
+                        if (!axisLabelField.activeFocus)
+                            axisLabelField.text = axisName.stored()
+                    }
+                }
             }
         }
     }
@@ -452,6 +568,31 @@ SettingsPanel {
         target: panel.plot
 
         function onChanged() { panel.copyResult = "" }
+    }
+
+    // --- which way round the axes are ------------------------------------
+    // Above the scales, because it is the larger question: which way x runs
+    // decides what the scales below are scales *of* on the screen. It changes
+    // nothing that is read and nothing about the window -- see
+    // PlotSurface.flipped -- so the zoom the reader is at survives it.
+    SettingRow {
+        label: qsTr("axes")
+        visible: panel.showFlip
+
+        AppCheckBox {
+            objectName: "flipAxesBox"
+
+            text: qsTr("flip x and y")
+            enabled: !!panel.target
+            checked: panel.target ? panel.target.flipped : false
+            onToggled: { if (panel.target) panel.target.flipped = checked }
+
+            AppToolTip {
+                shown: parent.hovered
+                text: qsTr("Draw x up the plot and y across it: the same lines, "
+                           + "with the axes swapped.")
+            }
+        }
     }
 
     // --- which scale each axis is on --------------------------------------

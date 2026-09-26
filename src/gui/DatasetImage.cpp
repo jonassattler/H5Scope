@@ -15,9 +15,16 @@ namespace {
 
 /// Where a value falls on the ramp, 0 to 1. `span` is guaranteed non-zero by
 /// the caller, because a flat image has no ramp at all.
+///
+/// A quotient that is not a number lands at the bottom rather than passing
+/// through. std::clamp hands a NaN back unchanged, and `inf / inf` is exactly
+/// what a range reaching an infinity produces: rampColor turned that NaN into
+/// an index, which is undefined behaviour and on x86 an index far past the
+/// end of the stops.
 inline double position(double value, double low, double span, bool reversed)
 {
-    const double t = std::clamp((value - low) / span, 0.0, 1.0);
+    const double quotient = (value - low) / span;
+    const double t = std::isnan(quotient) ? 0.0 : std::clamp(quotient, 0.0, 1.0);
     return reversed ? 1.0 - t : t;
 }
 
@@ -41,8 +48,11 @@ QRgb rampColor(const std::vector<QColor>& stops, double at)
     if (stops.size() == 1) {
         return stops.front().rgb();
     }
-    const double scaled = std::clamp(at, 0.0, 1.0)
-                          * static_cast<double>(stops.size() - 1);
+    // Checked here as well as in position(), because this is where a NaN
+    // would become an index: `!(at >= 0.0)` is true of a NaN and of nothing
+    // else that std::clamp would not already have handled.
+    const double scaled =
+        (!(at >= 0.0) ? 0.0 : std::min(at, 1.0)) * static_cast<double>(stops.size() - 1);
     const auto lower = static_cast<std::size_t>(std::floor(scaled));
     const std::size_t upper = std::min(lower + 1, stops.size() - 1);
     const double t = scaled - static_cast<double>(lower);
@@ -388,7 +398,10 @@ void DatasetImage::setAutoRange(bool automatic)
 
 void DatasetImage::setRangeMinimum(double value)
 {
-    if (qFuzzyCompare(rangeMinimum_, value)) {
+    // An end of the range is a value a pixel can be compared with. An
+    // infinity makes the span infinite and every position inf / inf, and a
+    // NaN makes it nothing at all, so neither is taken.
+    if (!std::isfinite(value) || qFuzzyCompare(rangeMinimum_, value)) {
         return;
     }
     rangeMinimum_ = value;
@@ -397,7 +410,8 @@ void DatasetImage::setRangeMinimum(double value)
 
 void DatasetImage::setRangeMaximum(double value)
 {
-    if (qFuzzyCompare(rangeMaximum_, value)) {
+    // Refused for setRangeMinimum's reason.
+    if (!std::isfinite(value) || qFuzzyCompare(rangeMaximum_, value)) {
         return;
     }
     rangeMaximum_ = value;

@@ -19,6 +19,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
+#include <QStringList>
 #include <QThread>
 
 #if defined(__unix__)
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -152,6 +154,45 @@ TEST_CASE("submitted work comes back in order, and on the caller's thread",
         CHECK(id == std::this_thread::get_id());
     }
     CHECK(h5.outstanding() == 0);
+}
+
+TEST_CASE("an answer that throws is reported, and the thread stops being busy", "[thread]")
+{
+    // A continuation is ordinary code on the requester's thread, inside its
+    // event loop -- and a listing of a group of a million names allocates a
+    // million rows in one. What it throws used to unwind into Qt, where
+    // nothing above it catches anything, and the count of outstanding work
+    // was never taken back down: the process ended, or the window said it was
+    // reading for as long as it lived.
+    auto& h5 = gui::H5Thread::instance();
+    gui::H5Requests requests;
+
+    QStringList reported;
+    const QMetaObject::Connection watching =
+        QObject::connect(&h5, &gui::H5Thread::jobFailed,
+                         [&reported](const QString& message) { reported << message; });
+
+    bool reached = false;
+    h5.submit(
+        requests, [](gui::H5Session&) { return 3; },
+        [&reached](int) {
+            reached = true;
+            throw std::runtime_error("the answer could not be taken");
+        });
+    // ...and one behind it, which has to be delivered as though nothing had
+    // happened in front of it.
+    int after = 0;
+    h5.submit(requests, [](gui::H5Session&) { return 4; }, [&after](int value) { after = value; });
+
+    REQUIRE(h5.drain());
+    QObject::disconnect(watching);
+
+    CHECK(reached);
+    REQUIRE(reported.size() == 1);
+    CHECK(reported.front() == QStringLiteral("the answer could not be taken"));
+    CHECK(after == 4);
+    CHECK(h5.outstanding() == 0);
+    CHECK_FALSE(h5.busy());
 }
 
 TEST_CASE("a reply nobody is waiting for is dropped", "[thread]")

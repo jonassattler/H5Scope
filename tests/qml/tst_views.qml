@@ -1443,6 +1443,114 @@ TestCase {
         compare(box.text, "[:]", "the second one puts back what the table shows")
     }
 
+    /// A row the reader has moved onto is what Tab and Return take.
+    ///
+    /// Both were broken, differently. Tab brought the list up to date before
+    /// taking from it, and a list handed over again forgot its row, so Tab took
+    /// the first row whichever one was lit. Return was never offered to the list
+    /// at all and applied what was typed. Driven by keys rather than by setting
+    /// the text, because the text is not where either of them went wrong.
+    function test_a_row_moved_onto_is_what_tab_and_return_take() {
+        verify(select("/compound")) // {id: int32, value: float64}
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const list = findChild(win, "sliceSelectionCompletion")
+        mouseClick(box)
+        keyClick(Qt.Key_End)
+        waitForRendering(win.contentItem)
+        verify(list.visible, "the list is offered on the way in")
+        compare(list.highlighted, -1, "and no row is chosen until the reader moves")
+
+        keyClick(Qt.Key_Down)
+        keyClick(Qt.Key_Down)
+        compare(list.chosen, "[:].value")
+        keyClick(Qt.Key_Tab)
+        compare(box.text, "[:].value",
+                "Tab takes the row the reader chose, not what the rows share")
+        compare(AppController.memberText, "", "and applies nothing")
+
+        // Return, with a row chosen, takes the row...
+        box.text = "[:]"
+        box.textEdited()
+        keyClick(Qt.Key_Down)
+        compare(list.chosen, "[:].id")
+        keyClick(Qt.Key_Return)
+        compare(box.text, "[:].id")
+        compare(AppController.memberText, "", "taking a row is not applying it")
+
+        // ...and with none, applies the line, as it does in every other box.
+        compare(list.highlighted, -1, "what was taken is no longer chosen")
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".id")
+
+        AppController.applyMember("")
+    }
+
+    /// A click on a row takes it, and the box keeps the keyboard.
+    ///
+    /// It did nothing at all. FocusRelease ends an edit on any press outside the
+    /// box, the list is drawn outside it, and the list is only up while the box
+    /// has the keyboard -- so the press closed it and the release had nothing
+    /// to land on.
+    function test_a_click_on_a_row_takes_it_and_leaves_the_box_editing() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const list = findChild(win, "sliceSelectionCompletion")
+        mouseClick(box)
+        keyClick(Qt.Key_End)
+        waitForRendering(win.contentItem)
+        verify(list.visible)
+
+        const rows = findChild(win, "completionList")
+        const row = rows.itemAtIndex(1)
+        verify(row, "the second row must be built")
+        compare(row.modelData, "[:].value")
+        mouseClick(row)
+        waitForRendering(win.contentItem)
+        compare(box.text, "[:].value", "the row clicked is what the box holds")
+        verify(box.activeFocus, "and the reader is still writing in it")
+        compare(AppController.memberText, "", "with nothing applied until Return")
+
+        keyClick(Qt.Key_Return)
+        waitForRendering(win.contentItem)
+        compare(AppController.memberText, ".value")
+
+        AppController.applyMember("")
+    }
+
+    /// The one-line box stands against its path and is as wide as its line.
+    ///
+    /// The two brackets of the other form were hidden and still a bracket wide
+    /// each, so the box stood two characters clear of the path; and it was held
+    /// open to the width of its `[:].member` hint, so `[:]` had a member's
+    /// worth of nothing after it.
+    function test_a_compound_line_reads_as_one_line() {
+        verify(select("/compound"))
+        const win = createTemporaryObject(windowComponent, testCase)
+        waitForRendering(win.contentItem)
+        win.selectTab("table")
+        waitForRendering(win.contentItem)
+
+        const path = findChild(win.contentItem, "slicePath")
+        const box = findChild(win.contentItem, "sliceSelectionInput")
+        const well = box.parent
+        compare(box.text, "[:]")
+        compare(well.x, path.x + path.width, "no gap between the path and the box")
+        verify(well.width < box.contentWidth + Theme.gapM,
+               "the box is as wide as `[:]`, not as `[:].member`: " + well.width
+               + " against " + box.contentWidth)
+    }
+
     /// A line that does not read is left in the box, in amber, with the
     /// reason -- the bracketed box's contract, because it is the same
     /// contract. Neither half of it is applied: a selection is one statement.

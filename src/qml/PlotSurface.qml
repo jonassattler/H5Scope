@@ -51,6 +51,19 @@ Item {
     property bool xLog: false
     property bool yLog: false
 
+    /// Whether x runs up the pane and y across it: the same plot with its axes
+    /// swapped, as `plot(y, x)` would draw it. Offered on a custom tab, where
+    /// a line may be a depth or an altitude profile that is read downwards.
+    ///
+    /// Only where things are *drawn* changes. The window is still a window
+    /// onto x and onto y -- zoomX and panX are still about x, the models are
+    /// still asked for a range of x -- so flipping moves nothing the reader
+    /// has arranged and costs no read; it is the renderer (PlotItem.transposed)
+    /// and the frame (PlotFrame.transposed) that lay the same numbers out the
+    /// other way. What had to learn about it here is every gesture, because a
+    /// gesture arrives in the pane's pixels: see zoomAt, panBy and dataXAt.
+    property bool flipped: false
+
     /// Which base each of those logarithms is taken to: "10", "2", "e", or
     /// "custom" and then the number beside it.
     ///
@@ -434,8 +447,9 @@ Item {
     }
 
     /// Every drawn line that is on an axis of its own, in drawing order, as
-    /// `{ series, line, fixed, low, high, colour, paperColour }` -- `line`
-    /// being its place in what the item was handed and `series` its row.
+    /// `{ series, line, fixed, low, high, label, colour, paperColour }` --
+    /// `line` being its place in what the item was handed, `series` its row,
+    /// and `label` the name the reader gave the axis (CustomPlot::setAxisLabel).
     ///
     /// **A separate axis zooms by the common axis's fractions.** Its whole
     /// is the line's own extent, with the air a lone line would get, so it is
@@ -487,6 +501,7 @@ Item {
                 fixed: axis.fixed,
                 low: whole.low + bottom * span,
                 high: whole.low + top * span,
+                label: axis.label ? axis.label : "",
                 colour: surface.seriesColor(drawn[i], i, drawn.length, false),
                 paperColour: surface.seriesColor(drawn[i], i, drawn.length, true)
             })
@@ -931,7 +946,8 @@ Item {
     }
 
     /// Zoom about (px, py) by `factor`, on the axes `axes` names: "x", "y" or
-    /// "both".
+    /// "both" -- the *pane's* x and y, across it and up it, so that Shift
+    /// stretches what runs across the pane whichever way round it is drawn.
     ///
     /// One axis at a time is what the modifiers ask for, and it is not a
     /// convenience. A plot of a long trace is read by stretching time without
@@ -943,11 +959,18 @@ Item {
         const area = surface.plotRect
         if (area.width <= 0 || area.height <= 0)
             return
-        const fx = Math.max(0, Math.min(1, (px - area.x) / area.width))
+        const across = Math.max(0, Math.min(1, (px - area.x) / area.width))
         // y grows downward on screen and upward on the axis.
-        const fy = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
+        const up = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
+        // Which data axis runs which way. On a flipped pane x runs up it, so
+        // the pointer's height is where it is along x, and a request for the
+        // pane's x is a request for data y.
+        const fx = surface.flipped ? up : across
+        const fy = surface.flipped ? across : up
+        const which = !surface.flipped ? axes
+                    : axes === "x" ? "y" : axes === "y" ? "x" : axes
 
-        if (axes !== "y") {
+        if (which !== "y") {
             // Where the pointer is, in the x the axis prints, before the zoom
             // moves anything -- which is the value zoomedAxis() is about to
             // hold still under it.
@@ -978,7 +1001,7 @@ Item {
             surface.zoomX = x.zoom
             surface.panX = x.pan
         }
-        if (axes !== "x") {
+        if (which !== "x") {
             const y = surface.zoomedAxis(surface.zoomY, surface.panY,
                                          surface.lowerBound, surface.upperBound,
                                          fy, factor, surface.yLog,
@@ -1078,8 +1101,20 @@ Item {
     ///
     /// Clamped to the pane, because a drag that runs off the edge says "to the
     /// edge" -- which is what the band draws and what the zoom then takes.
-    function dataXAt(px) {
+    ///
+    /// Each is read off the coordinate its axis runs along, which is the first
+    /// argument while the pane is upright and the second once it is flipped:
+    /// x up the pane, y across it. The second may be left off by anything that
+    /// never asks about a flipped pane.
+    function dataXAt(px, py) {
         const area = surface.plotRect
+        if (surface.flipped) {
+            if (area.height <= 0)
+                return surface.viewMinX
+            const up = Math.max(0, Math.min(1, (py - area.y) / area.height))
+            return surface.valueAlong(surface.viewMinX, surface.viewMaxX, 1.0 - up,
+                                      surface.xLog, surface.xLogBase)
+        }
         if (area.width <= 0)
             return surface.viewMinX
         const at = Math.max(0, Math.min(1, (px - area.x) / area.width))
@@ -1089,8 +1124,15 @@ Item {
 
     /// The same, down the other axis. y grows downward on screen and upward on
     /// the axis, so the top of the pane is the larger value.
-    function dataYAt(py) {
+    function dataYAt(py, px) {
         const area = surface.plotRect
+        if (surface.flipped) {
+            if (area.width <= 0)
+                return surface.viewMinY
+            const across = Math.max(0, Math.min(1, (px - area.x) / area.width))
+            return surface.valueAlong(surface.viewMinY, surface.viewMaxY, across,
+                                      surface.yLog, surface.yLogBase)
+        }
         if (area.height <= 0)
             return surface.viewMinY
         const at = Math.max(0, Math.min(1, (py - area.y) / area.height))
@@ -1125,11 +1167,13 @@ Item {
                 || bottom - top < surface.minimumBand)
             return false
 
-        // The band's top edge is the axis's larger value -- see dataYAt.
-        const x0 = surface.dataXAt(left)
-        const x1 = surface.dataXAt(right)
-        const y0 = surface.dataYAt(bottom)
-        const y1 = surface.dataYAt(top)
+        // The band's top edge is the axis's larger value -- see dataYAt -- and
+        // its right edge too; on a flipped pane those are x's and y's the
+        // other way round, which dataXAt and dataYAt know.
+        const x0 = surface.dataXAt(left, bottom)
+        const x1 = surface.dataXAt(right, top)
+        const y0 = surface.dataYAt(bottom, left)
+        const y1 = surface.dataYAt(top, right)
 
         // The middle of the band and the magnification it amounts to, both
         // measured the way the axis measures: on a logarithmic one the middle
@@ -1200,11 +1244,16 @@ Item {
                                            surface.yLogBase)
                        - surface.axisPosition(surface.lowerBound, surface.yLog,
                                               surface.yLogBase)) / surface.zoomY
-        surface.panX = surface.clampPan(surface.panX - dx * spanX / area.width,
+        // The share of each axis the drag moved along it. Upright, x runs to
+        // the right and y up; flipped, x runs up and y to the right -- and up
+        // is minus dy either way, because the pane counts downwards.
+        const alongX = surface.flipped ? -dy / area.height : dx / area.width
+        const alongY = surface.flipped ? dx / area.width : -dy / area.height
+        surface.panX = surface.clampPan(surface.panX - alongX * spanX,
                                         surface.zoomX, surface.axisLowX,
                                         surface.axisHighX, surface.xLog,
                                         surface.xLogBase)
-        surface.panY = surface.clampPan(surface.panY + dy * spanY / area.height,
+        surface.panY = surface.clampPan(surface.panY - alongY * spanY,
                                         surface.zoomY, surface.lowerBound,
                                         surface.upperBound, surface.yLog,
                                         surface.yLogBase)
@@ -1284,6 +1333,7 @@ Item {
         title: surface.plotTitle
         xLabel: surface.xLabel
         yLabel: surface.yLabel
+        transposed: surface.flipped
 
         commonAxis: surface.sharedAxis
         sideAxes: surface.separateAxes
@@ -1623,11 +1673,16 @@ Item {
     /// physical columns -- a band drawn at half or a third of the resolution
     /// the display has, which is the whole of what oversampling would have
     /// bought and is free to ask for correctly instead.
+    ///
+    /// Along x, which on a flipped pane is up it: the frame's height, less the
+    /// title's line, which is as independent of what the plot draws as the
+    /// width's gutter is.
     function pushColumns() {
         if (!surface.active || !surface.plot)
             return
-        surface.plot.setPaneColumns(
-            Math.round((frame.width - frame.gutterRight) * surface.pixelRatio))
+        const extent = surface.flipped ? frame.height - frame.gutterTop
+                                       : frame.width - frame.gutterRight
+        surface.plot.setPaneColumns(Math.round(extent * surface.pixelRatio))
     }
 
     /// Device pixels per logical one, which is the other factor in the pane's
@@ -1664,7 +1719,9 @@ Item {
     Connections {
         target: frame
         function onWidthChanged() { surface.pushColumns() }
+        function onHeightChanged() { surface.pushColumns() }
     }
+    onFlippedChanged: surface.pushColumns()
 
     Component.onCompleted: surface.refill()
     onActiveChanged: refillSoon.restart()
@@ -1750,7 +1807,8 @@ Item {
         "xLogBaseMode", "yLogBaseMode", "xLogBaseCustom", "yLogBaseCustom",
         "showMarkers", "showCursor",
         "plotTitle", "xLabel", "yLabel",
-        "legendOnPlot", "legendCorner"
+        "legendOnPlot", "legendCorner",
+        "flipped"
     ]
 
     /// Those properties as plain data, for something to write down.

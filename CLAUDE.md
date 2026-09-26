@@ -129,6 +129,32 @@ side axis's ticks cannot disagree. Four rules hold it up:
   early when nothing is separate — it is re-evaluated on every frame of a zoom,
   and the Plot tab can be ten thousand lines.
 
+Such an axis can be **named** (`Entry::axisLabel`, `setAxisLabel`, reported by
+`seriesAxis` as `label`): "y label 2" onwards in the plot settings, drawn beside
+the axis in its line's colour. It is typed where the common axis's name is and
+kept on the line, for the colour's reason — the axis *is* the line's, so the
+name follows it through a reorder and into a saved view. The boxes are built
+from `PlotSettingsPanel.ownAxes`, counted rather than listed, because
+`separateAxes` is a new list on every frame of a zoom and a box rebuilt under
+the reader loses what they typed.
+
+A custom tab can also be drawn **flipped** — x up the pane, y across it, as
+`plot(y, x)` draws it (`PlotSurface.flipped`, saved with the view). The rule
+that holds it up: **only where things are drawn changes.** The window is still
+a window onto x and onto y, so nothing is re-read and the zoom survives it.
+`PlotView::transposed` projects every line upright into a pane of the swapped
+size and reflects each point onto the real one (`uprightView`,
+`transposedPoint`), so the envelope still folds along x — which is now the
+pane's height, and what `pushColumns` reports. `PlotFrame` names every tick
+list after its *data* axis and lays them out through `left*`/`foot*`
+properties, which are the one place the swap is decided; the side axes become
+rows along the foot. The numbers up the side come only from lists measured up
+the pane (`xValuesUp`/`yValuesUp`): the left gutter sizes the pane's width, and
+a tick list that could depend on that width in either orientation is a cycle
+across the two that Qt reports on every flip. Gestures arrive in pixels, so
+`zoomAt`, `panBy`, `zoomToRegion` and `dataXAt`/`dataYAt` read each axis off
+the coordinate it runs along; the zoom modifiers name the pane's directions.
+
 The plot is drawn by this program and not by a library. `gui::PlotProjection`
 is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without
@@ -351,9 +377,16 @@ constructor to fall back on.** `std::vector` reallocates with
 still pointing at it. Whether that happens is down to the standard library:
 `std::map`'s move is `noexcept` on libstdc++ and libc++ and is not on MSVC's, so
 a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
-on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, both
-retired stores hold bare `std::vector<double>`, and `static_assert`s next to
-each of them say so on every platform rather than on the one that noticed.
+on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, the
+retired store holds bare `std::vector<double>`, and `static_assert`s next to
+each say so on every platform rather than on the one that noticed.
+
+Both plots keep that contract through one class, `gui::BorrowedLines`: which
+item is reading, the retired store, and the rule for when either is let go
+(`lend`, `retire`, `release`). Each plot used to carry its own copy, and the
+two defects found in it -- `fill()` into a second item leaving the first
+holding pointers, and a destroyed plot leaving its item holding them -- had
+to be fixed twice.
 
 ## Compound data: `.member` indexing
 
@@ -394,7 +427,7 @@ Four pieces:
   reason already written over that one. Resolving is arithmetic over a
   `TypeInfo`, so it costs no read and answers on every keystroke.
 - **The three entry points.** Over a compound the slice bar makes *everything
-  after the path* one box — `[:, 2].samples`, brackets and all — and keeps the
+  after the path* one box — `[:].samples[2]`, brackets and all — and keeps the
   bracketed `path[ box ]` form for everything else. `sliceText` and `memberText`
   keep their exact meanings underneath, which is what leaves the pipeline's
   slice row alone; `selectionText` / `applySelection` / `selectionError` are the

@@ -8,9 +8,30 @@
 #include <hdf5.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace h5core {
+
+/// `elements` of `elementSize` bytes each, as a byte count -- or nothing when
+/// the product does not fit in `std::size_t`.
+///
+/// Every read here sizes its buffer from a count the *file* states, and
+/// H5Aread and H5Dread then fill that buffer with every element there is.
+/// A product that wraps is a small buffer and a large write into it, so the
+/// multiplication is checked rather than trusted: a file is allowed to claim a
+/// dataspace no machine could hold, and this is not allowed to be an overrun
+/// when it does.
+[[nodiscard]] std::optional<std::size_t> bufferBytes(hsize_t elements,
+                                                     std::size_t elementSize) noexcept;
+
+/// The dimensions of an H5T_ARRAY, outermost first; empty for any other class.
+[[nodiscard]] std::vector<hsize_t> arrayDims(hid_t type);
+
+/// The name of member `index` of a compound or an enum, with the string HDF5
+/// allocated for it handed back. Nothing when HDF5 has no name to give.
+[[nodiscard]] std::optional<std::string> memberName(hid_t type, unsigned index);
 
 /// Describe an HDF5 datatype without taking ownership of `type`.
 TypeInfo describeType(hid_t type);
@@ -53,7 +74,7 @@ std::string formatElement(hid_t type, const void* data);
 /// Scope guard reclaiming variable-length data allocated by H5Dread/H5Aread.
 ///
 /// HDF5 allocates buffers for variable-length elements (strings, vlen arrays)
-/// that the caller must hand back or they leak. In HDF5 2.x the call is
+/// and for references that the caller must hand back or they leak. In HDF5 2.x the call is
 /// H5Treclaim; the older H5Dvlen_reclaim was removed.
 class VlenGuard
 {

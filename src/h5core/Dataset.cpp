@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <format>
-#include <numeric>
 #include <stdexcept>
 
 namespace h5core {
@@ -77,8 +76,7 @@ void collectFilters(hid_t createProps, DatasetInfo& info)
         const H5Z_filter_t id =
             H5Pget_filter2(createProps, static_cast<unsigned>(i), &flags, &valueCount,
                            values, sizeof(name), name, &filterConfig);
-        if (id < 0) {
-            H5Eclear2(H5E_DEFAULT);
+        if (failed(id)) {
             continue;
         }
 
@@ -126,10 +124,8 @@ void collectStorageSources(hid_t createProps, DatasetInfo& info)
             // long and no pointer to one converts.
             HDoff_t offset = 0;
             hsize_t size = 0;
-            if (H5Pget_external(createProps, static_cast<unsigned>(i), sizeof(name), name,
-                                &offset, &size)
-                < 0) {
-                H5Eclear2(H5E_DEFAULT);
+            if (failed(H5Pget_external(createProps, static_cast<unsigned>(i), sizeof(name), name,
+                                       &offset, &size))) {
                 continue;
             }
             info.externalFiles.emplace_back(name);
@@ -142,8 +138,7 @@ void collectStorageSources(hid_t createProps, DatasetInfo& info)
         return;
     }
     std::size_t mappings = 0;
-    if (H5Pget_virtual_count(createProps, &mappings) < 0) {
-        H5Eclear2(H5E_DEFAULT);
+    if (failed(H5Pget_virtual_count(createProps, &mappings))) {
         return;
     }
     for (std::size_t i = 0; i < mappings; ++i) {
@@ -216,8 +211,7 @@ Dataset::Dataset(const File& file, const std::string& path) : path_(path)
         info_.layout = layoutOf(createProps.get());
         if (info_.layout == Layout::Chunked) {
             info_.chunk.resize(static_cast<std::size_t>(rank));
-            if (H5Pget_chunk(createProps.get(), rank, info_.chunk.data()) < 0) {
-                H5Eclear2(H5E_DEFAULT);
+            if (failed(H5Pget_chunk(createProps.get(), rank, info_.chunk.data()))) {
                 info_.chunk.clear();
             }
         }
@@ -264,9 +258,7 @@ Dataset::Selection Dataset::selectWindow(const std::vector<hsize_t>& offset,
         }
     }
 
-    selection.elements = std::accumulate(selection.clamped.begin(),
-                                         selection.clamped.end(),
-                                         static_cast<hsize_t>(1), std::multiplies<>{});
+    selection.elements = elementCount(selection.clamped);
 
     // A null dataspace has rank 0 like a scalar, but selects nothing: the
     // empty product above says one element and there is none.
@@ -277,6 +269,14 @@ Dataset::Selection Dataset::selectWindow(const std::vector<hsize_t>& offset,
 
     if (rank > 0 && selection.elements == 0) {
         return selection;
+    }
+
+    // Refused rather than selected. HDF5 counts a selection the way it counts
+    // an extent, by a product that wraps, so a window of more elements than a
+    // 64-bit count holds would size every buffer by the wrapped number and
+    // then be read in full into it. No reader can hold such a window anyway.
+    if (selection.elements == kCountSaturated) {
+        throw H5Error(std::format("A window of '{}' has more elements than can be counted", path_));
     }
 
     if (rank > 0) {
@@ -312,40 +312,50 @@ DataWindow Dataset::readWindow(const std::vector<hsize_t>& offset,
         return window; // an empty window: nothing was selected to read
     }
 
-    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
-    Handle nativeType(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
-    if (!nativeType.valid()) {
-        // selectWindow above rejects an unconvertible type, so reaching here
-        // means the type became unconvertible between describing and reading.
-        H5Eclear2(H5E_DEFAULT);
-        throw H5Error(
-            std::format("Dataset '{}' cannot be read: {}", path_,
-                        info_.unreadableReason()));
-    }
-
-    const std::size_t elementSize = H5Tget_size(nativeType.get());
-    if (elementSize == 0) {
-        throwError("Datatype has zero size");
-    }
-
-    std::vector<unsigned char> buffer(
-        static_cast<std::size_t>(selection.elements) * elementSize);
-    check(H5Dread(dataset_.get(), nativeType.get(), selection.memorySpace.get(),
-                  selection.fileSpace.get(), H5P_DEFAULT, buffer.data()),
-          std::format("Failed to read '{}'", path_));
+    NativeRead read = readNative(selection);
 
     // Variable-length payloads are allocated by HDF5 and must be handed back;
     // the guard covers every return path below, including a throw from
     // formatElement.
-    VlenGuard reclaim(nativeType.get(), selection.memorySpace.get(), buffer.data());
+    VlenGuard reclaim(read.type.get(), selection.memorySpace.get(), read.buffer.data());
 
     window.cells.reserve(static_cast<std::size_t>(selection.elements));
     for (hsize_t i = 0; i < selection.elements; ++i) {
         window.cells.push_back(
-            formatElement(nativeType.get(), buffer.data() + i * elementSize));
+            formatElement(read.type.get(), read.buffer.data() + i * read.elementSize));
     }
 
     return window;
+}
+
+Dataset::NativeRead Dataset::readNative(const Selection& selection) const
+{
+    NativeRead read;
+    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
+    read.type = Handle(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
+    if (!read.type.valid()) {
+        // selectWindow rejects an unconvertible type, so reaching here means
+        // the type became unconvertible between describing and reading.
+        H5Eclear2(H5E_DEFAULT);
+        throw H5Error(
+            std::format("Dataset '{}' cannot be read: {}", path_, info_.unreadableReason()));
+    }
+
+    read.elementSize = H5Tget_size(read.type.get());
+    if (read.elementSize == 0) {
+        throwError("Datatype has zero size");
+    }
+
+    const std::optional<std::size_t> bytes = bufferBytes(selection.elements, read.elementSize);
+    if (!bytes.has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  selection.elements, path_));
+    }
+    read.buffer.resize(*bytes);
+    check(H5Dread(dataset_.get(), read.type.get(), selection.memorySpace.get(),
+                  selection.fileSpace.get(), H5P_DEFAULT, read.buffer.data()),
+          std::format("Failed to read '{}'", path_));
+    return read;
 }
 
 NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
@@ -371,6 +381,14 @@ NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
         return window;
     }
 
+    // Checked as readWindow checks its buffer: the count is the file's to
+    // state, and a vector asked for more than memory would throw something
+    // that says nothing about which dataset or why.
+    if (!bufferBytes(selection.elements, sizeof(double)).has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  selection.elements, path_));
+    }
+
     // H5T_NATIVE_DOUBLE as the memory type, so HDF5 does the widening and this
     // file carries no switch over integer widths at all.
     window.values.resize(static_cast<std::size_t>(selection.elements));
@@ -393,31 +411,15 @@ ElementValue Dataset::readElement(const std::vector<hsize_t>& offset) const
         return element;
     }
 
-    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
-    Handle nativeType(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
-    if (!nativeType.valid()) {
-        H5Eclear2(H5E_DEFAULT);
-        throw H5Error(std::format("Dataset '{}' cannot be read: {}", path_,
-                                  info_.unreadableReason()));
-    }
-
-    const std::size_t elementSize = H5Tget_size(nativeType.get());
-    if (elementSize == 0) {
-        throwError("Datatype has zero size");
-    }
-
-    std::vector<unsigned char> buffer(elementSize);
-    check(H5Dread(dataset_.get(), nativeType.get(), selection.memorySpace.get(),
-                  selection.fileSpace.get(), H5P_DEFAULT, buffer.data()),
-          std::format("Failed to read '{}'", path_));
+    NativeRead read = readNative(selection);
 
     // As in readWindow: the guard covers every return path below, including a
     // throw from the formatting.
-    VlenGuard reclaim(nativeType.get(), selection.memorySpace.get(), buffer.data());
+    VlenGuard reclaim(read.type.get(), selection.memorySpace.get(), read.buffer.data());
 
-    element.fields = describeCompoundElement(nativeType.get(), buffer.data());
-    element.json = toJson(nativeType.get(), buffer.data());
-    element.text = formatElement(nativeType.get(), buffer.data());
+    element.fields = describeCompoundElement(read.type.get(), read.buffer.data());
+    element.json = toJson(read.type.get(), read.buffer.data());
+    element.text = formatElement(read.type.get(), read.buffer.data());
     return element;
 }
 

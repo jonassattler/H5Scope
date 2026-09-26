@@ -155,6 +155,7 @@ Item {
             title: picture.surface ? picture.surface.plotTitle : ""
             xLabel: picture.surface ? picture.surface.xLabel : ""
             yLabel: picture.surface ? picture.surface.yLabel : ""
+            transposed: picture.surface ? picture.surface.flipped : false
 
             // The axes of their own travel with the lines they are the axes
             // of -- the item's per-line windows come across in adopt() -- and

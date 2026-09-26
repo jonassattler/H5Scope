@@ -285,6 +285,57 @@ inline constexpr int kSettleMilliseconds = 150;
 /// one run of each line, a resize re-reads all of every one.
 inline constexpr int kResizeMilliseconds = 200;
 
+/// The pane width a plot reads against, and the one it has been asked for.
+///
+/// Both plots took the surface's width the same way -- rounded down to
+/// kColumnQuantum, held until the drag that is changing it stops, taken at once
+/// the first time because that is a measurement and not a gesture -- and each
+/// carried its own copy of the three fields and the branches over them. This is
+/// that arithmetic without the timer, which is the plot's: request() says what
+/// to do with it and apply() is what the timer's end amounts to.
+struct PaneColumns
+{
+    /// What the caller should do with its resize timer.
+    enum class Step
+    {
+        Nothing, ///< the same width again: leave the timer as it is
+        Cancel,  ///< dragged out and back inside one gesture: stop it
+        Apply,   ///< the first measurement: stop it and apply now
+        Wait,    ///< a gesture in progress: restart it, and apply when it fires
+    };
+
+    /// The width reads are made against.
+    int applied = kDefaultColumns;
+    /// The width the surface last asked for, rounded.
+    int wanted = kDefaultColumns;
+    /// Whether the surface has ever said how wide the pane is.
+    bool measured = false;
+
+    /// The surface's width, `columns` device pixels.
+    Step request(int columns);
+    /// Take the width asked for. False when it is the one already applied,
+    /// which is not a change and costs no read.
+    bool apply();
+};
+
+/// Where a reader is zooming, in the x the axis prints.
+///
+/// Kept in x rather than as a position, because everything that changes how a
+/// position becomes an x -- a different start or step, a time base -- would
+/// otherwise leave it pointing somewhere the reader never was. Each plot turns
+/// it into a PlotFocus over its own lines.
+struct ZoomFocus
+{
+    double x = 0.0;
+    bool inward = true;
+    bool active = false;
+
+    /// A zoom by `factor` about `x`. A factor above one is in; anything not a
+    /// finite positive factor at a finite x is no focus at all.
+    void set(double atX, double factor);
+    void clear() { active = false; }
+};
+
 /// How far out a run is read before the reader has asked for it.
 ///
 /// The two directions of a zoom are not the same shape, and this is the one
@@ -417,6 +468,34 @@ struct LogColumns
 /// Whether `held` still serves `low`..`high`: the density the view wants and
 /// a reach that covers it. What a model asks before it folds again.
 [[nodiscard]] bool logColumnsServe(const LogColumns& held, double low, double high, int columns);
+
+/// The grid a model's logarithmic fold was made on, and the axis it was made
+/// against.
+///
+/// A fold is of one axis: every point's x was worked out from `start` and
+/// `step` (and, on a custom tab, from which kind of axis it is), so moving the
+/// axis is a fold that no longer says where anything is, and so is a pane that
+/// now wants a different number of columns. Both plots kept these fields and
+/// asked the same question of them; this is that question.
+struct LogFoldGrid
+{
+    std::optional<LogColumns> columns;
+    double start = 0.0;
+    double step = 1.0;
+    int buckets = 0;
+    /// Which kind of x axis the fold was made against, for a model that has
+    /// more than one way of turning a position into an x. Zero otherwise.
+    int mode = 0;
+
+    /// Whether this grid still serves a view of `low`..`high` over `buckets`
+    /// columns, on an axis of `start`, `step` and `mode`.
+    [[nodiscard]] bool serves(double atStart, double atStep, int atMode, int atBuckets, double low,
+                              double high) const;
+    /// Make this the grid for that view. `columns` is empty afterwards when
+    /// the view has none -- under an octave, or not a window at all.
+    void remake(double atStart, double atStep, int atMode, int atBuckets, double low, double high);
+    void clear() { columns.reset(); }
+};
 
 /// The edges of `columns` as positions along a line whose position `p` sits at
 /// `x = start + p * step`, ascending, into `out`.

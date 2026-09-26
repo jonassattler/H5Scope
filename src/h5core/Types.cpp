@@ -3,9 +3,6 @@
 
 #include "Types.hpp"
 
-#include <functional>
-#include <numeric>
-
 namespace h5core {
 
 std::string toString(NodeKind kind)
@@ -105,6 +102,24 @@ std::string DatasetInfo::unreadableReason() const
     return {};
 }
 
+hsize_t elementCount(const std::vector<hsize_t>& shape) noexcept
+{
+    hsize_t total = 1;
+    for (const hsize_t extent : shape) {
+        if (extent == 0) {
+            return 0;
+        }
+        if (total > kCountSaturated / extent) {
+            // Not returned yet: a later zero still makes the whole of it
+            // nothing, and saying "too many" about an empty dataset is wrong.
+            total = kCountSaturated;
+            continue;
+        }
+        total *= extent;
+    }
+    return total;
+}
+
 hsize_t DatasetInfo::elementCount() const
 {
     // A scalar dataspace has rank 0 but holds exactly one element; a null one
@@ -113,8 +128,7 @@ hsize_t DatasetInfo::elementCount() const
     if (space == Dataspace::Null) {
         return 0;
     }
-    return std::accumulate(shape.begin(), shape.end(), static_cast<hsize_t>(1),
-                           std::multiplies<>{});
+    return h5core::elementCount(shape);
 }
 
 } // namespace h5core
