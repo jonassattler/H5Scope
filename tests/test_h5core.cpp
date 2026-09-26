@@ -22,10 +22,13 @@
 #include <hdf5.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -903,6 +906,83 @@ TEST_CASE("an image tag written as an array is read, not overrun",
         // honoured rather than merely reported.
         REQUIRE(dataset.info().image->shapeMatches);
     }
+}
+
+namespace {
+
+/// A 4x4 grayscale image whose IMAGE_MINMAXRANGE is `low, high`.
+void writeImageWithRange(const std::string& path, double low, double high)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+
+    const std::vector<hsize_t> dims{4, 4};
+    const std::vector<std::uint8_t> pixels(16, 0);
+    const hid_t space = H5Screate_simple(2, dims.data(), nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "img", H5T_NATIVE_UINT8, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_NATIVE_UINT8, H5S_ALL, H5S_ALL, H5P_DEFAULT, pixels.data()) >= 0);
+
+    const auto text = [&](const char* name, const char* value) {
+        const hid_t type = H5Tcopy(H5T_C_S1);
+        REQUIRE(H5Tset_size(type, std::strlen(value) + 1) >= 0);
+        const hid_t scalar = H5Screate(H5S_SCALAR);
+        const hid_t attribute = H5Acreate2(dataset, name, type, scalar, H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(attribute >= 0);
+        REQUIRE(H5Awrite(attribute, type, value) >= 0);
+        H5Aclose(attribute);
+        H5Sclose(scalar);
+        H5Tclose(type);
+    };
+    text("CLASS", "IMAGE");
+    text("IMAGE_SUBCLASS", "IMAGE_GRAYSCALE");
+
+    const hsize_t two = 2;
+    const double range[2] = {low, high};
+    const hid_t rangeSpace = H5Screate_simple(1, &two, nullptr);
+    const hid_t attribute = H5Acreate2(dataset, "IMAGE_MINMAXRANGE", H5T_NATIVE_DOUBLE, rangeSpace,
+                                       H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(attribute >= 0);
+    REQUIRE(H5Awrite(attribute, H5T_NATIVE_DOUBLE, range) >= 0);
+    H5Aclose(attribute);
+    H5Sclose(rangeSpace);
+
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("an image range that reaches an infinity is not a range", "[h5core][image]")
+{
+    // `-inf < inf` is true, so ordering alone let this through, and a span
+    // between the two puts every pixel at inf / inf -- a NaN the colour ramp
+    // then used as an index.
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    const auto [low, high] = GENERATE_COPY(std::pair{-inf, inf}, std::pair{-inf, 0.0},
+                                           std::pair{0.0, inf}, std::pair{0.0, std::nan("")});
+    h5test::TempFile temp{"infrange"};
+    writeImageWithRange(temp.path(), low, high);
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/img");
+    REQUIRE(dataset.info().image.has_value());
+    CHECK_FALSE(dataset.info().image->minimum.has_value());
+    CHECK_FALSE(dataset.info().image->maximum.has_value());
+}
+
+TEST_CASE("a finite image range is still the range", "[h5core][image]")
+{
+    h5test::TempFile temp{"finiterange"};
+    writeImageWithRange(temp.path(), -2.5, 300.0);
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/img");
+    REQUIRE(dataset.info().image.has_value());
+    CHECK(dataset.info().image->minimum == std::optional<double>{-2.5});
+    CHECK(dataset.info().image->maximum == std::optional<double>{300.0});
 }
 
 // ---------------------------------------------------------------------------

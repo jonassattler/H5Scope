@@ -37,6 +37,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <QColor>
 #include <QImage>
 #include <QVariantMap>
 
@@ -44,6 +45,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -637,6 +639,33 @@ TEST_CASE("the image defaults come from the metadata, not from the data", "[exam
         CHECK_FALSE(image->invert());
         CHECK(image->autoRange());
     }
+}
+
+TEST_CASE("an end of the range that is not a number is refused", "[example][images]")
+{
+    gui::AppController controller;
+    REQUIRE(h5test::openFileAndSettle(controller, QString::fromStdString(example().path())));
+    auto* image = controller.datasetImage();
+    REQUIRE(h5test::selectAndSettle(controller, QStringLiteral("/images/gray_512x512")));
+    REQUIRE_FALSE(image->autoRange());
+
+    // An infinite end made the span infinite and every position inf / inf,
+    // and the ramp turned that NaN into an index into its stops.
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    image->setRangeMinimum(-inf);
+    image->setRangeMaximum(inf);
+    image->setRangeMinimum(std::nan(""));
+    CHECK(image->rangeMinimum() == 0.0);
+    CHECK(image->rangeMaximum() == 255.0);
+
+    // ...and a finite one is still taken.
+    image->setRangeMaximum(128.0);
+    CHECK(image->rangeMaximum() == 128.0);
+
+    // With a ramp of several stops, which is the path that indexed.
+    image->setRamp(QVariantList{QColor(Qt::black), QColor(Qt::red), QColor(Qt::white)});
+    const QImage painted = image->render();
+    CHECK_FALSE(painted.isNull());
 }
 
 TEST_CASE("only the colours the reader kept are painted", "[example][images]")

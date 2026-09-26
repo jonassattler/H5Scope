@@ -7,6 +7,7 @@
 #include "Handle.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -198,8 +199,13 @@ std::optional<ImageInfo> readImageInfo(hid_t dataset, const std::vector<hsize_t>
         info.shapeMatches = shape.size() == 2;
     }
 
+    // Both ends finite as well as ordered. `-inf < inf` holds, and a range
+    // between the two is a span no value can be placed on: every position on
+    // it is inf / inf. The file is then treated as though it stated nothing,
+    // which is what it has usefully said.
     const auto range = numericAttribute(dataset, "IMAGE_MINMAXRANGE", 2);
-    if (range.size() == 2 && range[0] < range[1]) {
+    if (range.size() == 2 && std::isfinite(range[0]) && std::isfinite(range[1]) &&
+        range[0] < range[1]) {
         info.minimum = range[0];
         info.maximum = range[1];
     }
