@@ -325,6 +325,24 @@ const unsigned char* FieldDataset::valueAt(const Extract& read, hsize_t element,
            + static_cast<std::size_t>(*index) * H5Tget_size(read.valueType.get());
 }
 
+std::vector<hsize_t> FieldDataset::Extract::count() const
+{
+    std::vector<hsize_t> shape = leadCount;
+    shape.insert(shape.end(), trailCount.begin(), trailCount.end());
+    return shape;
+}
+
+template<typename Take>
+void FieldDataset::forEachValue(const Extract& read, Take&& take) const
+{
+    for (hsize_t e = 0; e < read.leading; ++e) {
+        std::vector<hsize_t> step(read.trailCount.size(), 0);
+        do {
+            take(valueAt(read, e, flatten(member_.dims, read.trailOffset, step)));
+        } while (advance(step, read.trailCount));
+    }
+}
+
 DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
                                     const std::vector<hsize_t>& count) const
 {
@@ -333,9 +351,7 @@ DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
 
     DataWindow window;
     window.offset = offset;
-    window.count = read.leadCount;
-    window.count.insert(window.count.end(), read.trailCount.begin(),
-                        read.trailCount.end());
+    window.count = read.count();
     if (read.leading == 0) {
         return window;
     }
@@ -343,19 +359,11 @@ DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.cells.reserve(
-        static_cast<std::size_t>(elementCount({read.leading, elementCount(read.trailCount)})));
-    for (hsize_t e = 0; e < read.leading; ++e) {
-        std::vector<hsize_t> step(read.trailCount.size(), 0);
-        do {
-            const hsize_t slot =
-                flatten(member_.dims, read.trailOffset, step);
-            const unsigned char* at = valueAt(read, e, slot);
-            window.cells.push_back(at != nullptr
-                                       ? formatElement(read.valueType.get(), at)
-                                       : std::string{});
-        } while (advance(step, read.trailCount));
-    }
+    window.cells.reserve(static_cast<std::size_t>(elementCount(window.count)));
+    forEachValue(read, [&](const unsigned char* at) {
+        window.cells.push_back(at != nullptr ? formatElement(read.valueType.get(), at)
+                                             : std::string{});
+    });
     return window;
 }
 
@@ -371,9 +379,7 @@ NumericWindow FieldDataset::readNumericWindow(const std::vector<hsize_t>& offset
 
     NumericWindow window;
     window.offset = offset;
-    window.count = read.leadCount;
-    window.count.insert(window.count.end(), read.trailCount.begin(),
-                        read.trailCount.end());
+    window.count = read.count();
     if (read.leading == 0) {
         return window;
     }
@@ -381,23 +387,17 @@ NumericWindow FieldDataset::readNumericWindow(const std::vector<hsize_t>& offset
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.values.reserve(
-        static_cast<std::size_t>(elementCount({read.leading, elementCount(read.trailCount)})));
-    for (hsize_t e = 0; e < read.leading; ++e) {
-        std::vector<hsize_t> step(read.trailCount.size(), 0);
-        do {
-            const hsize_t slot = flatten(member_.dims, read.trailOffset, step);
-            const unsigned char* at = valueAt(read, e, slot);
-            // A record whose vlen is too short has no value here, and a NaN is
-            // what says so to a plot: PlotProjection already ends a stroke on
-            // one rather than drawing a line through nothing.
-            double value = std::numeric_limits<double>::quiet_NaN();
-            if (at != nullptr) {
-                std::memcpy(&value, at, sizeof(double));
-            }
-            window.values.push_back(value);
-        } while (advance(step, read.trailCount));
-    }
+    window.values.reserve(static_cast<std::size_t>(elementCount(window.count)));
+    forEachValue(read, [&](const unsigned char* at) {
+        // A record whose vlen is too short has no value here, and a NaN is
+        // what says so to a plot: PlotProjection already ends a stroke on one
+        // rather than drawing a line through nothing.
+        double value = std::numeric_limits<double>::quiet_NaN();
+        if (at != nullptr) {
+            std::memcpy(&value, at, sizeof(double));
+        }
+        window.values.push_back(value);
+    });
     return window;
 }
 

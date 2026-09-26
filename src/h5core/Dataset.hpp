@@ -81,6 +81,20 @@ protected:
     [[nodiscard]] Selection selectWindow(const std::vector<hsize_t>& offset,
                                          const std::vector<hsize_t>& count) const;
 
+    /// A selection read whole in the dataset's native type, with what it takes
+    /// to take one element of it apart. Anything variable-length in `buffer`
+    /// is the caller's to reclaim, through a VlenGuard over `type` and the
+    /// selection's memory space.
+    struct NativeRead
+    {
+        Handle type;
+        std::size_t elementSize = 0;
+        std::vector<unsigned char> buffer;
+    };
+
+    /// Read `selection`, which must have a memory space, in the native type.
+    [[nodiscard]] NativeRead readNative(const Selection& selection) const;
+
     std::string path_;
     Handle dataset_;
     DatasetInfo info_;

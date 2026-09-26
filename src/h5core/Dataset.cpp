@@ -317,44 +317,50 @@ DataWindow Dataset::readWindow(const std::vector<hsize_t>& offset,
         return window; // an empty window: nothing was selected to read
     }
 
-    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
-    Handle nativeType(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
-    if (!nativeType.valid()) {
-        // selectWindow above rejects an unconvertible type, so reaching here
-        // means the type became unconvertible between describing and reading.
-        H5Eclear2(H5E_DEFAULT);
-        throw H5Error(
-            std::format("Dataset '{}' cannot be read: {}", path_,
-                        info_.unreadableReason()));
-    }
-
-    const std::size_t elementSize = H5Tget_size(nativeType.get());
-    if (elementSize == 0) {
-        throwError("Datatype has zero size");
-    }
-
-    const std::optional<std::size_t> bytes = bufferBytes(selection.elements, elementSize);
-    if (!bytes.has_value()) {
-        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
-                                  selection.elements, path_));
-    }
-    std::vector<unsigned char> buffer(*bytes);
-    check(H5Dread(dataset_.get(), nativeType.get(), selection.memorySpace.get(),
-                  selection.fileSpace.get(), H5P_DEFAULT, buffer.data()),
-          std::format("Failed to read '{}'", path_));
+    NativeRead read = readNative(selection);
 
     // Variable-length payloads are allocated by HDF5 and must be handed back;
     // the guard covers every return path below, including a throw from
     // formatElement.
-    VlenGuard reclaim(nativeType.get(), selection.memorySpace.get(), buffer.data());
+    VlenGuard reclaim(read.type.get(), selection.memorySpace.get(), read.buffer.data());
 
     window.cells.reserve(static_cast<std::size_t>(selection.elements));
     for (hsize_t i = 0; i < selection.elements; ++i) {
         window.cells.push_back(
-            formatElement(nativeType.get(), buffer.data() + i * elementSize));
+            formatElement(read.type.get(), read.buffer.data() + i * read.elementSize));
     }
 
     return window;
+}
+
+Dataset::NativeRead Dataset::readNative(const Selection& selection) const
+{
+    NativeRead read;
+    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
+    read.type = Handle(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
+    if (!read.type.valid()) {
+        // selectWindow rejects an unconvertible type, so reaching here means
+        // the type became unconvertible between describing and reading.
+        H5Eclear2(H5E_DEFAULT);
+        throw H5Error(
+            std::format("Dataset '{}' cannot be read: {}", path_, info_.unreadableReason()));
+    }
+
+    read.elementSize = H5Tget_size(read.type.get());
+    if (read.elementSize == 0) {
+        throwError("Datatype has zero size");
+    }
+
+    const std::optional<std::size_t> bytes = bufferBytes(selection.elements, read.elementSize);
+    if (!bytes.has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  selection.elements, path_));
+    }
+    read.buffer.resize(*bytes);
+    check(H5Dread(dataset_.get(), read.type.get(), selection.memorySpace.get(),
+                  selection.fileSpace.get(), H5P_DEFAULT, read.buffer.data()),
+          std::format("Failed to read '{}'", path_));
+    return read;
 }
 
 NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
@@ -410,31 +416,15 @@ ElementValue Dataset::readElement(const std::vector<hsize_t>& offset) const
         return element;
     }
 
-    Handle fileType(H5Dget_type(dataset_.get()), &H5Tclose);
-    Handle nativeType(H5Tget_native_type(fileType.get(), H5T_DIR_ASCEND), &H5Tclose);
-    if (!nativeType.valid()) {
-        H5Eclear2(H5E_DEFAULT);
-        throw H5Error(std::format("Dataset '{}' cannot be read: {}", path_,
-                                  info_.unreadableReason()));
-    }
-
-    const std::size_t elementSize = H5Tget_size(nativeType.get());
-    if (elementSize == 0) {
-        throwError("Datatype has zero size");
-    }
-
-    std::vector<unsigned char> buffer(elementSize);
-    check(H5Dread(dataset_.get(), nativeType.get(), selection.memorySpace.get(),
-                  selection.fileSpace.get(), H5P_DEFAULT, buffer.data()),
-          std::format("Failed to read '{}'", path_));
+    NativeRead read = readNative(selection);
 
     // As in readWindow: the guard covers every return path below, including a
     // throw from the formatting.
-    VlenGuard reclaim(nativeType.get(), selection.memorySpace.get(), buffer.data());
+    VlenGuard reclaim(read.type.get(), selection.memorySpace.get(), read.buffer.data());
 
-    element.fields = describeCompoundElement(nativeType.get(), buffer.data());
-    element.json = toJson(nativeType.get(), buffer.data());
-    element.text = formatElement(nativeType.get(), buffer.data());
+    element.fields = describeCompoundElement(read.type.get(), read.buffer.data());
+    element.json = toJson(read.type.get(), read.buffer.data());
+    element.text = formatElement(read.type.get(), read.buffer.data());
     return element;
 }
 
