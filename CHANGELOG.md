@@ -25,6 +25,39 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.1
+
+**A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a
+depth or altitude profile: "flip x and y" in its plot settings. Nothing is read
+again and the zoom stays where it was.
+
+**Each y axis of its own can be named.** The plot settings offer "y label 2"
+onwards, and the name is drawn beside that axis in its line's colour. It
+follows the line through a reorder and is kept in a saved view.
+
+**A compound's selection reads as one line in the slice bar.** It no longer
+stands apart from its path, and what it prints for an array member is a line it
+will accept: `[:].samples[2]` came back as `[:, 2].samples` and was refused.
+
+**Completion takes the row you chose.** Tab took the first row whichever was
+highlighted, Return ignored the list, and a click on a row did nothing. All
+three now take the highlighted row.
+
+**Fixed:**
+- Ticking a custom line's postprocessing off and on again could blank the plot
+  until the window was resized.
+- Closing a custom tab while it was looking up a dataset could crash.
+- `/run.3` and member 3 of `/run` in a custom tab could draw each other's
+  values.
+- A crafted image range reaching an infinity, or a dataset whose extents
+  multiply past what a 64-bit count holds, could read past the end of a buffer.
+  Both are now refused.
+- A table of object references leaked a hold on the file with every cell read.
+- A plot shown in a detached window, or closed while drawn, could draw from
+  memory it had already freed.
+- An attribute with no elements printed as `0`; it prints `[]`.
+- A failure while answering a read no longer ends the program; it is reported.
+
 ## 0.7.0
 
 **A pipeline can be written as text.** Untick **enable visual editing** in the
