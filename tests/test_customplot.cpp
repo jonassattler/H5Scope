@@ -22,6 +22,7 @@
 #include "gui/DatasetLookup.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/H5Session.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotItem.hpp"
 #include "gui/PlotLevels.hpp"
@@ -48,8 +49,10 @@
 #include <hdf5.h>
 
 #include <algorithm>
-#include <limits>
 #include <cmath>
+#include <limits>
+#include <memory>
+#include <string>
 #include <vector>
 
 using Catch::Approx;
@@ -2525,6 +2528,50 @@ TEST_CASE_METHOD(PlotFixture, "reading a whole tab is one crossing of the HDF5 t
         settleAll();
         CHECK(gui::H5Thread::instance().crossings() - mark == 0);
     }
+}
+
+TEST_CASE("a dataset the session holds outlives being evicted while a job reads it",
+          "[custom][session]")
+{
+    // held() keeps a bounded number of datasets open and evicts the oldest to
+    // open one more. A job that took a plain pointer to the first and then
+    // asked for enough others was left holding a closed dataset.
+    h5test::TempFile temp{"heldmany"};
+    constexpr int kCount = 48;
+    h5test::onH5([&] {
+        const hid_t file = H5Fcreate(temp.path().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        REQUIRE(file >= 0);
+        const hsize_t four = 4;
+        const hid_t space = H5Screate_simple(1, &four, nullptr);
+        for (int i = 0; i < kCount; ++i) {
+            const std::string name = "d" + std::to_string(i);
+            const auto at = static_cast<double>(i);
+            const double values[4] = {at, at + 1.0, at + 2.0, at + 3.0};
+            const hid_t dataset = H5Dcreate2(file, name.c_str(), H5T_NATIVE_DOUBLE, space,
+                                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            REQUIRE(dataset >= 0);
+            REQUIRE(H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values) >=
+                    0);
+            H5Dclose(dataset);
+        }
+        H5Sclose(space);
+        H5Fclose(file);
+    });
+
+    const std::vector<double> first =
+        gui::H5Thread::instance().invoke([&](gui::H5Session& session) {
+            session.open(temp.path());
+            const std::shared_ptr<h5core::Dataset> kept = session.held("/d0");
+            REQUIRE(kept != nullptr);
+            for (int i = 1; i < kCount; ++i) {
+                REQUIRE(session.held("/d" + std::to_string(i)) != nullptr);
+            }
+            // Evicted from the session by now, and still open for this job.
+            const std::vector<double> values = kept->readNumericWindow({0}, {4}).values;
+            session.close();
+            return values;
+        });
+    CHECK(first == std::vector<double>{0.0, 1.0, 2.0, 3.0});
 }
 
 // --- the hand-over to a renderer ------------------------------------------

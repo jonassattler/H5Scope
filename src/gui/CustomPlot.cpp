@@ -196,7 +196,10 @@ struct Reply
                  chain.selection.dims.end());
     const std::size_t originRank = known->second.shape.size();
 
-    h5core::Dataset* open =
+    // Shared, not borrowed: the session keeps a bounded number of these and
+    // opening one more evicts the oldest, so a pointer from an earlier call
+    // is only good for as long as something still holds it.
+    const std::shared_ptr<h5core::Dataset> open =
         session.held(parts.path.toStdString(), chain.selection);
     if (open == nullptr) {
         answer.problem = known->second.problem.isEmpty()
@@ -211,7 +214,7 @@ struct Reply
     // with steps in it -- the pipeline's output, held in memory. It is handed
     // the second as a DataSource, because a ComputedDataset is one, so nothing
     // below this point has a branch for which it got.
-    const h5core::DataSource* source = open;
+    const h5core::DataSource* source = open.get();
     std::shared_ptr<const postproc::ComputedDataset> computed;
 
     if (script.has_value() && !script->steps.empty()) {

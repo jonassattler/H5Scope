@@ -92,8 +92,14 @@ public:
     /// cached under the path *and* the chain: one custom tab can perfectly well
     /// draw `/events.energy` beside `/events.time`, and those are two readings
     /// of one dataset rather than one of them twice.
-    [[nodiscard]] h5core::Dataset* held(const std::string& path,
-                                        const h5core::MemberSelection& member = {});
+    ///
+    /// Returned shared rather than as a plain pointer, because asking for one
+    /// more than kHeldDatasets evicts the oldest: a job that held a plain
+    /// pointer across a second call could be left reading a closed dataset.
+    /// The pointer is for the length of the job that asked. Kept past it, it
+    /// would outlive the file the session closes in a later job.
+    [[nodiscard]] std::shared_ptr<h5core::Dataset> held(const std::string& path,
+                                                        const h5core::MemberSelection& member = {});
 
     /// Install the pipeline's output as what the views read. Passing nullptr
     /// puts them back on the file.
@@ -117,7 +123,7 @@ private:
     /// A vector rather than a map because it is searched by path a handful of
     /// times per job over a handful of entries, and because "drop the oldest"
     /// is what a map has no order to answer.
-    std::vector<std::pair<std::string, std::unique_ptr<h5core::Dataset>>> heldDatasets_;
+    std::vector<std::pair<std::string, std::shared_ptr<h5core::Dataset>>> heldDatasets_;
 
     /// How many of them. More than a crowded tab names and few enough that an
     /// abandoned one is closed rather than kept for the life of the file; every
