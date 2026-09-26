@@ -103,13 +103,11 @@ void DatasetPlot::applyBudget()
     const long long budget = pyramidBudget();
     bool refine = false;
     for (auto it = pyramids_.begin(); it != pyramids_.end();) {
-        const long long wanted = baseBucketFor(it->second.length, budget);
-        if (wanted < it->second.baseBucket()) {
+        if (!fitToBudget(it->second, budget)) {
             it = pyramids_.erase(it);
             refine = true;
             continue;
         }
-        coarsenTo(it->second, wanted);
         ++it;
     }
     if (refine) {

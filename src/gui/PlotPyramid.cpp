@@ -136,6 +136,16 @@ bool coarsenTo(LinePyramid& pyramid, long long base)
     return true;
 }
 
+bool fitToBudget(LinePyramid& pyramid, long long budget)
+{
+    const long long wanted = baseBucketFor(pyramid.length, budget);
+    if (wanted < pyramid.baseBucket()) {
+        return false;
+    }
+    coarsenTo(pyramid, wanted);
+    return true;
+}
+
 void buildLevels(LinePyramid& pyramid)
 {
     if (pyramid.levels.empty()) {

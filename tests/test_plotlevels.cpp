@@ -1077,3 +1077,27 @@ TEST_CASE("a log fold's grid serves the axis it was made on and no other", "[lev
     grid.clear();
     CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
 }
+
+TEST_CASE("a pyramid is coarsened to a smaller budget and refuses a larger one",
+          "[levels][pyramid][budget]")
+{
+    const std::vector<double> line = testLine(30000);
+    gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 30000, 1);
+    REQUIRE(pyramid.baseBucket() == 1);
+
+    // Enough for the base it has: nothing to do.
+    CHECK(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK(pyramid.baseBucket() == 1);
+
+    // Less: coarsened in the call, to the base the budget affords.
+    const long long small = gui::pyramidDoubles(30000, 16);
+    CHECK(gui::fitToBudget(pyramid, small));
+    CHECK(pyramid.baseBucket() == gui::baseBucketFor(30000, small));
+    CHECK(pyramid.baseBucket() > 1);
+
+    // More again: a finer base is elements this no longer has, so it says so
+    // and leaves the pyramid as it is.
+    const long long coarse = pyramid.baseBucket();
+    CHECK_FALSE(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK(pyramid.baseBucket() == coarse);
+}

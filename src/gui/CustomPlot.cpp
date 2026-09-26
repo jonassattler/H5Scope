@@ -473,15 +473,9 @@ void CustomPlot::applyBudget()
     const long long budget = pyramidBudget();
     bool refine = false;
     const auto resize = [&](Entry& entry) {
-        if (entry.pyramid.empty()) {
-            return;
-        }
-        const long long wanted = baseBucketFor(entry.pyramid.length, budget);
-        if (wanted < entry.pyramid.baseBucket()) {
+        if (!entry.pyramid.empty() && !fitToBudget(entry.pyramid, budget)) {
             refine = true;
-            return;
         }
-        coarsenTo(entry.pyramid, wanted);
     };
     resize(axis_);
     for (Entry& entry : entries_) {
