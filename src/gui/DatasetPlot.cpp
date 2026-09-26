@@ -121,54 +121,25 @@ void DatasetPlot::applyBudget()
 
 void DatasetPlot::releaseDrawing() const
 {
-    if (drawing_ != nullptr) {
-        drawing_->clear();
-        drawing_ = nullptr;
-    }
+    lent_.release();
 }
 
 void DatasetPlot::retire(std::map<int, std::vector<double>>& cache) const
 {
-    if (cache.empty()) {
-        return;
-    }
-    if (drawing_ == nullptr) {
-        // Nothing is reading it, so there is nothing to keep it alive for. This
-        // is also what bounds the store: without it a plot nobody is drawing --
-        // headless, or on a tab that is not on screen -- would accumulate one
-        // cache per change until something filled a renderer.
-        cache.clear();
-        return;
-    }
     // The values out of the map rather than the map itself, and that is the
-    // whole of what a retired line is: a buffer nothing must free yet. Moving a
-    // std::vector takes the buffer with it, so every pointer the renderer was
-    // given goes on naming the same doubles -- and a std::vector<double> move
-    // is noexcept, so growing the store can only ever move them too. Keeping
-    // the maps here meant growing a std::vector of std::map, which takes the
-    // copy on a library whose map move is not noexcept and frees what this
-    // exists to protect. See the note on Detail.
-    //
-    // `drawing_` is deliberately left alone -- the item is still reading these
-    // values and is still the thing that has to be emptied if they ever do have
-    // to go.
-    retired_.reserve(retired_.size() + cache.size());
+    // whole of what a retired line is: a buffer nothing must free yet. Keeping
+    // the maps meant growing a std::vector of std::map, which takes the copy on
+    // a library whose map move is not noexcept and frees what this exists to
+    // protect. See the note on Detail, and BorrowedLines for the rest.
     for (auto& held : cache) {
-        if (!held.second.empty()) {
-            retired_.push_back(std::move(held.second));
-        }
+        lent_.retire(held.second);
     }
     cache.clear();
 }
 
 void DatasetPlot::retire(std::vector<double>& values) const
 {
-    if (values.empty() || drawing_ == nullptr) {
-        values.clear();
-        return;
-    }
-    retired_.push_back(std::move(values));
-    values.clear();
+    lent_.retire(values);
 }
 
 void DatasetPlot::invalidate()
@@ -183,7 +154,6 @@ void DatasetPlot::invalidate()
     // dataset's elements; carrying it into another would be drawing the wrong
     // file, which is the same thing releaseDrawing() above is here to prevent.
     pyramids_.clear();
-    retired_.clear();
     // And the closer look with them. A new table is a new window onto it: what
     // was being looked at closely was a run of the old one, and the range the
     // surface last pushed is in the old table's x. Both are forgotten here and
@@ -1019,11 +989,7 @@ int DatasetPlot::detailBuckets() const
 
 long long DatasetPlot::retiredDoubles() const
 {
-    long long held = 0;
-    for (const std::vector<double>& values : retired_) {
-        held += static_cast<long long>(values.size());
-    }
-    return held;
+    return lent_.retiredDoubles();
 }
 
 long long DatasetPlot::heldDoubles() const
@@ -1459,28 +1425,15 @@ void DatasetPlot::fill(PlotItem* target)
     if (target == nullptr) {
         return;
     }
-    // A different item is being handed the lines, so the one that had them is
-    // emptied first. Only one item is ever recorded as reading this plot, and
-    // everything below frees on that record: the retired store at the end of
-    // this call, and every later retire() and releaseDrawing(). An item left
-    // holding pointers it was given before would go on drawing through them
-    // after they were freed -- a detached custom tab is drawn by a second
-    // PlotSurface, and the one it left behind in the tab bar was exactly that.
-    if (drawing_ != nullptr && drawing_ != target) {
-        drawing_->clear();
-    }
     ensure();
     std::vector<PlotLine> lines;
     lines.reserve(drawn_.size());
     for (const int series : drawn_) {
         lines.push_back(lineOf(series));
     }
-    target->setLines(std::move(lines), drawingAxis());
-    drawing_ = target;
-    // ...and now, and only now, is nothing reading what was retired. This is
-    // the one place those vectors are freed, because it is the one place a
-    // renderer that was borrowing them has just been given something else.
-    retired_.clear();
+    // The one place the retired store is let go, because it is the one place a
+    // renderer that was borrowing it has just been given something else.
+    lent_.lend(target, std::move(lines), drawingAxis());
 }
 
 } // namespace gui

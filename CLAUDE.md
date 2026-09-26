@@ -377,9 +377,16 @@ constructor to fall back on.** `std::vector` reallocates with
 still pointing at it. Whether that happens is down to the standard library:
 `std::map`'s move is `noexcept` on libstdc++ and libc++ and is not on MSVC's, so
 a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
-on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, both
-retired stores hold bare `std::vector<double>`, and `static_assert`s next to
-each of them say so on every platform rather than on the one that noticed.
+on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, the
+retired store holds bare `std::vector<double>`, and `static_assert`s next to
+each say so on every platform rather than on the one that noticed.
+
+Both plots keep that contract through one class, `gui::BorrowedLines`: which
+item is reading, the retired store, and the rule for when either is let go
+(`lend`, `retire`, `release`). Each plot used to carry its own copy, and the
+two defects found in it -- `fill()` into a second item leaving the first
+holding pointers, and a destroyed plot leaving its item holding them -- had
+to be fixed twice.
 
 ## Compound data: `.member` indexing
 

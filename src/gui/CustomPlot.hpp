@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "BorrowedLines.hpp"
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
 #include "PlotBudget.hpp"
@@ -837,18 +838,9 @@ private:
     /// Drawn lines on the common y axis; see sharedSeriesCount.
     int sharedSeries_ = 0;
 
-    /// What fill() last handed the entries to, so it can be emptied before
-    /// they are freed.
-    mutable QPointer<PlotItem> drawing_;
-    /// Values the renderer may still be reading, kept alive until it is handed
-    /// their replacement. See retire(); fill() is what empties this.
-    mutable std::vector<std::vector<double>> retired_;
-
-    // The bare buffers rather than whatever they came out of, for the reason
-    // DatasetPlot::retired_ now gives: growing this must move them, and a
-    // std::vector<double> move is noexcept on every implementation.
-    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
-                  "the retired store must relocate by moving, or it frees what it holds alive");
+    /// Which item is drawing the entries' values, and what it may still be
+    /// drawing that this has replaced. See BorrowedLines.
+    mutable BorrowedLines lent_;
 
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;

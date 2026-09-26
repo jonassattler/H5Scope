@@ -1781,11 +1781,7 @@ bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
 
 long long CustomPlot::retiredDoubles() const
 {
-    long long held = 0;
-    for (const std::vector<double>& values : retired_) {
-        held += static_cast<long long>(values.size());
-    }
-    return held;
+    return lent_.retiredDoubles();
 }
 
 long long CustomPlot::heldDoubles() const
@@ -2151,31 +2147,12 @@ double CustomPlot::positionOf(const Entry& entry, std::size_t at) const
 
 void CustomPlot::releaseDrawing()
 {
-    if (drawing_ != nullptr) {
-        drawing_->clear();
-        drawing_ = nullptr;
-    }
+    lent_.release();
 }
 
 void CustomPlot::retire(std::vector<double>& values) const
 {
-    if (values.empty()) {
-        return;
-    }
-    if (drawing_ == nullptr) {
-        // Nothing is reading it, so there is nothing to keep it alive for --
-        // and this is what bounds the store: a tab nobody is drawing would
-        // otherwise accumulate one copy per read until something filled a
-        // renderer.
-        values.clear();
-        return;
-    }
-    // Moved rather than copied: a std::vector move takes the buffer with it,
-    // so the pointer the renderer was given goes on naming the same doubles.
-    // `drawing_` is deliberately left alone -- the item is still reading these
-    // values and is still what has to be emptied if they ever do have to go.
-    retired_.push_back(std::move(values));
-    values.clear();
+    lent_.retire(values);
 }
 
 void CustomPlot::announce()
@@ -2276,16 +2253,6 @@ void CustomPlot::fill(PlotItem* target)
     if (target == nullptr) {
         return;
     }
-    // A different item is being handed the lines, so the one that had them is
-    // emptied first. Only one item is ever recorded as reading this plot, and
-    // everything below frees on that record: the retired store at the end of
-    // this call, and every later retire() and releaseDrawing(). An item left
-    // holding pointers it was given before would go on drawing through them
-    // after they were freed -- a detached custom tab is drawn by a second
-    // PlotSurface, and the one it left behind in the tab bar was exactly that.
-    if (drawing_ != nullptr && drawing_ != target) {
-        drawing_->clear();
-    }
     std::vector<PlotLine> lines;
     lines.reserve(entries_.size());
     for (std::size_t i = 0; i < entries_.size(); ++i) {
@@ -2293,12 +2260,9 @@ void CustomPlot::fill(PlotItem* target)
             lines.push_back(lineOf(static_cast<int>(i)));
         }
     }
-    target->setLines(std::move(lines), drawingAxis());
-    drawing_ = target;
-    // ...and now, and only now, is nothing reading what was retired. This is
-    // the one place those vectors are freed, because it is the one place a
-    // renderer that was borrowing them has just been given something else.
-    retired_.clear();
+    // The one place the retired store is let go, because it is the one place a
+    // renderer that was borrowing it has just been given something else.
+    lent_.lend(target, std::move(lines), drawingAxis());
 }
 
 QStringList CustomPlot::paths() const
@@ -2337,7 +2301,6 @@ void CustomPlot::discard()
     // the data, it is a reading of something the reader has just said they are
     // not looking at.
     releaseDrawing();
-    retired_.clear(); // nothing is reading them now
     invalidate();
 }
 

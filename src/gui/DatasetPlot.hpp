@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "BorrowedLines.hpp"
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "PlotItem.hpp"
@@ -385,7 +386,7 @@ private:
     /// retired vector goes on naming the same doubles at the same address and
     /// every pointer the item holds stays good. The keys are dropped on the way
     /// in -- nothing ever looks a retired line up, it only has to stay alive --
-    /// and that is deliberate rather than incidental. See `retired_`.
+    /// and that is deliberate rather than incidental. See BorrowedLines.
     ///
     /// The maps themselves are safe to insert into meanwhile for the related
     /// reason: a std::map relinks nodes rather than moving them, so everything
@@ -660,26 +661,10 @@ private:
     mutable bool hasPositive_ = false;
     mutable QString error_;
     mutable bool sampled_ = false;
-    /// What fill() last handed the lines to, so that it can be emptied before
-    /// they are freed. A QPointer because the item belongs to a QML scene that
-    /// is torn down and rebuilt without telling this object.
-    mutable QPointer<PlotItem> drawing_;
-    /// Values the renderer may still be reading, kept alive until it is handed
-    /// their replacement. See retire(); fill() is what empties this.
-    ///
-    /// The bare vectors rather than the maps they came out of, which is the
-    /// same shape CustomPlot::retired_ has. That is not tidying: this store
-    /// held `std::map`s, and growing a std::vector of those took the copy that
-    /// std::move_if_noexcept falls back on -- see Detail above for why -- so
-    /// the store whose whole job is to keep the borrowed doubles alive was
-    /// itself freeing them on Windows. A std::vector<double> move is noexcept
-    /// on every implementation, so this one can only ever be moved.
-    mutable std::vector<std::vector<double>> retired_;
-
-    // Stated against the member rather than against the type it happens to hold
-    // today, so that changing it is what has to answer for this.
-    static_assert(std::is_nothrow_move_constructible_v<decltype(retired_)::value_type>,
-                  "the retired store must relocate by moving, or it frees what it holds alive");
+    /// Which item is drawing `lines_` and the rest, and what it may still be
+    /// drawing that this has replaced. See BorrowedLines; fill() lends,
+    /// retire() keeps alive, releaseDrawing() empties.
+    mutable BorrowedLines lent_;
 
     /// The pane width the surface last pushed, waiting for the drag to stop.
     int wantedColumns_ = kDefaultColumns;
