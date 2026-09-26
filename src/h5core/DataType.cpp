@@ -290,6 +290,66 @@ std::string formatBytes(const void* data, std::size_t size)
     return out;
 }
 
+/// Visit the children of one value: a compound's members, an array's
+/// elements, or the elements of a vlen's list, in order.
+///
+/// `visit(child, name, at, index)` is called with the child's type -- which
+/// for a compound member whose type will not open is H5I_INVALID_HID -- its
+/// name if it is a member, and where its bytes are. Returns false when the
+/// children cannot be reached at all: an array or vlen whose base type will
+/// not open, a vlen with no list, or a class that has no children. Each caller
+/// says that in its own words.
+///
+/// formatElement, toJson and describeCompoundElement each walked these three
+/// shapes by hand, with the stride arithmetic and the handles written out
+/// every time.
+template<typename Visit>
+bool forEachChild(hid_t type, const void* data, Visit&& visit)
+{
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    switch (H5Tget_class(type)) {
+    case H5T_COMPOUND: {
+        const int count = H5Tget_nmembers(type);
+        for (int i = 0; i < count; ++i) {
+            const auto index = static_cast<unsigned>(i);
+            Handle member(H5Tget_member_type(type, index), &H5Tclose);
+            const std::size_t offset = H5Tget_member_offset(type, index);
+            visit(member.get(), memberName(type, index), bytes + offset,
+                  static_cast<std::size_t>(i));
+        }
+        return true;
+    }
+    case H5T_ARRAY: {
+        const hsize_t total = elementCount(arrayDims(type));
+        Handle base(H5Tget_super(type), &H5Tclose);
+        if (!base.valid()) {
+            return false;
+        }
+        const std::size_t stride = H5Tget_size(base.get());
+        for (hsize_t i = 0; i < total; ++i) {
+            visit(base.get(), std::optional<std::string>{}, bytes + i * stride,
+                  static_cast<std::size_t>(i));
+        }
+        return true;
+    }
+    case H5T_VLEN: {
+        const auto list = load<hvl_t>(data);
+        Handle base(H5Tget_super(type), &H5Tclose);
+        if (!base.valid() || list.p == nullptr) {
+            return false;
+        }
+        const std::size_t stride = H5Tget_size(base.get());
+        const auto* items = static_cast<const unsigned char*>(list.p);
+        for (std::size_t i = 0; i < list.len; ++i) {
+            visit(base.get(), std::optional<std::string>{}, items + i * stride, i);
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 /// How deep a datatype is followed before this stops describing it.
 ///
 /// HDF5 types cannot be cyclic -- a compound is built out of types that already
@@ -302,6 +362,32 @@ constexpr int kMaxTypeDepth = 16;
 TypeInfo describeTypeAt(hid_t type, int depth);
 
 } // namespace
+
+std::vector<hsize_t> arrayDims(hid_t type)
+{
+    if (H5Tget_class(type) != H5T_ARRAY) {
+        return {};
+    }
+    const int rank = H5Tget_array_ndims(type);
+    std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
+    if (rank > 0 && H5Tget_array_dims2(type, dims.data()) < 0) {
+        H5Eclear2(H5E_DEFAULT);
+        dims.clear();
+    }
+    return dims;
+}
+
+std::optional<std::string> memberName(hid_t type, unsigned index)
+{
+    char* name = H5Tget_member_name(type, index);
+    if (name == nullptr) {
+        H5Eclear2(H5E_DEFAULT);
+        return std::nullopt;
+    }
+    std::string copied(name);
+    H5free_memory(name);
+    return copied;
+}
 
 TypeInfo describeType(hid_t type)
 {
@@ -350,15 +436,15 @@ TypeInfo describeTypeAt(hid_t type, int depth)
         desc << "compound {";
         for (int i = 0; i < count; ++i) {
             const auto index = static_cast<unsigned>(i);
-            char* member = H5Tget_member_name(type, index);
-            if (member == nullptr) {
+            const std::optional<std::string> member = memberName(type, index);
+            if (!member.has_value()) {
                 continue;
             }
-            info.memberNames.emplace_back(member);
+            info.memberNames.push_back(*member);
             if (i > 0) {
                 desc << ", ";
             }
-            desc << member;
+            desc << *member;
 
             // The member's own type, offset included. This is the same walk
             // that builds the description string, so the type it opens on the
@@ -367,12 +453,11 @@ TypeInfo describeTypeAt(hid_t type, int depth)
             if (depth < kMaxTypeDepth) {
                 Handle memberType(H5Tget_member_type(type, index), &H5Tclose);
                 if (memberType.valid()) {
-                    info.members.push_back(
-                        TypeMember{member, describeTypeAt(memberType.get(), depth + 1),
-                                   H5Tget_member_offset(type, index)});
+                    info.members.push_back(TypeMember{*member,
+                                                      describeTypeAt(memberType.get(), depth + 1),
+                                                      H5Tget_member_offset(type, index)});
                 }
             }
-            H5free_memory(member);
         }
         desc << "}";
         info.description = desc.str();
@@ -381,21 +466,15 @@ TypeInfo describeTypeAt(hid_t type, int depth)
     case TypeClass::Enum: {
         const int count = H5Tget_nmembers(type);
         for (int i = 0; i < count; ++i) {
-            char* member = H5Tget_member_name(type, static_cast<unsigned>(i));
-            if (member != nullptr) {
-                info.memberNames.emplace_back(member);
-                H5free_memory(member);
+            if (std::optional<std::string> member = memberName(type, static_cast<unsigned>(i))) {
+                info.memberNames.push_back(std::move(*member));
             }
         }
         info.description = std::format("enum ({} values)", count);
         break;
     }
     case TypeClass::Array: {
-        const int rank = H5Tget_array_ndims(type);
-        std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
-        if (rank > 0) {
-            H5Tget_array_dims2(type, dims.data());
-        }
+        const std::vector<hsize_t> dims = arrayDims(type);
         info.arrayDims = dims;
         Handle base(H5Tget_super(type), &H5Tclose);
         std::ostringstream desc;
@@ -484,74 +563,41 @@ std::string formatElementAt(hid_t type, const void* data, int level)
     case TypeClass::Enum:
         return formatEnum(type, data);
     case TypeClass::Compound: {
-        const int count = H5Tget_nmembers(type);
         std::ostringstream out;
         out << "{";
-        for (int i = 0; i < count; ++i) {
-            const auto index = static_cast<unsigned>(i);
-            Handle member(H5Tget_member_type(type, index), &H5Tclose);
-            const std::size_t offset = H5Tget_member_offset(type, index);
-            if (i > 0) {
-                out << ", ";
-            }
-            char* name = H5Tget_member_name(type, index);
-            if (name != nullptr) {
-                out << name << "=";
-                H5free_memory(name);
-            }
-            if (member.valid()) {
-                out << formatElementAt(member.get(),
-                                       static_cast<const unsigned char*>(data) + offset, level + 1);
-            }
-        }
+        forEachChild(type, data,
+                     [&](hid_t member, const std::optional<std::string>& name,
+                         const unsigned char* at, std::size_t index) {
+                         if (index > 0) {
+                             out << ", ";
+                         }
+                         if (name.has_value()) {
+                             out << *name << "=";
+                         }
+                         if (member >= 0) {
+                             out << formatElementAt(member, at, level + 1);
+                         }
+                     });
         out << "}";
         return out.str();
     }
-    case TypeClass::Array: {
-        const int rank = H5Tget_array_ndims(type);
-        std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
-        if (rank > 0) {
-            H5Tget_array_dims2(type, dims.data());
-        }
-        hsize_t total = 1;
-        for (const hsize_t dim : dims) {
-            total *= dim;
-        }
-
-        Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid()) {
-            return "<array>";
-        }
-        const std::size_t stride = H5Tget_size(base.get());
-
-        std::ostringstream out;
-        out << "[";
-        for (hsize_t i = 0; i < total; ++i) {
-            if (i > 0) {
-                out << ", ";
-            }
-            out << formatElementAt(base.get(), static_cast<const unsigned char*>(data) + i * stride,
-                                   level + 1);
-        }
-        out << "]";
-        return out.str();
-    }
+    case TypeClass::Array:
     case TypeClass::VarLen: {
-        const auto vl = load<hvl_t>(data);
-        Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || vl.p == nullptr) {
-            return "[]";
-        }
-        const std::size_t stride = H5Tget_size(base.get());
-
         std::ostringstream out;
         out << "[";
-        for (std::size_t i = 0; i < vl.len; ++i) {
-            if (i > 0) {
-                out << ", ";
-            }
-            out << formatElementAt(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
-                                   level + 1);
+        const bool reached = forEachChild(type, data,
+                                          [&](hid_t element, const std::optional<std::string>&,
+                                              const unsigned char* at, std::size_t index) {
+                                              if (index > 0) {
+                                                  out << ", ";
+                                              }
+                                              out << formatElementAt(element, at, level + 1);
+                                          });
+        if (!reached) {
+            // An array whose base will not open says so; a vlen with no list
+            // is an empty one, which is what a null list means.
+            H5Eclear2(H5E_DEFAULT);
+            return classOf(H5Tget_class(type)) == TypeClass::Array ? "<array>" : "[]";
         }
         out << "]";
         return out.str();
@@ -586,26 +632,19 @@ std::vector<FieldValue> describeCompoundElement(hid_t type, const void* data)
         return fields;
     }
 
-    const int count = H5Tget_nmembers(type);
-    fields.reserve(static_cast<std::size_t>(std::max(count, 0)));
-    for (int i = 0; i < count; ++i) {
-        const auto index = static_cast<unsigned>(i);
-        Handle member(H5Tget_member_type(type, index), &H5Tclose);
-        const std::size_t offset = H5Tget_member_offset(type, index);
-
-        FieldValue field;
-        if (char* name = H5Tget_member_name(type, index); name != nullptr) {
-            field.name = name;
-            H5free_memory(name);
-        }
-        if (member.valid()) {
-            const auto* at = static_cast<const unsigned char*>(data) + offset;
-            field.type = describeType(member.get()).description;
-            field.value = formatElement(member.get(), at);
-            field.json = toJson(member.get(), at);
-        }
-        fields.push_back(std::move(field));
-    }
+    fields.reserve(static_cast<std::size_t>(std::max(H5Tget_nmembers(type), 0)));
+    forEachChild(type, data,
+                 [&](hid_t member, const std::optional<std::string>& name, const unsigned char* at,
+                     std::size_t) {
+                     FieldValue field;
+                     field.name = name.value_or(std::string{});
+                     if (member >= 0) {
+                         field.type = describeType(member).description;
+                         field.value = formatElement(member, at);
+                         field.json = toJson(member, at);
+                     }
+                     fields.push_back(std::move(field));
+                 });
     return fields;
 }
 
@@ -637,98 +676,53 @@ std::string toJsonAt(hid_t type, const void* data, int depth, int level)
         // value, and it is the half that survives a change of base type.
         return quoteJson(formatEnum(type, data));
     case TypeClass::Compound: {
-        const int count = H5Tget_nmembers(type);
-        if (count <= 0) {
+        if (H5Tget_nmembers(type) <= 0) {
             H5Eclear2(H5E_DEFAULT);
             return "{}";
         }
         std::ostringstream out;
         out << "{\n";
-        for (int i = 0; i < count; ++i) {
-            const auto index = static_cast<unsigned>(i);
-            Handle member(H5Tget_member_type(type, index), &H5Tclose);
-            const std::size_t offset = H5Tget_member_offset(type, index);
-            if (i > 0) {
-                out << ",\n";
-            }
-            char* name = H5Tget_member_name(type, index);
-            out << jsonLead(depth + 1)
-                << quoteJson((name != nullptr) ? std::string_view(name)
-                                               : std::string_view{})
-                << ": ";
-            if (name != nullptr) {
-                H5free_memory(name);
-            }
-            out << (member.valid()
-                        ? toJsonAt(member.get(), static_cast<const unsigned char*>(data) + offset,
-                                   depth + 1, level + 1)
-                        : std::string("null"));
-        }
+        forEachChild(type, data,
+                     [&](hid_t member, const std::optional<std::string>& name,
+                         const unsigned char* at, std::size_t index) {
+                         if (index > 0) {
+                             out << ",\n";
+                         }
+                         out << jsonLead(depth + 1) << quoteJson(name.value_or(std::string{}))
+                             << ": ";
+                         out << (member >= 0 ? toJsonAt(member, at, depth + 1, level + 1)
+                                             : std::string("null"));
+                     });
         out << "\n" << jsonLead(depth) << "}";
         return out.str();
     }
-    case TypeClass::Array: {
-        const int rank = H5Tget_array_ndims(type);
-        std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
-        if (rank > 0) {
-            H5Tget_array_dims2(type, dims.data());
-        }
-        hsize_t total = 1;
-        for (const hsize_t dim : dims) {
-            total *= dim;
-        }
-
-        Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || total == 0) {
-            H5Eclear2(H5E_DEFAULT);
-            return "[]";
-        }
-        const std::size_t stride = H5Tget_size(base.get());
-        const bool broken = jsonBreaksOpen(classOf(H5Tget_class(base.get())));
-
-        std::ostringstream out;
-        out << "[";
-        for (hsize_t i = 0; i < total; ++i) {
-            if (i > 0) {
-                out << ",";
-            }
-            if (broken) {
-                out << "\n" << jsonLead(depth + 1);
-            } else if (i > 0) {
-                out << " ";
-            }
-            out << toJsonAt(base.get(), static_cast<const unsigned char*>(data) + i * stride,
-                            broken ? depth + 1 : depth, level + 1);
-        }
-        if (broken) {
-            out << "\n" << jsonLead(depth);
-        }
-        out << "]";
-        return out.str();
-    }
+    case TypeClass::Array:
     case TypeClass::VarLen: {
-        const auto vl = load<hvl_t>(data);
-        Handle base(H5Tget_super(type), &H5Tclose);
-        if (!base.valid() || vl.p == nullptr || vl.len == 0) {
-            H5Eclear2(H5E_DEFAULT);
-            return "[]";
-        }
-        const std::size_t stride = H5Tget_size(base.get());
-        const bool broken = jsonBreaksOpen(classOf(H5Tget_class(base.get())));
-
+        // Broken over lines only when what it holds is a struct or a list;
+        // see jsonBreaksOpen. Every element has the one base type, so the
+        // first one visited decides for the closing bracket too.
+        bool broken = false;
         std::ostringstream out;
         out << "[";
-        for (std::size_t i = 0; i < vl.len; ++i) {
-            if (i > 0) {
-                out << ",";
-            }
-            if (broken) {
-                out << "\n" << jsonLead(depth + 1);
-            } else if (i > 0) {
-                out << " ";
-            }
-            out << toJsonAt(base.get(), static_cast<const unsigned char*>(vl.p) + i * stride,
-                            broken ? depth + 1 : depth, level + 1);
+        const bool reached =
+            forEachChild(type, data,
+                         [&](hid_t element, const std::optional<std::string>&,
+                             const unsigned char* at, std::size_t index) {
+                             broken = jsonBreaksOpen(classOf(H5Tget_class(element)));
+                             if (index > 0) {
+                                 out << ",";
+                             }
+                             if (broken) {
+                                 out << "\n" << jsonLead(depth + 1);
+                             }
+                             else if (index > 0) {
+                                 out << " ";
+                             }
+                             out << toJsonAt(element, at, broken ? depth + 1 : depth, level + 1);
+                         });
+        if (!reached) {
+            H5Eclear2(H5E_DEFAULT);
+            return "[]";
         }
         if (broken) {
             out << "\n" << jsonLead(depth);

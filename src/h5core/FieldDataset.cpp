@@ -23,26 +23,13 @@ struct Level {
     std::vector<hsize_t> dims; ///< empty unless the member is an H5T_ARRAY
 };
 
-std::vector<hsize_t> arrayDimsOf(hid_t type)
-{
-    if (H5Tget_class(type) != H5T_ARRAY) {
-        return {};
-    }
-    const int rank = H5Tget_array_ndims(type);
-    std::vector<hsize_t> dims(static_cast<std::size_t>(std::max(rank, 0)));
-    if (rank > 0) {
-        H5Tget_array_dims2(type, dims.data());
-    }
-    return dims;
-}
-
 /// Every dimension of `type` and of the arrays nested inside it, outermost
 /// first -- what an array contributes to a chain's shape.
 void appendArrayDims(hid_t type, std::vector<hsize_t>& dims)
 {
     Handle current(H5Tcopy(type), &H5Tclose);
     while (current.valid() && H5Tget_class(current.get()) == H5T_ARRAY) {
-        const std::vector<hsize_t> own = arrayDimsOf(current.get());
+        const std::vector<hsize_t> own = arrayDims(current.get());
         dims.insert(dims.end(), own.begin(), own.end());
         current = Handle(H5Tget_super(current.get()), &H5Tclose);
     }
@@ -84,11 +71,7 @@ std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
         if (link.index >= static_cast<unsigned>(std::max(count, 0))) {
             throw H5Error(std::format("'{}' has no member '{}'", path, link.name));
         }
-        char* found = H5Tget_member_name(current.get(), link.index);
-        const std::string name = (found != nullptr) ? std::string(found) : std::string{};
-        if (found != nullptr) {
-            H5free_memory(found);
-        }
+        const std::string name = memberName(current.get(), link.index).value_or(std::string{});
         if (name != link.name) {
             throw H5Error(std::format("'{}' member {} is '{}', not '{}'", path,
                                       link.index, name, link.name));
@@ -98,8 +81,8 @@ std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
         if (!memberType.valid()) {
             throwError(std::format("Cannot read the type of '{}.{}'", path, link.name));
         }
-        levels.push_back(Level{Handle(H5Tcopy(memberType.get()), &H5Tclose),
-                               arrayDimsOf(memberType.get())});
+        levels.push_back(
+            Level{Handle(H5Tcopy(memberType.get()), &H5Tclose), arrayDims(memberType.get())});
         appendArrayDims(memberType.get(), dims);
         current = std::move(memberType);
     }

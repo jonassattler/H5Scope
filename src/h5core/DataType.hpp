@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace h5core {
 
@@ -24,6 +25,13 @@ namespace h5core {
 /// when it does.
 [[nodiscard]] std::optional<std::size_t> bufferBytes(hsize_t elements,
                                                      std::size_t elementSize) noexcept;
+
+/// The dimensions of an H5T_ARRAY, outermost first; empty for any other class.
+[[nodiscard]] std::vector<hsize_t> arrayDims(hid_t type);
+
+/// The name of member `index` of a compound or an enum, with the string HDF5
+/// allocated for it handed back. Nothing when HDF5 has no name to give.
+[[nodiscard]] std::optional<std::string> memberName(hid_t type, unsigned index);
 
 /// Describe an HDF5 datatype without taking ownership of `type`.
 TypeInfo describeType(hid_t type);
