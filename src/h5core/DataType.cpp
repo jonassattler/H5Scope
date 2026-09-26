@@ -754,7 +754,12 @@ std::optional<std::size_t> bufferBytes(hsize_t elements, std::size_t elementSize
 
 VlenGuard::VlenGuard(hid_t type, hid_t space, void* buffer) noexcept
     : type_(type), space_(space), buffer_(buffer),
-      needed_(H5Tdetect_class(type, H5T_VLEN) > 0 || H5Tdetect_class(type, H5T_STRING) > 0)
+      // References as well: one read into memory is an H5R_ref_t, which HDF5
+      // allocates and which holds a count on the file it names. H5Treclaim
+      // releases both, and a table of references scrolled without it leaked
+      // one count per cell -- enough to keep the file open after it closed.
+      needed_(H5Tdetect_class(type, H5T_VLEN) > 0 || H5Tdetect_class(type, H5T_STRING) > 0 ||
+              H5Tdetect_class(type, H5T_REFERENCE) > 0)
 {
     // H5Tdetect_class can fail on an odd type; clear rather than leak the error.
     H5Eclear2(H5E_DEFAULT);

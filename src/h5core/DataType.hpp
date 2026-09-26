@@ -66,7 +66,7 @@ std::string formatElement(hid_t type, const void* data);
 /// Scope guard reclaiming variable-length data allocated by H5Dread/H5Aread.
 ///
 /// HDF5 allocates buffers for variable-length elements (strings, vlen arrays)
-/// that the caller must hand back or they leak. In HDF5 2.x the call is
+/// and for references that the caller must hand back or they leak. In HDF5 2.x the call is
 /// H5Treclaim; the older H5Dvlen_reclaim was removed.
 class VlenGuard
 {

@@ -1143,6 +1143,54 @@ TEST_CASE("a dataset whose extents wrap a 64-bit count is refused, not read", "[
     CHECK(window.values == std::vector<double>(6, 0.0));
 }
 
+namespace {
+
+/// A dataset of four new-style object references, each to the root group.
+void writeReferences(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    H5R_ref_t refs[4];
+    for (H5R_ref_t& ref : refs) {
+        REQUIRE(H5Rcreate_object(file, "/", H5P_DEFAULT, &ref) >= 0);
+    }
+    const hsize_t four = 4;
+    const hid_t space = H5Screate_simple(1, &four, nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "refs", H5T_STD_REF, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_STD_REF, H5S_ALL, H5S_ALL, H5P_DEFAULT, refs) >= 0);
+    for (H5R_ref_t& ref : refs) {
+        H5Rdestroy(&ref);
+    }
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a read of references hands them back", "[h5core][memory]")
+{
+    // A reference read into memory is an H5R_ref_t, which HDF5 allocates and
+    // which holds a count on the file it names. H5Treclaim releases both, and
+    // the guard only asked for it when the type held a string or a vlen.
+    h5test::TempFile temp{"refs"};
+    writeReferences(temp.path());
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/refs");
+    REQUIRE(dataset.info().type.cls == h5core::TypeClass::Reference);
+
+    const int before = H5Iget_ref(file.id());
+    for (int i = 0; i < 3; ++i) {
+        const h5core::DataWindow window = dataset.readWindow({0}, {4});
+        REQUIRE(window.cells.size() == 4);
+        (void)dataset.readElement({2});
+    }
+    CHECK(H5Iget_ref(file.id()) == before);
+}
+
 TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
 {
     // A member of a packed compound, or the nth element of an array of odd
