@@ -38,22 +38,6 @@ reach(std::ptrdiff_t offset, const std::vector<hsize_t>& shape,
 
 } // namespace
 
-hsize_t elementCount(const std::vector<hsize_t>& shape)
-{
-    constexpr hsize_t kMax = std::numeric_limits<hsize_t>::max();
-    hsize_t total = 1;
-    for (const hsize_t extent : shape) {
-        if (extent == 0) {
-            return 0;
-        }
-        if (total > kMax / extent) {
-            return kMax;
-        }
-        total *= extent;
-    }
-    return total;
-}
-
 Progression asProgression(const std::vector<hsize_t>& indices)
 {
     Progression result;

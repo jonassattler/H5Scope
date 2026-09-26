@@ -223,7 +223,7 @@ TEST_CASE("every operation answers what numpy answers", "[postproc][numpy]")
 // The array engine
 // ---------------------------------------------------------------------------
 
-TEST_CASE("an array whose values do not fill its shape is refused", "[postprocess][array]")
+TEST_CASE("an array whose values do not fill its shape is refused", "[postproc][array]")
 {
     // Every read walks the shape and trusts the buffer to reach; a shape that
     // claims more than the values hold was a read past the end in whichever

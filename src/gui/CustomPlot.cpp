@@ -758,7 +758,7 @@ void CustomPlot::addLinesOf(const QString& path, bool confirmed)
         return; // a scalar is not usable, so this is only ever a guard
     }
     const std::size_t last = shape.size() - 1;
-    // Saturating, for the reason postproc::elementCount gives.
+    // Saturating, for the reason h5core::elementCount gives.
     const hsize_t lines = postproc::elementCount(
         std::vector<hsize_t>(shape.begin(), shape.begin() + static_cast<std::ptrdiff_t>(last)));
 
