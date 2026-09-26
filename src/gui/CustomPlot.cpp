@@ -444,6 +444,13 @@ CustomPlot::~CustomPlot()
     // how long the line is, through a table that is already gone.
     disconnect(&PlotBudget::instance(), nullptr, this, nullptr);
     PlotBudget::instance().leave();
+
+    // The item this last filled is borrowing values this object owns, and
+    // nothing orders the two deaths: a plot is deleted later than the row that
+    // held it, and the item is QML's to destroy whenever the delegate goes.
+    // Emptied here, so an item that outlives this -- by one frame, or for good
+    // in a window nobody closed -- has nothing left to read.
+    releaseDrawing();
 }
 
 void CustomPlot::applyBudget()

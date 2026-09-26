@@ -38,6 +38,7 @@
 #include <QAbstractItemModel>
 #include <QColor>
 #include <QCoreApplication>
+#include <QEvent>
 #include <QPointer>
 #include <QScopeGuard>
 #include <QSettings>
@@ -2634,6 +2635,26 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot filled into a second item empties t
     // The same item filled twice keeps what it was given.
     plot->fill(&tabbed);
     CHECK(tabbed.lineCount() == 1);
+}
+
+TEST_CASE_METHOD(PlotFixture, "a closed custom tab empties the item it filled", "[custom]")
+{
+    // The tab is deleted later than its row, and the item drawing it is QML's
+    // to destroy whenever the delegate goes. One that outlived the tab held
+    // pointers into the tab's entries after they were freed.
+    const int index = set()->addPlot();
+    settleAll();
+    gui::CustomPlot* plot = set()->plotAt(index);
+    REQUIRE(plot != nullptr);
+    add(plot, QStringLiteral("/series/a[:]"));
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    REQUIRE(item.lineCount() == 1);
+
+    set()->removePlot(index);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(item.lineCount() == 0);
 }
 
 TEST_CASE_METHOD(PlotFixture,
