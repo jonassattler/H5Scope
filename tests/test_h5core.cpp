@@ -1077,6 +1077,72 @@ TEST_CASE("a buffer is sized by a product that cannot wrap", "[h5core][memory]")
     CHECK(h5core::bufferBytes(huge, 4) == std::optional<std::size_t>{std::size_t{1} << 63});
 }
 
+TEST_CASE("an element count saturates rather than wrapping", "[h5core][memory]")
+{
+    CHECK(h5core::elementCount({}) == 1);
+    CHECK(h5core::elementCount({0}) == 0);
+    CHECK(h5core::elementCount({2, 3, 4}) == 24);
+
+    // Eight thousand along each of five axes is 2^65, which wraps to zero:
+    // exactly what HDF5's own count of such a dataspace reports.
+    const std::vector<hsize_t> five(5, 8192);
+    CHECK(h5core::elementCount(five) == h5core::kCountSaturated);
+
+    // One that wraps to something small is the dangerous one: a buffer sized
+    // for 2^24 elements and a selection of 2^64 + 2^24 of them.
+    CHECK(h5core::elementCount({(hsize_t{1} << 40) + 1, hsize_t{1} << 24}) ==
+          h5core::kCountSaturated);
+
+    // An empty axis anywhere is nothing, even after the rest has saturated.
+    CHECK(h5core::elementCount({hsize_t{1} << 40, hsize_t{1} << 40, 0}) == 0);
+}
+
+namespace {
+
+/// A chunked dataset whose extents multiply past 2^64 to a small number.
+/// Chunked and never written, so the file is a few kilobytes: HDF5 allocates
+/// nothing for chunks nobody wrote, and counts the dataspace without looking.
+void writeWrappingDataset(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t dims[2] = {(hsize_t{1} << 40) + 1, hsize_t{1} << 24};
+    const hsize_t chunk[2] = {1, 1024};
+    const hid_t space = H5Screate_simple(2, dims, nullptr);
+    REQUIRE(space >= 0);
+    const hid_t create = H5Pcreate(H5P_DATASET_CREATE);
+    REQUIRE(H5Pset_chunk(create, 2, chunk) >= 0);
+    const hid_t dataset =
+        H5Dcreate2(file, "wraps", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, create, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    H5Dclose(dataset);
+    H5Pclose(create);
+    H5Sclose(space);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a dataset whose extents wrap a 64-bit count is refused, not read", "[h5core][memory]")
+{
+    h5test::TempFile temp{"wraps"};
+    writeWrappingDataset(temp.path());
+
+    const h5core::File file(temp.path());
+    const h5core::Dataset dataset(file, "/wraps");
+    CHECK(dataset.info().elementCount() == h5core::kCountSaturated);
+
+    // The whole of it, which is what a full read and a pipeline ask for.
+    const std::vector<hsize_t> origin{0, 0};
+    CHECK_THROWS_AS(dataset.readAll(1u << 24), h5core::H5Error);
+    CHECK_THROWS_AS(dataset.readNumericWindow(origin, dataset.info().shape), h5core::H5Error);
+    CHECK_THROWS_AS(dataset.readWindow(origin, dataset.info().shape), h5core::H5Error);
+
+    // ...while a window of it is still an ordinary read, of fill values.
+    const h5core::NumericWindow window = dataset.readNumericWindow(origin, {2, 3});
+    CHECK(window.values == std::vector<double>(6, 0.0));
+}
+
 TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
 {
     // A member of a packed compound, or the nth element of an array of odd

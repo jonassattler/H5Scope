@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <format>
-#include <numeric>
 #include <stdexcept>
 
 namespace h5core {
@@ -264,9 +263,7 @@ Dataset::Selection Dataset::selectWindow(const std::vector<hsize_t>& offset,
         }
     }
 
-    selection.elements = std::accumulate(selection.clamped.begin(),
-                                         selection.clamped.end(),
-                                         static_cast<hsize_t>(1), std::multiplies<>{});
+    selection.elements = elementCount(selection.clamped);
 
     // A null dataspace has rank 0 like a scalar, but selects nothing: the
     // empty product above says one element and there is none.
@@ -277,6 +274,14 @@ Dataset::Selection Dataset::selectWindow(const std::vector<hsize_t>& offset,
 
     if (rank > 0 && selection.elements == 0) {
         return selection;
+    }
+
+    // Refused rather than selected. HDF5 counts a selection the way it counts
+    // an extent, by a product that wraps, so a window of more elements than a
+    // 64-bit count holds would size every buffer by the wrapped number and
+    // then be read in full into it. No reader can hold such a window anyway.
+    if (selection.elements == kCountSaturated) {
+        throw H5Error(std::format("A window of '{}' has more elements than can be counted", path_));
     }
 
     if (rank > 0) {
@@ -373,6 +378,14 @@ NumericWindow Dataset::readNumericWindow(const std::vector<hsize_t>& offset,
 
     if (!selection.memorySpace.valid()) {
         return window;
+    }
+
+    // Checked as readWindow checks its buffer: the count is the file's to
+    // state, and a vector asked for more than memory would throw something
+    // that says nothing about which dataset or why.
+    if (!bufferBytes(selection.elements, sizeof(double)).has_value()) {
+        throw H5Error(std::format("A window of {} elements of '{}' is larger than memory",
+                                  selection.elements, path_));
     }
 
     // H5T_NATIVE_DOUBLE as the memory type, so HDF5 does the widening and this

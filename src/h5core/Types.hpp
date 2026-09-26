@@ -63,6 +63,20 @@ std::string toString(TypeClass cls);
     return cls == TypeClass::Integer || cls == TypeClass::Float;
 }
 
+/// The product of `shape`, saturating rather than wrapping.
+///
+/// A file states its extents and HDF5 multiplies them without looking: eight
+/// thousand along each of five axes is 2^65 elements, which H5Sget_simple_
+/// extent_npoints reports as zero, and a product that wraps to a small number
+/// is a selection that sizes its buffer for a few elements and is then read
+/// in full. Saturated, the count is at least as large as the truth, so every
+/// cap it is compared with still refuses it. The empty shape is one element,
+/// which is a scalar's count; a null dataspace is the caller's to tell apart.
+[[nodiscard]] hsize_t elementCount(const std::vector<hsize_t>& shape) noexcept;
+
+/// What elementCount returns for a count too large to hold.
+inline constexpr hsize_t kCountSaturated = ~hsize_t{0};
+
 /// One member of a compound datatype. Defined below, and named here first
 /// because a datatype holds its members and a member holds its datatype, which
 /// is a cycle the language has to be told about once.

@@ -10,19 +10,11 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
-#include <functional>
 #include <limits>
-#include <numeric>
 
 namespace h5core {
 
 namespace {
-
-hsize_t product(const std::vector<hsize_t>& dims)
-{
-    return std::accumulate(dims.begin(), dims.end(), static_cast<hsize_t>(1),
-                           std::multiplies<>{});
-}
 
 /// One level of the walk down a chain: the member's type, and the array
 /// dimensions it was wrapped in if it had any.
@@ -253,16 +245,15 @@ FieldDataset::Extract FieldDataset::extract(const std::vector<hsize_t>& offset,
 
     read.memoryType = memoryTypeFor(asDouble);
     read.stride = H5Tget_size(read.memoryType.get());
-    const auto perElement = static_cast<std::size_t>(std::max<hsize_t>(
-        product(member_.dims), 1));
+    const auto perElement =
+        static_cast<std::size_t>(std::max<hsize_t>(elementCount(member_.dims), 1));
     read.width = read.stride / perElement;
 
     // What one value is, for formatting: the vlen itself when the whole list is
     // the value, its base when an index has picked one element out of it.
     read.valueType = valueTypeOf(read.memoryType.get());
 
-    if (!selection.memorySpace.valid() || read.leading == 0
-        || product(read.trailCount) == 0) {
+    if (!selection.memorySpace.valid() || read.leading == 0 || elementCount(read.trailCount) == 0) {
         read.leading = 0;
         return read;
     }
@@ -343,8 +334,8 @@ DataWindow FieldDataset::readWindow(const std::vector<hsize_t>& offset,
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.cells.reserve(static_cast<std::size_t>(read.leading)
-                         * static_cast<std::size_t>(product(read.trailCount)));
+    window.cells.reserve(
+        static_cast<std::size_t>(elementCount({read.leading, elementCount(read.trailCount)})));
     for (hsize_t e = 0; e < read.leading; ++e) {
         std::vector<hsize_t> step(read.trailCount.size(), 0);
         do {
@@ -381,8 +372,8 @@ NumericWindow FieldDataset::readNumericWindow(const std::vector<hsize_t>& offset
     VlenGuard reclaim(read.memoryType.get(), read.memorySpace.get(),
                       const_cast<unsigned char*>(read.values.data()));
 
-    window.values.reserve(static_cast<std::size_t>(read.leading)
-                          * static_cast<std::size_t>(product(read.trailCount)));
+    window.values.reserve(
+        static_cast<std::size_t>(elementCount({read.leading, elementCount(read.trailCount)})));
     for (hsize_t e = 0; e < read.leading; ++e) {
         std::vector<hsize_t> step(read.trailCount.size(), 0);
         do {
