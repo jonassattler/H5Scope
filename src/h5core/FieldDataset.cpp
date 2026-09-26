@@ -36,17 +36,38 @@ std::vector<hsize_t> arrayDimsOf(hid_t type)
     return dims;
 }
 
+/// Every dimension of `type` and of the arrays nested inside it, outermost
+/// first -- what an array contributes to a chain's shape.
+void appendArrayDims(hid_t type, std::vector<hsize_t>& dims)
+{
+    Handle current(H5Tcopy(type), &H5Tclose);
+    while (current.valid() && H5Tget_class(current.get()) == H5T_ARRAY) {
+        const std::vector<hsize_t> own = arrayDimsOf(current.get());
+        dims.insert(dims.end(), own.begin(), own.end());
+        current = Handle(H5Tget_super(current.get()), &H5Tclose);
+    }
+}
+
 /// Walk a chain down a dataset's datatype, opening each member on the way.
 ///
 /// The names are checked as well as the indices. The selection was resolved
 /// against a TypeInfo -- a description, made earlier, of what may by now be a
 /// different file -- and a member index that still exists under a different
 /// name is the one way this could read the wrong field and say nothing at all.
+///
+/// So are the dimensions, for the same reason and a worse consequence. Every
+/// read sizes a value's slot in the buffer as the member's bytes over the
+/// product of `member.dims`, so dimensions that no longer match the file put
+/// the last slot of the last record past the end of the buffer. They are
+/// collected exactly as postproc's resolver collects them -- every array met
+/// on the way, nested ones included, the dataset's own first -- and compared.
 std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
                              const std::string& path)
 {
     std::vector<Level> levels;
     Handle current(H5Tcopy(fileType), &H5Tclose);
+    std::vector<hsize_t> dims;
+    appendArrayDims(fileType, dims);
 
     for (const MemberLink& link : member.links) {
         // A chain may pass through an array of compounds, in which case the
@@ -79,7 +100,12 @@ std::vector<Level> walkChain(hid_t fileType, const MemberSelection& member,
         }
         levels.push_back(Level{Handle(H5Tcopy(memberType.get()), &H5Tclose),
                                arrayDimsOf(memberType.get())});
+        appendArrayDims(memberType.get(), dims);
         current = std::move(memberType);
+    }
+    if (dims != member.dims) {
+        throw H5Error(
+            std::format("'{}{}' no longer has the shape it was selected with", path, member.text));
     }
     return levels;
 }

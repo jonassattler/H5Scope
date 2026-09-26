@@ -1191,6 +1191,61 @@ TEST_CASE("a read of references hands them back", "[h5core][memory]")
     CHECK(H5Iget_ref(file.id()) == before);
 }
 
+namespace {
+
+/// Three records of `{ samples: array[4] of float64 }`, record r holding
+/// 10r, 10r+1, 10r+2, 10r+3.
+void writeArrayMember(const std::string& path)
+{
+    const hid_t file = H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    const hsize_t four = 4;
+    const hid_t samples = H5Tarray_create2(H5T_NATIVE_DOUBLE, 1, &four);
+    const hid_t record = H5Tcreate(H5T_COMPOUND, 4 * sizeof(double));
+    REQUIRE(H5Tinsert(record, "samples", 0, samples) >= 0);
+    std::vector<double> values(12);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = static_cast<double>((i / 4) * 10 + i % 4);
+    }
+    const hsize_t three = 3;
+    const hid_t space = H5Screate_simple(1, &three, nullptr);
+    const hid_t dataset =
+        H5Dcreate2(file, "records", record, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, record, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Tclose(record);
+    H5Tclose(samples);
+    H5Fclose(file);
+}
+
+} // namespace
+
+TEST_CASE("a member chain whose dimensions are not the file's is refused", "[h5core][member]")
+{
+    // A slot in the buffer is the member's bytes over the product of the
+    // chain's dimensions. A chain resolved against a description that no
+    // longer matches -- the TypeInfo is made earlier, and may be of another
+    // file by now -- read its last slot past the end of the buffer.
+    h5test::TempFile temp{"arraymember"};
+    writeArrayMember(temp.path());
+    const h5core::File file(temp.path());
+    const h5core::Dataset whole(file, "/records");
+
+    const h5core::MemberSelection chain = h5test::chainOf(whole.info().type, {"samples"});
+    REQUIRE(chain.dims == std::vector<hsize_t>{4});
+    const h5core::FieldDataset samples(file, "/records", chain);
+    CHECK(samples.readNumericWindow({2, 0}, {1, 4}).values ==
+          std::vector<double>{20.0, 21.0, 22.0, 23.0});
+
+    h5core::MemberSelection stale = chain;
+    stale.dims = {8};
+    CHECK_THROWS_AS(h5core::FieldDataset(file, "/records", stale), h5core::H5Error);
+    stale.dims = {2, 2};
+    CHECK_THROWS_AS(h5core::FieldDataset(file, "/records", stale), h5core::H5Error);
+}
+
 TEST_CASE("a value is read wherever it sits, aligned or not", "[h5core][format]")
 {
     // A member of a packed compound, or the nth element of an array of odd
