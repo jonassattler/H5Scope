@@ -731,6 +731,10 @@ private:
     /// being a reading of anything: a row removed, a row retyped, the whole tab
     /// replaced. Everywhere else retire() is what keeps the contract.
     void releaseDrawing();
+    /// The entry at `row`, or null when there is none. Every public method
+    /// taking a row or a series index asks here, so the bound is written once.
+    [[nodiscard]] Entry* entryAt(int row);
+    [[nodiscard]] const Entry* entryAt(int row) const;
     /// The second half of addDataset, once the lookup knows `path`'s shape.
     /// Split out so that the half that runs a turn later can be reached through
     /// a guard on this object rather than through a `this` captured before the

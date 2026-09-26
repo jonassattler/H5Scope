@@ -456,6 +456,20 @@ CustomPlot::~CustomPlot()
     releaseDrawing();
 }
 
+CustomPlot::Entry* CustomPlot::entryAt(int row)
+{
+    return row >= 0 && row < static_cast<int>(entries_.size())
+               ? &entries_[static_cast<std::size_t>(row)]
+               : nullptr;
+}
+
+const CustomPlot::Entry* CustomPlot::entryAt(int row) const
+{
+    return row >= 0 && row < static_cast<int>(entries_.size())
+               ? &entries_[static_cast<std::size_t>(row)]
+               : nullptr;
+}
+
 void CustomPlot::applyBudget()
 {
     // The pyramids are where the memory is. This used to trim the run ladder
@@ -676,10 +690,11 @@ int CustomPlot::addScript(const QString& text)
 
 void CustomPlot::setPostprocess(int row, bool on)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     if (entry.postprocess == on) {
         return;
     }
@@ -820,7 +835,7 @@ void CustomPlot::addLinesOf(const QString& path, bool confirmed)
 
 void CustomPlot::removeEntry(int row)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    if (entryAt(row) == nullptr) {
         return;
     }
     beginRemoveRows({}, row, row);
@@ -867,10 +882,11 @@ void CustomPlot::clearEntries()
 
 void CustomPlot::setExpression(int row, const QString& text)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     QString trimmed = text.trimmed();
     if (entry.postprocess) {
         // Formatted a step to a line, which is what Return in a DATA box
@@ -902,17 +918,18 @@ QString CustomPlot::entryError(int row, const QString& text) const
     if (lookup_ == nullptr) {
         return {};
     }
-    const bool postprocess = row >= 0 && row < static_cast<int>(entries_.size())
-                             && entries_[static_cast<std::size_t>(row)].postprocess;
+    const Entry* const at = entryAt(row);
+    const bool postprocess = at != nullptr && at->postprocess;
     return lineProblem(text, postprocess, *lookup_);
 }
 
 void CustomPlot::setAlias(int row, const QString& text)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     const QString trimmed = text.trimmed();
     if (entry.alias == trimmed) {
         return;
@@ -926,10 +943,11 @@ void CustomPlot::setAlias(int row, const QString& text)
 
 void CustomPlot::setEntryColor(int row, const QColor& colour)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     if (entry.colour == colour) {
         return;
     }
@@ -951,19 +969,21 @@ void CustomPlot::clearEntryColor(int row)
 
 QVariant CustomPlot::seriesOverride(int series) const
 {
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    const Entry* const at = entryAt(series);
+    if (at == nullptr) {
         return {};
     }
-    const QColor& colour = entries_[static_cast<std::size_t>(series)].colour;
+    const QColor& colour = at->colour;
     return colour.isValid() ? QVariant(colour) : QVariant();
 }
 
 void CustomPlot::setSeparateAxis(int row, bool on)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     if (entry.separateAxis == on) {
         return;
     }
@@ -978,10 +998,11 @@ void CustomPlot::setSeparateAxis(int row, bool on)
 
 void CustomPlot::setAxisFixed(int row, bool on)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     if (entry.axisFixed == on) {
         return;
     }
@@ -992,10 +1013,11 @@ void CustomPlot::setAxisFixed(int row, bool on)
 
 void CustomPlot::setAxisLabel(int row, const QString& text)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     const QString trimmed = text.trimmed();
     if (entry.axisLabel == trimmed) {
         return;
@@ -1009,10 +1031,11 @@ void CustomPlot::setAxisLabel(int row, const QString& text)
 
 QVariantMap CustomPlot::seriesAxis(int series) const
 {
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    const Entry* const at = entryAt(series);
+    if (at == nullptr) {
         return {{QStringLiteral("separate"), false}};
     }
-    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    const Entry& entry = *at;
     return {{QStringLiteral("separate"), entry.ownAxis},
             {QStringLiteral("fixed"), entry.ownAxis && entry.axisFixed},
             {QStringLiteral("finite"), entry.finite},
@@ -1023,10 +1046,11 @@ QVariantMap CustomPlot::seriesAxis(int series) const
 
 void CustomPlot::setScaling(int row, Scaling scaling)
 {
-    if (row < 0 || row >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(row)];
+    Entry& entry = *at;
     if (entry.scaling == scaling) {
         return;
     }
@@ -1312,10 +1336,11 @@ QString CustomPlot::error() const
 
 QString CustomPlot::seriesLabel(int series) const
 {
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    const Entry* const at = entryAt(series);
+    if (at == nullptr) {
         return {};
     }
-    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    const Entry& entry = *at;
     if (!entry.alias.isEmpty()) {
         return entry.alias;
     }
@@ -1330,18 +1355,17 @@ QString CustomPlot::seriesLabel(int series) const
 
 bool CustomPlot::seriesVisible(int series) const
 {
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
-        return false;
-    }
-    return entries_[static_cast<std::size_t>(series)].drawn;
+    const Entry* const at = entryAt(series);
+    return at != nullptr && at->drawn;
 }
 
 void CustomPlot::setSeriesVisible(int series, bool visible)
 {
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    Entry* const at = entryAt(series);
+    if (at == nullptr) {
         return;
     }
-    Entry& entry = entries_[static_cast<std::size_t>(series)];
+    Entry& entry = *at;
     if (entry.drawn == visible) {
         return;
     }
@@ -2138,10 +2162,11 @@ void CustomPlot::announce()
 PlotLine CustomPlot::lineOf(int series) const
 {
     PlotLine line;
-    if (series < 0 || series >= static_cast<int>(entries_.size())) {
+    const Entry* const at = entryAt(series);
+    if (at == nullptr) {
         return line;
     }
-    const Entry& entry = entries_[static_cast<std::size_t>(series)];
+    const Entry& entry = *at;
     if (entry.values.empty()) {
         return line;
     }
