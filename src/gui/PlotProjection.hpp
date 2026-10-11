@@ -77,6 +77,17 @@ struct PlotLine
     const double* values = nullptr;
     qsizetype count = 0;
 
+    /// Element position of `values[i]`, when the line states one per point.
+    ///
+    /// An envelope's two extremes did not occur half a bucket apart. The index
+    /// each one sat at is here, `count` of them, borrowed on the same terms as
+    /// `values`. The axis still turns that position into an x -- a time base
+    /// included -- which is what `xs` does not do: `xs` is the x itself.
+    /// Absent, the point sits at `positionStart + i * positionStep`, and that
+    /// step stays half a bucket so a window can still be turned back into a
+    /// range of indices.
+    const double* positions = nullptr;
+
     /// Where sample `i` sits along the shared axis, before the axis turns a
     /// position into an x: `positionStart + i * positionStep`.
     ///
@@ -540,8 +551,13 @@ struct PlotProjected
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
 /// set of lines projects into one pair of buffers.
 ///
+/// `data`, when it is set, receives the same vertices in the data's own units
+/// and in the same order, so a run indexes either buffer. The y is the line's
+/// value. A line drawn in a shifted window is not rewritten into the common
+/// one: the window moved, the value did not.
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
-                          std::vector<QPointF>& points, std::vector<PlotRun>& runs);
+                          std::vector<QPointF>& points, std::vector<PlotRun>& runs,
+                          std::vector<QPointF>* data = nullptr);
 
 /// How far a mitred join may reach past the stroke before it is given up.
 ///

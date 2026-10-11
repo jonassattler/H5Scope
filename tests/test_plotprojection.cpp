@@ -1716,9 +1716,9 @@ TEST_CASE("a closer look is twice the width of the pane", "[plot]")
     const auto window = gui::windowFor(0.0, 10000.0, 1000000, 1024);
     REQUIRE(window.has_value());
 
-    CHECK(window->bucket == 32); // 2 * 10000 / 1024, to the next power of two
+    CHECK(window->bucket == 16); // 10000 / 1024, to the next power of two
     CHECK(window->span == 32768);
-    CHECK(window->columns == 1024);
+    CHECK(window->columns == 2048);
     CHECK(window->span >= 2 * 10000);
     CHECK(window->covers(0.0, 10000.0));
     // ...and a bucket small enough that the run is drawn at about the
@@ -1757,7 +1757,7 @@ TEST_CASE("a closer look is aligned to the data and not to the view", "[plot]")
     for (double at = 0.0; at < 40000.0; at += 137.0) {
         const auto window = gui::windowFor(at, at + 10000.0, 1000000, 1024);
         REQUIRE(window.has_value());
-        CHECK(window->bucket == 32);
+        CHECK(window->bucket == 16);
         CHECK(window->first % window->bucket == 0);
         CHECK(window->first % 8192 == 0); // a quarter of the run
         CHECK(window->covers(at, at + 10000.0));
@@ -1781,7 +1781,7 @@ TEST_CASE("zooming a closer look steps one octave at a time", "[plot]")
     const auto closest = gui::windowFor(500000.0, 500100.0, 1000000, 1024);
     REQUIRE(closest.has_value());
     CHECK(closest->bucket == 1);
-    CHECK(closest->span == 1024);
+    CHECK(closest->span == 2048);
 }
 
 TEST_CASE("a closer look at the end of a line keeps the stride of the others",
@@ -1795,11 +1795,11 @@ TEST_CASE("a closer look at the end of a line keeps the stride of the others",
     const auto window = gui::windowFor(99000.0, 99900.0, 100000, 1024);
     REQUIRE(window.has_value());
 
-    CHECK(window->bucket == 2);
+    CHECK(window->bucket == 1);
     CHECK(window->first == 98816);
     CHECK(window->first % window->bucket == 0);
     CHECK(window->span == 100000 - 98816); // what is left, not the whole run
-    CHECK(window->span < window->bucket * 1024);
+    CHECK(window->span < 2 * window->bucket * 1024);
     // Ceiling division of the clamped span, which is what makes a read work out
     // a stride of exactly `bucket` -- the same arithmetic sampleFrom applies.
     CHECK(window->columns == (window->span + window->bucket - 1) / window->bucket);

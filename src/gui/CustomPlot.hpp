@@ -113,6 +113,8 @@ class CustomPlot : public QAbstractListModel
     /// Whether the x axis places a value by its logarithm. See
     /// DatasetPlot::xLog, which is the same fact asked for the same reason.
     Q_PROPERTY(bool xLog READ xLog WRITE setXLog NOTIFY xAxisChanged)
+    /// Whether the y axis places a value by its logarithm. See DatasetPlot::yLog.
+    Q_PROPERTY(bool yLog READ yLog WRITE setYLog NOTIFY changed)
     Q_PROPERTY(bool hasData READ hasData NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     /// Whether anything has been asked of the file yet for this tab. The view
@@ -345,6 +347,8 @@ public:
     void setXStep(double value);
     [[nodiscard]] bool xLog() const { return xLog_; }
     void setXLog(bool logarithmic);
+    [[nodiscard]] bool yLog() const { return yLog_; }
+    void setYLog(bool logarithmic);
     [[nodiscard]] bool hasData() const;
     [[nodiscard]] QString error() const;
     [[nodiscard]] bool empty() const { return entries_.empty(); }
@@ -385,6 +389,13 @@ public:
     /// the debounce, so a drag of the window's edge costs one read at the end
     /// of it rather than one per sixty-four pixels.
     Q_INVOKABLE void setPaneColumns(int columns);
+
+    /// One device pixel of the pane, in y units.
+    ///
+    /// Retained for the QML/C API. Drawing uses PlotColumns entry/exit
+    /// geometry rather than a chord tolerance. PlotSurface drives either plot
+    /// without knowing which it has.
+    Q_INVOKABLE void setYPerPixel(double value);
 
     /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
     /// crossing, no points built on the way, and the values are **borrowed**.
@@ -448,9 +459,12 @@ private:
     {
         PlotWindow window;
         /// Elements of this line between one of its drawn points and the next.
-        /// Half a bucket, as `Entry::step` is.
+        /// Half a bucket, as `Entry::step` is. The extreme is drawn at
+        /// `positions` when the run has them.
         double step = 1.0;
         std::vector<double> values;
+        /// Element index of each value. Empty when `values` are the samples.
+        std::vector<double> positions;
 
     };
 
@@ -488,6 +502,13 @@ private:
         /// Filled by the last read.
         QString problem;
         std::vector<double> values;
+        /// Element index of each value in `values`, when they are an envelope.
+        /// Borrowed with them. Empty for a line drawn sample for sample.
+        std::vector<double> positions;
+        /// `positions` multiplied by the stretch, when the line is stretched.
+        /// Built in lineOf and borrowed for that frame. Align points at
+        /// `positions` directly.
+        mutable std::vector<double> scaledPositions;
         double step = 1.0;    ///< axis positions between drawn points
         /// Whether those values are an envelope rather than the elements. See
         /// PlotLine::summarised, which is what this is read into: a dot on a
@@ -627,8 +648,10 @@ private:
     [[nodiscard]] double timeAt(long long at) const;
     /// Whether the time base, as held, runs one way; and which.
     [[nodiscard]] bool timeSorted(bool& ascending) const;
-    /// The edges of `columns` as positions of an entry scaled by `scale`
-    /// against the time base, ascending.
+    /// Column edges of a time base, as positions along a line stretched by
+    /// `scale`. A bisection of the held times: the fold then reads a run
+    /// between two of them, the same question an index axis answers by
+    /// division.
     void timeEdges(const LogColumns& columns, double scale, std::vector<double>& out) const;
     /// Work out where the view and the focus fall in axis positions, once, for
     /// every entry to divide by its own scaling.
@@ -816,11 +839,16 @@ private:
     double xStart_ = 0.0;
     double xStep_ = 1.0;
     bool xLog_ = false;
+    bool yLog_ = false;
 
     /// The grid every entry's fold was made on, and what each point's x was
     /// worked out with. See Entry::foldValues.
     mutable LogFoldGrid foldGrid_;
     mutable long long foldGeneration_ = 0;
+    mutable bool foldArmed_ = false;
+    mutable bool foldYLog_ = false;
+    mutable double foldViewMin_ = 0.0;
+    mutable double foldViewMax_ = 0.0;
     /// Whether the held time base runs one way, asked once per time base
     /// rather than once per fold: the answer is a walk of every element.
     mutable const double* sortedFor_ = nullptr;
@@ -842,6 +870,8 @@ private:
 
     /// The last range the surface pushed, in the x the axis prints.
     double viewMin_ = 0.0;
+    /// One device pixel of y, in the line's units. See setYPerPixel.
+    double yPerPixel_ = 0.0;
     double viewMax_ = 0.0;
     /// Columns the pane has, quantised, and the width the surface last pushed,
     /// waiting for the drag to stop. See PaneColumns.

@@ -3,6 +3,7 @@
 
 add_subdirectory(h5core)
 add_subdirectory(postproc)
+add_subdirectory(plotcore)
 add_subdirectory(gui)
 add_subdirectory(qml)
 

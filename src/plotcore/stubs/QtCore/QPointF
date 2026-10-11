@@ -1,0 +1,28 @@
+#ifndef PLOTCORE_STUB_QPOINTF
+#define PLOTCORE_STUB_QPOINTF
+
+#include <cstddef>
+
+using qsizetype = std::ptrdiff_t;
+
+class QPointF
+{
+public:
+    QPointF() = default;
+    QPointF(double x, double y) : xp_(x), yp_(y) {}
+
+    [[nodiscard]] double x() const { return xp_; }
+    [[nodiscard]] double y() const { return yp_; }
+    void setX(double x) { xp_ = x; }
+    void setY(double y) { yp_ = y; }
+
+    QPointF operator+(const QPointF& other) const { return {xp_ + other.xp_, yp_ + other.yp_}; }
+    QPointF operator-(const QPointF& other) const { return {xp_ - other.xp_, yp_ - other.yp_}; }
+    QPointF operator*(double scale) const { return {xp_ * scale, yp_ * scale}; }
+
+private:
+    double xp_ = 0.0;
+    double yp_ = 0.0;
+};
+
+#endif

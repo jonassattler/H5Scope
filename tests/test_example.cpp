@@ -2202,8 +2202,9 @@ TEST_CASE("the plot's stress set is as difficult as it says", "[example][plottin
         h5test::settleFor(300);
 
         const gui::PlotLine closest = plot->lineOf(0);
-        // Twice the pane's own thousand buckets, because a run is read an
-        // octave finer than the pane needs -- see DatasetPlot::detailBuckets.
+        // The pane's own thousand buckets, and a run is twice that wide --
+        // see windowFor. detailBuckets() is an octave finer again, and drawing
+        // that one would be 4096 samples at a different alignment.
         REQUIRE(closest.count == 2048);
         CHECK(closest.positionStep == 1.0);
         CHECK(closest.positionStart == 4999680.0); // aligned to the data, not to the view

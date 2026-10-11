@@ -342,6 +342,15 @@ Item {
         value: surface.xLog
     }
 
+    // Column strokes need the y scale too: non-positive y is a gap on a
+    // logarithmic axis, and a lerp across a sign change invents a false lower
+    // edge (see PlotColumns).
+    Binding {
+        target: surface.plot
+        property: "yLog"
+        value: surface.yLog
+    }
+
     // --- the y axis: the values, and nothing to set about them -----------
     /// `low`..`high` with a little air at each end, so a line at the extreme is
     /// a line and not part of the frame. A flat series has no span to take a

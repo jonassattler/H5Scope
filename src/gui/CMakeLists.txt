@@ -15,9 +15,6 @@ qt_add_library(gui STATIC
   DatasetStringListModel.cpp
   DatasetPlot.cpp
   PlotItem.cpp
-  PlotProjection.cpp
-  PlotLevels.cpp
-  PlotPyramid.cpp
   PlotBudget.cpp
   Rendering.cpp
   DatasetImage.cpp
@@ -130,9 +127,10 @@ target_include_directories(gui PUBLIC
 )
 # Qt6::Quick because the plot is drawn on the scene graph by gui::PlotItem, and
 # PUBLIC because PlotItem.hpp is part of this library's interface: DatasetPlot
-# and CustomPlot hand their lines to one. There is no plotting library on this
-# line any more -- see docs on PlotProjection.hpp for what replaced it and why.
-target_link_libraries(gui PUBLIC Qt6::Quick Qt6::Qml h5core postproc)
+# and CustomPlot hand their lines to one. plotcore is the arithmetic those
+# lines are projected with, compiled once rather than again here -- see
+# src/plotcore/CMakeLists.txt.
+target_link_libraries(gui PUBLIC Qt6::Quick Qt6::Qml h5core postproc plotcore)
 
 # AppController is declared QML_ELEMENT/QML_SINGLETON, so the module needs a
 # URI matching the QML import below.

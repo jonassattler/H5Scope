@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 Andreas Martin
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Wheels for the ctypes library in python/. This is not a job of ci.yml.
+# That workflow builds Qt and HDF5 on every push; this one only runs when
+# the plot sources or the package change, or when someone starts it by hand.
+#
+# There is no h5plot tag. ci.yml triggers on every push, including tags, and
+# a tag would spend the Qt build even though its release job only publishes
+# refs/tags/v*. The version of the wheel is the number in python/pyproject.toml.
+#
+# The library does not link libpython, so each platform produces one
+# py3-none wheel and the other interpreters only install it and import it.
+
+name: h5plot wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the built wheels to PyPI
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "python/**"
+      - "src/plotcore/**"
+      - "src/gui/PlotProjection.*"
+      - "src/gui/PlotLevels.*"
+      - "src/gui/PlotPyramid.*"
+      - ".github/workflows/h5plot-wheels.yml"
+  push:
+    paths:
+      - "python/**"
+      - "src/plotcore/**"
+      - "src/gui/PlotProjection.*"
+      - "src/gui/PlotLevels.*"
+      - "src/gui/PlotPyramid.*"
+      - ".github/workflows/h5plot-wheels.yml"
+
+concurrency:
+  group: h5plot-wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: Wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Linux is pointed at /project, where the checkout is copied. macOS can
+      # run pwd. Windows cannot: there is no pwd executable, and a backslash
+      # in an unquoted path is a bash escape. The workspace is that checkout.
+      - name: Build the wheel
+        uses: pypa/cibuildwheel@v3.3.0
+        with:
+          package-dir: python
+          output-dir: wheelhouse
+        env:
+          CIBW_ENVIRONMENT_WINDOWS: H5PLOT_REPO="${{ github.workspace }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: h5plot-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # Trusted publishing. The PyPI project has to name this workflow as a
+  # publisher once; until then the input stays off and the artifacts above
+  # are the result. A pull request cannot set the input.
+  publish:
+    name: Publish wheels to PyPI
+    needs: wheels
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: h5plot-wheels-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

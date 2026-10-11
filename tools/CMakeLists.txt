@@ -54,6 +54,11 @@ qt_add_executable(bench-zoom bench-zoom.cpp)
 target_link_libraries(bench-zoom PRIVATE gui postproc Qt6::Core Qt6::Gui)
 qt_import_plugins(bench-zoom INCLUDE Qt6::QOffscreenIntegrationPlugin)
 
+# A QWidget plot of a generated line, so plotcore can be seen without opening
+# an HDF5 file. Not part of the test suite -- it is a window.
+qt_add_executable(plot-demo plot-demo.cpp)
+target_link_libraries(plot-demo PRIVATE plotcore Qt6::Widgets)
+
 # The pictures in README.md, taken off the application's own window. See the
 # header of make-screenshots.cpp: they went stale because they were taken by
 # hand, and this is what makes them a thing the build produces instead.

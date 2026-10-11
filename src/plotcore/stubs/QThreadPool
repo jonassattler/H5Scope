@@ -1,0 +1,26 @@
+#ifndef PLOTCORE_STUB_QTHREADPOOL
+#define PLOTCORE_STUB_QTHREADPOOL
+
+// Serial on purpose: the MinGW DLL must not pull Qt, and a fold below the
+// grain already stays on the calling thread in the real pool. Forcing one
+// thread makes every fold take that path.
+
+class QThreadPool
+{
+public:
+    static QThreadPool* globalInstance()
+    {
+        static QThreadPool pool;
+        return &pool;
+    }
+
+    [[nodiscard]] int maxThreadCount() const { return 1; }
+
+    template<typename F>
+    void start(F&& work)
+    {
+        work();
+    }
+};
+
+#endif

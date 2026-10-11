@@ -186,7 +186,7 @@ endif()
 # GPL-3.0-only, and they were the only components here that were: see
 # docs on PlotProjection.hpp for the four things a library could not do, and
 # THIRD-PARTY-NOTICES.md for what their departure changed about the licensing.
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickTest Test
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControls2 QuickTest Test
                                            LabsFolderListModel QuickShapes
                                            QuickDialogs2)
 

@@ -1,0 +1,39 @@
+#ifndef PLOTCORE_STUB_QCOLOR
+#define PLOTCORE_STUB_QCOLOR
+
+class QColor
+{
+public:
+    QColor() = default;
+    QColor(int red, int green, int blue, int alpha = 255)
+        : r_(red), g_(green), b_(blue), a_(alpha), valid_(true)
+    {
+    }
+
+    [[nodiscard]] bool isValid() const { return valid_; }
+    [[nodiscard]] int red() const { return r_; }
+    [[nodiscard]] int green() const { return g_; }
+    [[nodiscard]] int blue() const { return b_; }
+    [[nodiscard]] int alpha() const { return a_; }
+    [[nodiscard]] double alphaF() const { return static_cast<double>(a_) / 255.0; }
+    void setAlphaF(double alpha)
+    {
+        if (alpha < 0.0) {
+            a_ = 0;
+        } else if (alpha > 1.0) {
+            a_ = 255;
+        } else {
+            a_ = static_cast<int>(alpha * 255.0 + 0.5);
+        }
+        valid_ = true;
+    }
+
+private:
+    int r_ = 0;
+    int g_ = 0;
+    int b_ = 0;
+    int a_ = 255;
+    bool valid_ = false;
+};
+
+#endif

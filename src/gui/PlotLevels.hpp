@@ -75,6 +75,11 @@ struct Extremes
     /// descending pair in the line the other way up.
     [[nodiscard]] double first() const { return lowAt <= highAt ? lowest : highest; }
     [[nodiscard]] double second() const { return lowAt <= highAt ? highest : lowest; }
+
+    /// Where each of those sat. The earlier one, then the later one -- the
+    /// same order `first()` and `second()` name the values in.
+    [[nodiscard]] long long firstAt() const { return lowAt <= highAt ? lowAt : highAt; }
+    [[nodiscard]] long long secondAt() const { return lowAt <= highAt ? highAt : lowAt; }
 };
 
 /// The extremes of `values[from, to)`, skipping whatever is not finite.
@@ -98,6 +103,18 @@ struct Extremes
 /// sample for sample.
 void reduceBuckets(const double* values, long long count, long long bucket,
                    std::vector<double>& out);
+
+/// The same fold, and where each extreme occurred.
+///
+/// `origin` is the element index of `values[0]`. `positions` receives one
+/// index per value appended to `out`, in the same order: the sample
+/// `extremesOf` already found and `reduceBuckets` used to throw away. A bucket
+/// with nothing finite in it is a pair of NaN at its own start, which is a
+/// gap and is not drawn. A bucket of one element is that element twice, at
+/// its own index twice -- callers that draw samples pass bucket one through
+/// the other path and never ask this.
+void reduceBucketsLocated(const double* values, long long count, long long bucket, long long origin,
+                          std::vector<double>& out, std::vector<double>& positions);
 
 /// The same fold, written straight into `out`.
 ///
@@ -453,6 +470,35 @@ struct LogColumns
     {
         return density > 0 && edge(first) <= low && edge(last) >= high;
     }
+
+    [[nodiscard]] int columnCount() const { return static_cast<int>(last - first); }
+};
+
+/// Linear twin of LogColumns: equal-width columns on x, aligned to a fixed
+/// pitch so a pan moves which columns are on screen and nothing about what
+/// each column holds.
+///
+/// Edge `k` sits at `k * width`. Half a pane of margin either side: a pan can
+/// go half a pane before another fold, and a zoom stays on this grid until the
+/// pitch it wants moves by more than a factor of two — the linear twin of
+/// LogColumns stepping density by octaves. Refolding on every wheel tick at
+/// a wide view was the cost a reader felt as sluggish zooming.
+struct LinearColumns
+{
+    double width = 0.0;
+    long long first = 0;
+    long long last = 0;
+
+    [[nodiscard]] bool operator==(const LinearColumns&) const = default;
+
+    [[nodiscard]] double edge(long long k) const { return static_cast<double>(k) * width; }
+
+    [[nodiscard]] bool covers(double low, double high) const
+    {
+        return width > 0.0 && edge(first) <= low && edge(last) >= high;
+    }
+
+    [[nodiscard]] int columnCount() const { return static_cast<int>(last - first); }
 };
 
 /// The columns a logarithmic x axis showing `low`..`high` across `columns`
@@ -469,7 +515,15 @@ struct LogColumns
 /// a reach that covers it. What a model asks before it folds again.
 [[nodiscard]] bool logColumnsServe(const LogColumns& held, double low, double high, int columns);
 
-/// The grid a model's logarithmic fold was made on, and the axis it was made
+/// Linear columns covering `low`..`high` with half a pane of margin, or
+/// nothing when the view is not a finite span.
+[[nodiscard]] std::optional<LinearColumns> linearColumnsFor(double low, double high, int columns);
+
+/// Same pitch as the view wants, and a reach that covers it.
+[[nodiscard]] bool linearColumnsServe(const LinearColumns& held, double low, double high,
+                                      int columns);
+
+/// The grid a model's column fold was made on, and the axis it was made
 /// against.
 ///
 /// A fold is of one axis: every point's x was worked out from `start` and
@@ -477,9 +531,14 @@ struct LogColumns
 /// axis is a fold that no longer says where anything is, and so is a pane that
 /// now wants a different number of columns. Both plots kept these fields and
 /// asked the same question of them; this is that question.
+///
+/// `columns` is the logarithmic grid; `linear` is the equal-width one. A
+/// remake fills exactly one of them. Pan reuse is `serves`: the held grid
+/// still covers the view at the same pitch, so the stroke is kept.
 struct LogFoldGrid
 {
     std::optional<LogColumns> columns;
+    std::optional<LinearColumns> linear;
     double start = 0.0;
     double step = 1.0;
     int buckets = 0;
@@ -491,10 +550,18 @@ struct LogFoldGrid
     /// columns, on an axis of `start`, `step` and `mode`.
     [[nodiscard]] bool serves(double atStart, double atStep, int atMode, int atBuckets, double low,
                               double high) const;
-    /// Make this the grid for that view. `columns` is empty afterwards when
-    /// the view has none -- under an octave, or not a window at all.
-    void remake(double atStart, double atStep, int atMode, int atBuckets, double low, double high);
-    void clear() { columns.reset(); }
+    /// Make this the grid for that view. `xLog` chooses log vs linear columns.
+    /// Both optionals are empty afterwards when the view has none -- under an
+    /// octave on a log axis, or not a window at all.
+    void remake(double atStart, double atStep, int atMode, int atBuckets, double low, double high,
+                bool xLog = true);
+    /// The x span and column count the stroke was (or will be) built over.
+    [[nodiscard]] bool extent(double& xMin, double& xMax, int& columnCount) const;
+    void clear()
+    {
+        columns.reset();
+        linear.reset();
+    }
 };
 
 /// The edges of `columns` as positions along a line whose position `p` sits at

@@ -5,6 +5,7 @@
 
 #include "gui/PlotBudget.hpp"
 #include "gui/PlotLevels.hpp"
+#include "gui/PlotPyramid.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -147,6 +148,7 @@ void DatasetPlot::invalidate()
     // the old line for another frame would be drawing the wrong file.
     releaseDrawing();
     lines_.clear();
+    positions_.clear();
     dropFold();
     // And the lines they were folded out of. A pyramid is a reading of one
     // dataset's elements; carrying it into another would be drawing the wrong
@@ -221,6 +223,7 @@ void DatasetPlot::applyCap(int cap)
     // resizes the window is a worse reading of the data than one drawn at the
     // bucket they had a moment ago.
     retire(lines_);
+    retire(positions_);
     // The pyramids stay. A different pane width is a different *fold* of the
     // same elements, and those elements are in hand -- so what used to be a
     // re-read of every drawn line on every sixty-four pixels of a window drag
@@ -249,6 +252,16 @@ void DatasetPlot::applyColumns()
     applyCap(cap);
     emit changed();
     refreshDetail();
+}
+
+void DatasetPlot::setYPerPixel(double value)
+{
+    // Kept for the QML/C API shape. Column strokes place entry/exit by
+    // geometry; a y-pixel tolerance is not part of that picture.
+    if (!(value > 0.0) || !std::isfinite(value)) {
+        value = 0.0;
+    }
+    yPerPixel_ = value;
 }
 
 void DatasetPlot::setPaneColumns(int columns)
@@ -420,13 +433,14 @@ void DatasetPlot::readMissing() const
             continue; // already folded at this width
         }
         std::vector<double> summary;
+        std::vector<double> positions;
         long long stride = 1;
         double step = 1.0;
         // Half as many buckets as points, because an envelope answers with two
         // values for each of them -- so a line still arrives as at most
         // kMaxPoints doubles and nothing about what this costs in memory
         // changes.
-        if (!fillWhole(pyramid->second, cap_ / 2, summary, stride, step)) {
+        if (!fillWhole(pyramid->second, cap_ / 2, summary, stride, step, &positions)) {
             continue;
         }
         // Every line covers the same extent of the other axis, so these are the
@@ -439,6 +453,9 @@ void DatasetPlot::readMissing() const
         // of extremes per bucket, whatever the step works out to.
         summarised_ = stride > 1;
         lines_.emplace(series, std::move(summary));
+        if (positions.size() == lines_.find(series)->second.size()) {
+            positions_.insert_or_assign(series, std::move(positions));
+        }
     }
 }
 
@@ -477,10 +494,12 @@ void DatasetPlot::ensure() const
         retire(gone);
     };
     prune(lines_);
+    prune(positions_);
     prune(fold_.values);
     prune(fold_.xs);
     for (Detail& level : levels_) {
         prune(level.lines);
+        prune(level.positions);
     }
     // The pyramids go the blunt way, because nothing borrows them: what the
     // renderer holds a pointer into is always a vector in `lines_` or in a
@@ -650,8 +669,22 @@ void DatasetPlot::setXLog(bool logarithmic)
     refreshDetail();
 }
 
+void DatasetPlot::setYLog(bool logarithmic)
+{
+    if (yLog_ == logarithmic) {
+        return;
+    }
+    yLog_ = logarithmic;
+    dropFold();
+    emit changed();
+}
+
 std::optional<LogColumns> DatasetPlot::foldWanted() const
 {
+    // Linear, and a log axis under an octave, are the closer look. A column
+    // stroke there replaces the position step the runs are drawn with, and a
+    // zoom stops resolving. logColumnsFor is the refusal: nothing under an
+    // octave, and nothing that is not a window on a log axis.
     if (!xLog_ || drawn_.empty() || static_cast<int>(drawn_.size()) > kWindowedSeries ||
         !std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
         return {};
@@ -661,7 +694,8 @@ std::optional<LogColumns> DatasetPlot::foldWanted() const
 
 bool DatasetPlot::foldServes() const
 {
-    return fold_.grid.serves(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
+    return fold_.armed && fold_.yLog == yLog_ &&
+           fold_.grid.serves(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
 }
 
 void DatasetPlot::dropFold() const
@@ -671,6 +705,7 @@ void DatasetPlot::dropFold() const
     fold_.summarised.clear();
     fold_.edges.clear();
     fold_.grid.clear();
+    fold_.armed = false;
 }
 
 bool DatasetPlot::foldedLine(int series, PlotLine& line) const
@@ -681,10 +716,15 @@ bool DatasetPlot::foldedLine(int series, PlotLine& line) const
     if (!foldServes()) {
         // Another grid: a zoom that crossed an octave of density, a pan off the
         // margin, or an axis that moved. Retired rather than freed, because the
-        // renderer is drawing the old one until it is handed this.
+        // renderer is drawing the old one until it is handed this. A pan inside
+        // the margin keeps the fold, which is why a drag does not rebuild it.
         dropFold();
         fold_.grid.remake(xStart_, xStep_, 0, paneBuckets(), viewMin_, viewMax_);
-        if (!fold_.grid.columns.has_value()) {
+        fold_.viewMin = viewMin_;
+        fold_.viewMax = viewMax_;
+        fold_.yLog = yLog_;
+        fold_.armed = fold_.grid.columns.has_value();
+        if (!fold_.armed) {
             return false;
         }
         edgesAlong(*fold_.grid.columns, xStart_, xStep_, fold_.edges);
@@ -696,6 +736,9 @@ bool DatasetPlot::foldedLine(int series, PlotLine& line) const
         if (pyramid == pyramids_.end() || pyramid->second.empty()) {
             return false;
         }
+        // Extremes at the samples they occurred at. An edge lerp is not an
+        // element, and a drawn value has to be one: on this line the value is
+        // the index, and a point that is neither fails the file.
         ColumnFold folded;
         foldColumns(pyramid->second, fold_.edges, folded);
         std::vector<double> xs(folded.positions.size());
@@ -773,6 +816,11 @@ PlotLine DatasetPlot::lineOf(int series) const
             line.values = closer->second.data();
             line.count = static_cast<qsizetype>(closer->second.size());
             line.positionStep = level.step;
+            const auto atPos = level.positions.find(series);
+            if (atPos != level.positions.end() &&
+                static_cast<qsizetype>(atPos->second.size()) == line.count) {
+                line.positions = atPos->second.data();
+            }
             // A run at bucket one is the elements of that run, read again and
             // drawn one for one; anything coarser is an envelope of them.
             line.summarised = level.window.bucket > 1;
@@ -791,12 +839,15 @@ PlotLine DatasetPlot::lineOf(int series) const
     // to skip the same distance. With the default axis and no thinning this is
     // the element's own index, which is what the grid's column headers count.
     //
-    // Half a bucket when the line was read as an envelope: the two values of a
-    // bucket are its extremes, they occurred somewhere inside it, and putting
-    // them at its start and its middle is the nearest thing to where they were
-    // that costs nothing to say. A bucket is about a pixel wide, so the error
-    // is half of one.
+    // The step stays half a bucket, which is what turns the window back into
+    // indices. The extreme is drawn at the sample it occurred at, when the
+    // fold recorded one -- a straight line from the bucket's start to its
+    // middle would put half the rise in the next column.
     line.positionStep = step_;
+    const auto atPos = positions_.find(series);
+    if (atPos != positions_.end() && static_cast<qsizetype>(atPos->second.size()) == line.count) {
+        line.positions = atPos->second.data();
+    }
     line.summarised = summarised_;
     return line;
 }
@@ -1110,24 +1161,16 @@ void DatasetPlot::refreshDetail()
     // whose exit is a policy in another file is a loop worth bounding here.
     bool filled = false;
 
-    // The pane's own preferred run first, whether or not something coarser in
-    // hand would already have covered it.
+    // The pane's own run first, at the bucket the pane asked for.
     //
-    // wantedLevel() stops asking once *some* held run covers the view at a
-    // bucket no coarser than the pane strictly needs, and that was the right
-    // rule while every run cost a round trip: a run read on the way in is
-    // usually a little finer than the next view out needs, and re-reading the
-    // file to gain a fraction of an octave would have been a round trip spent
-    // on almost nothing. The cost of settling for it is that the pane can be
-    // drawn at up to an octave coarser than it asked -- about one drawn station
-    // per column where it asked for two, which is what kSamplesPerColumn's
-    // slack absorbs.
-    //
-    // Out of a held line that trade has no second side. The finer run is a fold
-    // of a buffer already in hand, so there is nothing to weigh against it, and
-    // the pane gets the resolution it asked for on every frame rather than on
-    // the frames where the ladder happens to line up.
-    if (const std::optional<PlotWindow> own = detailFor(detailBuckets());
+    // detailBuckets() is an octave finer, and wantedLevel() asks for that one
+    // only while nothing held covers the view. Filling it here would make it
+    // the finest covering run, which is the one that is drawn -- a view of
+    // four thousand elements would come back at a step of one instead of two.
+    // Once this run is in hand the view is answered, so the octave finer is
+    // not fetched for it. The next step in is a narrower window, folded from
+    // the pyramid when the pane asks, and that is still not a read.
+    if (const std::optional<PlotWindow> own = detailFor(paneBuckets());
         own.has_value() && fillDetail(*own)) {
         filled = true;
         trimLevels();
@@ -1188,6 +1231,7 @@ void DatasetPlot::trimLevels()
         // rest is coldest.
         const std::size_t worst = gui::coldestLevel(ladder(), levelView(), focusFor());
         retire(levels_[worst].lines);
+        retire(levels_[worst].positions);
         levels_.erase(levels_.begin() + static_cast<long>(worst));
     }
 }
@@ -1224,15 +1268,21 @@ bool DatasetPlot::fillDetail(const PlotWindow& detail)
         if (level.lines.find(series) != level.lines.end()) {
             continue; // already held at this run
         }
-        if (!fillWindow(pyramids_[series], detail, folded)) {
+        std::vector<double> positions;
+        if (!fillWindow(pyramids_[series], detail, folded, &positions)) {
             continue;
         }
         // Every line covers the same run, so these are the same for all of them
         // and the last word is as good as the first. They are what a read of
-        // this run would have reported: a pair per bucket half a bucket apart,
-        // or the elements themselves when the bucket is one.
+        // this run would have reported: a pair per bucket, or the elements
+        // themselves when the bucket is one. The step stays half a bucket so
+        // the window still maps back to indices; the positions are where the
+        // extremes occurred.
         level.points = static_cast<int>(folded.size());
         level.step = detail.bucket == 1 ? 1.0 : static_cast<double>(detail.bucket) / 2.0;
+        if (positions.size() == folded.size()) {
+            level.positions[series] = std::move(positions);
+        }
         level.lines[series] = std::move(folded);
         folded.clear();
         any = true;
@@ -1346,7 +1396,15 @@ void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& s
         if (held != level.lines.end()) {
             retire(held->second);
         }
+        auto heldAt = level.positions.find(series[i]);
+        if (heldAt != level.positions.end()) {
+            retire(heldAt->second);
+            level.positions.erase(heldAt);
+        }
         level.lines[series[i]] = std::move(grid.values);
+        if (grid.positions.size() == level.lines[series[i]].size() && !grid.positions.empty()) {
+            level.positions[series[i]] = std::move(grid.positions);
+        }
     }
 
     trimLevels();
@@ -1370,6 +1428,7 @@ void DatasetPlot::clearDetail()
     wanted_.reset();
     for (Detail& level : levels_) {
         retire(level.lines);
+        retire(level.positions);
     }
     levels_.clear();
 }

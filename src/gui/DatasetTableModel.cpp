@@ -344,6 +344,9 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
 
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     grid.values.assign(static_cast<std::size_t>(grid.rows) * grid.columns, nan);
+    if (envelopeColumns || envelopeRows) {
+        grid.positions.assign(grid.values.size(), 0.0);
+    }
 
     const auto note = [&grid](double value) {
         if (!std::isfinite(value)) {
@@ -433,6 +436,11 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
                         grid.values[out] = found.first();
                         grid.values[out + 1] = found.second();
+                        if (!grid.positions.empty()) {
+                            const double base = static_cast<double>(firstColumn + wanted);
+                            grid.positions[out] = base + static_cast<double>(found.firstAt());
+                            grid.positions[out + 1] = base + static_cast<double>(found.secondAt());
+                        }
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk
@@ -496,6 +504,11 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
                         grid.values[first] = found.first();
                         grid.values[second] = found.second();
+                        if (!grid.positions.empty()) {
+                            const double base = static_cast<double>(firstRow + wanted);
+                            grid.positions[first] = base + static_cast<double>(found.firstAt());
+                            grid.positions[second] = base + static_cast<double>(found.secondAt());
+                        }
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk

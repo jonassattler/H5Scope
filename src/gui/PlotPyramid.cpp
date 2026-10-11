@@ -336,11 +336,237 @@ namespace {
     return best;
 }
 
-/// Fold `[first, first + span)` of the line at `bucket`, out of the pyramid.
+/// Where slot `slot` of bucket `bucket` at `levelIndex` occurred.
+///
+/// An extreme of a union is an extreme of one of its children, so the walk
+/// opens that one child and not the bucket. Four comparisons a level, down to
+/// the base. At bucket one the index is the sample. At a coarser base there is
+/// nothing finer to open, and the answer is the bucket's start or its middle --
+/// the stand-in the pair has always been drawn at, and no worse than that.
+[[nodiscard]] long long locateSlot(const LinePyramid& pyramid, int levelIndex, long long bucket,
+                                   int slot)
+{
+    const PyramidLevel& level = pyramid.levels[static_cast<std::size_t>(levelIndex)];
+    const long long origin = bucket * level.bucket;
+    const long long end = std::min(origin + level.bucket, pyramid.length);
+    if (end <= origin) {
+        return std::max<long long>(origin, 0);
+    }
+    if (level.bucket == 1) {
+        return origin;
+    }
+    const double* pair = level.values.data() + static_cast<std::size_t>(bucket) * 2;
+    const double want = pair[slot];
+    if (!std::isfinite(want)) {
+        return origin;
+    }
+    // Both slots the same value: the first finite sample, which is the first
+    // of the pair. A coarser base cannot say which sample, so both land on
+    // the start rather than one of them on the middle.
+    const auto coarse = [&]() {
+        if (slot == 0 || pair[0] == pair[1]) {
+            return origin;
+        }
+        return std::min(origin + level.bucket / 2, end - 1);
+    };
+    if (levelIndex == 0) {
+        return coarse();
+    }
+    const PyramidLevel& finer = pyramid.levels[static_cast<std::size_t>(levelIndex - 1)];
+    if (finer.bucket == 1) {
+        const long long n = end - origin;
+        const double* raw = finer.values.data();
+        for (long long i = 0; i < n; ++i) {
+            if (raw[static_cast<std::size_t>(origin + i)] == want) {
+                return origin + i;
+            }
+        }
+        return origin;
+    }
+    const long long factor = level.bucket / finer.bucket;
+    const long long child0 = bucket * factor;
+    const long long childCount =
+        std::max<long long>(0, std::min(factor, finer.buckets() - child0));
+    for (long long c = 0; c < childCount; ++c) {
+        const double* child = finer.values.data() + static_cast<std::size_t>(child0 + c) * 2;
+        // The earlier slot first. The value was copied up, so equality is
+        // the bit the child holds, and the first match is the first occurrence.
+        if (child[0] == want) {
+            return locateSlot(pyramid, levelIndex - 1, child0 + c, 0);
+        }
+        if (child[1] == want) {
+            return locateSlot(pyramid, levelIndex - 1, child0 + c, 1);
+        }
+    }
+    return coarse();
+}
+
+/// Where `value`, an extreme of source buckets `[begin, begin + count)`, sat.
+[[nodiscard]] long long positionOf(const LinePyramid& pyramid, int levelIndex, long long begin,
+                                   long long count, double value, long long fallback)
+{
+    if (!std::isfinite(value) || count <= 0) {
+        return fallback;
+    }
+    const PyramidLevel& level = pyramid.levels[static_cast<std::size_t>(levelIndex)];
+    if (level.bucket == 1) {
+        return fallback;
+    }
+    const long long last = std::min(begin + count, level.buckets());
+    for (long long b = begin; b < last; ++b) {
+        const double* pair = level.values.data() + static_cast<std::size_t>(b) * 2;
+        if (pair[0] == value) {
+            return locateSlot(pyramid, levelIndex, b, 0);
+        }
+        if (pair[1] == value) {
+            return locateSlot(pyramid, levelIndex, b, 1);
+        }
+    }
+    return fallback;
+}
+
+/// The value of the straight line where it crosses `edge`.
+///
+/// The edge sits between two samples, so the value is not one of them: it is
+/// the height the stroke has there. False when nothing finite crosses — the
+/// neighbour is missing, or it is a NaN, and a NaN is a gap.
+[[nodiscard]] bool crossingAt(const double* raw, long long rawCount, double edge, double& y)
+{
+    if (raw == nullptr || !(edge >= 0.0) || edge > static_cast<double>(rawCount - 1)) {
+        return false;
+    }
+    const auto left = static_cast<long long>(std::floor(edge));
+    if (left < 0 || left >= rawCount) {
+        return false;
+    }
+    const double a = raw[static_cast<std::size_t>(left)];
+    if (static_cast<double>(left) == edge || left + 1 >= rawCount) {
+        if (!std::isfinite(a)) {
+            return false;
+        }
+        y = a;
+        return true;
+    }
+    const double b = raw[static_cast<std::size_t>(left + 1)];
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+        return false;
+    }
+    const double t = edge - static_cast<double>(left);
+    y = a + t * (b - a);
+    return true;
+}
+
+/// One column: the two extremes, the crossing at each edge included.
+///
+/// A seam joins the comparison. When the crossing lies outside the samples the
+/// column holds, it is the extreme, which is what keeps a peak that belongs to
+/// the next column from cutting this one short. When it lies between them it
+/// changes nothing and is not stored.
+///
+/// Each extreme keeps the position it occurred at. Standing a turn on the
+/// column centre made the bar vertical there, and the stroke from that bar to
+/// the next column was a triangle the width of the bucket: the spike drawn a
+/// bucket away from the sample. Pixel-column strokes (PlotColumns) place entry
+/// and exit from those true positions instead.
+void placeColumn(double& y0, double& y1, double& x0, double& x1, double columnAt,
+                 const double* raw, long long rawCount, double leftEdge, double rightEdge)
+{
+    if (!std::isfinite(y0) && !std::isfinite(y1)) {
+        x0 = x1 = columnAt;
+        return;
+    }
+    double low = 0.0;
+    double high = 0.0;
+    double lowAt = 0.0;
+    double highAt = 0.0;
+    bool have = false;
+    const auto offer = [&](double at, double value) {
+        if (!std::isfinite(at) || !std::isfinite(value)) {
+            return;
+        }
+        if (!have) {
+            low = high = value;
+            lowAt = highAt = at;
+            have = true;
+            return;
+        }
+        if (value < low) {
+            low = value;
+            lowAt = at;
+        }
+        else if (value > high) {
+            high = value;
+            highAt = at;
+        }
+    };
+    offer(x0, y0);
+    offer(x1, y1);
+    double crossed = 0.0;
+    if (crossingAt(raw, rawCount, leftEdge, crossed)) {
+        offer(leftEdge, crossed);
+    }
+    if (crossingAt(raw, rawCount, rightEdge, crossed)) {
+        offer(rightEdge, crossed);
+    }
+    if (!have) {
+        x0 = x1 = columnAt;
+        return;
+    }
+    if (lowAt <= highAt) {
+        y0 = low;
+        y1 = high;
+        x0 = lowAt;
+        x1 = highAt;
+    }
+    else {
+        y0 = high;
+        y1 = low;
+        x0 = highAt;
+        x1 = lowAt;
+    }
+}
+
+/// Put each summarised bucket on its column, when the base still holds every
+/// sample. A coarser base has thrown the seam away. Coarsening an envelope
+/// cannot grow it back, so those lines stay the pair, at the positions the
+/// fold already named.
+void placeOnColumns(const LinePyramid& pyramid, long long bucket, long long first, long long count,
+                    std::vector<double>& values, std::vector<double>& positions)
+{
+    if (pyramid.baseBucket() != 1 || bucket <= 1 || values.size() < 2 ||
+        values.size() != positions.size() || values.size() % 2 != 0) {
+        return;
+    }
+    const double* raw = pyramid.levels.front().values.data();
+    const long long rawCount = pyramid.length;
+    const long long limit = std::min(first + count, rawCount);
+    const long long buckets = static_cast<long long>(values.size() / 2);
+    for (long long i = 0; i < buckets; ++i) {
+        const long long start = first + i * bucket;
+        if (start >= limit) {
+            break;
+        }
+        // The edge is halfway to the neighbouring sample. That is where the
+        // column ends and the next one begins, and the line crosses it between
+        // the two samples rather than on either of them.
+        const long long end = std::min(start + bucket, limit) - 1;
+        const auto at = static_cast<std::size_t>(i) * 2;
+        placeColumn(values[at], values[at + 1], positions[at], positions[at + 1],
+                    0.5 * static_cast<double>(start + end), raw, rawCount,
+                    static_cast<double>(start) - 0.5, static_cast<double>(end) + 0.5);
+    }
+}
+
+/// `positions`, when set, is filled alongside an envelope and cleared when the
+/// answer is the samples themselves. See fillWindow.
 [[nodiscard]] bool foldRun(const LinePyramid& pyramid, long long first, long long span,
-                           long long bucket, std::vector<double>& out)
+                           long long bucket, std::vector<double>& out,
+                           std::vector<double>* positions)
 {
     out.clear();
+    if (positions != nullptr) {
+        positions->clear();
+    }
     if (pyramid.empty() || bucket < pyramid.baseBucket() || first < 0 || span <= 0) {
         return false;
     }
@@ -382,10 +608,40 @@ namespace {
         out.resize(static_cast<std::size_t>(made) * 2);
         double* into = out.data();
         const double* from = level.values.data() + first;
+        if (positions == nullptr) {
+            overRanges(made, take, [&](long long a, long long b) {
+                const long long at = a * bucket;
+                reduceBucketsInto(from + at, std::min(b * bucket, take) - at, bucket,
+                                  into + a * 2);
+            });
+            return true;
+        }
+        // The index extremesOf finds while it folds. One pass: asking again
+        // afterwards would walk every element of the line a second time, and
+        // the whole-line summary is that walk.
+        positions->resize(static_cast<std::size_t>(made) * 2);
+        double* atPos = positions->data();
         overRanges(made, take, [&](long long a, long long b) {
-            const long long at = a * bucket;
-            reduceBucketsInto(from + at, std::min(b * bucket, take) - at, bucket, into + a * 2);
+            for (long long bucketIndex = a; bucketIndex < b; ++bucketIndex) {
+                const long long at = bucketIndex * bucket;
+                const long long count = std::min(at + bucket, take) - at;
+                const Extremes found = extremesOf(from + at, 0, count);
+                const auto outAt = static_cast<std::size_t>(bucketIndex) * 2;
+                if (!found.found()) {
+                    const auto nothing = std::numeric_limits<double>::quiet_NaN();
+                    into[outAt] = nothing;
+                    into[outAt + 1] = nothing;
+                    atPos[outAt] = static_cast<double>(first + at);
+                    atPos[outAt + 1] = static_cast<double>(first + at);
+                    continue;
+                }
+                into[outAt] = found.first();
+                into[outAt + 1] = found.second();
+                atPos[outAt] = static_cast<double>(first + at + found.firstAt());
+                atPos[outAt + 1] = static_cast<double>(first + at + found.secondAt());
+            }
         });
+        placeOnColumns(pyramid, bucket, first, take, out, *positions);
         return true;
     }
 
@@ -396,32 +652,63 @@ namespace {
         return false;
     }
     const double* pairs = level.values.data() + fromBucket * 2;
+    const long long made = (buckets + factor - 1) / factor;
     if (factor == 1) {
         out.assign(pairs, pairs + buckets * 2);
+    }
+    else {
+        out.resize(static_cast<std::size_t>(made) * 2);
+        double* into = out.data();
+        overRanges(made, buckets * 2, [&](long long a, long long b) {
+            const long long start = a * factor;
+            coarsenEnvelopeInto(pairs + start * 2, std::min(b * factor, buckets) - start, factor,
+                                into + a * 2);
+        });
+    }
+    if (positions == nullptr) {
         return true;
     }
-    const long long made = (buckets + factor - 1) / factor;
-    out.resize(static_cast<std::size_t>(made) * 2);
-    double* into = out.data();
-    overRanges(made, buckets * 2, [&](long long a, long long b) {
-        const long long at = a * factor;
-        coarsenEnvelopeInto(pairs + at * 2, std::min(b * factor, buckets) - at, factor,
-                            into + a * 2);
-    });
+    // The value was copied up from a child. Finding which child, and then
+    // which of its children, is a handful of comparisons a level -- never a
+    // scan of the bucket, which would make the summary a second pass over
+    // the line.
+    positions->resize(out.size());
+    for (long long i = 0; i < made; ++i) {
+        const long long n = std::min(factor, buckets - i * factor);
+        const long long src = fromBucket + i * factor;
+        // src counts buckets of this level from the start of the line, so
+        // the element it opens on is src times the level's own bucket.
+        const long long bucketOrigin = src * level.bucket;
+        const double earlier = out[static_cast<std::size_t>(i) * 2];
+        const double later = out[static_cast<std::size_t>(i) * 2 + 1];
+        (*positions)[static_cast<std::size_t>(i) * 2] = static_cast<double>(
+            positionOf(pyramid, at, src, n, earlier, bucketOrigin));
+        const long long laterFallback =
+            std::isfinite(earlier) && earlier == later
+                ? bucketOrigin
+                : std::min(bucketOrigin + bucket / 2, std::max<long long>(pyramid.length - 1, 0));
+        (*positions)[static_cast<std::size_t>(i) * 2 + 1] =
+            static_cast<double>(positionOf(pyramid, at, src, n, later, laterFallback));
+    }
+    placeOnColumns(pyramid, bucket, first, take, out, *positions);
     return true;
 }
 
 } // namespace
 
-bool fillWindow(const LinePyramid& pyramid, const PlotWindow& window, std::vector<double>& out)
+bool fillWindow(const LinePyramid& pyramid, const PlotWindow& window, std::vector<double>& out,
+                std::vector<double>* positions)
 {
-    return foldRun(pyramid, window.first, window.span, window.bucket, out);
+    return foldRun(pyramid, window.first, window.span, window.bucket, out, positions);
 }
 
 bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out, long long& stride,
-               double& step)
+               double& step, std::vector<double>* positions)
 {
     out.clear();
+    if (positions != nullptr) {
+        positions->clear();
+    }
     if (pyramid.empty() || buckets <= 0) {
         return false;
     }
@@ -440,7 +727,7 @@ bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out
     wanted = ((wanted + base - 1) / base) * base;
     stride = std::max<long long>(wanted, 1);
 
-    if (!foldRun(pyramid, 0, pyramid.length, stride, out)) {
+    if (!foldRun(pyramid, 0, pyramid.length, stride, out, positions)) {
         return false;
     }
     // What sampleFrom reports beside the values: an envelope answers with two
@@ -465,17 +752,33 @@ Extremes extremesOver(const LinePyramid& pyramid, long long first, long long las
         last = std::min(last, pyramid.length);
     }
 
-    const auto take = [&found](double value, long long at) {
+    // Which bucket the winning value was copied out of. The index stored on
+    // the way is only there so a value that never resolves still has a place;
+    // the sample is walked down once, after the winners are known, because
+    // doing it for every bucket the run is cut into would open levels the
+    // answer does not use.
+    struct Hit
+    {
+        int level = -1;
+        long long bucket = -1;
+        int slot = 0;
+        long long at = -1;
+    };
+    Hit lowHit;
+    Hit highHit;
+    const auto take = [&](double value, const Hit& hit) {
         if (!std::isfinite(value)) {
             return;
         }
         if (found.lowAt < 0 || value < found.lowest) {
             found.lowest = value;
-            found.lowAt = at;
+            found.lowAt = hit.at;
+            lowHit = hit;
         }
         if (found.highAt < 0 || value > found.highest) {
             found.highest = value;
-            found.highAt = at;
+            found.highAt = hit.at;
+            highHit = hit;
         }
     };
 
@@ -495,15 +798,30 @@ Extremes extremesOver(const LinePyramid& pyramid, long long first, long long las
         const PyramidLevel& level = pyramid.levels[use];
         const long long index = at / level.bucket;
         if (level.bucket == 1) {
-            take(level.values[static_cast<std::size_t>(index)], at);
+            take(level.values[static_cast<std::size_t>(index)],
+                 Hit{-1, -1, 0, at});
         }
         else if (index < level.buckets()) {
-            // A pair in the order its two occurred, so the first is taken as
-            // earlier than the second -- the bucket's start and its middle.
-            take(level.values[static_cast<std::size_t>(index) * 2], at);
-            take(level.values[static_cast<std::size_t>(index) * 2 + 1], at + level.bucket / 2);
+            // A pair in the order its two occurred. The index kept here is the
+            // bucket's start and its middle; locateSlot replaces it with the
+            // sample once this value has won.
+            const double* pair = level.values.data() + static_cast<std::size_t>(index) * 2;
+            take(pair[0], Hit{static_cast<int>(use), index, 0, at});
+            take(pair[1], Hit{static_cast<int>(use), index, 1, at + level.bucket / 2});
         }
         at += level.bucket;
+    }
+    const auto refine = [&](const Hit& hit) {
+        if (hit.level < 0) {
+            return hit.at;
+        }
+        return locateSlot(pyramid, hit.level, hit.bucket, hit.slot);
+    };
+    if (lowHit.at >= 0) {
+        found.lowAt = refine(lowHit);
+    }
+    if (highHit.at >= 0) {
+        found.highAt = refine(highHit);
     }
     return found;
 }
@@ -560,11 +878,14 @@ void foldColumns(const LinePyramid& pyramid, std::span<const double> edges, Colu
             out.positions.push_back(static_cast<double>(first));
             continue;
         }
+        // The extremes, at the samples they occurred at. A crossing at the
+        // column edge is not one of those samples: on a line whose element i
+        // is i it is a fraction, and a fold is checked against the file as
+        // the elements themselves.
         out.values.push_back(found.first());
-        out.positions.push_back(static_cast<double>(first));
+        out.positions.push_back(static_cast<double>(found.firstAt()));
         out.values.push_back(found.second());
-        out.positions.push_back(static_cast<double>(first) +
-                                static_cast<double>(last - first) / 2.0);
+        out.positions.push_back(static_cast<double>(found.secondAt()));
     }
 }
 
@@ -577,7 +898,7 @@ bool smallestPositive(const LinePyramid& pyramid, double& out)
     bool found = false;
     double best = 0.0;
     const auto offer = [&](double value) {
-        if (value > 0.0 && std::isfinite(value) && (!found || value < best)) {
+        if ((!found || value < best) && value > 0.0 && std::isfinite(value)) {
             best = value;
             found = true;
         }

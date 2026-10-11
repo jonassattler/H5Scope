@@ -25,6 +25,12 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.2
+
+- `plotcore` is the fold and the camera with no file and no scene graph. `PlotProjection`, `PlotLevels` and `PlotPyramid` were already free of HDF5; they now live in one library that `gui` links, so a second copy of those sources is not a second answer. `LineStore` is what `DatasetPlot` does once the elements are in hand: one pyramid, a whole-line summary, a closer fold on zoom. A contiguous buffer of doubles sits where a hyperslab used to.
+- `h5plot` is the pip package around that library. One window holds several curves, from RAM or streamed from a 1-D HDF5 dataset, against the sample index or a time base. The wheel zooms, Shift is x and Ctrl is y, a right-drag opens the rectangle it names, and Alt (or the middle button) moves one curve onto a y axis of its own. Alt+Ctrl and the wheel scale only the curve under the pointer in y. A later rectangle, pan or wheel takes the same fraction of every curve, however far apart those scales have gone. The pointer reads the sample that was drawn, and it does not read one from the axis gutter, where the curve is not.
+- The same picture can be drawn on a matplotlib axes. Logarithmic x and y are numbered at the powers of their base. A curve on its own axis carries that curve's name, in the colour it is drawn.
+
 ## 0.7.1
 
 **A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a

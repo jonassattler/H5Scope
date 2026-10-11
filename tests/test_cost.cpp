@@ -925,9 +925,10 @@ constexpr int kZoomColumns = 2048;
 ///   - an envelope bucket holds `[p, p + bucket)` and answers with its two
 ///     extremes in occurrence order, so on a rising line those are `p` and
 ///     `p + bucket - 1`;
-///   - the two sit half a bucket apart, so the *even* sample of each pair sits
-///     at the bucket's own start -- and its value is therefore exactly its own
-///     axis position.
+///   - each extreme is drawn at the sample it occurred at, so on this line the
+///     value *is* the axis position. A run that does not name positions still
+///     spaces the pair half a bucket apart, and the odd sample is then the far
+///     end of the bucket rather than the position it is drawn at.
 ///
 /// Both hold unchanged for a run drawn sample for sample, where the step is one
 /// and each element is its own bucket. So one rule covers every resolution, and
@@ -938,12 +939,17 @@ void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
     REQUIRE(line.values != nullptr);
     REQUIRE(line.count > 0);
     const double step = line.positionStep;
+    const bool placed = line.positions != nullptr;
     for (qsizetype i = 0; i < line.count; ++i) {
-        const double at = line.positionStart + static_cast<double>(i) * step;
+        const double at = placed ? line.positions[i]
+                                 : line.positionStart + static_cast<double>(i) * step;
         // The far end of the bucket, clipped by the end of the line -- the last
         // bucket of a run that reaches it is summarised from what there is.
-        const double want =
-            (i % 2 == 0) ? at : std::min(at + step - 1.0, static_cast<double>(length - 1));
+        // Named positions are that end, so the value and the place are one
+        // number.
+        const double want = placed || i % 2 == 0
+                                ? at
+                                : std::min(at + step - 1.0, static_cast<double>(length - 1));
         INFO("sample " << i << " of " << line.count << " at " << at << " step " << step);
         REQUIRE(line.values[i] == want);
     }

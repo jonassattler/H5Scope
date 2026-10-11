@@ -1,0 +1,8 @@
+numpy
+PySide6
+
+[matplotlib]
+matplotlib>=3.8
+
+[rpc3]
+rpc3-file>=1.0.0rc6

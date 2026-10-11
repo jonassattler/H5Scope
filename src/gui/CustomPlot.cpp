@@ -28,6 +28,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <span>
 #include <optional>
 #include <utility>
 
@@ -112,6 +113,9 @@ struct Answer
     /// Axis positions between one drawn point and the next. Half a bucket when
     /// the line was read as an envelope, because a bucket answers with two.
     double step = 1.0;
+    /// Element index of each value, when `values` is an envelope. Empty when
+    /// the read is the samples themselves.
+    std::vector<double> positions;
     /// Whether it *was* read as an envelope. Carried rather than derived from
     /// the step above, which cannot tell a bucket of two from the elements
     /// themselves -- see PlotLine::summarised.
@@ -351,7 +355,8 @@ struct Reply
         // walk below would have answered with: coarsening an envelope is the
         // same question as reading at that bucket. See PlotLevels.hpp.
         long long stride = 1;
-        if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step)) {
+        if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step,
+                       &answer.positions)) {
             answer.problem = QStringLiteral("could not summarise %1").arg(ask.expression);
             return answer;
         }
@@ -425,12 +430,15 @@ struct Reply
         if (!read.ok()) {
             answer.problem = read.error;
             answer.values.clear();
+            answer.positions.clear();
             return answer;
         }
         // Contiguous, because the fold walks it with a pointer. A read of a run
         // of a line is already contiguous, so this is the buffer itself.
         const std::vector<double> buffer = read.array.values();
-        reduceBuckets(buffer.data(), static_cast<long long>(buffer.size()), bucket, answer.values);
+        reduceBucketsLocated(buffer.data(), static_cast<long long>(buffer.size()), bucket,
+                             static_cast<long long>(answer.start) + done, answer.values,
+                             answer.positions);
         done += run;
     }
     return answer;
@@ -906,6 +914,7 @@ void CustomPlot::setExpression(int row, const QString& text)
     // rather than left drawing them, which is what discard() below is for.
     releaseDrawing();
     entry.values.clear();
+    entry.positions.clear();
     entry.sourceLength = 0;
     entry.step = 1.0;
     entry.summarised = false;
@@ -1157,10 +1166,23 @@ void CustomPlot::setXLog(bool logarithmic)
     refreshCloser();
 }
 
+void CustomPlot::setYLog(bool logarithmic)
+{
+    if (yLog_ == logarithmic) {
+        return;
+    }
+    yLog_ = logarithmic;
+    dropFold();
+    announce();
+}
+
 std::optional<LogColumns> CustomPlot::foldWanted() const
 {
     const int drawn = seriesCount();
-    if (!xLog_ || drawn == 0 || drawn > kCrowdedLines) {
+    if (drawn == 0 || drawn > kCrowdedLines) {
+        return {};
+    }
+    if (!std::isfinite(viewMin_) || !std::isfinite(viewMax_) || !(viewMax_ > viewMin_)) {
         return {};
     }
     if (xMode_ == Dataset) {
@@ -1175,12 +1197,19 @@ std::optional<LogColumns> CustomPlot::foldWanted() const
     else if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
         return {};
     }
+    // Linear, and a log axis under an octave, are the closer look. A column
+    // stroke there has no position step, so a stretched line and a time base
+    // stop being read where they are drawn. logColumnsFor is the refusal.
+    if (!xLog_) {
+        return {};
+    }
     return logColumnsFor(viewMin_, viewMax_, bucketBudget());
 }
 
 bool CustomPlot::foldServes() const
 {
-    return foldGrid_.serves(xStart_, xStep_, static_cast<int>(xMode_), bucketBudget(), viewMin_,
+    return foldArmed_ && foldYLog_ == yLog_ &&
+           foldGrid_.serves(xStart_, xStep_, static_cast<int>(xMode_), bucketBudget(), viewMin_,
                             viewMax_);
 }
 
@@ -1192,6 +1221,8 @@ void CustomPlot::dropFold() const
         entry.foldGeneration = -1;
     }
     foldGrid_.clear();
+    foldArmed_ = false;
+    foldYLog_ = false;
     ++foldGeneration_;
 }
 
@@ -1274,10 +1305,14 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
     if (!foldServes()) {
         // Another grid. Every entry's fold goes with the one it was made on --
         // retired rather than freed, because the renderer is drawing them
-        // until it is handed these.
+        // until it is handed these. A pan inside the margin keeps the fold.
         dropFold();
         foldGrid_.remake(xStart_, xStep_, static_cast<int>(xMode_), bucketBudget(), viewMin_,
                          viewMax_);
+        foldViewMin_ = viewMin_;
+        foldViewMax_ = viewMax_;
+        foldYLog_ = yLog_;
+        foldArmed_ = foldGrid_.columns.has_value();
     }
     if (!foldGrid_.columns.has_value()) {
         return false;
@@ -1295,6 +1330,9 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
         else {
             edgesAlong(*foldGrid_.columns, xStart_, xStep_ * scale, edges);
         }
+        // Extremes at the samples they occurred at, then placed on the axis.
+        // A lerp at a column edge is not a time the file records, and a point
+        // drawn there is a reading of a sample that does not exist.
         ColumnFold folded;
         foldColumns(entry.pyramid, edges, folded);
         std::vector<double> xs(folded.positions.size());
@@ -1449,6 +1487,16 @@ int CustomPlot::closerBuckets() const
     return seriesCount() <= kCrowdedLines ? std::min(2 * pane, kMaxPoints) : pane;
 }
 
+
+void CustomPlot::setYPerPixel(double value)
+{
+    // Kept for the QML/C API shape. Column strokes place entry/exit by
+    // geometry; a y-pixel tolerance is not part of that picture.
+    if (!(value > 0.0) || !std::isfinite(value)) {
+        value = 0.0;
+    }
+    yPerPixel_ = value;
+}
 
 void CustomPlot::setPaneColumns(int columns)
 {
@@ -1765,16 +1813,18 @@ bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
         return false; // already held at this run
     }
     std::vector<double> folded;
-    if (!fillWindow(entry.pyramid, window, folded)) {
+    std::vector<double> positions;
+    if (!fillWindow(entry.pyramid, window, folded, &positions)) {
         return false;
     }
-    // What a read of this run would have reported: a pair per bucket half a
-    // bucket apart, or the elements themselves when the bucket is one.
+    // What a read of this run would have reported: a pair per bucket, or the
+    // elements themselves when the bucket is one. The step stays half a
+    // bucket; the positions are the samples the extremes occurred at.
     const double step = window.bucket == 1 ? 1.0 : static_cast<double>(window.bucket) / 2.0;
     // The same hazard DatasetPlot::takeDetail names: this push_back may
     // reallocate `levels` while the renderer is reading a run already in it, so
     // a Level is move-only-by-noexcept and the relocation cannot be a copy.
-    entry.levels.push_back(Level{window, step, std::move(folded)});
+    entry.levels.push_back(Level{window, step, std::move(folded), std::move(positions)});
     return true;
 }
 
@@ -1914,7 +1964,10 @@ void CustomPlot::refreshCloser()
     // hand would have covered it -- see the note there; out of a held line the
     // finer fold has nothing to weigh against it.
     for (Entry& entry : entries_) {
-        if (const std::optional<PlotWindow> own = closerFor(entry, closerBuckets());
+        // The pane's bucket, for DatasetPlot::refreshDetail's reason: the
+        // octave finer is the next step, and drawing it now answers this one
+        // a step ahead of the pane.
+        if (const std::optional<PlotWindow> own = closerFor(entry, bucketBudget());
             own.has_value() && fillCloser(entry, *own)) {
             filled = true;
         }
@@ -2067,10 +2120,10 @@ void CustomPlot::askForCloser()
                     entry.levels.begin(), entry.levels.end(),
                     [&window](const Level& level) { return level.window == window; });
                 if (at == entry.levels.end()) {
-                    entry.levels.push_back(Level{window, answer.step,
-                                                 answer.problem.isEmpty()
-                                                     ? std::move(answer.values)
-                                                     : std::vector<double>{}});
+                    const bool ok = answer.problem.isEmpty();
+                    Level level{window, answer.step, ok ? std::move(answer.values) : std::vector<double>{},
+                                ok ? std::move(answer.positions) : std::vector<double>{}};
+                    entry.levels.push_back(std::move(level));
                 }
                 else {
                     at->step = answer.step;
@@ -2078,8 +2131,10 @@ void CustomPlot::askForCloser()
                     // pointer into what is there now, and it goes on drawing it
                     // until fill() hands over what replaces it.
                     retire(at->values);
-                    at->values = answer.problem.isEmpty() ? std::move(answer.values)
-                                                          : std::vector<double>{};
+                    retire(at->positions);
+                    const bool ok = answer.problem.isEmpty();
+                    at->values = ok ? std::move(answer.values) : std::vector<double>{};
+                    at->positions = ok ? std::move(answer.positions) : std::vector<double>{};
                 }
                 trimLevels(entry);
             }
@@ -2102,6 +2157,7 @@ void CustomPlot::clearCloser()
     for (Entry& entry : entries_) {
         for (Level& level : entry.levels) {
             retire(level.values);
+            retire(level.positions);
         }
         entry.levels.clear();
     }
@@ -2110,6 +2166,7 @@ void CustomPlot::clearCloser()
     // is.
     for (Level& level : axis_.levels) {
         retire(level.values);
+        retire(level.positions);
     }
     axis_.levels.clear();
     // And every fold, for the same reason: it is a fold of the lines, and of
@@ -2184,6 +2241,24 @@ PlotLine CustomPlot::lineOf(int series) const
         return line;
     }
 
+    // The index the extreme occurred at, scaled into an axis position when the
+    // line is stretched. Align uses the index itself. Absent, the step below
+    // still places the pair half a bucket apart.
+    const auto bindPositions = [&](const std::vector<double>& at, double scale) {
+        if (at.size() != static_cast<std::size_t>(line.count) || at.empty()) {
+            return;
+        }
+        if (!(scale > 0.0) || scale == 1.0) {
+            line.positions = at.data();
+            return;
+        }
+        entry.scaledPositions.resize(at.size());
+        for (std::size_t i = 0; i < at.size(); ++i) {
+            entry.scaledPositions[i] = at[i] * scale;
+        }
+        line.positions = entry.scaledPositions.data();
+    };
+
     // The closer look, while it covers what is on screen. A second summary of
     // the same entry rather than a replacement for the first: zoom out past the
     // run in hand and the whole-line summary below is what is drawn, in the
@@ -2200,6 +2275,7 @@ PlotLine CustomPlot::lineOf(int series) const
         line.values = level.values.data();
         line.count = static_cast<qsizetype>(level.values.size());
         line.positionStep = level.step * scale;
+        bindPositions(level.positions, scale);
         // A run at bucket one is that run's own elements; anything coarser is
         // an envelope of them, whatever the stretch does to the step.
         line.summarised = level.window.bucket > 1;
@@ -2220,6 +2296,7 @@ PlotLine CustomPlot::lineOf(int series) const
     else {
         line.positionStep = entry.step;
     }
+    bindPositions(entry.positions, stretchScale(entry));
     return line;
 }
 
@@ -2472,6 +2549,8 @@ void CustomPlot::refresh()
     if (asks.empty()) {
         axis_.problem.clear();
         retire(axis_.values);
+        retire(axis_.positions);
+        axis_.positions.clear();
         axis_.step = 1.0;
         axis_.sourceLength = 0;
         axis_.pyramid = {};
@@ -2518,6 +2597,8 @@ void CustomPlot::refresh()
                     Answer& answer = reply.lines.front();
                     axis_.problem = answer.problem;
                     retire(axis_.values);
+                    retire(axis_.positions);
+                    axis_.positions.clear();
                     axis_.values = std::move(answer.values);
                     // The time base's own thinning, which is what turns an
                     // axis position back into one of these values. It is not
@@ -2532,6 +2613,8 @@ void CustomPlot::refresh()
             else {
                 axis_.problem.clear();
                 retire(axis_.values);
+                retire(axis_.positions);
+                axis_.positions.clear();
                 axis_.step = 1.0;
                 axis_.sourceLength = 0;
                 axis_.pyramid = {};
@@ -2545,7 +2628,12 @@ void CustomPlot::refresh()
                 Entry& entry = entries_[i];
                 entry.problem = answer.problem;
                 retire(entry.values);
+                retire(entry.positions);
                 entry.values = std::move(answer.values);
+                entry.positions = std::move(answer.positions);
+                if (entry.positions.size() != entry.values.size()) {
+                    entry.positions.clear();
+                }
                 entry.step = answer.step;
                 entry.summarised = answer.summarised;
                 entry.sourceLength = answer.sourceLength;

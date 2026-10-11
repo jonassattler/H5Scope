@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Andreas Martin
+# SPDX-License-Identifier: GPL-3.0-only
+
+# The shared library is compiled into the wheel. It is not part of the
+# sdist: a Windows DLL checked in here would be packed into the Linux wheel.
+include h5plot/*.py
+include h5plot/CMakeLists.txt
+global-exclude __pycache__
+global-exclude *.pyc

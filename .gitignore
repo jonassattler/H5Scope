@@ -23,3 +23,6 @@ instructions/
 
 # Agent configuration, local to this checkout.
 .claude/
+/python/__pycache__/*.pyc
+/python/.venv
+/python/h5plot/__pycache__/*.pyc

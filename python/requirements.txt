@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Andreas Martin
+# SPDX-License-Identifier: GPL-3.0-only
+
+# What `pip install -e .` would pull from pyproject.toml, written out so a
+# venv can be filled without building the wheel. The shared library is
+# loaded with ctypes and is not in this list.
+
+numpy
+PySide6
+
+# h5plot.mpl and the Tk viewer. The same floor as the matplotlib extra.
+matplotlib>=3.8
+
+# The two viewer windows read RPC3 through this. The same pin as the rpc3 extra.
+rpc3-file>=1.0.0rc6
+
+# File drop in demo_mpl.py. The dialog still opens files when it is absent.
+tkinterdnd2

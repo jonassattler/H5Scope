@@ -1035,10 +1035,9 @@ TEST_CASE_METHOD(PlotFixture, "an entry the reader has zoomed into is read again
         const gui::PlotLine closer = plot->lineOf(0);
         CHECK(closer.summarised);
         CHECK(closer.positionStart == 0.0);
-        // Twice the visible span, in twice the buckets the pane has columns --
-        // the prefetch octave, which reads the same elements and has the next
-        // step in already in hand. The plot tab takes the same octave, which is
-        // what keeps the two pictures identical.
+        // Twice the visible span, in the buckets the pane has columns. The
+        // plot tab takes the same run, which is what keeps the two pictures
+        // identical.
         CHECK(closer.positionStep == Approx(2.0));
         CHECK(closer.count == 4096);
 

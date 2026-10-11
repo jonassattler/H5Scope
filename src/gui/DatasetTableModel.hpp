@@ -103,6 +103,12 @@ public:
         /// Row-major, size == rows * columns. NaN marks a cell that could not
         /// be read, so one bad element does not discard the block around it.
         std::vector<double> values;
+        /// Element index of each value, when `values` is an envelope.
+        ///
+        /// Same size and order as `values`, and empty otherwise -- a stride
+        /// already says where a sample sits. An envelope's extreme sits at the
+        /// sample `extremesOf` found, not half a bucket along.
+        std::vector<double> positions;
         double minimum = 0.0; ///< over the finite values only
         double maximum = 0.0;
         bool hasFinite = false;

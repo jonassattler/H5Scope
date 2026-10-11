@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: h5plot
+Version: 0.3.2
+Summary: Look at large 1-D arrays from RAM: an envelope, several curves, one window.
+Author: Andreas Martin
+License-Expression: GPL-3.0-only
+Requires-Python: >=3.11
+Requires-Dist: numpy
+Requires-Dist: PySide6
+Provides-Extra: matplotlib
+Requires-Dist: matplotlib>=3.8; extra == "matplotlib"
+Provides-Extra: rpc3
+Requires-Dist: rpc3-file>=1.0.0rc6; extra == "rpc3"

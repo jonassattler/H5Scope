@@ -2526,12 +2526,10 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         h5test::settleFor(300);
 
         const gui::PlotLine closer = plot->lineOf(0);
-        // Twice the visible span, in twice the buckets the pane has columns:
-        // four elements each, two between drawn points, and every one of them
-        // inside the run. The extra octave is the prefetch -- it reads exactly
-        // the same elements, because a run's cost is its span -- and it is what
-        // makes the reader's next step in a draw rather than a wait. See
-        // DatasetPlot::detailBuckets.
+        // Twice the visible span, in the buckets the pane has columns: four
+        // elements each, two between drawn points, and every one of them inside
+        // the run. detailBuckets() is an octave finer than this and is not
+        // drawn -- that one would halve the step.
         CHECK(closer.positionStart == 0.0);
         CHECK(closer.positionStep == Catch::Approx(2.0));
         CHECK(closer.summarised);

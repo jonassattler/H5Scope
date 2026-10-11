@@ -1,0 +1,11 @@
+#ifndef PLOTCORE_STUB_QSEMAPHORE
+#define PLOTCORE_STUB_QSEMAPHORE
+
+class QSemaphore
+{
+public:
+    void release(int = 1) {}
+    void acquire(int = 1) {}
+};
+
+#endif

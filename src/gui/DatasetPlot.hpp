@@ -143,6 +143,10 @@ class DatasetPlot : public QObject
     /// On `xAxisChanged` for that signal's reason: the same points, drawn at
     /// different places, and nothing to re-read.
     Q_PROPERTY(bool xLog READ xLog WRITE setXLog NOTIFY xAxisChanged)
+    /// Whether the y axis places a value by its logarithm. Column strokes
+    /// treat non-positive y as a gap (see PlotColumns). Same NOTIFY as the
+    /// view changing: the fold is rebuilt, nothing is re-read from the file.
+    Q_PROPERTY(bool yLog READ yLog WRITE setYLog NOTIFY changed)
     Q_PROPERTY(bool numeric READ numeric NOTIFY changed)
     Q_PROPERTY(bool hasData READ hasData NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
@@ -170,6 +174,8 @@ public:
     void setXStep(double value);
     [[nodiscard]] bool xLog() const { return xLog_; }
     void setXLog(bool logarithmic);
+    [[nodiscard]] bool yLog() const { return yLog_; }
+    void setYLog(bool logarithmic);
     [[nodiscard]] bool numeric() const;
     [[nodiscard]] bool hasData() const;
     [[nodiscard]] QString error() const;
@@ -292,6 +298,12 @@ public:
     /// asked for and a timer -- see kResizeMilliseconds -- so a drag costs one
     /// read at the end of it rather than one per sixty-four pixels.
     Q_INVOKABLE void setPaneColumns(int columns);
+
+    /// One device pixel of the pane, in y units.
+    ///
+    /// Retained for the QML/C API. Drawing uses PlotColumns entry/exit
+    /// geometry rather than a chord tolerance.
+    Q_INVOKABLE void setYPerPixel(double value);
 
     /// Hand every drawn line to `target` at once.
     ///
@@ -436,13 +448,17 @@ private:
 
         PlotWindow window;
         /// Table positions between one drawn point of this run and the next,
-        /// and how many of them there are. Half a bucket, for the reason
-        /// PlotLine::positionStep gives.
+        /// and how many of them there are. Half a bucket, so a window still
+        /// turns back into a range of indices. Where an extreme is *drawn*
+        /// is `positions`, when that run has them.
         double step = 1.0;
         int points = 0;
         /// One entry per drawn line, keyed as `lines_` is. Borrowed by the
         /// renderer on exactly the same terms.
         std::map<int, std::vector<double>> lines;
+        /// Element index of each value in `lines`, same keys, borrowed with
+        /// them. Empty when the run is the samples themselves.
+        std::map<int, std::vector<double>> positions;
 
     };
 
@@ -514,6 +530,7 @@ private:
     ///
     /// False when any drawn line cannot answer, which leaves the whole run to
     /// the file: a run half in memory and half on disk would be two pictures.
+    /// Bend `values` onto the pyramid wherever a chord leaves it by more than a
     [[nodiscard]] bool fillDetail(const PlotWindow& detail);
 
     // --- a logarithmic x axis ----------------------------------------------
@@ -576,20 +593,27 @@ private:
     double xStart_ = 0.0;
     double xStep_ = 1.0;
     bool xLog_ = false;
+    bool yLog_ = false;
 
-    /// Every drawn line folded onto a logarithmic axis's columns. See
-    /// LogColumns.
+    /// Every drawn line folded onto the pane's columns, on a logarithmic x
+    /// that spans an octave or more. See LogColumns.
     ///
     /// Beside the whole-line summary and the runs rather than instead of
-    /// them, because it answers only for a view spanning an octave or more:
-    /// zoomed in past that, the runs are what is drawn and what reads below
-    /// the pyramid's base. Both maps are borrowed by the renderer on the terms
-    /// `lines_` is, keyed as it is, and pruned and retired with it.
+    /// them. Under an octave, and on a linear axis, the runs are what is
+    /// drawn: a column stroke there has no position step, and the closer look
+    /// is the reading a zoom asks for. The held grid covers the view plus a
+    /// half-pane margin so a pan inside that margin keeps the fold. The maps
+    /// are borrowed by the renderer on the terms `lines_` is, keyed as it is,
+    /// and pruned and retired with it.
     struct LogFold
     {
-        /// The grid it was made on, and the axis it was made against.
+        /// Axis + pane + column grid this fold was built for.
         LogFoldGrid grid;
-        /// The column edges in table positions, shared by every line.
+        double viewMin = 0.0;
+        double viewMax = 0.0;
+        bool yLog = false;
+        bool armed = false;
+        /// Column edges as positions along the line, shared by every series.
         std::vector<double> edges;
         std::map<int, std::vector<double>> values;
         std::map<int, std::vector<double>> xs;
@@ -602,6 +626,9 @@ private:
     /// Pruned to the drawn set on every sample, so what is held is what is on
     /// screen and a line that goes away stops costing memory.
     mutable std::map<int, std::vector<double>> lines_;
+    /// Element index of each value in `lines_`, keyed the same way and retired
+    /// with it. Empty for a line drawn sample for sample.
+    mutable std::map<int, std::vector<double>> positions_;
 
     /// Each drawn line held whole, at every resolution it will be drawn at.
     ///
@@ -671,6 +698,8 @@ private:
     /// becomes an x -- the axis moving, the selection changing the budget --
     /// has to work out the window again from the same view.
     double viewMin_ = 0.0;
+    /// One device pixel of y, in the line's units. See setYPerPixel.
+    double yPerPixel_ = 0.0;
     double viewMax_ = 0.0;
     /// The runs in hand, one per resolution, in no particular order. Mutable
     /// because ensure() is const by Qt's contract and prunes every cache down

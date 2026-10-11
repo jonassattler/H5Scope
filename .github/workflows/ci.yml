@@ -572,6 +572,7 @@ jobs:
       # and a queue wait to learn the next thing that a single run could have
       # told us. It still exits non-zero, so a failure is still a failure.
       - name: Build
+        id: build
         run: cmake --build --preset windows-release -- -k 0
 
       # Every suite the Linux job runs, including the two design checks, which
@@ -630,9 +631,11 @@ jobs:
           key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-windows-static-release.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # A binary is conveyed object code even as a CI artefact, so it does not
-      # travel without a way to reach its source.
+      # travel without a way to reach its source. Written whenever the build
+      # produced an executable, including when a later test failed: the upload
+      # below is what that failure used to throw away.
       - name: Write the source pointer
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        if: always() && steps.build.outcome == 'success'
         run: |
           $text = @"
           # H5Scope --- where this binary's source is
@@ -661,8 +664,14 @@ jobs:
           "@
           Set-Content -Path build/windows-release/bin/SOURCE.md -Value $text
 
+      # Kept from every branch, and kept when the tests fail. The Linux job
+      # limits itself to main and to tags because one binary per push on every
+      # branch is a lot of storage for something rebuildable. This one is the
+      # build that is being iterated on, and a failing test was discarding the
+      # only copy of an executable that took the better part of an hour. The
+      # release job still publishes only a tag, and only when this job is green.
       - name: Upload the executable
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: H5Scope-windows-x64

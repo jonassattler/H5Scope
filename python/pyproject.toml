@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Andreas Martin
+# SPDX-License-Identifier: GPL-3.0-only
+
+[build-system]
+requires = ["setuptools>=70.1", "cmake>=3.26", "ninja"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h5plot"
+version = "0.3.4"
+description = "Look at large 1-D arrays from RAM: an envelope, several curves, one window."
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+authors = [{ name = "Andreas Martin" }]
+dependencies = ["numpy", "PySide6"]
+
+[project.optional-dependencies]
+matplotlib = ["matplotlib>=3.8"]
+rpc3 = ["rpc3-file>=1.0.0rc6"]
+
+[tool.setuptools]
+packages = ["h5plot"]
+# The binary is compiled during the wheel build, after the sdist file list
+# exists. Package data is the glob below, not that list, or the library
+# would be left out of the wheel.
+include-package-data = false
+
+[tool.setuptools.package-data]
+h5plot = ["*.dll", "*.so", "*.dylib"]
+
+# The library does not link libpython. One wheel per platform, tagged
+# py3-none, installs on every Python this package accepts. cibuildwheel
+# still builds against each interpreter below and only compiles once;
+# the rest of them install the wheel and run the test.
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-* cp314-*"
+# PyPy is not in `build`, and it is not an enabled group. A skip of `pp*`
+# matches nothing and cibuildwheel warns about it.
+skip = ["*-win32", "*-win_arm64", "*-musllinux*", "*i686*", "*-macosx_x86_64", "*-macosx_arm64"]
+test-requires = "numpy"
+test-command = 'python -c "import numpy as np; from h5plot.lib import Plot; p = Plot(); p.add_line(np.array([0.0, 1.0, 4.0])); p.close()"'
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+# glibc 2.28, the same floor as the application. libstdc++ stays dynamic:
+# it is in the manylinux set, and linking it statically is not.
+manylinux-x86_64-image = "manylinux_2_28"
+# PySide6 that accepts 3.14 is published as manylinux_2_34. Inside this image
+# pip therefore has nothing to install: 6.9 is the last 2.28 build and it
+# stops before 3.14. The library under test is the one already run on
+# 3.11–3.13, and it does not link Python. On a machine with glibc 2.34 the
+# same wheel installs PySide6 6.10 or newer.
+test-skip = ["cp314-*"]
+# The working directory is copied to /project. $(pwd) is not used: on Windows
+# the same substitution looks for a pwd executable and the build never starts.
+environment = { H5PLOT_REPO = "/project" }
+
+[tool.cibuildwheel.macos]
+archs = ["universal2"]
+environment = { H5PLOT_REPO = "$(pwd)", MACOSX_DEPLOYMENT_TARGET = "11.0", _PYTHON_HOST_PLATFORM = "macosx-11.0-universal2" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+# delvewheel repairs extension modules. This DLL is loaded with ctypes, and
+# the static CRT means there is no VCRUNTIME140.dll to bundle.
+repair-wheel-command = ""
