@@ -39,6 +39,17 @@ namespace {
 /// difference, never a thing another thread waits on.
 std::atomic<long long> gHyperslabs{0};
 
+/// `held`, when it describes the `count` values being drawn; nothing when it
+/// does not -- a run drawn sample for sample has none, and a stale set must
+/// never be read against values of another length.
+const double* positionsOf(const std::vector<double>& held, qsizetype count)
+{
+    if (held.empty() || static_cast<qsizetype>(held.size()) != count) {
+        return nullptr;
+    }
+    return held.data();
+}
+
 /// Which drawn point of one reading of a time base `x` falls on, as an axis
 /// position -- where that reading's first value sits at `start` and its values
 /// are `step` positions apart.
@@ -112,6 +123,9 @@ struct Answer
     /// Axis positions between one drawn point and the next. Half a bucket when
     /// the line was read as an envelope, because a bucket answers with two.
     double step = 1.0;
+    /// The element each value is, when `values` is an envelope. Empty when the
+    /// read is the samples themselves. See PlotLine::positions.
+    std::vector<double> positions;
     /// Whether it *was* read as an envelope. Carried rather than derived from
     /// the step above, which cannot tell a bucket of two from the elements
     /// themselves -- see PlotLine::summarised.
@@ -351,7 +365,8 @@ struct Reply
         // walk below would have answered with: coarsening an envelope is the
         // same question as reading at that bucket. See PlotLevels.hpp.
         long long stride = 1;
-        if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step)) {
+        if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step,
+                       &answer.positions)) {
             answer.problem = QStringLiteral("could not summarise %1").arg(ask.expression);
             return answer;
         }
@@ -425,12 +440,15 @@ struct Reply
         if (!read.ok()) {
             answer.problem = read.error;
             answer.values.clear();
+            answer.positions.clear();
             return answer;
         }
         // Contiguous, because the fold walks it with a pointer. A read of a run
         // of a line is already contiguous, so this is the buffer itself.
         const std::vector<double> buffer = read.array.values();
-        reduceBuckets(buffer.data(), static_cast<long long>(buffer.size()), bucket, answer.values);
+        reduceBucketsLocated(buffer.data(), static_cast<long long>(buffer.size()), bucket,
+                             static_cast<long long>(answer.start) + done, answer.values,
+                             answer.positions);
         done += run;
     }
     return answer;
@@ -906,6 +924,7 @@ void CustomPlot::setExpression(int row, const QString& text)
     // rather than left drawing them, which is what discard() below is for.
     releaseDrawing();
     entry.values.clear();
+    entry.positions.clear();
     entry.sourceLength = 0;
     entry.step = 1.0;
     entry.summarised = false;
@@ -1765,16 +1784,17 @@ bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
         return false; // already held at this run
     }
     std::vector<double> folded;
-    if (!fillWindow(entry.pyramid, window, folded)) {
+    std::vector<double> positions;
+    if (!fillWindow(entry.pyramid, window, folded, &positions)) {
         return false;
     }
-    // What a read of this run would have reported: a pair per bucket half a
-    // bucket apart, or the elements themselves when the bucket is one.
+    // What a read of this run would have reported: a pair per bucket, each at
+    // the element it is, or the elements themselves when the bucket is one.
     const double step = window.bucket == 1 ? 1.0 : static_cast<double>(window.bucket) / 2.0;
     // The same hazard DatasetPlot::takeDetail names: this push_back may
     // reallocate `levels` while the renderer is reading a run already in it, so
     // a Level is move-only-by-noexcept and the relocation cannot be a copy.
-    entry.levels.push_back(Level{window, step, std::move(folded)});
+    entry.levels.push_back(Level{window, step, std::move(folded), std::move(positions)});
     return true;
 }
 
@@ -1804,9 +1824,11 @@ int CustomPlot::heldLevels() const
     // carries the argument.
     const long long spare =
         std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
+    //
+    // Twice over, because an envelope run holds a position beside every value
+    // (Level::positions).
     const int entries = std::max(seriesCount(), 1);
-    const long long affordable =
-        spare / std::max<long long>(entries * 4LL * bucketBudget(), 1);
+    const long long affordable = spare / std::max<long long>(entries * 8LL * bucketBudget(), 1);
     return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
 }
 
@@ -1817,7 +1839,7 @@ void CustomPlot::trimLevels(Entry& entry)
         // Rebuilt each time round, because erasing one changes which of the
         // rest is coldest.
         const std::size_t worst = gui::coldestLevel(ladder(entry), levelView(entry), focusFor(entry));
-        retire(entry.levels[worst].values);
+        retire(entry.levels[worst]);
         entry.levels.erase(entry.levels.begin() + static_cast<long>(worst));
     }
 }
@@ -1886,7 +1908,7 @@ void CustomPlot::refreshCloser()
                 // construction, so the frame after this is a correct picture
                 // either way.
                 for (Level& level : axis_.levels) {
-                    retire(level.values);
+                    retire(level);
                 }
                 axis_.levels.clear();
                 dropped = true;
@@ -1948,7 +1970,7 @@ void CustomPlot::refreshCloser()
                 // whole-line summary covers everything by construction, so the
                 // frame after this one is a correct picture either way.
                 for (Level& level : entry.levels) {
-                    retire(level.values);
+                    retire(level);
                 }
                 entry.levels.clear();
                 dropped = true;
@@ -2066,20 +2088,21 @@ void CustomPlot::askForCloser()
                 const auto at = std::find_if(
                     entry.levels.begin(), entry.levels.end(),
                     [&window](const Level& level) { return level.window == window; });
+                const bool read = answer.problem.isEmpty();
                 if (at == entry.levels.end()) {
-                    entry.levels.push_back(Level{window, answer.step,
-                                                 answer.problem.isEmpty()
-                                                     ? std::move(answer.values)
-                                                     : std::vector<double>{}});
+                    entry.levels.push_back(
+                        Level{window, answer.step,
+                              read ? std::move(answer.values) : std::vector<double>{},
+                              read ? std::move(answer.positions) : std::vector<double>{}});
                 }
                 else {
                     at->step = answer.step;
                     // Retired, not overwritten: a renderer may be holding a
                     // pointer into what is there now, and it goes on drawing it
                     // until fill() hands over what replaces it.
-                    retire(at->values);
-                    at->values = answer.problem.isEmpty() ? std::move(answer.values)
-                                                          : std::vector<double>{};
+                    retire(*at);
+                    at->values = read ? std::move(answer.values) : std::vector<double>{};
+                    at->positions = read ? std::move(answer.positions) : std::vector<double>{};
                 }
                 trimLevels(entry);
             }
@@ -2101,7 +2124,7 @@ void CustomPlot::clearCloser()
     closerInFlight_ = false;
     for (Entry& entry : entries_) {
         for (Level& level : entry.levels) {
-            retire(level.values);
+            retire(level);
         }
         entry.levels.clear();
     }
@@ -2109,7 +2132,7 @@ void CustomPlot::clearCloser()
     // was before whatever is clearing this, which is exactly what a stale run
     // is.
     for (Level& level : axis_.levels) {
-        retire(level.values);
+        retire(level);
     }
     axis_.levels.clear();
     // And every fold, for the same reason: it is a fold of the lines, and of
@@ -2152,6 +2175,12 @@ void CustomPlot::releaseDrawing()
 void CustomPlot::retire(std::vector<double>& values) const
 {
     lent_.retire(values);
+}
+
+void CustomPlot::retire(Level& level) const
+{
+    lent_.retire(level.values);
+    lent_.retire(level.positions);
 }
 
 void CustomPlot::announce()
@@ -2200,6 +2229,11 @@ PlotLine CustomPlot::lineOf(int series) const
         line.values = level.values.data();
         line.count = static_cast<qsizetype>(level.values.size());
         line.positionStep = level.step * scale;
+        // ...and each extreme at the element it is, by the same factor. A
+        // factor rather than an array of scaled positions, so that what the
+        // renderer borrows is only ever what the retire contract can see.
+        line.positions = positionsOf(level.positions, line.count);
+        line.positionScale = scale;
         // A run at bucket one is that run's own elements; anything coarser is
         // an envelope of them, whatever the stretch does to the step.
         line.summarised = level.window.bucket > 1;
@@ -2220,6 +2254,11 @@ PlotLine CustomPlot::lineOf(int series) const
     else {
         line.positionStep = entry.step;
     }
+    // Where each extreme is drawn, when the summary is an envelope: at its own
+    // element, spread by the factor a closer run of this line is spread by, so
+    // the summary and a run of it put every element in the same place.
+    line.positions = positionsOf(entry.positions, line.count);
+    line.positionScale = stretchScale(entry);
     return line;
 }
 
@@ -2545,7 +2584,9 @@ void CustomPlot::refresh()
                 Entry& entry = entries_[i];
                 entry.problem = answer.problem;
                 retire(entry.values);
+                retire(entry.positions);
                 entry.values = std::move(answer.values);
+                entry.positions = std::move(answer.positions);
                 entry.step = answer.step;
                 entry.summarised = answer.summarised;
                 entry.sourceLength = answer.sourceLength;

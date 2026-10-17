@@ -765,6 +765,30 @@ minutes over.
    assertion anywhere that noticed. `CustomPlot::hyperslabs()` is the count
    that would now.
 
+   **An extreme is drawn at the element it is.** A bucket's two extremes used
+   to stand at its start and its middle, which put a spike on a bucket's last
+   sample half a bucket early and split a straight rise across two columns by
+   distance. Every fold now says which element each value is
+   (`reduceBucketsLocated`, the `positions` of `fillWindow`/`fillWhole`,
+   `extremesOver`'s `lowAt`/`highAt`), and both plots lend those beside the
+   values as `PlotLine::positions` — borrowed, retired and pruned with them,
+   and spread by `positionScale` under Stretch rather than copied into a
+   scaled array the retire contract could not see. **The pyramid holds them**
+   (`PyramidLevel::at`), written by the build out of the fold that finds each
+   extreme anyway, so every fold is a copy or the same merge that coarsens the
+   values. Finding them afterwards instead — a walk down every level below the
+   value — was correct and made a zoom frame ten times the cost (`bench-zoom`:
+   10.8 ms a gesture against 0.9). Memory was the cheaper of the two to spend.
+   **A position is always an element and the value is always that element** —
+   never a point between two samples, which would be a reading nobody took —
+   over a coarse base as well, because the base was folded out of the elements
+   while they were in hand. `test_plotlevels` holds every fold and every level
+   to it, and `test_cost` walks the whole zoom over a line whose values are not
+   their positions, where a value drawn between two elements cannot pass by
+   coincidence. The renderer still thins a line that names positions when the
+   pane is narrower than it is, and draws each extreme it keeps at its own
+   position.
+
    **A bucket is a column, and a column is a device pixel.** What a line is
    thinned to follows the pane — `setPaneColumns`, quantised — rather than
    being a constant, because a constant is wrong in both directions: fewer
@@ -908,13 +932,20 @@ minutes over.
 
    What the held budget buys is the pyramid's **base bucket**
    (`gui::baseBucketFor`), and that is the one number a reader can feel. A
-   pyramid costs its base and a third again, so a line the budget can hold at
-   bucket one is a line where no zoom reads anything ever; one it cannot is held
-   at bucket two, four, sixteen, and the octaves below that base are the only
-   ones that still go to the file. On a 16 GB machine at **medium** that is
-   bucket one up to about a hundred million elements and bucket sixteen at a
-   billion — so a billion-element trace still zooms free for the first ten
-   octaves and costs one hyperslab for the rest.
+   pyramid of the elements costs them and four thirds again — the levels above
+   are two thirds of the base, and where each of their extremes is the same
+   again — and one of pairs costs its base and a third again, each pair beside
+   its positions; `pyramidDoubles` counts it level by level, which is the count
+   the build makes. (It summed a series until 0.7.2 and the series was a third
+   short over a base of the elements, so the promise Settings makes was being
+   overspent by that much.) A line the budget can hold at bucket one is a line
+   where no zoom reads anything ever; one it cannot is held at bucket four,
+   eight, sixty-four, and the octaves below that base are the only ones that
+   still go to the file. On a 16 GB machine at **medium**, with the Plot tab
+   alone, that is bucket one up to about fifty-seven million elements, bucket
+   four up to a hundred million and bucket sixty-four at a billion — so a
+   billion-element trace on a 2048-column pane still zooms free through its
+   first thirteen octaves and costs one hyperslab a step for the last six.
 
    **Changing the budget changes what is held, and the two directions are not
    the same operation.** `applyBudget` used to trim the run ladder and nothing

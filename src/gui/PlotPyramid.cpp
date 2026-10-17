@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "PlotPyramid.hpp"
@@ -81,7 +82,7 @@ std::size_t LinePyramid::doubles() const
 {
     std::size_t total = 0;
     for (const PyramidLevel& level : levels) {
-        total += level.values.size();
+        total += level.values.size() + level.at.size();
     }
     return total;
 }
@@ -92,11 +93,16 @@ long long pyramidDoubles(long long length, long long base)
         return 0;
     }
     const long long bucket = std::max<long long>(base, 1);
-    const long long size = bucket == 1 ? length : 2 * ((length + bucket - 1) / bucket);
-    // The levels above add a quarter, a sixteenth, a sixty-fourth... which sums
-    // to a third. Rounded up, because the top few levels are a handful of
-    // doubles each and there are more of them than the series accounts for.
-    return size + size / 3 + 64;
+    // A base of the elements is one double each; a base of pairs is two values
+    // and two positions a bucket, and so is every level above either.
+    long long buckets = (length + bucket - 1) / bucket;
+    long long total = bucket == 1 ? length : 4 * buckets;
+    constexpr long long factor = 1LL << kPyramidOctaves;
+    while (buckets > 1) {
+        buckets = (buckets + factor - 1) / factor;
+        total += 4 * buckets;
+    }
+    return total;
 }
 
 long long baseBucketFor(long long length, long long budget)
@@ -160,11 +166,14 @@ void buildLevels(LinePyramid& pyramid)
 
         const long long buckets = (below.buckets() + factor - 1) / factor;
         level.values.resize(static_cast<std::size_t>(buckets) * 2);
+        level.at.resize(level.values.size());
 
         const double* source = below.values.data();
+        const double* sourceAt = below.at.data();
         const long long sourceBuckets = below.buckets();
         const bool raw = below.bucket == 1;
         double* out = level.values.data();
+        double* outAt = level.at.data();
 
         // Every output bucket is a fold of `factor` input buckets, and no two
         // of them share an input -- so the ranges are disjoint and there is
@@ -177,10 +186,13 @@ void buildLevels(LinePyramid& pyramid)
                            return;
                        }
                        if (raw) {
-                           reduceBucketsInto(source + first, count, factor, out + from * 2);
+                           reduceBucketsLocatedInto(source + first, count, factor, first,
+                                                    out + from * 2, outAt + from * 2);
                        }
                        else {
-                           coarsenEnvelopeInto(source + first * 2, count, factor, out + from * 2);
+                           coarsenEnvelopeLocatedInto(source + first * 2, sourceAt + first * 2,
+                                                      count, factor, out + from * 2,
+                                                      outAt + from * 2);
                        }
                    });
 
@@ -203,6 +215,9 @@ PyramidBuilder::PyramidBuilder(long long length, long long base)
     // that come with first touching them.
     const long long buckets = (pyramid_.length + base_ - 1) / base_;
     bottom.values.reserve(static_cast<std::size_t>(base_ == 1 ? pyramid_.length : buckets * 2));
+    if (base_ > 1) {
+        bottom.at.reserve(static_cast<std::size_t>(buckets * 2));
+    }
     pyramid_.levels.push_back(std::move(bottom));
 }
 
@@ -212,15 +227,18 @@ void PyramidBuilder::add(const double* values, long long count)
         return;
     }
     taken_ += count;
-    std::vector<double>& bottom = pyramid_.levels.front().values;
+    PyramidLevel& bottom = pyramid_.levels.front();
 
+    // Folded with where each extreme is, while the elements are in hand: a
+    // coarse base is the one level nothing finer can ever say that about.
     const auto fold = [&](const double* from, long long many) {
         if (base_ == 1) {
-            bottom.insert(bottom.end(), from, from + many);
+            bottom.values.insert(bottom.values.end(), from, from + many);
         }
         else {
-            reduceBuckets(from, many, base_, bottom);
+            reduceBucketsLocated(from, many, base_, folded_, bottom.values, bottom.at);
         }
+        folded_ += many;
     };
 
     if (carry_.empty() && count % base_ == 0) {
@@ -244,13 +262,15 @@ void PyramidBuilder::add(const double* values, long long count)
 LinePyramid PyramidBuilder::finish()
 {
     if (!carry_.empty()) {
-        std::vector<double>& bottom = pyramid_.levels.front().values;
+        PyramidLevel& bottom = pyramid_.levels.front();
         if (base_ == 1) {
-            bottom.insert(bottom.end(), carry_.begin(), carry_.end());
+            bottom.values.insert(bottom.values.end(), carry_.begin(), carry_.end());
         }
         else {
-            reduceBuckets(carry_.data(), static_cast<long long>(carry_.size()), base_, bottom);
+            reduceBucketsLocated(carry_.data(), static_cast<long long>(carry_.size()), base_,
+                                 folded_, bottom.values, bottom.at);
         }
+        folded_ += static_cast<long long>(carry_.size());
         carry_.clear();
     }
     // The length is what was handed in, not what was promised. Everything that
@@ -291,13 +311,16 @@ LinePyramid pyramidOf(const double* values, long long count, long long base)
     else {
         const long long buckets = (count + bottom.bucket - 1) / bottom.bucket;
         bottom.values.resize(static_cast<std::size_t>(buckets) * 2);
+        bottom.at.resize(bottom.values.size());
         double* out = bottom.values.data();
+        double* outAt = bottom.at.data();
         const long long width = bottom.bucket;
         overRanges(buckets, count, [&](long long from, long long to) {
             const long long first = from * width;
             const long long take = std::min(to * width, count) - first;
             if (take > 0) {
-                reduceBucketsInto(values + first, take, width, out + from * 2);
+                reduceBucketsLocatedInto(values + first, take, width, first, out + from * 2,
+                                         outAt + from * 2);
             }
         });
     }
@@ -337,10 +360,17 @@ namespace {
 }
 
 /// Fold `[first, first + span)` of the line at `bucket`, out of the pyramid.
+///
+/// `positions`, when set, is filled beside an envelope and left empty when the
+/// answer is the elements themselves. See fillWindow().
 [[nodiscard]] bool foldRun(const LinePyramid& pyramid, long long first, long long span,
-                           long long bucket, std::vector<double>& out)
+                           long long bucket, std::vector<double>& out,
+                           std::vector<double>* positions)
 {
     out.clear();
+    if (positions != nullptr) {
+        positions->clear();
+    }
     if (pyramid.empty() || bucket < pyramid.baseBucket() || first < 0 || span <= 0) {
         return false;
     }
@@ -382,9 +412,22 @@ namespace {
         out.resize(static_cast<std::size_t>(made) * 2);
         double* into = out.data();
         const double* from = level.values.data() + first;
+        if (positions == nullptr) {
+            overRanges(made, take, [&](long long a, long long b) {
+                const long long at = a * bucket;
+                reduceBucketsInto(from + at, std::min(b * bucket, take) - at, bucket, into + a * 2);
+            });
+            return true;
+        }
+        // In the same pass, because the scan already finds the index: asking
+        // for it afterwards would walk every element of the line again, and
+        // the whole-line summary is that walk.
+        positions->resize(out.size());
+        double* where = positions->data();
         overRanges(made, take, [&](long long a, long long b) {
             const long long at = a * bucket;
-            reduceBucketsInto(from + at, std::min(b * bucket, take) - at, bucket, into + a * 2);
+            reduceBucketsLocatedInto(from + at, std::min(b * bucket, take) - at, bucket, first + at,
+                                     into + a * 2, where + a * 2);
         });
         return true;
     }
@@ -396,32 +439,52 @@ namespace {
         return false;
     }
     const double* pairs = level.values.data() + fromBucket * 2;
+    const double* pairAt = level.at.data() + fromBucket * 2;
+    const long long made = (buckets + factor - 1) / factor;
     if (factor == 1) {
         out.assign(pairs, pairs + buckets * 2);
+        if (positions != nullptr) {
+            positions->assign(pairAt, pairAt + buckets * 2);
+        }
         return true;
     }
-    const long long made = (buckets + factor - 1) / factor;
     out.resize(static_cast<std::size_t>(made) * 2);
     double* into = out.data();
+    if (positions == nullptr) {
+        overRanges(made, buckets * 2, [&](long long a, long long b) {
+            const long long at = a * factor;
+            coarsenEnvelopeInto(pairs + at * 2, std::min(b * factor, buckets) - at, factor,
+                                into + a * 2);
+        });
+        return true;
+    }
+    // The same merge, keeping the element each extreme was copied up from.
+    positions->resize(out.size());
+    double* where = positions->data();
     overRanges(made, buckets * 2, [&](long long a, long long b) {
         const long long at = a * factor;
-        coarsenEnvelopeInto(pairs + at * 2, std::min(b * factor, buckets) - at, factor,
-                            into + a * 2);
+        coarsenEnvelopeLocatedInto(pairs + at * 2, pairAt + at * 2,
+                                   std::min(b * factor, buckets) - at, factor, into + a * 2,
+                                   where + a * 2);
     });
     return true;
 }
 
 } // namespace
 
-bool fillWindow(const LinePyramid& pyramid, const PlotWindow& window, std::vector<double>& out)
+bool fillWindow(const LinePyramid& pyramid, const PlotWindow& window, std::vector<double>& out,
+                std::vector<double>* positions)
 {
-    return foldRun(pyramid, window.first, window.span, window.bucket, out);
+    return foldRun(pyramid, window.first, window.span, window.bucket, out, positions);
 }
 
 bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out, long long& stride,
-               double& step)
+               double& step, std::vector<double>* positions)
 {
     out.clear();
+    if (positions != nullptr) {
+        positions->clear();
+    }
     if (pyramid.empty() || buckets <= 0) {
         return false;
     }
@@ -440,7 +503,7 @@ bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out
     wanted = ((wanted + base - 1) / base) * base;
     stride = std::max<long long>(wanted, 1);
 
-    if (!foldRun(pyramid, 0, pyramid.length, stride, out)) {
+    if (!foldRun(pyramid, 0, pyramid.length, stride, out, positions)) {
         return false;
     }
     // What sampleFrom reports beside the values: an envelope answers with two
@@ -465,17 +528,30 @@ Extremes extremesOver(const LinePyramid& pyramid, long long first, long long las
         last = std::min(last, pyramid.length);
     }
 
-    const auto take = [&found](double value, long long at) {
+    // Which bucket each winner was copied out of. The position kept as the walk
+    // goes is a bucket's start or middle, enough to order the two; the element
+    // is read once the winners are known.
+    struct Slot
+    {
+        std::size_t level = 0;
+        long long bucket = -1;
+        int slot = 0;
+    };
+    Slot lowSlot;
+    Slot highSlot;
+    const auto take = [&](double value, long long at, const Slot& from) {
         if (!std::isfinite(value)) {
             return;
         }
         if (found.lowAt < 0 || value < found.lowest) {
             found.lowest = value;
             found.lowAt = at;
+            lowSlot = from;
         }
         if (found.highAt < 0 || value > found.highest) {
             found.highest = value;
             found.highAt = at;
+            highSlot = from;
         }
     };
 
@@ -495,15 +571,28 @@ Extremes extremesOver(const LinePyramid& pyramid, long long first, long long las
         const PyramidLevel& level = pyramid.levels[use];
         const long long index = at / level.bucket;
         if (level.bucket == 1) {
-            take(level.values[static_cast<std::size_t>(index)], at);
+            take(level.values[static_cast<std::size_t>(index)], at, Slot{});
         }
         else if (index < level.buckets()) {
             // A pair in the order its two occurred, so the first is taken as
-            // earlier than the second -- the bucket's start and its middle.
-            take(level.values[static_cast<std::size_t>(index) * 2], at);
-            take(level.values[static_cast<std::size_t>(index) * 2 + 1], at + level.bucket / 2);
+            // earlier than the second -- the bucket's start and its middle,
+            // until the walk below says which elements they were.
+            take(level.values[static_cast<std::size_t>(index) * 2], at, Slot{use, index, 0});
+            take(level.values[static_cast<std::size_t>(index) * 2 + 1], at + level.bucket / 2,
+                 Slot{use, index, 1});
         }
         at += level.bucket;
+    }
+    const auto element = [&](const Slot& held) {
+        const PyramidLevel& level = pyramid.levels[held.level];
+        return static_cast<long long>(level.at[static_cast<std::size_t>(held.bucket) * 2 +
+                                               static_cast<std::size_t>(held.slot)]);
+    };
+    if (lowSlot.bucket >= 0) {
+        found.lowAt = element(lowSlot);
+    }
+    if (highSlot.bucket >= 0) {
+        found.highAt = element(highSlot);
     }
     return found;
 }
@@ -561,10 +650,9 @@ void foldColumns(const LinePyramid& pyramid, std::span<const double> edges, Colu
             continue;
         }
         out.values.push_back(found.first());
-        out.positions.push_back(static_cast<double>(first));
+        out.positions.push_back(static_cast<double>(found.firstAt()));
         out.values.push_back(found.second());
-        out.positions.push_back(static_cast<double>(first) +
-                                static_cast<double>(last - first) / 2.0);
+        out.positions.push_back(static_cast<double>(found.secondAt()));
     }
 }
 

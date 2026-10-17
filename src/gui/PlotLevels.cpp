@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "gui/PlotLevels.hpp"
@@ -134,6 +135,45 @@ void reduceBuckets(const double* values, long long count, long long bucket,
     reduceBucketsInto(values, count, width, out.data() + was);
 }
 
+void reduceBucketsLocated(const double* values, long long count, long long bucket, long long origin,
+                          std::vector<double>& out, std::vector<double>& positions)
+{
+    if (values == nullptr || count <= 0) {
+        return;
+    }
+    const long long width = std::max<long long>(bucket, 1);
+    const long long taken = (count + width - 1) / width;
+    const std::size_t was = out.size();
+    const std::size_t wasAt = positions.size();
+    out.resize(was + static_cast<std::size_t>(taken) * 2);
+    positions.resize(wasAt + static_cast<std::size_t>(taken) * 2);
+    reduceBucketsLocatedInto(values, count, width, origin, out.data() + was,
+                             positions.data() + wasAt);
+}
+
+void reduceBucketsLocatedInto(const double* values, long long count, long long bucket,
+                              long long origin, double* out, double* positions)
+{
+    if (values == nullptr || out == nullptr || positions == nullptr || count <= 0) {
+        return;
+    }
+    const long long width = std::max<long long>(bucket, 1);
+    const long long taken = (count + width - 1) / width;
+    for (long long b = 0; b < taken; ++b) {
+        const long long from = b * width;
+        const Extremes found = extremesOf(values, from, std::min(from + width, count));
+        if (!found.found()) {
+            out[2 * b] = out[2 * b + 1] = std::numeric_limits<double>::quiet_NaN();
+            positions[2 * b] = positions[2 * b + 1] = static_cast<double>(origin + from);
+            continue;
+        }
+        out[2 * b] = found.first();
+        out[2 * b + 1] = found.second();
+        positions[2 * b] = static_cast<double>(origin + found.firstAt());
+        positions[2 * b + 1] = static_cast<double>(origin + found.secondAt());
+    }
+}
+
 void coarsenEnvelopeInto(const double* pairs, long long buckets, long long factor, double* out)
 {
     if (pairs == nullptr || out == nullptr || buckets <= 0) {
@@ -143,6 +183,34 @@ void coarsenEnvelopeInto(const double* pairs, long long buckets, long long facto
     // order, so folding it by twice the factor is the same question
     // reduceBuckets() asks of the elements themselves.
     reduceBucketsInto(pairs, buckets * 2, std::max<long long>(factor, 1) * 2, out);
+}
+
+void coarsenEnvelopeLocatedInto(const double* pairs, const double* pairAt, long long buckets,
+                                long long factor, double* out, double* outAt)
+{
+    if (pairs == nullptr || pairAt == nullptr || out == nullptr || outAt == nullptr ||
+        buckets <= 0) {
+        return;
+    }
+    // The same fold coarsenEnvelopeInto() asks of the pair buffer, by twice the
+    // factor; the index it finds is into that buffer, and `pairAt` says which
+    // element sits there.
+    const long long width = std::max<long long>(factor, 1) * 2;
+    const long long count = buckets * 2;
+    const long long taken = (count + width - 1) / width;
+    for (long long b = 0; b < taken; ++b) {
+        const long long from = b * width;
+        const Extremes found = extremesOf(pairs, from, std::min(from + width, count));
+        if (!found.found()) {
+            out[2 * b] = out[2 * b + 1] = std::numeric_limits<double>::quiet_NaN();
+            outAt[2 * b] = outAt[2 * b + 1] = pairAt[from];
+            continue;
+        }
+        out[2 * b] = found.first();
+        out[2 * b + 1] = found.second();
+        outAt[2 * b] = pairAt[found.firstAt()];
+        outAt[2 * b + 1] = pairAt[found.secondAt()];
+    }
 }
 
 void coarsenEnvelope(const double* pairs, long long buckets, long long factor,

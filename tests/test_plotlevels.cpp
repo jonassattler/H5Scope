@@ -508,6 +508,183 @@ TEST_CASE("the whole-line summary comes out of the pyramid", "[levels][pyramid]"
     }
 }
 
+// --- where each extreme is ------------------------------------------------
+//
+// An envelope is a choice of elements. Asked where each value of one is, the
+// pyramid names the element -- and the value is that element, never something
+// drawn between two of them, which is a reading of a sample nobody took.
+
+namespace {
+
+/// The lines a placement can get wrong: a square wave (every bucket that
+/// straddles an edge holds both levels), the test line above (a trend, spikes
+/// and a run of gaps), and a walk with a spike on the last element of every
+/// bucket of sixteen, up and down by turns.
+std::vector<std::vector<double>> placementLines()
+{
+    std::vector<double> square(8192);
+    for (std::size_t i = 0; i < square.size(); ++i) {
+        square[i] = (i / 64) % 2 == 0 ? 0.0 : 100.0;
+    }
+    std::vector<double> walk(20000);
+    double at = 0.0;
+    for (std::size_t i = 0; i < walk.size(); ++i) {
+        at += std::sin(static_cast<double>(i) * 0.37) * 0.5;
+        walk[i] = at;
+    }
+    for (std::size_t i = 15; i < walk.size(); i += 16) {
+        walk[i] += (i / 16) % 2 == 0 ? 500.0 : -500.0;
+    }
+    return {square, testLine(30000), walk};
+}
+
+/// Every value at its position is that element of `line`, every position is
+/// inside the bucket it was folded out of, and they ascend. `first` and
+/// `bucket` describe the run. Over any base: a coarse one was folded out of the
+/// elements while they were in hand, and kept where each extreme was.
+void placedOn(const std::vector<double>& line, const std::vector<double>& values,
+              const std::vector<double>& positions, long long first, long long bucket)
+{
+    REQUIRE(positions.size() == values.size());
+    const auto length = static_cast<long long>(line.size());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const long long from = first + static_cast<long long>(i / 2) * bucket;
+        const long long to = std::min(from + bucket, length);
+        const double p = positions[i];
+        INFO("value " << i << " = " << values[i] << " at " << p << " of [" << from << ", " << to
+                      << ")");
+        REQUIRE(p == std::floor(p));
+        REQUIRE(p >= static_cast<double>(from));
+        REQUIRE(p < static_cast<double>(to));
+        if (i > 0) {
+            REQUIRE(p >= positions[i - 1]);
+        }
+        const auto element = static_cast<long long>(p);
+        if (std::isnan(values[i])) {
+            REQUIRE(element == from); // a gap stands at its bucket's start
+            continue;
+        }
+        REQUIRE(values[i] == line[static_cast<std::size_t>(element)]);
+    }
+}
+
+} // namespace
+
+TEST_CASE("an envelope names the element each extreme is, and holds nothing else",
+          "[levels][pyramid][positions]")
+{
+    const std::vector<std::vector<double>> lines = placementLines();
+
+    SECTION("folding the elements finds them where it finds the extremes")
+    {
+        for (const std::vector<double>& line : lines) {
+            const auto length = static_cast<long long>(line.size());
+            for (const long long bucket : {2LL, 16LL, 100LL}) {
+                INFO("line of " << length << " bucket " << bucket);
+                std::vector<double> plain;
+                std::vector<double> values;
+                std::vector<double> positions;
+                gui::reduceBuckets(line.data(), length, bucket, plain);
+                gui::reduceBucketsLocated(line.data(), length, bucket, 0, values, positions);
+                same(values, plain); // the same fold, with nothing taken out or put in
+                placedOn(line, values, positions, 0, bucket);
+            }
+        }
+    }
+
+    SECTION("a run out of the pyramid is the elements of the line")
+    {
+        for (const std::vector<double>& line : lines) {
+            const auto length = static_cast<long long>(line.size());
+            for (const long long base : {1LL, 4LL, 16LL}) {
+                const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, base);
+                for (const long long bucket : {16LL, 64LL, 256LL, 1024LL}) {
+                    for (const long long first : {0LL, 4096LL}) {
+                        const long long span = std::min(bucket * 64, length - first);
+                        if (span <= 0 || bucket < base) {
+                            continue;
+                        }
+                        INFO("line of " << length << " base " << base << " bucket " << bucket
+                                        << " first " << first);
+                        const gui::PlotWindow window{
+                            first, span, bucket, static_cast<int>((span + bucket - 1) / bucket)};
+                        std::vector<double> values;
+                        std::vector<double> positions;
+                        REQUIRE(gui::fillWindow(pyramid, window, values, &positions));
+                        // Asking where they are changes none of them.
+                        same(values, readWould(line, first, span, bucket));
+                        placedOn(line, values, positions, first, bucket);
+                    }
+                }
+            }
+        }
+    }
+
+    SECTION("the whole-line summary is the elements of the line")
+    {
+        for (const std::vector<double>& line : lines) {
+            const auto length = static_cast<long long>(line.size());
+            for (const long long base : {1LL, 16LL}) {
+                const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, base);
+                long long stride = 0;
+                double step = 0.0;
+                std::vector<double> values;
+                std::vector<double> positions;
+                REQUIRE(gui::fillWhole(pyramid, 500, values, stride, step, &positions));
+                INFO("line of " << length << " base " << base << " stride " << stride);
+                REQUIRE(stride > 1);
+                CHECK(step == static_cast<double>(stride) / 2.0);
+                same(values, readWould(line, 0, length, stride));
+                placedOn(line, values, positions, 0, stride);
+            }
+        }
+    }
+
+    SECTION("any run's extremes are named at their first occurrence")
+    {
+        for (const std::vector<double>& line : lines) {
+            const auto length = static_cast<long long>(line.size());
+            const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, 1);
+            for (const gui::PyramidLevel& level : pyramid.levels) {
+                // Every level holds where each of its values is, and nothing else.
+                INFO("level of bucket " << level.bucket);
+                if (level.bucket == 1) {
+                    CHECK(level.at.empty());
+                    continue;
+                }
+                REQUIRE(level.at.size() == level.values.size());
+                placedOn(line, level.values, level.at, 0, level.bucket);
+            }
+            for (long long from = 0; from < length; from += 997) {
+                for (const long long width : {3LL, 70LL, 1500LL, 9000LL}) {
+                    const long long to = std::min(from + width, length);
+                    const gui::Extremes want = gui::extremesOf(line.data(), from, to);
+                    const gui::Extremes got = gui::extremesOver(pyramid, from, to);
+                    INFO("line of " << length << " run " << from << ".." << to);
+                    REQUIRE(got.found() == want.found());
+                    if (!want.found()) {
+                        continue;
+                    }
+                    CHECK(got.lowAt == want.lowAt);
+                    CHECK(got.highAt == want.highAt);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("a run drawn sample for sample names no positions", "[levels][pyramid][positions]")
+{
+    // The values are the elements and the step already says where each sits.
+    const std::vector<double> line = testLine(5000);
+    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 5000, 1);
+    std::vector<double> values;
+    std::vector<double> positions{1.0, 2.0};
+    REQUIRE(gui::fillWindow(pyramid, gui::PlotWindow{1024, 1024, 1, 1024}, values, &positions));
+    CHECK(values.size() == 1024);
+    CHECK(positions.empty());
+}
+
 TEST_CASE("a pyramid streamed in pieces is the pyramid of the whole line", "[levels][pyramid]")
 {
     // Both plots build their pyramids this way -- a read at a time, of up to
@@ -537,6 +714,7 @@ TEST_CASE("a pyramid streamed in pieces is the pyramid of the whole line", "[lev
                 INFO("level " << level);
                 CHECK(streamed.levels[level].bucket == whole.levels[level].bucket);
                 same(streamed.levels[level].values, whole.levels[level].values);
+                same(streamed.levels[level].at, whole.levels[level].at);
             }
         }
     }
@@ -628,7 +806,10 @@ TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
     {
         REQUIRE(gui::coarsenTo(fine, 16));
         CHECK(fine.baseBucket() == 16);
-        CHECK(fine.doubles() < before / 8);
+        // Seven times smaller: a base of the elements is one double each, and
+        // every level of pairs is two values and two positions a bucket, so
+        // what is left is the levels from sixteen up.
+        CHECK(fine.doubles() < before / 6);
         CHECK(static_cast<long long>(fine.doubles())
               <= gui::pyramidDoubles(static_cast<long long>(line.size()), 16));
     }
@@ -830,9 +1011,14 @@ TEST_CASE("a logarithmic pane is folded one envelope per column, from the first 
                 continue;
             }
             REQUIRE(at + 1 < fold.values.size());
-            CHECK(fold.positions[at] == static_cast<double>(first));
+            // Each at the element it is, and that element's value -- not at the
+            // column's first element and half way along it.
+            CHECK(fold.positions[at] == static_cast<double>(want.firstAt()));
+            CHECK(fold.positions[at + 1] == static_cast<double>(want.secondAt()));
             CHECK(fold.values[at] == want.first());
             CHECK(fold.values[at + 1] == want.second());
+            CHECK(fold.values[at] == line[static_cast<std::size_t>(want.firstAt())]);
+            CHECK(fold.values[at + 1] == line[static_cast<std::size_t>(want.secondAt())]);
             at += 2;
         }
         CHECK(at == fold.values.size());

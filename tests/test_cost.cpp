@@ -77,9 +77,10 @@ struct Counted
     DatasetPlot plot{&table};
     DatasetImage image{&table};
 
-    explicit Counted(std::vector<hsize_t> shape)
+    explicit Counted(std::vector<hsize_t> shape, bool scrambled = false)
         : source(std::make_shared<CountingSource>(std::move(shape)))
     {
+        source->setScrambled(scrambled);
         install();
         table.setSource(true, source->info(), QStringLiteral("/counted"));
         settleAll();
@@ -925,14 +926,19 @@ constexpr int kZoomColumns = 2048;
 ///   - an envelope bucket holds `[p, p + bucket)` and answers with its two
 ///     extremes in occurrence order, so on a rising line those are `p` and
 ///     `p + bucket - 1`;
-///   - the two sit half a bucket apart, so the *even* sample of each pair sits
-///     at the bucket's own start -- and its value is therefore exactly its own
-///     axis position.
+///   - the step is half a bucket, so the *even* sample of each pair counts the
+///     bucket's own start -- and its value is therefore exactly that position.
 ///
 /// Both hold unchanged for a run drawn sample for sample, where the step is one
 /// and each element is its own bucket. So one rule covers every resolution, and
 /// an off-by-one in the alignment, the bucket, the offset or the order of the
 /// pair fails it immediately.
+///
+/// An envelope also names the element each value is (PlotLine::positions), and
+/// on this line that element's value is its index -- so the position has to be
+/// the value itself, exactly, and a whole number inside its bucket. A point
+/// drawn between two elements would be a fraction, and is refused here rather
+/// than passing because a fraction of this line equals its own place on it.
 void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
 {
     REQUIRE(line.values != nullptr);
@@ -946,6 +952,42 @@ void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
             (i % 2 == 0) ? at : std::min(at + step - 1.0, static_cast<double>(length - 1));
         INFO("sample " << i << " of " << line.count << " at " << at << " step " << step);
         REQUIRE(line.values[i] == want);
+        if (line.positions != nullptr) {
+            const double named = line.positions[i] * line.positionScale;
+            const double bucketStart = line.positionStart + static_cast<double>(i / 2) * 2.0 * step;
+            INFO("named " << named);
+            REQUIRE(named == std::floor(named));
+            REQUIRE(named >= bucketStart);
+            REQUIRE(named < bucketStart + 2.0 * step);
+            REQUIRE(named == line.values[i]);
+        }
+    }
+}
+
+/// The same check over a scrambled line, where a value is not its position:
+/// every drawn value has to be the element it names, which on this line no
+/// point between two elements could be.
+void drawnIsTheElement(const gui::PlotLine& line)
+{
+    REQUIRE(line.values != nullptr);
+    REQUIRE(line.count > 0);
+    for (qsizetype i = 0; i < line.count; ++i) {
+        INFO("sample " << i << " of " << line.count);
+        if (line.positions == nullptr) {
+            // The samples themselves, a step of one apart.
+            REQUIRE(line.positionStep == 1.0);
+            const auto element = static_cast<hsize_t>(line.positionStart + static_cast<double>(i));
+            REQUIRE(line.values[i] == CountingSource::scramble(element));
+            continue;
+        }
+        const double named = line.positions[i] * line.positionScale;
+        const double bucketStart =
+            line.positionStart + static_cast<double>(i / 2) * 2.0 * line.positionStep;
+        INFO("named " << named << " in the bucket from " << bucketStart);
+        REQUIRE(named == std::floor(named));
+        REQUIRE(named >= bucketStart);
+        REQUIRE(named < bucketStart + 2.0 * line.positionStep);
+        REQUIRE(line.values[i] == CountingSource::scramble(static_cast<hsize_t>(named)));
     }
 }
 
@@ -1042,6 +1084,44 @@ TEST_CASE("a zoom from the whole line to a single sample reads nothing", "[cost]
         CHECK(back.crossings == 0);
         CHECK(back.reads == 0);
     }
+}
+
+TEST_CASE("a zoom over a line whose values are not their positions draws each at its element",
+          "[cost][plot][zoom][positions]")
+{
+    // The whole descent again, over a line where a value and its place differ.
+    // Every frame's every drawn value is the element it names, and the walk
+    // still reads nothing.
+    Counted big({1, static_cast<hsize_t>(kZoomLine)}, true);
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    const double focus = 4999999.0;
+    double low = 0.0;
+    double high = static_cast<double>(kZoomLine);
+    const double shrink =
+        std::pow(static_cast<double>(kZoomColumns) / static_cast<double>(kZoomLine),
+                 1.0 / static_cast<double>(kZoomFrames));
+
+    int envelopes = 0;
+    const auto cost = big.measure([&] {
+        drawnIsTheElement(big.plot.lineOf(0));
+        for (int frame = 0; frame < kZoomFrames; ++frame) {
+            big.plot.setZoomFocus(focus, 1.0 / shrink);
+            low = focus - (focus - low) * shrink;
+            high = focus + (high - focus) * shrink;
+            big.plot.setVisibleRange(low, high);
+            const gui::PlotLine line = big.plot.lineOf(0);
+            INFO("frame " << frame);
+            drawnIsTheElement(line);
+            envelopes += line.positions != nullptr ? 1 : 0;
+        }
+    });
+    // Most of the descent is envelopes; the end of it is the samples.
+    CHECK(envelopes >= kZoomFrames / 2);
+    CHECK(cost.crossings == 0);
+    CHECK(cost.reads == 0);
 }
 
 namespace {

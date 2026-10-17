@@ -765,11 +765,26 @@ TEST_CASE_METHOD(PlotFixture, "the same slice draws the same in both plots", "[c
         REQUIRE(theirs.values[i] == mine.values[i]);
     }
 
+    // ...and each drawn at the same element. An envelope names where its
+    // extremes are, and two plots of one dataset naming different places for
+    // the same extreme would be the same two-pictures bug in the other axis.
+    REQUIRE(mine.positions != nullptr);
+    REQUIRE(theirs.positions != nullptr);
+    for (qsizetype i = 0; i < mine.count; ++i) {
+        INFO("point " << i);
+        REQUIRE(theirs.positions[i] * theirs.positionScale ==
+                mine.positions[i] * mine.positionScale);
+    }
+
     // Including the one-sample spike, which is the whole reason an envelope is
     // worth its round trips: a stride of twenty lands on 12345 only by luck,
-    // and neither of these is relying on luck.
+    // and neither of these is relying on luck. It is drawn at 12345 too, not
+    // at the start or the middle of the bucket that holds it.
     CHECK(tabPlot->maximum() == Approx(9.0));
     CHECK(custom->maximum() == Approx(9.0));
+    const auto spike = std::find(mine.values, mine.values + mine.count, 9.0) - mine.values;
+    REQUIRE(spike < mine.count);
+    CHECK(mine.positions[spike] == 12345.0);
 }
 
 TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not by the bucket",
@@ -1228,6 +1243,100 @@ TEST_CASE_METHOD(PlotFixture, "a stretched entry is looked at closely where it i
     CHECK(points.last().x() <= 8200.0);
     // Denser than the summary was over the same stretch of axis.
     CHECK(points.size() > summarised / 4);
+}
+
+TEST_CASE_METHOD(PlotFixture,
+                 "a stretched entry names its elements and leaves the stretch to one factor",
+                 "[custom][positions]")
+{
+    // Stretch spreads a line over the axis by one factor, and every extreme of
+    // it is drawn at its element times that factor. The positions are the
+    // entry's own, unscaled, in storage the borrow contract can see: an array
+    // of scaled copies rebuilt each time the line was handed over would be a
+    // buffer freed under the renderer by the next handing-over.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));       // 20000: the axis is this long
+    add(plot, QStringLiteral("/trace[0:10000]")); // half as long, stretched over it
+    plot->setScaling(1, gui::CustomPlot::Stretch);
+    settleAll();
+    const std::vector<double> trace = h5test::traceValues();
+    const double stretch = 19999.0 / 9999.0;
+
+    const auto check = [&](const char* which) {
+        INFO(which);
+        const gui::PlotLine first = plot->lineOf(1);
+        const gui::PlotLine again = plot->lineOf(1);
+        REQUIRE(first.summarised);
+        REQUIRE(first.positions != nullptr);
+        CHECK(first.positionScale == Approx(stretch));
+        // The same storage both times: nothing is built when a line is handed
+        // over, so nothing is freed when it is handed over again.
+        CHECK(again.positions == first.positions);
+        for (qsizetype i = 0; i < first.count; ++i) {
+            const double at = first.positions[i];
+            INFO("point " << i << " at " << at);
+            REQUIRE(at == std::floor(at));
+            REQUIRE(at >= 0.0);
+            REQUIRE(at < 10000.0);
+            REQUIRE(first.values[i] == trace[static_cast<std::size_t>(at)]);
+        }
+    };
+    check("the whole line");
+
+    plot->setVisibleRange(0.0, 4000.0);
+    h5test::settleFor(300);
+    settleAll();
+    check("a closer look");
+}
+
+TEST_CASE_METHOD(PlotFixture, "an entry's positions outlive a zoom, as its values do",
+                 "[custom][positions]")
+{
+    // The borrow contract for the second array. A zoom back out past the run
+    // in hand retires that run's values; it has to retire their positions with
+    // them, or the renderer bisects freed memory to find where a value goes.
+    // Asked through the item, by dereferencing, for the reason test_models
+    // gives: a count would pass just as happily over freed memory.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    settleAll();
+
+    gui::PlotItem item;
+    item.setWidth(400.0);
+    item.setHeight(300.0);
+    item.setYMin(-10.0);
+    item.setYMax(10.0);
+    // The spike: 12345 along, and a value of 9 is 95% of the way up.
+    const double py = 300.0 * (1.0 - 19.0 / 20.0);
+    const auto readsSpike = [&](double low, double high) {
+        item.setXMin(low);
+        item.setXMax(high);
+        const QVariantMap found = item.nearestSample((12345.0 - low) / (high - low) * 400.0, py);
+        REQUIRE(found.value(QStringLiteral("valid")).toBool());
+        CHECK(found.value(QStringLiteral("y")).toDouble() == Approx(9.0));
+        CHECK(found.value(QStringLiteral("x")).toDouble() == Approx(12345.0));
+    };
+
+    plot->setVisibleRange(8000.0, 16000.0);
+    h5test::settleFor(300);
+    settleAll();
+    plot->fill(&item);
+    const gui::PlotLine closer = plot->lineOf(0);
+    REQUIRE(closer.positions != nullptr);
+    REQUIRE(closer.summarised);
+    REQUIRE(closer.positionStart > 0.0); // a run of the line, not the whole of it
+    readsSpike(8000.0, 16000.0);
+
+    // Back out past the run, which lets it go -- retired, because the item is
+    // still drawing it until the next fill.
+    plot->setVisibleRange(0.0, 19999.0);
+    h5test::settleFor(300);
+    settleAll();
+    REQUIRE(plot->lineOf(0).positionStart == 0.0);
+    readsSpike(8000.0, 16000.0);
+
+    plot->fill(&item);
+    readsSpike(0.0, 19999.0);
 }
 
 TEST_CASE_METHOD(PlotFixture, "a tab drawn against a time base that doubles back keeps its "

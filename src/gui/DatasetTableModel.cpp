@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "DatasetTableModel.hpp"
@@ -344,6 +345,30 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
 
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     grid.values.assign(static_cast<std::size_t>(grid.rows) * grid.columns, nan);
+    // Every bucket's pair starts out standing at the bucket's own start, which
+    // is where a gap is said to be. A bucket that is never read, or holds
+    // nothing finite, keeps that -- and the positions stay in order, which is
+    // what lets the renderer find a window among them by bisection.
+    if (envelopeColumns) {
+        grid.positions.resize(grid.values.size());
+        for (int r = 0; r < grid.rows; ++r) {
+            for (int b = 0; b < buckets; ++b) {
+                const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
+                grid.positions[out] = grid.positions[out + 1] =
+                    static_cast<double>(firstColumn + qint64{b} * grid.columnStride);
+            }
+        }
+    }
+    else if (envelopeRows) {
+        grid.positions.resize(grid.values.size());
+        for (int b = 0; b < rowBuckets; ++b) {
+            const auto start = static_cast<double>(firstRow + qint64{b} * grid.rowStride);
+            for (int c = 0; c < grid.columns; ++c) {
+                grid.positions[static_cast<std::size_t>(2 * b) * grid.columns + c] = start;
+                grid.positions[static_cast<std::size_t>(2 * b + 1) * grid.columns + c] = start;
+            }
+        }
+    }
 
     const auto note = [&grid](double value) {
         if (!std::isfinite(value)) {
@@ -433,6 +458,11 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
                         grid.values[out] = found.first();
                         grid.values[out + 1] = found.second();
+                        if (!grid.positions.empty()) {
+                            const double base = static_cast<double>(firstColumn + wanted);
+                            grid.positions[out] = base + static_cast<double>(found.firstAt());
+                            grid.positions[out + 1] = base + static_cast<double>(found.secondAt());
+                        }
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk
@@ -496,6 +526,11 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
                         grid.values[first] = found.first();
                         grid.values[second] = found.second();
+                        if (!grid.positions.empty()) {
+                            const double base = static_cast<double>(firstRow + wanted);
+                            grid.positions[first] = base + static_cast<double>(found.firstAt());
+                            grid.positions[second] = base + static_cast<double>(found.secondAt());
+                        }
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk

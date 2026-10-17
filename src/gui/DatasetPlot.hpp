@@ -443,7 +443,10 @@ private:
         /// One entry per drawn line, keyed as `lines_` is. Borrowed by the
         /// renderer on exactly the same terms.
         std::map<int, std::vector<double>> lines;
-
+        /// The element each value in `lines` is, keyed the same way and
+        /// borrowed, retired and pruned with them. No entry for a run drawn
+        /// sample for sample. See PlotLine::positions.
+        std::map<int, std::vector<double>> positions;
     };
 
     // Asserted rather than left to the one platform that noticed. A member
@@ -602,6 +605,9 @@ private:
     /// Pruned to the drawn set on every sample, so what is held is what is on
     /// screen and a line that goes away stops costing memory.
     mutable std::map<int, std::vector<double>> lines_;
+    /// The element each value in `lines_` is, keyed the same way and retired
+    /// and pruned with it. No entry for a line drawn sample for sample.
+    mutable std::map<int, std::vector<double>> positions_;
 
     /// Each drawn line held whole, at every resolution it will be drawn at.
     ///

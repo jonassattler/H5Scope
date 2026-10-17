@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #pragma once
@@ -87,6 +88,31 @@ struct PlotLine
     /// line that is simply itself leaves these at 0 and 1.
     double positionStart = 0.0;
     double positionStep = 1.0;
+
+    /// The element each value is, when the values are an envelope: `count` of
+    /// them, ascending, borrowed on the same terms as `values`.
+    ///
+    /// An envelope's two extremes did not occur half a bucket apart. Drawn at
+    /// the bucket's start and its middle, a spike on the last sample of a bucket
+    /// was painted half a bucket early, and a straight rise was split across two
+    /// columns by distance rather than by where its extremes were. With these,
+    /// value `i` is drawn at `positions[i] * positionScale` and is the element
+    /// there -- never a point between two elements, which nothing read.
+    ///
+    /// `positionStart` and `positionStep` still describe the run, because they
+    /// are what turns a window back into a range of drawn points. Unlike `xs`
+    /// these are positions, not x: the axis still turns each into an x, a time
+    /// base included.
+    const double* positions = nullptr;
+
+    /// What `positions` are multiplied by to become axis positions.
+    ///
+    /// A custom tab's Stretch spreads a line over the whole axis, which scales
+    /// every position by one factor. Carried as a number rather than as a
+    /// second array of scaled positions, because that array would have to live
+    /// somewhere the renderer could borrow it from -- and a buffer rebuilt each
+    /// time the line was handed over is one the retire contract cannot see.
+    double positionScale = 1.0;
 
     /// The x of every sample, when the line states them rather than leaving
     /// them to the axis: `count` of them, borrowed on the same terms as

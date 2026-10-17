@@ -476,15 +476,39 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
             continue;
         }
 
-        // x is affine in the index, so the nearest one is arithmetic.
-        const double x0 = axis_.start + line.positionStart * axis_.step;
-        const double dx = line.positionStep * axis_.step;
-        const double exact = (wanted - x0) / dx;
-        if (!std::isfinite(exact)) {
-            continue;
+        // x is affine in the index, so the nearest one is arithmetic -- or, for
+        // a line that names where each point is, a bisection of those, for
+        // the reason projectLine bisects them: an envelope's extremes are at
+        // their own elements, not half a bucket apart, and a guess from the
+        // step can start the walk on the wrong one of a pair.
+        qsizetype centre = 0;
+        if (line.positions != nullptr) {
+            if (!(std::abs(axis_.step) > 0.0) || !(line.positionScale > 0.0)) {
+                continue;
+            }
+            const double position = (wanted - axis_.start) / axis_.step / line.positionScale;
+            if (!std::isfinite(position)) {
+                continue;
+            }
+            const double* const end = line.positions + line.count;
+            qsizetype after = std::lower_bound(line.positions, end, position) - line.positions;
+            after = std::min(after, line.count - 1);
+            centre = after;
+            if (after > 0 &&
+                position - line.positions[after - 1] < line.positions[after] - position) {
+                centre = after - 1;
+            }
         }
-        const auto centre = static_cast<qsizetype>(
-            std::clamp(std::llround(exact), 0LL, static_cast<long long>(line.count - 1)));
+        else {
+            const double x0 = axis_.start + line.positionStart * axis_.step;
+            const double dx = line.positionStep * axis_.step;
+            const double exact = (wanted - x0) / dx;
+            if (!std::isfinite(exact)) {
+                continue;
+            }
+            centre = static_cast<qsizetype>(
+                std::clamp(std::llround(exact), 0LL, static_cast<long long>(line.count - 1)));
+        }
 
         // Outward from there until a drawable sample turns up. A gap wider than
         // this is a gap the crosshair declines to reach across, which is the

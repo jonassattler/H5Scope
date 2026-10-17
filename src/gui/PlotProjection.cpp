@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "gui/PlotProjection.hpp"
@@ -45,6 +46,41 @@ constexpr double kSamplesPerColumn = 4.0;
 // point where such a segment crosses the frame by far less than a pixel, and
 // it is the only place in this file where the arithmetic is allowed to lie.
 constexpr double kFarAway = 1e7;
+
+// Where drawn point `at` sits along the axis, before the axis makes it an x.
+double positionOf(const PlotLine& line, qsizetype at)
+{
+    if (line.positions != nullptr) {
+        return line.positions[at] * line.positionScale;
+    }
+    return line.positionStart + static_cast<double>(at) * line.positionStep;
+}
+
+// Which drawn point of a time base `position` reads, when the time base's
+// drawn points sit at `start + i * step`.
+//
+// The nearest, except past either end. Rounding puts a position more than half
+// a step past the last drawn time one past the end, and the point is then
+// dropped -- which is where every line drawn at its own elements ends: its last
+// extreme is the line's last element, and the time base's last drawn point is
+// half a bucket short of that. A position that has reached the time base's
+// *next* point would be a line longer than its axis, and is still past the end.
+double timeIndex(double position, double start, double step, qsizetype count)
+{
+    if (!(std::abs(step) > 0.0) || count <= 0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double exact = (position - start) / step;
+    double index = std::round(exact);
+    const auto last = static_cast<double>(count - 1);
+    if (index > last && exact < static_cast<double>(count)) {
+        index = last;
+    }
+    if (index < 0.0 && exact > -1.0) {
+        index = 0.0;
+    }
+    return index;
+}
 
 } // namespace
 
@@ -167,7 +203,7 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
         const double x = line.xs[at];
         return std::isfinite(x) ? x : std::numeric_limits<double>::quiet_NaN();
     }
-    const double position = line.positionStart + static_cast<double>(at) * line.positionStep;
+    const double position = positionOf(line, at);
     if (!axis.explicitX()) {
         return axis.start + position * axis.step;
     }
@@ -184,7 +220,7 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
     // reaches this position: it is the same time base read finer, so it is the
     // same answer only sharper. See PlotAxis::closerValues.
     if (axis.hasCloser() && std::abs(axis.closerStep) > 0.0) {
-        const double at = std::round((position - axis.closerStart) / axis.closerStep);
+        const double at = timeIndex(position, axis.closerStart, axis.closerStep, axis.closerCount);
         if (at >= 0.0 && at < static_cast<double>(axis.closerCount)) {
             const double x = axis.closerValues[static_cast<std::size_t>(at)];
             return std::isfinite(x) ? x : std::numeric_limits<double>::quiet_NaN();
@@ -193,7 +229,7 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
     if (!(std::abs(axis.valueStep) > 0.0)) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    const double index = std::round(position / axis.valueStep);
+    const double index = timeIndex(position, 0.0, axis.valueStep, axis.count);
     if (!(index >= 0.0) || !(index < static_cast<double>(axis.count))) {
         // Past the end of the time base. The line stops here rather than being
         // drawn against an x that does not exist, which is what "align" means
@@ -369,7 +405,29 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
 
     std::int64_t first = 0;
     std::int64_t last = count - 1;
-    if (std::abs(dx) > 0.0) {
+    if (line.positions != nullptr) {
+        // Not evenly spaced, so the window is not a division: it is a range of
+        // positions, and they are written in order. One point either side of
+        // it, for the reason the even case below gives.
+        if (!(std::abs(axis.step) > 0.0) || !(line.positionScale > 0.0)) {
+            return {};
+        }
+        double low = (view.xMin - axis.start) / axis.step / line.positionScale;
+        double high = (view.xMax - axis.start) / axis.step / line.positionScale;
+        if (low > high) {
+            std::swap(low, high);
+        }
+        if (std::isnan(low) || std::isnan(high)) {
+            return {};
+        }
+        const double* const begin = line.positions;
+        const double* const end = begin + count;
+        const auto from = static_cast<std::int64_t>(std::lower_bound(begin, end, low) - begin);
+        const auto to = static_cast<std::int64_t>(std::upper_bound(begin, end, high) - begin);
+        first = std::max<std::int64_t>(from - 1, 0);
+        last = std::min<std::int64_t>(to, count - 1);
+    }
+    else if (std::abs(dx) > 0.0) {
         // One sample either side of the window, so the line enters and leaves
         // the pane at its edges instead of stopping a pixel short of them.
         double lowAt = (view.xMin - x0) / dx;
@@ -409,7 +467,8 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
         // there are values. Draw them.
         for (std::int64_t i = first; i <= last; ++i) {
             const double value = line.values[i];
-            const double x = x0 + static_cast<double>(i) * dx;
+            const double x =
+                line.positions != nullptr ? xOf(line, axis, i) : x0 + static_cast<double>(i) * dx;
             if (!yMap.draws(value) || !xMap.draws(x)) {
                 closeRun();
                 continue;
@@ -525,32 +584,36 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
             continue;
         }
 
-        // The two extremes occurred somewhere inside the bucket, and a bucket
-        // is a pixel or two wide. Putting them at its start and its middle is
-        // the nearest thing to where they were that costs nothing to say -- and
-        // at a bucket of two samples it is exactly where they were.
-        const double xFirst = x0 + static_cast<double>(i0) * dx;
-        const double xMiddle =
-            x0 + (static_cast<double>(i0) + static_cast<double>(size) / 2.0) * dx;
-        if (!xMap.draws(xFirst) || !xMap.draws(xMiddle)) {
+        // Each extreme where it is. The scan above kept its index, so this
+        // costs nothing to say. Both used to stand at the bucket's start and
+        // its middle, which put a spike on the bucket's last sample half a
+        // bucket early and split a straight rise across two columns by distance
+        // rather than by where it went. A line that names its positions names
+        // them here too -- an envelope folded again for a narrower pane draws
+        // each extreme at the element it is, not at its place in the summary.
+        const auto xAt = [&](std::int64_t i) {
+            return line.positions != nullptr ? xOf(line, axis, i)
+                                             : x0 + static_cast<double>(i) * dx;
+        };
+        const double xLow = xAt(lowIndex);
+        const double xHigh = xAt(highIndex);
+        if (!xMap.draws(xLow) || !xMap.draws(xHigh)) {
             // Both stations of a bucket are on the axis or the bucket is not
             // drawn, which on a logarithmic axis is every bucket at or below
             // zero. A gap, for the reason every gap here is one.
             closeRun();
             continue;
         }
-        const double atFirst = toX(xFirst);
-        const double atMiddle = toX(xMiddle);
         if (lowIndex == highIndex) {
-            place(atFirst, toY(lowest));
+            place(toX(xLow), toY(lowest));
         }
         else if (lowIndex < highIndex) {
-            place(atFirst, toY(lowest));
-            place(atMiddle, toY(highest));
+            place(toX(xLow), toY(lowest));
+            place(toX(xHigh), toY(highest));
         }
         else {
-            place(atFirst, toY(highest));
-            place(atMiddle, toY(lowest));
+            place(toX(xHigh), toY(highest));
+            place(toX(xLow), toY(lowest));
         }
     }
     closeRun();

@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #pragma once
@@ -75,6 +76,11 @@ struct Extremes
     /// descending pair in the line the other way up.
     [[nodiscard]] double first() const { return lowAt <= highAt ? lowest : highest; }
     [[nodiscard]] double second() const { return lowAt <= highAt ? highest : lowest; }
+
+    /// Where each of those occurred: the earlier one, then the later one, in
+    /// the order `first()` and `second()` name the values.
+    [[nodiscard]] long long firstAt() const { return lowAt <= highAt ? lowAt : highAt; }
+    [[nodiscard]] long long secondAt() const { return lowAt <= highAt ? highAt : lowAt; }
 };
 
 /// The extremes of `values[from, to)`, skipping whatever is not finite.
@@ -98,6 +104,27 @@ struct Extremes
 /// sample for sample.
 void reduceBuckets(const double* values, long long count, long long bucket,
                    std::vector<double>& out);
+
+/// The same fold, and the element each value of it is.
+///
+/// `positions` receives one index per value appended to `out`, in the same
+/// order: the element `extremesOf` found the extreme at, counted from `origin`,
+/// which is the index of `values[0]` in the line. reduceBuckets() finds the same
+/// two and throws away where they were, which is what drew every extreme at its
+/// bucket's start or middle rather than at itself.
+///
+/// A position is always an element, so a value here is always the element at
+/// its position -- there is nothing in between two samples that could be one.
+/// A bucket with nothing finite in it is a pair of NaN at the bucket's start,
+/// which is a gap and is not drawn.
+void reduceBucketsLocated(const double* values, long long count, long long bucket, long long origin,
+                          std::vector<double>& out, std::vector<double>& positions);
+
+/// The same, written straight into `out` and `positions`, for the reason
+/// reduceBucketsInto() is: the pyramid folds slices of a buffer it has sized,
+/// on several threads at once.
+void reduceBucketsLocatedInto(const double* values, long long count, long long bucket,
+                              long long origin, double* out, double* positions);
 
 /// The same fold, written straight into `out`.
 ///
@@ -128,6 +155,14 @@ void coarsenEnvelope(const double* pairs, long long buckets, long long factor,
 
 /// The same merge, written straight into `out`. See reduceBucketsInto.
 void coarsenEnvelopeInto(const double* pairs, long long buckets, long long factor, double* out);
+
+/// The same merge, carrying where each extreme is: `pairAt` holds the element
+/// of each value in `pairs`, and `outAt` receives the element of each value
+/// written to `out`. The extreme of a union is copied up from one of its
+/// parts, so its element is that part's -- the merge already finds which one,
+/// and this keeps it rather than throwing it away.
+void coarsenEnvelopeLocatedInto(const double* pairs, const double* pairAt, long long buckets,
+                                long long factor, double* out, double* outAt);
 
 // ---------------------------------------------------------------------------
 // Which runs to hold, which to draw from, and which to read next
