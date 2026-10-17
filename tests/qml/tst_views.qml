@@ -4137,6 +4137,36 @@ TestCase {
     /// not, because matplotlib's log(0.001) over log(10) is an ulp short of
     /// -3 -- so it counts one power crossed there and two over 1..10. A
     /// reader comparing the two figures sees the ulp, so it is kept.
+    /// Every number on a linear axis is written to as many figures as every
+    /// other, and the crosshair's to as many again.
+    ///
+    /// The count was asked of each value, so it stepped up wherever a tick
+    /// passed the span: an axis from 2.6 to 6.6 million read "3.00e+6" beside
+    /// "4.500e+6".
+    function test_every_number_on_an_axis_has_as_many_figures() {
+        const win = openLogPlot()
+        const frame = logPlot(win).frame
+        const figures = (text) => {
+            const mantissa = text.split("e")[0]
+            const point = mantissa.indexOf(".")
+            return point < 0 ? 0 : mantissa.length - point - 1
+        }
+        for (const [low, high] of [[2.6e6, 6.6e6], [0, 1e7], [-3e7, 4.5e7],
+                                   [1.00012, 1.00019], [0.5, 950.5]]) {
+            const found = frame.tickValues(low, high, false, 10, 1000, false)
+            const counts = found.texts.filter((t) => t.text !== "0")
+                                      .map((t) => figures(t.text))
+            verify(counts.length > 1, low + ".." + high)
+            for (const count of counts) {
+                compare(count, counts[0], low + ".." + high + ": "
+                        + found.texts.map((t) => t.text).join(" "))
+            }
+            const between = (low + high) / 2 + (high - low) / 7
+            compare(figures(frame.axisLabel(between, low, high, false)), counts[0],
+                    "the crosshair over " + low + ".." + high)
+        }
+    }
+
     function test_the_ticks_are_matplotlibs_window_for_window() {
         const win = openLogPlot()
         const frame = logPlot(win).frame

@@ -638,23 +638,29 @@ Item {
     /// nothing at all. Judged by the span, that axis prints whole seconds and
     /// the ticks differ; an axis that really does cross decades gets the
     /// exponent, and its ticks differ too.
-    function labelFor(value, span) {
-        const width = Math.abs(span)
+    function labelFor(value, low, high) {
+        const width = Math.abs(high - low)
         if (width >= 1e6 || (width > 0 && width < 1e-4)) {
             // Zero written as an exponent is "0.0e+0", which is six characters
             // that mean nothing the first one did not.
             if (value === 0)
                 return "0"
             // As many figures as it takes to tell this tick from the next one,
-            // which is how far the value sits above the span -- the argument
+            // which is how far the axis sits above its span -- the argument
             // decimalsFor makes, in significant figures rather than places.
             // One figure was right only while the value and the span were of a
             // size: between 1.0001 and 1.0002, which is where a logarithmic axis
             // zoomed inside a decade ends up, every tick read "1.0e+0".
-            const figures = Math.ceil(Math.log10(Math.abs(value) / width)) + 2
+            //
+            // Of the axis and not of the value, so that every number on it has
+            // as many figures as every other. Asked of each value, the count
+            // stepped up wherever a tick passed the span: an axis of four
+            // million numbered "3.00e+6" beside "5.000e+6".
+            const magnitude = Math.max(Math.abs(low), Math.abs(high))
+            const figures = Math.ceil(Math.log10(magnitude / width)) + 2
             return value.toExponential(Math.max(1, Math.min(15, figures)))
         }
-        return value.toFixed(frame.decimalsFor(span))
+        return value.toFixed(frame.decimalsFor(high - low))
     }
 
     /// A decimal with its trailing zeros taken off, and the point with them.
@@ -698,7 +704,7 @@ Item {
     /// file -- see PlotSurface.xNumber, which the band's readout goes through.
     function axisLabel(value, low, high, logarithmic) {
         return logarithmic ? frame.logLabelFor(value)
-                           : frame.labelFor(value, high - low)
+                           : frame.labelFor(value, low, high)
     }
 
     /// The round values in `low`..`high`, stepping by `step`.
@@ -1067,9 +1073,9 @@ Item {
         const values = frame.ticksBetween(
             low, high, frame.niceStep(high - low, frame.tickTarget))
         return ({ values: values,
-                  texts: values.map((v) => ({ base: frame.labelFor(v, high - low),
+                  texts: values.map((v) => ({ base: frame.labelFor(v, low, high),
                                               exponent: "",
-                                              text: frame.labelFor(v, high - low) })),
+                                              text: frame.labelFor(v, low, high) })),
                   ticks: values, logarithmic: false, fallback: false })
     }
 
