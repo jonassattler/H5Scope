@@ -43,10 +43,17 @@ find_package(Threads REQUIRED)
 
 add_library(plotcore_core
   src/Budget.cpp
+  src/Camera.cpp
+  src/Figure.cpp
+  src/Format.cpp
+  src/Json.cpp
   src/Levels.cpp
+  src/Palettes.cpp
   src/Parallel.cpp
+  src/Plot.cpp
   src/Projection.cpp
   src/Pyramid.cpp
+  src/Ticks.cpp
 )
 add_library(plotcore::core ALIAS plotcore_core)
 set_target_properties(plotcore_core PROPERTIES
@@ -65,6 +72,37 @@ target_include_directories(plotcore_core PUBLIC
 # user's to link.
 target_link_libraries(plotcore_core PUBLIC Threads::Threads)
 
+# --- the C interface ------------------------------------------------------
+# What the Python and Rust libraries are built on: plotcore::Figure behind a
+# C header, as one shared library that exports that header and nothing else.
+# Off inside the viewer, which links the C++ directly.
+option(PLOTCORE_BUILD_CAPI "Build plotcore_c, the C interface" ${PROJECT_IS_TOP_LEVEL})
+if(PLOTCORE_BUILD_CAPI)
+  add_library(plotcore_c SHARED capi/plotcore.cpp)
+  add_library(plotcore::c ALIAS plotcore_c)
+  set_target_properties(plotcore_c PROPERTIES
+    EXPORT_NAME c
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    PUBLIC_HEADER capi/plotcore.h
+  )
+  target_compile_definitions(plotcore_c PRIVATE
+    PLOTCORE_VERSION_STRING="${PROJECT_VERSION}")
+  target_include_directories(plotcore_c PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/capi>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  )
+  target_link_libraries(plotcore_c PRIVATE plotcore::core)
+  if(NOT MSVC AND NOT APPLE)
+    # One file to hand to Python or Rust: the C++ runtime inside it rather
+    # than beside it, for the release floor's reason (CLAUDE.md, invariant 4).
+    target_link_options(plotcore_c PRIVATE -static-libstdc++ -static-libgcc
+                        LINKER:--exclude-libs,ALL)
+  endif()
+endif()
+
 if(PLOTCORE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
@@ -76,6 +114,13 @@ if(PLOTCORE_INSTALL)
           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(PLOTCORE_BUILD_CAPI)
+    install(TARGETS plotcore_c EXPORT plotcoreTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(EXPORT plotcoreTargets NAMESPACE plotcore::
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/plotcore)

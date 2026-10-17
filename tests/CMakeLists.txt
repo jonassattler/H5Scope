@@ -88,7 +88,7 @@ target_link_libraries(test_cost PRIVATE
 catch_discover_tests(test_cost)
 
 # --- QML: the real bindings, via Qt Quick Test ----------------------------
-qt_add_executable(test_qml tst_qml.cpp)
+qt_add_executable(test_qml tst_qml.cpp PlotCoreProbe.cpp PlotCoreProbe.hpp)
 target_link_libraries(test_qml PRIVATE
   Qt6::QuickTest Qt6::Qml Qt6::Quick
   gui appqml test_support

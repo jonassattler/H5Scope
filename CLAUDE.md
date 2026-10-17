@@ -58,7 +58,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg** — `cmake -S plotcore` builds and tests it alone, and a CI job does exactly that, because the viewer's build would carry a dependency on the viewer creeping back in without complaint. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`), and they run with the viewer's. |
+| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg** — `cmake -S plotcore` builds and tests it alone, and a CI job does exactly that, because the viewer's build would carry a dependency on the viewer creeping back in without complaint. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore as a library* below. |
 | `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
@@ -693,6 +693,53 @@ zeros (`clipped`); and `pow(0.5)` is a square root. `add`, `multiply` and
 `normalize` are not numpy's and are tested by hand. The golden header is
 pooled arrays of plain numbers rather than structs of vectors, which GCC took
 minutes over.
+
+## plotcore as a library
+
+plotcore is also what three standalone libraries are built on — C++, Python
+and Rust — and the viewer's port of its own frame and gestures is how they draw
+the plot this application draws. Four layers, each the only place its question
+is answered:
+
+- **`Format`, `Ticks`, `Camera`, `Palettes`** are PlotFrame.qml's and
+  PlotSurface.qml's functions and Theme.qml's colours, *ported* rather than
+  reasoned out again, and `tests/qml/tst_plotcore_parity.qml` asks the QML and
+  the port the same questions through `tests/PlotCoreProbe` and compares the
+  answers exactly — values bit for bit, labels character for character, colours
+  to a sixteen-bit step. That includes JavaScript's own number formatting
+  (`toFixed`, `toExponential`, and Qt's V4 `toPrecision`, which is not
+  ECMAScript's). **A change to how the viewer numbers, rules, zooms or colours
+  an axis is a change to both, or the parity suite fails** — which is the
+  point of it.
+- **`Plot`** holds lines: copied in (the pyramid *is* the copy) or streamed
+  through `PyramidBuilder`, at the base the budget affords, with an optional
+  `LineReader` below it. Every picture is a fold of what is held; with no
+  reader, a window finer than the base is drawn *at* the base rather than from
+  the whole-line summary.
+- **`Figure`** is the whole plot a host drives: lines, settings, the camera,
+  the gestures, and a `Scene` out — strokes, rules and text in pane pixels with
+  y down, flipping already applied. A host measures text, forwards events and
+  paints; it decides nothing. Three things are this layer's own, all from #30
+  and all about a line: **moved and scaled** (`LineSettings::scale`/`shift`,
+  Alt-drag, Alt+Control+wheel, Control-click to put back), **stacked** in
+  bands, and **a time per line**. A moved line stays in the common axis's
+  extent and is numbered on it — an axis appearing beside the pane on the first
+  pixel of a drag widened the gutter and moved every x under the pointer — and
+  only a line on an axis of its own, or stacked, is numbered beside the pane.
+  `state()`/`restore()` write a view as JSON (`src/Json.*`, private), passing
+  over what they cannot read as the viewer's saved views do.
+- **`capi/plotcore.h`** is `Figure` as C, built as one shared library
+  (`plotcore_c`, exporting nothing else, its C++ runtime linked in). Settings
+  are **named, not laid out** — `plotcore_set_bool(f, "xLog", 1)`, the names a
+  saved view writes — so a new setting is a new name and not a new ABI. Nothing
+  is borrowed across it, every failure is a status with
+  `plotcore_last_error()` beside it, and `test_capi.c` is compiled as C.
+
+`plotcore/tests/golden/` is what holds the three languages to one plot: a
+script of settings and gestures, and the digest of every scene it asks for.
+`test_capi` writes it (`--write`) and checks it; the Python and Rust tests
+check the same file through their own bindings. A changed line in
+`expected.txt` is a changed picture, so read the diff before committing one.
 
 ## Invariants worth knowing before editing
 
