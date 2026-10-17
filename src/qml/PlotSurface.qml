@@ -334,7 +334,7 @@ Item {
     // logarithmic x axis a pixel column at the left holds a handful of elements
     // and one at the right holds thousands, so a line folded into buckets of
     // equal element width is folded wrong for nearly all of the pane -- see
-    // LogColumns in PlotLevels.hpp. Unconditional, unlike the two above: every
+    // LogColumns in plotcore/Levels.hpp. Unconditional, unlike the two above: every
     // x axis has a scale, a time base included.
     Binding {
         target: surface.plot

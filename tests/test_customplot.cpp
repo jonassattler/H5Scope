@@ -24,9 +24,8 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Session.hpp"
 #include "gui/H5Thread.hpp"
+#include "gui/PlotCore.hpp"
 #include "gui/PlotItem.hpp"
-#include "gui/PlotLevels.hpp"
-#include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
@@ -106,12 +105,12 @@ struct PlotFixture
     /// sample of entry `series` lands along x, with the undrawable ones absent.
     [[nodiscard]] static QList<QPointF> drawn(gui::CustomPlot* plot, int series)
     {
-        const std::vector<QPointF> points =
+        const std::vector<gui::Point> points =
             gui::samplesOf(plot->lineOf(series), plot->drawingAxis());
         QList<QPointF> out;
         out.reserve(static_cast<qsizetype>(points.size()));
-        for (const QPointF& point : points) {
-            out.append(point);
+        for (const gui::Point& point : points) {
+            out.append(QPointF(point.x(), point.y()));
         }
         return out;
     }
@@ -1491,7 +1490,7 @@ TEST_CASE_METHOD(PlotFixture, "a tab on a logarithmic x axis is folded per colum
                  "[custom][plot][log]")
 {
     // The custom tab's half of the logarithmic fold -- see LogColumns in
-    // PlotLevels.hpp. It has two things the Plot tab does not: a line stretched
+    // plotcore/Levels.hpp. It has two things the Plot tab does not: a line stretched
     // over an axis longer than itself, and a time base, where the way from an x
     // back to an element is a search rather than a division. Both have to land
     // every point where the axis would, or the fold is right about the values
@@ -2995,10 +2994,10 @@ TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
         CHECK(plot->minimum() == -7.0);
 
         // ...and both are among the points actually handed to the renderer.
-        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        const std::vector<gui::Point> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
         double highest = 0.0;
         double lowest = 0.0;
-        for (const QPointF& point : drawn) {
+        for (const gui::Point& point : drawn) {
             highest = std::max(highest, point.y());
             lowest = std::min(lowest, point.y());
         }
@@ -3008,7 +3007,7 @@ TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
         // Where it is drawn is where it is in the data, to within the bucket it
         // was the extreme of.
         double at = 0.0;
-        for (const QPointF& point : drawn) {
+        for (const gui::Point& point : drawn) {
             if (point.y() == 9.0) {
                 at = point.x();
             }
@@ -3032,10 +3031,10 @@ TEST_CASE("a spike one sample wide survives the thinning", "[custom][plot]")
         CHECK(plot->maximum() == 9.0);
         CHECK(plot->minimum() == -7.0);
 
-        const std::vector<QPointF> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
+        const std::vector<gui::Point> drawn = gui::samplesOf(plot->lineOf(0), plot->drawingAxis());
         double highest = 0.0;
         double at = 0.0;
-        for (const QPointF& point : drawn) {
+        for (const gui::Point& point : drawn) {
             if (point.y() > highest) {
                 highest = point.y();
                 at = point.x();

@@ -5,7 +5,7 @@
 
 // A line plot drawn directly on the Qt Quick scene graph.
 //
-// The arithmetic is next door in PlotProjection.hpp, which has no renderer in
+// The arithmetic is next door in plotcore/Projection.hpp, which has no renderer in
 // it and says why the plot is ours at all. This file is the part that has a
 // window: it holds the lines, turns them into geometry once a frame, and hands
 // QML the two questions the chrome has to ask -- where does a value sit, and
@@ -30,7 +30,7 @@
 // Nothing else in this application needs a fallback, because nothing else in
 // it draws anything a rectangle cannot.
 
-#include "gui/PlotProjection.hpp"
+#include "gui/PlotCore.hpp"
 
 #include <QtGui/QColor>
 #include <QtQml/qqmlregistration.h>
@@ -296,7 +296,7 @@ private:
     // count is bounded by the pane, so these settle at a few thousand entries
     // on the first frame and never grow again -- which is what keeps the
     // per-frame allocation count flat as the file gets bigger.
-    std::vector<QPointF> points_;
+    std::vector<Point> points_;
     std::vector<PlotRun> runs_;
     /// Where each line's runs start in runs_, with one past the end appended,
     /// so the drawing loops can find a line's strokes without searching.
@@ -304,7 +304,7 @@ private:
     /// Whether each line was summarised rather than drawn sample for sample,
     /// which is what decides whether it carries markers.
     std::vector<bool> lineDecimated_;
-    std::vector<QPointF> stroke_;
+    std::vector<Point> stroke_;
 };
 
 } // namespace gui

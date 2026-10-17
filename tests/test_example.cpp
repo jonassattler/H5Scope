@@ -16,13 +16,13 @@
 
 #include "gui/AppController.hpp"
 #include "gui/DatasetImage.hpp"
-#include "gui/DatasetPlot.hpp"
 #include "gui/DatasetLookup.hpp"
+#include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
+#include "gui/PlotCore.hpp"
 #include "gui/PostprocessModel.hpp"
-#include "gui/PlotProjection.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "postproc/MemberPath.hpp"
 
@@ -2232,7 +2232,7 @@ TEST_CASE("the plot's stress set is as difficult as it says", "[example][plottin
 
         const gui::PlotLine line = plot->lineOf(0);
         REQUIRE(line.count > 0);
-        const std::vector<QPointF> drawable = gui::samplesOf(line, plot->drawingAxis());
+        const std::vector<gui::Point> drawable = gui::samplesOf(line, plot->drawingAxis());
         // A fifth of the line is missing, so a good fraction of what was read
         // has to be missing too -- and what is left is what gets drawn, with
         // the holes ending one stroke and starting the next.

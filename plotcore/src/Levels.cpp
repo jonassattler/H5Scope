@@ -2,13 +2,13 @@
 // SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "gui/PlotLevels.hpp"
+#include "plotcore/Levels.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
-namespace gui {
+namespace plotcore {
 
 namespace {
 
@@ -295,7 +295,8 @@ std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const Lev
     }
 
     const int at = drawnLevel(held, view);
-    const bool answered = at >= 0 && held[static_cast<std::size_t>(at)].window.bucket <= needed->bucket;
+    const bool answered =
+        at >= 0 && held[static_cast<std::size_t>(at)].window.bucket <= needed->bucket;
     if (!answered) {
         // What the pane is waiting for, an octave finer than it asked. First,
         // because it is the only one the reader can see.
@@ -398,8 +399,8 @@ std::size_t coldestLevel(std::span<const HeldLevel> held, const LevelView& view,
     const std::optional<PlotWindow> needed =
         windowFor(view.low, view.high, view.length, view.paneBuckets);
     const int at = drawnLevel(held, view);
-    const long long drawing =
-        at >= 0 ? held[static_cast<std::size_t>(at)].window.bucket : std::numeric_limits<long long>::max();
+    const long long drawing = at >= 0 ? held[static_cast<std::size_t>(at)].window.bucket
+                                      : std::numeric_limits<long long>::max();
 
     // Abandoned speculation first: a run finer than the one on screen was read
     // on a guess about where the zoom was going, and a focus somewhere it does
@@ -548,4 +549,4 @@ void ZoomFocus::set(double atX, double factor)
     active = true;
 }
 
-} // namespace gui
+} // namespace plotcore

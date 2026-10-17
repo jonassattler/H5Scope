@@ -28,8 +28,8 @@
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
+#include "gui/PlotCore.hpp"
 #include "gui/PlotItem.hpp"
-#include "gui/PlotProjection.hpp"
 
 #include <QCoreApplication>
 #include <QString>
@@ -336,7 +336,7 @@ int main(int argc, char** argv)
                 // What the renderer does with it, so that a frame here is a
                 // frame rather than a model call: the projection walks every
                 // drawn value on every frame and is the other half of the cost.
-                const std::vector<QPointF> points = gui::samplesOf(line, plot->drawingAxis());
+                const std::vector<gui::Point> points = gui::samplesOf(line, plot->drawingAxis());
                 const auto end = std::chrono::steady_clock::now();
                 measured.milliseconds.push_back(
                     std::chrono::duration<double, std::milli>(end - start).count());
@@ -427,7 +427,7 @@ int main(int argc, char** argv)
                     high = static_cast<double>(at) + (high - static_cast<double>(at)) * shrink;
                     tab->setVisibleRange(low, high);
                     const gui::PlotLine line = tab->lineOf(0);
-                    const std::vector<QPointF> points = gui::samplesOf(line, tab->drawingAxis());
+                    const std::vector<gui::Point> points = gui::samplesOf(line, tab->drawingAxis());
                     const auto end = std::chrono::steady_clock::now();
                     custom.milliseconds.push_back(
                         std::chrono::duration<double, std::milli>(end - start).count());

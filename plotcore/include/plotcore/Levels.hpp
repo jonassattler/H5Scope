@@ -18,7 +18,7 @@
 //
 // Everything here is doubles and a vector. No Qt, no HDF5, no window -- so
 // tests/test_plotlevels.cpp asserts all of it with nothing open, which is the
-// arrangement PlotProjection.hpp already argues for.
+// arrangement Projection.hpp already argues for.
 //
 // One property of an envelope is load-bearing enough to state on its own, and
 // coarsenEnvelope() below is built entirely out of it:
@@ -33,14 +33,14 @@
 // budget affords, once, and derive every coarser view from it in memory
 // rather than reading the file again.
 
-#include "gui/PlotProjection.hpp"
+#include "plotcore/Projection.hpp"
 
 #include <cstddef>
 #include <optional>
 #include <span>
 #include <vector>
 
-namespace gui {
+namespace plotcore {
 
 /// Most elements one read of a line pulls in one hyperslab.
 ///
@@ -541,4 +541,4 @@ struct LogFoldGrid
 /// because a column is a run of positions whichever way the pane reads them.
 void edgesAlong(const LogColumns& columns, double start, double step, std::vector<double>& out);
 
-} // namespace gui
+} // namespace plotcore

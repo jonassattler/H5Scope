@@ -5,8 +5,8 @@
 #pragma once
 
 #include "H5Thread.hpp"
-#include "PlotPyramid.hpp"
 #include "TableLayout.hpp"
+#include "gui/PlotCore.hpp"
 #include "h5core/DataSource.hpp"
 
 #include <QAbstractTableModel>
@@ -340,7 +340,7 @@ public:
     /// thousand points and throws the other ten million away; this answers with
     /// a gui::LinePyramid, which is those same elements kept -- at the finest
     /// bucket `budget` affords -- so that every closer look afterwards is a
-    /// fold in memory rather than another read. See PlotPyramid.hpp.
+    /// fold in memory rather than another read. See plotcore/Pyramid.hpp.
     struct PyramidRequest
     {
         /// Which line. A table row when `alongRow`, a table column otherwise --
@@ -505,7 +505,7 @@ private:
     /// that asking is one read rather than a walk of a dataset larger than
     /// RAM. Stride sampling can miss a lone spike, and a fill clamps rather
     /// than misreports when it does.
-    // What one read of a line pulls is gui::kReadRun -- see PlotLevels.hpp. It
+    // What one read of a line pulls is gui::kReadRun -- see plotcore/Levels.hpp. It
     // moved there when CustomPlot started reading by it too.
 
 public:

@@ -5060,7 +5060,7 @@ TestCase {
     /// element, so the first drawn point sat at the twelfth and the left
     /// quarter of the pane had nothing in it at all; after that it was a few
     /// straight strokes. Zooming never repaired it, because every closer look
-    /// was bucketed the same way. See LogColumns in PlotLevels.hpp.
+    /// was bucketed the same way. See LogColumns in plotcore/Levels.hpp.
     function test_a_logarithmic_x_axis_draws_the_line_across_the_whole_pane() {
         const opened = openTracePlot()
         const plot = opened.plot

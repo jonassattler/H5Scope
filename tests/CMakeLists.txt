@@ -49,32 +49,8 @@ add_executable(test_models test_models.cpp)
 target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
-# --- what the plot decides before a pixel is touched ----------------------
-# Arithmetic only: gui::projectLine takes doubles and fills two vectors, so
-# this needs no window, no engine and no file. That is the point of having
-# split PlotProjection out of PlotItem -- the four things the plot got wrong
-# for as long as it drew through Qt Graphs are all decided here, and a grab of
-# something rendered is a poor way to assert any of them.
-add_executable(test_plotprojection test_plotprojection.cpp)
-target_link_libraries(test_plotprojection PRIVATE gui Catch2::Catch2WithMain)
-catch_discover_tests(test_plotprojection)
-
-# --- which runs to hold, and which to read next ---------------------------
-# The other half of the same argument. gui::PlotLevels is the fold a line is
-# reduced by and the policy over the runs it is reduced into, and both plots
-# call it rather than carrying a copy each -- which they did, along with nine
-# constants copied between them under comments saying they had to match.
-# Nothing here opens a file or makes a window: the whole of it is doubles, a
-# vector of windows and a view.
-#
-# gui::PlotPyramid is asserted here too, for the same reason and with the same
-# nothing open -- it is the fold of PlotLevels held at every resolution at once.
-# It links test_main rather than Catch2's own because its build spreads a large
-# fold over QThreadPool, and the path that does is worth asserting rather than
-# only the one small enough to stay on the calling thread.
-add_executable(test_plotlevels test_plotlevels.cpp)
-target_link_libraries(test_plotlevels PRIVATE gui test_main Catch2::Catch2)
-catch_discover_tests(test_plotlevels)
+# The plot's own arithmetic -- the projection, the fold, the pyramid -- is
+# asserted in plotcore/tests, which link nothing but plotcore and run with these.
 
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature

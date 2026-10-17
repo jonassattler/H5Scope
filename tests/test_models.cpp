@@ -4,24 +4,24 @@
 #include "support/TestFile.hpp"
 
 #include "gui/AppController.hpp"
-#include "support/AsyncModels.hpp"
 #include "gui/AttributeTableModel.hpp"
+#include "gui/Completion.hpp"
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
-#include "gui/PlotItem.hpp"
-#include "gui/PlotProjection.hpp"
+#include "gui/DatasetStringListModel.hpp"
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/ImageClipboard.hpp"
-#include "gui/Completion.hpp"
-#include "gui/ObjectInfoModel.hpp"
-#include "gui/TableLayout.hpp"
-#include "gui/DatasetStringListModel.hpp"
-#include "gui/PostprocessModel.hpp"
-#include "gui/TableSetupModel.hpp"
 #include "gui/NameIndex.hpp"
+#include "gui/ObjectInfoModel.hpp"
+#include "gui/PlotCore.hpp"
+#include "gui/PlotItem.hpp"
+#include "gui/PostprocessModel.hpp"
+#include "gui/TableLayout.hpp"
+#include "gui/TableSetupModel.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "h5scope/Version.hpp"
+#include "support/AsyncModels.hpp"
 
 #include <limits>
 
@@ -2596,7 +2596,7 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         CHECK(closer.count == 4096);
         CHECK(closer.values != whole.values);
 
-        const std::vector<QPointF> points = gui::samplesOf(closer, plot->drawingAxis());
+        const std::vector<gui::Point> points = gui::samplesOf(closer, plot->drawingAxis());
         REQUIRE_FALSE(points.empty());
         CHECK(points.front().x() >= 0.0);
         CHECK(points.back().x() <= 8192.0);
@@ -2710,7 +2710,7 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary cou
         h5test::settleFor(300);
 
         const gui::PlotLine closer = plot->lineOf(0);
-        const std::vector<QPointF> points = gui::samplesOf(closer, plot->drawingAxis());
+        const std::vector<gui::Point> points = gui::samplesOf(closer, plot->drawingAxis());
         REQUIRE_FALSE(points.empty());
         CHECK(points.back().x() <= 20000.0);
         CHECK(closer.positionStart + closer.positionStep * (closer.count - 1) <= 20000.0);

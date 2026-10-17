@@ -8,6 +8,7 @@
 #include <QtGui/QImage>
 #include <QtGui/QPainter>
 #include <QtGui/QPen>
+#include <QtGui/QPolygonF>
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/QSGGeometryNode>
 #include <QtQuick/QSGNode>
@@ -58,12 +59,36 @@ struct Ink
 
 Ink inkFor(const PlotLine& line)
 {
-    const double alpha = std::clamp(line.colour.alphaF() * line.opacity, 0.0, 1.0);
-    const auto channel = [&](int value) {
-        return static_cast<uchar>(std::lround(static_cast<double>(value) * alpha));
+    const double alpha = std::clamp(line.colour.alpha * line.opacity, 0.0, 1.0);
+    const auto channel = [&](double value) {
+        return static_cast<uchar>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0 * alpha));
     };
-    return {channel(line.colour.red()), channel(line.colour.green()), channel(line.colour.blue()),
+    return {channel(line.colour.red), channel(line.colour.green), channel(line.colour.blue),
             static_cast<uchar>(std::lround(alpha * 255.0))};
+}
+
+/// The scene's colour as the line holds it, and back. A colour nobody gave is
+/// invalid on both sides of the edge.
+Rgba rgbaOf(const QColor& colour)
+{
+    if (!colour.isValid()) {
+        return {};
+    }
+    return Rgba::of(colour.redF(), colour.greenF(), colour.blueF(), colour.alphaF());
+}
+
+QColor colourOf(const Rgba& colour)
+{
+    if (!colour.valid) {
+        return {};
+    }
+    return QColor::fromRgbF(static_cast<float>(colour.red), static_cast<float>(colour.green),
+                            static_cast<float>(colour.blue), static_cast<float>(colour.alpha));
+}
+
+QPointF pointOf(const Point& point)
+{
+    return {point.x(), point.y()};
 }
 
 /// Delete every node under `root`. removeAllChildNodes() only unlinks them, and
@@ -182,7 +207,7 @@ QColor PlotItem::seriesColor(int index) const
     if (index < 0 || index >= lineCount()) {
         return {};
     }
-    return lines_[static_cast<std::size_t>(index)].colour;
+    return colourOf(lines_[static_cast<std::size_t>(index)].colour);
 }
 
 double PlotItem::seriesOpacity(int index) const
@@ -199,8 +224,9 @@ void PlotItem::setSeriesColor(int index, const QColor& colour)
         return;
     }
     PlotLine& line = lines_[static_cast<std::size_t>(index)];
-    if (line.colour != colour) {
-        line.colour = colour;
+    const Rgba wanted = rgbaOf(colour);
+    if (line.colour != wanted) {
+        line.colour = wanted;
         update();
     }
 }
@@ -402,7 +428,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
     pane.height = height();
     const PlotView upright = uprightView(pane);
     if (pane.transposed) {
-        const QPointF at = uprightPoint(QPointF(px, py), pane);
+        const Point at = uprightPoint(Point(px, py), pane);
         px = at.x();
         py = at.y();
     }
@@ -542,7 +568,7 @@ QVariantMap PlotItem::nearestSample(double px, double py) const
         return answer;
     }
     if (pane.transposed) {
-        const QPointF drawn = transposedPoint(QPointF(bestPx, bestPy), pane);
+        const Point drawn = transposedPoint(Point(bestPx, bestPy), pane);
         bestPx = drawn.x();
         bestPy = drawn.y();
     }
@@ -600,7 +626,7 @@ void PlotItem::projectAll()
     }
     lineRuns_[lines] = static_cast<int>(runs_.size());
     if (pane.transposed) {
-        for (QPointF& point : points_) {
+        for (Point& point : points_) {
             point = transposedPoint(point, pane);
         }
     }
@@ -721,7 +747,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
             ++at;
         }
     };
-    const auto place = [&](const QPointF& point, const Ink& ink) {
+    const auto place = [&](const Point& point, const Ink& ink) {
         QSGGeometry::ColoredPoint2D written{};
         written.set(static_cast<float>(point.x()), static_cast<float>(point.y()), ink.red,
                     ink.green, ink.blue, ink.alpha);
@@ -752,10 +778,10 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                                   opening = false;
                                   if (started) {
                                       repeatLast();
-                                      place(QPointF(x, y), ink);
+                                      place(Point(x, y), ink);
                                   }
                               }
-                              place(QPointF(x, y), ink);
+                              place(Point(x, y), ink);
                           });
             if (!opening) {
                 started = true;
@@ -780,7 +806,7 @@ QSGNode* PlotItem::buildGeometry(QSGNode* root)
                     repeatLast();
                     place(stroke_.front(), ink);
                 }
-                for (const QPointF& point : stroke_) {
+                for (const Point& point : stroke_) {
                     place(point, ink);
                 }
                 started = true;
@@ -814,7 +840,7 @@ QSGNode* PlotItem::buildPainted(QSGNode* root)
         QPainter painter(&image);
         painter.setRenderHint(QPainter::Antialiasing, true);
         for (std::size_t line = 0; line < lines_.size(); ++line) {
-            QColor colour = lines_[line].colour;
+            QColor colour = colourOf(lines_[line].colour);
             colour.setAlphaF(std::clamp(colour.alphaF() * lines_[line].opacity, 0.0, 1.0));
             // Round joins rather than the mitred ones the geometry path builds.
             // QPainter's miter limit is its own, and the two only have to agree
@@ -823,7 +849,15 @@ QSGNode* PlotItem::buildPainted(QSGNode* root)
                 QPen(colour, lines_[line].width, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
             for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
                 const PlotRun& run = runs_[static_cast<std::size_t>(r)];
-                painter.drawPolyline(&points_[static_cast<std::size_t>(run.first)], run.count);
+                // QPainter wants its own point type. This is the software
+                // renderer's path, which draws each frame once, so the copy is
+                // the cost of the arithmetic not knowing who draws it.
+                QPolygonF polyline;
+                polyline.reserve(run.count);
+                for (int i = 0; i < run.count; ++i) {
+                    polyline.append(pointOf(points_[static_cast<std::size_t>(run.first + i)]));
+                }
+                painter.drawPolyline(polyline);
             }
             if (!marksLine(line)) {
                 continue;
@@ -833,7 +867,7 @@ QSGNode* PlotItem::buildPainted(QSGNode* root)
             for (int r = lineRuns_[line]; r < lineRuns_[line + 1]; ++r) {
                 const PlotRun& run = runs_[static_cast<std::size_t>(r)];
                 for (int i = 0; i < run.count; ++i) {
-                    painter.drawEllipse(points_[static_cast<std::size_t>(run.first + i)],
+                    painter.drawEllipse(pointOf(points_[static_cast<std::size_t>(run.first + i)]),
                                         markerSize_ / 2.0, markerSize_ / 2.0);
                 }
             }

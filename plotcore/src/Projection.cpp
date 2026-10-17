@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "gui/PlotProjection.hpp"
+#include "plotcore/Projection.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +10,7 @@
 #include <limits>
 #include <numbers>
 
-namespace gui {
+namespace plotcore {
 namespace {
 
 // How many samples a pixel column may hold before the envelope takes over.
@@ -48,7 +48,7 @@ constexpr double kSamplesPerColumn = 4.0;
 constexpr double kFarAway = 1e7;
 
 // Where drawn point `at` sits along the axis, before the axis makes it an x.
-double positionOf(const PlotLine& line, qsizetype at)
+double positionOf(const PlotLine& line, long long at)
 {
     if (line.positions != nullptr) {
         return line.positions[at] * line.positionScale;
@@ -65,7 +65,7 @@ double positionOf(const PlotLine& line, qsizetype at)
 // extreme is the line's last element, and the time base's last drawn point is
 // half a bucket short of that. A position that has reached the time base's
 // *next* point would be a line longer than its axis, and is still past the end.
-double timeIndex(double position, double start, double step, qsizetype count)
+double timeIndex(double position, double start, double step, long long count)
 {
     if (!(std::abs(step) > 0.0) || count <= 0) {
         return std::numeric_limits<double>::quiet_NaN();
@@ -195,7 +195,7 @@ std::optional<PlotWindow> windowFor(double low, double high, long long length, l
     return PlotWindow{first, take, bucket, columns};
 }
 
-double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
+double xOf(const PlotLine& line, const PlotAxis& axis, long long at)
 {
     if (line.xs != nullptr) {
         // Stated by the line itself, which is what a fold onto a logarithmic
@@ -240,14 +240,14 @@ double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at)
     return std::isfinite(x) ? x : std::numeric_limits<double>::quiet_NaN();
 }
 
-std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis)
+std::vector<Point> samplesOf(const PlotLine& line, const PlotAxis& axis)
 {
-    std::vector<QPointF> out;
+    std::vector<Point> out;
     if (line.values == nullptr || line.count <= 0) {
         return out;
     }
     out.reserve(static_cast<std::size_t>(line.count));
-    for (qsizetype i = 0; i < line.count; ++i) {
+    for (long long i = 0; i < line.count; ++i) {
         // A value that would not read is a gap in the line, not a zero: an
         // invented number at the axis is a reading of the data, and a wrong
         // one.
@@ -286,7 +286,7 @@ PlotView uprightView(const PlotView& view)
     return upright;
 }
 
-QPointF transposedPoint(const QPointF& upright, const PlotView& view)
+Point transposedPoint(const Point& upright, const PlotView& view)
 {
     // Upright, x = fx * height and y = (1 - fy) * width. On the pane, x is to
     // be fy * width and y (1 - fx) * height -- which is each of those taken
@@ -294,13 +294,13 @@ QPointF transposedPoint(const QPointF& upright, const PlotView& view)
     return {view.width - upright.y(), view.height - upright.x()};
 }
 
-QPointF uprightPoint(const QPointF& onPane, const PlotView& view)
+Point uprightPoint(const Point& onPane, const PlotView& view)
 {
     return {view.height - onPane.y(), view.width - onPane.x()};
 }
 
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
-                          std::vector<QPointF>& points, std::vector<PlotRun>& runs)
+                          std::vector<Point>& points, std::vector<PlotRun>& runs)
 {
     const auto startRuns = static_cast<int>(runs.size());
     const auto added = [&](bool decimated) {
@@ -455,8 +455,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // PlotView::pixelRatio: on a HiDPI display those differ by two or three,
     // and summarising to the logical count throws away exactly that factor
     // before a pixel is touched.
-    std::int64_t columns =
-        static_cast<std::int64_t>(std::ceil(w * std::max(view.pixelRatio, 1.0)));
+    std::int64_t columns = static_cast<std::int64_t>(std::ceil(w * std::max(view.pixelRatio, 1.0)));
     if (view.maxColumns > 0) {
         columns = std::min<std::int64_t>(columns, view.maxColumns);
     }
@@ -528,7 +527,7 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     // this loop: the models fold it per pixel column on a grid aligned in the
     // logarithm -- which answers the crawling as well, because the grid is
     // fixed and the pan only moves which of it is on screen -- and hand it over
-    // with its own x. See LogColumns in PlotLevels.hpp and the branch above.
+    // with its own x. See LogColumns in Levels.hpp and the branch above.
     // Under an octave, the difference between the widest and narrowest
     // column is under two, and this is still the right place for it.
     //
@@ -620,18 +619,18 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     return added(true);
 }
 
-void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out)
+void strokeRun(const Point* points, int count, double width, std::vector<Point>& out)
 {
     strokeRunInto(points, count, width, [&out](double x, double y) { out.emplace_back(x, y); });
 }
 
-void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out)
+void markerAt(const Point& centre, double radius, std::vector<Point>& out)
 {
     // The ring, once. Eight sines and cosines per marker would be sixteen
     // thousand of them on a line of two thousand points, which is a
     // measurable fraction of a frame spent recomputing a constant.
-    static const std::vector<QPointF> ring = [] {
-        std::vector<QPointF> unit;
+    static const std::vector<Point> ring = [] {
+        std::vector<Point> unit;
         unit.reserve(kMarkerSides);
         for (int i = 0; i < kMarkerSides; ++i) {
             const double angle = 2.0 * std::numbers::pi_v<double> * static_cast<double>(i) /
@@ -648,10 +647,10 @@ void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out)
     int high = kMarkerSides - 1;
     bool fromLow = true;
     for (int i = 0; i < kMarkerSides; ++i) {
-        const QPointF& at = ring[static_cast<std::size_t>(fromLow ? low++ : high--)];
+        const Point& at = ring[static_cast<std::size_t>(fromLow ? low++ : high--)];
         fromLow = !fromLow;
         out.emplace_back(centre.x() + at.x() * radius, centre.y() + at.y() * radius);
     }
 }
 
-} // namespace gui
+} // namespace plotcore
