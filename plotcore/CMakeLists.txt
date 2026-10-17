@@ -28,6 +28,14 @@ option(PLOTCORE_BUILD_TESTS "Build plotcore's tests" ${PROJECT_IS_TOP_LEVEL})
 option(PLOTCORE_INSTALL "Install plotcore's headers, library and CMake package"
        ${PROJECT_IS_TOP_LEVEL})
 
+# A wheel's library is loaded by whatever Python is on the machine, and Python
+# ships the C runtime but not the C++ one (MSVCP140.dll): so inside a wheel the
+# MSVC runtime is linked in, as -static-libstdc++ links libstdc++ in below. Not
+# otherwise, because a static archive's runtime is its consumers' to match.
+if(SKBUILD AND MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(PROJECT_IS_TOP_LEVEL)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -84,10 +92,15 @@ if(PLOTCORE_BUILD_CAPI)
     EXPORT_NAME c
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
-    VERSION ${PROJECT_VERSION}
-    SOVERSION ${PROJECT_VERSION_MAJOR}
     PUBLIC_HEADER capi/plotcore.h
   )
+  if(NOT SKBUILD)
+    # Versioned where it is installed as a library. Not inside a wheel, which
+    # is a zip: the two symlinks would go into it as two more copies.
+    set_target_properties(plotcore_c PROPERTIES
+      VERSION ${PROJECT_VERSION}
+      SOVERSION ${PROJECT_VERSION_MAJOR})
+  endif()
   target_compile_definitions(plotcore_c PRIVATE
     PLOTCORE_VERSION_STRING="${PROJECT_VERSION}")
   target_include_directories(plotcore_c PUBLIC
@@ -128,6 +141,19 @@ endif()
 if(PLOTCORE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# --- a Python wheel ---------------------------------------------------------
+# scikit-build-core, from plotcore/python/pyproject.toml: the C interface and
+# nothing else, beside the package that loads it with ctypes. It links no
+# Python, which is what lets one wheel per platform serve every version.
+if(SKBUILD)
+  if(NOT PLOTCORE_BUILD_CAPI)
+    message(FATAL_ERROR "a wheel is the C interface: PLOTCORE_BUILD_CAPI must be ON")
+  endif()
+  install(TARGETS plotcore_c
+          LIBRARY DESTINATION plotcore
+          RUNTIME DESTINATION plotcore)
 endif()
 
 if(PLOTCORE_INSTALL)

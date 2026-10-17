@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-FileCopyrightText: 2026 Andreas Martin
+# SPDX-License-Identifier: GPL-3.0-only
+
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "plotcore"
+version = "0.1.0"
+description = "The plot H5Scope draws, for Python: an envelope that keeps every spike, zoomed without rereading, with the same axes, gestures and colours."
+readme = "README.md"
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "Jonas Sattler" }, { name = "Andreas Martin" }]
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.optional-dependencies]
+qt = ["PyQt6>=6.5"]
+matplotlib = ["matplotlib>=3.7"]
+test = ["pytest>=7"]
+
+[project.urls]
+Source = "https://github.com/jonassattler/H5Scope"
+
+[tool.scikit-build]
+# The library is plotcore's own CMake project one directory up, built as the
+# C interface and nothing else; see "a Python wheel" in its CMakeLists.txt.
+cmake.source-dir = ".."
+cmake.build-type = "Release"
+wheel.packages = ["src/plotcore"]
+# ctypes, not the Python C API: one wheel per platform for every Python.
+wheel.py-api = "py3"
+
+[tool.scikit-build.cmake.define]
+PLOTCORE_BUILD_CAPI = "ON"
+PLOTCORE_BUILD_TESTS = "OFF"
+PLOTCORE_INSTALL = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
