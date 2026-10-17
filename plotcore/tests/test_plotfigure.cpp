@@ -769,3 +769,40 @@ TEST_CASE("the crosshair reads nothing that is drawn off the pane", "[figure]")
     figure.hover(a.x + a.width / 2.0, a.y + a.height / 2.0);
     REQUIRE_FALSE(figure.scene().reading.valid);
 }
+
+TEST_CASE("a drawn line carries its points in the data's own units too", "[figure]")
+{
+    const std::vector<double> values = ramp(200, 10.0, 0.5);
+    Figure figure = figureOf({values, ramp(200, 0.0, 1.0)});
+    for (const bool flipped : {false, true}) {
+        for (const bool yLog : {false, true}) {
+            FigureSettings settings = figure.settings();
+            settings.flipped = flipped;
+            settings.yLog = yLog;
+            figure.setSettings(settings);
+            LineSettings own;
+            own.ownAxis = true;
+            figure.setLineSettings(0, own);
+            const Scene scene = figure.scene();
+            const DrawnLine& line = drawnOf(scene, 0);
+            REQUIRE(line.own);
+            REQUIRE(line.numbered);
+            REQUIRE_FALSE(line.yLogarithmic); // an axis of its own is linear
+            REQUIRE(line.values.size() == line.runs.size());
+            const auto& run = line.values.front();
+            REQUIRE(run.size() == 200);
+            for (std::size_t i = 0; i < run.size(); ++i) {
+                REQUIRE(run[i].x() == Approx(static_cast<double>(i)));
+                REQUIRE(run[i].y() == Approx(values[i]));
+            }
+            const DrawnLine& other = drawnOf(scene, 1);
+            REQUIRE_FALSE(other.own);
+            REQUIRE(other.yLogarithmic == yLog);
+            REQUIRE(other.y.low == Approx(scene.y.low));
+            REQUIRE(other.y.high == Approx(scene.y.high));
+            for (std::size_t i = 1; i < other.values.back().size(); ++i) {
+                REQUIRE(other.values.back()[i].y() > other.values.back()[i - 1].y());
+            }
+        }
+    }
+}

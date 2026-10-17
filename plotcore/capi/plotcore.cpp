@@ -38,6 +38,7 @@ struct plotcore_scene
     struct Line
     {
         std::vector<std::vector<double>> runs;
+        std::vector<std::vector<double>> values;
         std::vector<double> triangles;
         std::vector<double> markers;
     };
@@ -1191,6 +1192,9 @@ plotcore_scene* plotcore_scene_new(plotcore_figure* figure)
             for (const std::vector<Point>& run : line.runs) {
                 flattened.runs.push_back(flat(run));
             }
+            for (const std::vector<Point>& run : line.values) {
+                flattened.values.push_back(flat(run));
+            }
             flattened.triangles = flat(line.triangles);
             flattened.markers = flat(line.markers);
             out->lines.push_back(std::move(flattened));
@@ -1284,6 +1288,11 @@ plotcore_status plotcore_scene_line(const plotcore_scene* scene, int64_t index,
     out->run_count = static_cast<int64_t>(line.runs.size());
     out->triangle_points = static_cast<int64_t>(line.triangles.size());
     out->marker_count = static_cast<int64_t>(line.markers.size());
+    out->y_low = line.y.low;
+    out->y_high = line.y.high;
+    out->y_log = line.yLogarithmic ? 1 : 0;
+    out->own = line.own ? 1 : 0;
+    out->numbered = line.numbered ? 1 : 0;
     return PLOTCORE_OK;
 }
 
@@ -1306,6 +1315,18 @@ const double* plotcore_scene_line_run(const plotcore_scene* scene, int64_t index
     const auto& runs = scene->lines[static_cast<std::size_t>(index)].runs;
     return run >= 0 && static_cast<std::size_t>(run) < runs.size()
                ? runs[static_cast<std::size_t>(run)].data()
+               : nullptr;
+}
+
+const double* plotcore_scene_line_run_values(const plotcore_scene* scene, int64_t index,
+                                             int64_t run)
+{
+    if (!hasDrawn(scene, index)) {
+        return nullptr;
+    }
+    const auto& values = scene->lines[static_cast<std::size_t>(index)].values;
+    return run >= 0 && static_cast<std::size_t>(run) < values.size()
+               ? values[static_cast<std::size_t>(run)].data()
                : nullptr;
 }
 

@@ -294,12 +294,17 @@ static void digest(Out* out, plotcore_scene* scene, int index)
         long long points = 0;
         double sx = 0;
         double sy = 0;
+        double vx = 0;
+        double vy = 0;
         for (int64_t r = 0; r < info.run_count; ++r) {
             const int64_t n = plotcore_scene_line_run_length(scene, i, r);
             const double* xy = plotcore_scene_line_run(scene, i, r);
+            const double* values = plotcore_scene_line_run_values(scene, i, r);
             for (int64_t k = 0; k < n; ++k) {
                 sx += xy[2 * k];
                 sy += xy[2 * k + 1];
+                vx += values[2 * k];
+                vy += values[2 * k + 1];
             }
             points += n;
         }
@@ -307,6 +312,8 @@ static void digest(Out* out, plotcore_scene* scene, int index)
         colour(out, info.colour);
         put(out, " " G " %lld %lld %lld %lld " G " " G "\n", info.width, (long long)info.run_count,
             points, (long long)info.triangle_points, (long long)info.marker_count, sx, sy);
+        put(out, "window " G " " G " %d %d %d " G " " G "\n", info.y_low, info.y_high, info.y_log,
+            info.own, info.numbered, vx, vy);
     }
     segments(out, "rules", plotcore_scene_rules(scene), plotcore_scene_rule_count(scene));
     segments(out, "strokes", plotcore_scene_strokes(scene), plotcore_scene_stroke_count(scene));

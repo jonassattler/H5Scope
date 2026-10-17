@@ -741,7 +741,25 @@ Scene Figure::scene()
 
         std::vector<Point> points;
         std::vector<PlotRun> runs;
-        const PlotProjected result = projectLine(line, axis, lineView(line, upright), points, runs);
+        const PlotView view = lineView(line, upright);
+        const PlotProjected result = projectLine(line, axis, view, points, runs);
+        // The way back to the values, through the view that projected them,
+        // before the points are turned onto a flipped pane.
+        const double xFrom = axisPosition(view.xMin, view.xLog, view.xLogBase);
+        const double xTo = axisPosition(view.xMax, view.xLog, view.xLogBase);
+        const double yFrom = axisPosition(view.yMin, view.yLog, view.yLogBase);
+        const double yTo = axisPosition(view.yMax, view.yLog, view.yLogBase);
+        const auto valueOf = [&](const Point& p) {
+            const double across = view.width > 0.0 ? p.x() / view.width : 0.0;
+            const double up = view.height > 0.0 ? 1.0 - p.y() / view.height : 0.0;
+            return Point(axisValue(xFrom + across * (xTo - xFrom), view.xLog, view.xLogBase),
+                         axisValue(yFrom + up * (yTo - yFrom), view.yLog, view.yLogBase));
+        };
+        std::vector<Point> values;
+        values.reserve(points.size());
+        for (const Point& point : points) {
+            values.push_back(valueOf(point));
+        }
         if (pane.transposed) {
             for (Point& point : points) {
                 point = transposedPoint(point, pane);
@@ -754,6 +772,10 @@ Scene Figure::scene()
         drawnLine.colour = ink;
         drawnLine.width = line.width;
         drawnLine.markerRadius = s.markerSize / 2.0;
+        drawnLine.y = Span{view.yMin, view.yMax};
+        drawnLine.yLogarithmic = view.yLog;
+        drawnLine.own = window.own;
+        drawnLine.numbered = window.own && window.axis;
         const bool marks = settings_.markers && !line.summarised && !result.decimated;
         for (const PlotRun& run : runs) {
             std::vector<Point> stroke;
@@ -770,6 +792,8 @@ Scene Figure::scene()
                 drawnLine.markers.insert(drawnLine.markers.end(), stroke.begin(), stroke.end());
             }
             drawnLine.runs.push_back(std::move(stroke));
+            drawnLine.values.emplace_back(values.begin() + run.first,
+                                          values.begin() + run.first + run.count);
         }
         scene.lines.push_back(std::move(drawnLine));
         scene.legend.push_back(LegendEntry{index, plot_.name(index), colour, {}, {}, {}});

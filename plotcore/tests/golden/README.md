@@ -75,6 +75,7 @@ relative 1e-9, everything after a `|` character for character.
     ground R G B A
     message |TEXT
     line INDEX R G B A WIDTH RUNS POINTS TRIANGLE_POINTS MARKERS SUM_X SUM_Y
+    window Y_LOW Y_HIGH Y_LOG OWN NUMBERED SUM_VALUE_X SUM_VALUE_Y
     rules COUNT SUM_X SUM_Y
     strokes COUNT SUM_X SUM_Y
     text ROLE ACROSS DOWN VERTICAL X Y R G B A |TEXT
@@ -86,5 +87,6 @@ relative 1e-9, everything after a `|` character for character.
 A `state` command writes `state |JSON`.
 
 `SUM_X` and `SUM_Y` add up every run point's coordinates (or both ends of every
-segment) in order. A legend appears only when it has entries, and its rect
+segment) in order, and `SUM_VALUE_X` and `SUM_VALUE_Y` the same points in the
+data's own units. A legend appears only when it has entries, and its rect
 only then.

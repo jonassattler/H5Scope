@@ -227,6 +227,18 @@ struct DrawnLine
     /// Where a marker goes, when markers are on and the line is its samples.
     std::vector<Point> markers;
     double markerRadius = 2.0;
+    /// The runs again in the data's own units, point for point: x as the x
+    /// axis reads it and y as `y` reads it. For a host whose axes are its own
+    /// -- matplotlib's -- and which is handed values to draw rather than
+    /// pixels.
+    std::vector<std::vector<Point>> values;
+    /// The window y is read in: the common axis's, or the line's own when it
+    /// is on an axis of its own, moved, scaled or stacked.
+    Span y;
+    bool yLogarithmic = false;
+    bool own = false;
+    /// Whether that window is numbered beside the pane.
+    bool numbered = false;
 };
 
 /// One row of the legend: a swatch from `from` to `to`, and the name set in

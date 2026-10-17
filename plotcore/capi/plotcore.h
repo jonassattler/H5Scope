@@ -141,6 +141,13 @@ typedef struct plotcore_line_info
     int64_t run_count;
     int64_t triangle_points;
     int64_t marker_count;
+    /* The window y is read in, and whether it is the line's own and whether
+     * that is numbered beside the pane: see plotcore_scene_line_run_values. */
+    double y_low;
+    double y_high;
+    int32_t y_log;
+    int32_t own;
+    int32_t numbered;
 } plotcore_line_info;
 
 /* A piece of text. `base` is set in `role`'s face and `exponent` raised beside
@@ -414,6 +421,11 @@ PLOTCORE_API int64_t plotcore_scene_line_run_length(const plotcore_scene* scene,
                                                     int64_t run);
 PLOTCORE_API const double* plotcore_scene_line_run(const plotcore_scene* scene, int64_t index,
                                                    int64_t run);
+/* The same run in the data's own units, point for point: x as the x axis
+ * reads it, y as the line's window reads it. For a host whose axes are its
+ * own, such as matplotlib. */
+PLOTCORE_API const double* plotcore_scene_line_run_values(const plotcore_scene* scene,
+                                                          int64_t index, int64_t run);
 /* The line as triangles, three x, y pairs each; and its marker centres. */
 PLOTCORE_API const double* plotcore_scene_line_triangles(const plotcore_scene* scene,
                                                          int64_t index);
