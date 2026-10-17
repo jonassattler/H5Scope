@@ -940,7 +940,18 @@ repository and is not publishable as it stands.
    fold has nothing to weigh against.
 
    `H5Thread::submit` is still the path below the pyramid's base bucket, which
-   is the only zoom a line too large to hold at bucket one still reads for. Those
+   is the only zoom a line too large to hold at bucket one still reads for —
+   and **only** that path: a run the pyramid can fold is never asked of the
+   file, even when the ladder has no room to keep it (`DatasetPlot::folds`,
+   `CustomPlot::folds`), because the file would answer it no differently and
+   the reply would be trimmed away as the fold was. Both halves of the policy
+   read one list of what is wanted (`pathOf` in `plotcore/src/Levels.cpp`):
+   until 0.7.2 `coldestLevel` ranked by distance alone, so a full ladder gave
+   up the fourth octave in towards the pointer the moment it was folded, was
+   asked for it again until the loop ran out of turns, and sent it to the
+   file — one read in the middle of a zoom into 7777777 of a
+   ten-million-element line, where a zoom into the middle of it read nothing.
+   Those
    are the cheapest reads there are: below the base, a run's span is at most a
    paneful of base buckets, which is a single hyperslab however large the
    dataset. `kPrefetchOctaves` and `kFocusOctavesIn` still shape what is asked

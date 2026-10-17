@@ -1124,6 +1124,100 @@ TEST_CASE("a zoom over a line whose values are not their positions draws each at
     CHECK(cost.reads == 0);
 }
 
+TEST_CASE("a zoom reads nothing wherever the pointer is", "[cost][plot][zoom]")
+{
+    // The descent above at one focus, the middle of the record, was where this
+    // was held -- and at 7777777 the same twenty frames read once. A full
+    // ladder evicted the fourth octave in towards the pointer the moment it
+    // was folded, because by distance from the pane's bucket it was the
+    // furthest run held; asked for again, evicted again, until the loop ran out
+    // of turns and the run went to the file. So every focus a reader might put
+    // the pointer on, the ends of the line included, and back out again.
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    const double shrink =
+        std::pow(static_cast<double>(kZoomColumns) / static_cast<double>(kZoomLine),
+                 1.0 / static_cast<double>(kZoomFrames));
+    for (const double focus : {11.0, 1234567.0, 4999999.0, 7777777.0, 9876543.0, 9999990.0}) {
+        INFO("focus " << focus);
+        double low = 0.0;
+        double high = static_cast<double>(kZoomLine);
+        big.plot.setVisibleRange(low, high);
+        const auto cost = big.measure([&] {
+            for (int frame = 0; frame < kZoomFrames; ++frame) {
+                big.plot.setZoomFocus(focus, 1.0 / shrink);
+                low = focus - (focus - low) * shrink;
+                high = focus + (high - focus) * shrink;
+                big.plot.setVisibleRange(low, high);
+                drawnMatchesTheFile(big.plot.lineOf(0), kZoomLine);
+            }
+            for (int frame = 0; frame < kZoomFrames; ++frame) {
+                big.plot.setZoomFocus(focus, shrink);
+                low = focus - (focus - low) / shrink;
+                high = focus + (high - focus) / shrink;
+                big.plot.setVisibleRange(low, high);
+                drawnMatchesTheFile(big.plot.lineOf(0), kZoomLine);
+            }
+        });
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+    }
+}
+
+TEST_CASE("a ladder too short for the runs it wants still reads nothing", "[cost][plot][zoom]")
+{
+    // A budget that holds the line at bucket one and leaves room for two runs
+    // beside it, where the policy wants the run on screen, four octaves in and
+    // two out. The trim then has to give up a run the policy is still asking
+    // for, and the plot used to ask the file for it -- a read the pyramid could
+    // have folded, trimmed away again as soon as it landed.
+    constexpr long long kLine = 1 << 16;
+    auto& budget = gui::PlotBudget::instance();
+    const long long was = budget.pinnedTotal();
+    // Twice what a pyramid of the elements costs, because a plot holds its
+    // pyramids to half its share (DatasetPlot::pyramidBudget).
+    budget.setPinnedTotal(2 * gui::pyramidDoubles(kLine, 1) *
+                          static_cast<long long>(sizeof(double)));
+
+    Counted small({1, static_cast<hsize_t>(kLine)});
+    small.plot.setPaneColumns(8192);
+    (void)small.plot.pointCount();
+    Counted::settleAll();
+    // Every element held: anything less and a read below the base would be
+    // the right answer rather than the failure this is about.
+    REQUIRE(small.plot.heldDoubles() >= kLine);
+
+    const double shrink = std::pow(16.0 / static_cast<double>(kLine), 1.0 / kZoomFrames);
+    for (const double focus : {100.5, 40000.5, 65000.5}) {
+        INFO("focus " << focus);
+        double low = 0.0;
+        double high = static_cast<double>(kLine);
+        small.plot.setVisibleRange(low, high);
+        const auto cost = small.measure([&] {
+            for (int frame = 0; frame < kZoomFrames; ++frame) {
+                small.plot.setZoomFocus(focus, 1.0 / shrink);
+                low = focus - (focus - low) * shrink;
+                high = focus + (high - focus) * shrink;
+                small.plot.setVisibleRange(low, high);
+                drawnMatchesTheFile(small.plot.lineOf(0), kLine);
+            }
+            for (int frame = 0; frame < kZoomFrames; ++frame) {
+                small.plot.setZoomFocus(focus, shrink);
+                low = focus - (focus - low) / shrink;
+                high = focus + (high - focus) / shrink;
+                small.plot.setVisibleRange(low, high);
+                drawnMatchesTheFile(small.plot.lineOf(0), kLine);
+            }
+        });
+        CHECK(cost.crossings == 0);
+        CHECK(cost.reads == 0);
+    }
+    budget.setPinnedTotal(was);
+}
+
 namespace {
 
 /// How many of `line`'s drawn points land in each tenth of a logarithmic pane

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace plotcore {
 
@@ -276,51 +277,63 @@ bool served(std::span<const HeldLevel> held, const LevelView& view, double low, 
     });
 }
 
-std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const LevelView& view,
-                                      const PlotFocus& focus)
+namespace {
+
+/// One run the policy wants in hand: the range it has to cover, the coarsest
+/// bucket that answers it, and the run to fold or read when none does.
+struct Wanted
 {
-    if (!view.usable()) {
-        return {};
-    }
     double low = 0.0;
     double high = 0.0;
-    drawnRange(view, low, high);
+    long long bucket = 0;
+    PlotWindow window;
+};
 
+/// Every run the policy wants held, in the order it asks for them: the one the
+/// pane is waiting for, the octaves in towards the focus, and the octaves out
+/// from the run being drawn.
+///
+/// One list for both halves of the policy. wantedLevel() asks for the first of
+/// these nothing in hand answers, and coldestLevel() keeps whatever answers any
+/// of them -- and they were two pieces of arithmetic until 0.7.2, which is how
+/// a full ladder came to evict the fourth octave in towards the pointer the
+/// moment it was folded, because by distance from the pane's bucket it was the
+/// furthest run held. Asked for again on the next turn, evicted again, until
+/// the loop ran out of turns and the run went to the file.
+std::vector<Wanted> pathOf(std::span<const HeldLevel> held, const LevelView& view,
+                           const PlotFocus& focus)
+{
+    std::vector<Wanted> path;
+    if (!view.usable()) {
+        return path;
+    }
     const std::optional<PlotWindow> needed =
         windowFor(view.low, view.high, view.length, view.paneBuckets);
     if (!needed.has_value()) {
         // Zoomed out far enough that the whole-line summary is already at this
         // bucket or finer. There is nothing a second read could add.
-        return {};
+        return path;
     }
 
-    const int at = drawnLevel(held, view);
-    const bool answered =
-        at >= 0 && held[static_cast<std::size_t>(at)].window.bucket <= needed->bucket;
-    if (!answered) {
-        // What the pane is waiting for, an octave finer than it asked. First,
-        // because it is the only one the reader can see.
-        std::optional<PlotWindow> want =
-            windowFor(view.low, view.high, view.length, view.detailBuckets);
-        if (!want.has_value()) {
-            // The finer run would reach past the end of the line, so there is
-            // no octave to take -- but the pane still wants a finer bucket than
-            // the whole-line summary has. Only lines between one and two panes'
-            // worth of buckets long land here.
-            want = needed;
-        }
-        return want;
-    }
+    // What the pane is waiting for, an octave finer than it asked -- first,
+    // because it is the only one the reader can see. A finer run that would
+    // reach past the end of the line has no octave to take, but the pane still
+    // wants a finer bucket than the whole-line summary has; only lines between
+    // one and two panes' worth of buckets long land there.
+    double low = 0.0;
+    double high = 0.0;
+    drawnRange(view, low, high);
+    const std::optional<PlotWindow> detail =
+        windowFor(view.low, view.high, view.length, view.detailBuckets);
+    path.push_back(Wanted{low, high, needed->bucket, detail.value_or(*needed)});
 
-    // The pane is answered, so what is left is idle work.
-    //
-    // Inward first, and only towards a focus. A run costs its span and each
-    // octave in is half the span of the one above, so the whole inward ladder
-    // is cheaper than one step out -- which is why it can be four octaves deep
-    // and why it is worth reading before the outward one. Without a focus there
-    // is nothing to aim it at: the view's own centre is where detailBuckets()
-    // already reads an octave finer, and guessing further in about a reader who
-    // may be about to zoom out is spending the file on a coin toss.
+    // Inward, and only towards a focus. A run costs its span and each octave in
+    // is half the span of the one above, so the whole inward ladder is cheaper
+    // than one step out -- which is why it can be four octaves deep and why it
+    // is worth folding before the outward one. Without a focus there is nothing
+    // to aim it at: the view's own centre is where detailBuckets() already
+    // reads an octave finer, and guessing further in about a reader who may be
+    // about to zoom out is spending memory on a coin toss.
     if (focus.active && focus.inward) {
         for (int octave = 1; octave <= kFocusOctavesIn; ++octave) {
             // Where the view goes if the reader keeps zooming about this point:
@@ -334,9 +347,7 @@ std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const Lev
             if (!in.has_value()) {
                 break; // finer than the line has anything to say about
             }
-            if (!served(held, view, wantLow, wantHigh, in->bucket)) {
-                return in;
-            }
+            path.push_back(Wanted{wantLow, wantHigh, in->bucket, *in});
         }
     }
 
@@ -348,8 +359,9 @@ std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const Lev
     // untouched -- which is what keeps "panning reads nothing" true of the
     // prefetch as well as of the picture. Taken from the view, every pan would
     // shift the octaves a little and eventually ask for one.
+    const int at = drawnLevel(held, view);
     if (at < 0) {
-        return {};
+        return path;
     }
     const PlotWindow base = held[static_cast<std::size_t>(at)].window;
     const double half = static_cast<double>(base.span) / 2.0;
@@ -363,14 +375,12 @@ std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const Lev
     }
     for (int octave = 1; octave <= view.prefetchOctaves; ++octave) {
         const auto reach = static_cast<double>(1LL << octave);
-        double wantLow = centre - half * reach;
-        double wantHigh = centre + half * reach;
         // Whatever the lean did, never less than the run it came from: a step
         // out that did not cover what is already on screen would be a step out
         // into a blank.
-        wantLow = std::min(wantLow, static_cast<double>(base.first));
-        wantHigh = std::max(wantHigh, static_cast<double>(base.first + base.span));
-
+        const double wantLow = std::min(centre - half * reach, static_cast<double>(base.first));
+        const double wantHigh =
+            std::max(centre + half * reach, static_cast<double>(base.first + base.span));
         const std::optional<PlotWindow> out =
             windowFor(wantLow, wantHigh, view.length, view.paneBuckets);
         if (!out.has_value()) {
@@ -378,13 +388,24 @@ std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const Lev
             // does everything past it.
             break;
         }
-        // Asked about the range rather than about the window, because a run
-        // already in hand may answer for this octave without being the run this
-        // would have read: one the reader zoomed in from is finer and wider
-        // than what is being asked for here, and re-reading it would be a round
-        // trip spent on nothing.
-        if (!served(held, view, wantLow, wantHigh, out->bucket)) {
-            return out;
+        path.push_back(Wanted{wantLow, wantHigh, out->bucket, *out});
+    }
+    return path;
+}
+
+} // namespace
+
+std::optional<PlotWindow> wantedLevel(std::span<const HeldLevel> held, const LevelView& view,
+                                      const PlotFocus& focus)
+{
+    // Asked about the range rather than about the window, because a run
+    // already in hand may answer for a step without being the run this would
+    // have read: one the reader zoomed in from is finer and wider than the
+    // octave out of where they are now, and folding it again would be work
+    // spent on nothing.
+    for (const Wanted& want : pathOf(held, view, focus)) {
+        if (!served(held, view, want.low, want.high, want.bucket)) {
+            return want.window;
         }
     }
     return {};
@@ -420,21 +441,59 @@ std::size_t coldestLevel(std::span<const HeldLevel> held, const LevelView& view,
         return octavesApart(level.window.bucket, needed->bucket);
     };
 
-    std::size_t worst = 0;
-    for (std::size_t i = 1; i < held.size(); ++i) {
+    // What answers a step the policy still wants is kept while anything else
+    // can go: for each run on the path, the coarsest held run that serves it,
+    // which is the one served() would find. Only when every run in hand is one
+    // of those -- a ladder too short for the path, which a small budget gives --
+    // does the ranking below choose among them, and then the plot stops folding
+    // what it cannot keep rather than asking for it again.
+    std::vector<bool> kept(held.size(), false);
+    if (at >= 0) {
+        kept[static_cast<std::size_t>(at)] = true;
+    }
+    for (const Wanted& want : pathOf(held, view, focus)) {
+        const double low = std::max(want.low, 0.0);
+        const double high = std::min(want.high, static_cast<double>(view.length));
+        int answer = -1;
+        for (std::size_t i = 0; i < held.size(); ++i) {
+            const HeldLevel& level = held[i];
+            if (!level.complete || level.window.bucket > want.bucket ||
+                !level.window.covers(low, high)) {
+                continue;
+            }
+            if (answer < 0 ||
+                level.window.bucket > held[static_cast<std::size_t>(answer)].window.bucket) {
+                answer = static_cast<int>(i);
+            }
+        }
+        if (answer >= 0) {
+            kept[static_cast<std::size_t>(answer)] = true;
+        }
+    }
+    const bool anySpare = std::find(kept.begin(), kept.end(), false) != kept.end();
+
+    std::optional<std::size_t> worst;
+    for (std::size_t i = 0; i < held.size(); ++i) {
+        if (anySpare && kept[i]) {
+            continue;
+        }
+        if (!worst.has_value()) {
+            worst = i;
+            continue;
+        }
         const bool lost = forsaken(held[i]);
-        const bool losing = forsaken(held[worst]);
+        const bool losing = forsaken(held[*worst]);
         if (lost != losing) {
             if (lost) {
                 worst = i;
             }
             continue;
         }
-        if (distance(held[i]) > distance(held[worst])) {
+        if (distance(held[i]) > distance(held[*worst])) {
             worst = i;
         }
     }
-    return worst;
+    return worst.value_or(0);
 }
 
 std::optional<LogColumns> logColumnsFor(double low, double high, int columns)

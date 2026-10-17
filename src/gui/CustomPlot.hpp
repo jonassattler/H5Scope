@@ -683,6 +683,10 @@ private:
     /// entry has no pyramid, when the run is finer than its base bucket -- the
     /// only zooms that still cost a read -- or when it is already held.
     [[nodiscard]] bool fillCloser(Entry& entry, const PlotWindow& window);
+    /// Whether `entry`'s pyramid can fold `window`: held, at a base no finer
+    /// than its bucket. What fillCloser() needs, and what keeps such a run
+    /// from ever being asked of the file.
+    [[nodiscard]] static bool folds(const Entry& entry, const PlotWindow& window);
     /// Drop the runs of `entry` furthest from the one the pane is on, down to
     /// heldLevels().
     void trimLevels(Entry& entry);

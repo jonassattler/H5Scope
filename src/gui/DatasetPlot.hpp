@@ -518,6 +518,10 @@ private:
     /// False when any drawn line cannot answer, which leaves the whole run to
     /// the file: a run half in memory and half on disk would be two pictures.
     [[nodiscard]] bool fillDetail(const PlotWindow& detail);
+    /// Whether every drawn line's pyramid can fold `detail`: held, and at a
+    /// base no finer than its bucket. What fillDetail() needs, and what keeps
+    /// such a run from ever being asked of the file.
+    [[nodiscard]] bool folds(const PlotWindow& detail) const;
 
     // --- a logarithmic x axis ----------------------------------------------
     /// The columns the view is folded at, or nothing when the view is drawn
