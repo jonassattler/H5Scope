@@ -741,6 +741,11 @@ script of settings and gestures, and the digest of every scene it asks for.
 check the same file through their own bindings. A changed line in
 `expected.txt` is a changed picture, so read the diff before committing one.
 
+`plotcore/qt` (`PLOTCORE_WITH_QT`, on in the viewer's build) is a `QWidget`
+over a `Figure`, and `plotcore/examples/qt` walks every feature on one window;
+`--self-test` walks them itself offscreen and is the `plotcore_qt_demo` ctest
+test.
+
 ## Invariants worth knowing before editing
 
 1. **One thread ever calls into HDF5.** The pinned HDF5 is not thread-safe and

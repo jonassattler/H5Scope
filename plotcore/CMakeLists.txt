@@ -103,6 +103,28 @@ if(PLOTCORE_BUILD_CAPI)
   endif()
 endif()
 
+# --- the Qt adapter -------------------------------------------------------
+# plotcore::Figure in a QWidget, and the example that walks every feature on
+# one. Off unless asked for, because it is the one part of this project that
+# needs a toolkit; the viewer asks for it, so CI builds and runs it against the
+# viewer's own Qt.
+option(PLOTCORE_WITH_QT "Build plotcore::qt and its example" OFF)
+if(PLOTCORE_WITH_QT)
+  find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+  add_library(plotcore_qt STATIC
+    qt/src/PlotWidget.cpp
+    qt/include/plotcore/qt/PlotWidget.hpp
+  )
+  add_library(plotcore::qt ALIAS plotcore_qt)
+  set_target_properties(plotcore_qt PROPERTIES EXPORT_NAME qt AUTOMOC ON)
+  target_include_directories(plotcore_qt PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/qt/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  )
+  target_link_libraries(plotcore_qt PUBLIC plotcore::core Qt6::Widgets)
+  add_subdirectory(examples/qt)
+endif()
+
 if(PLOTCORE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
