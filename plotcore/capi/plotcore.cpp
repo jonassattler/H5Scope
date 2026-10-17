@@ -523,6 +523,28 @@ int64_t plotcore_line_base_bucket(const plotcore_figure* figure, int32_t line)
     return figure != nullptr && hasLine(figure, line) ? figure->figure.plot().baseBucket(line) : -1;
 }
 
+plotcore_status plotcore_get_line_name(const plotcore_figure* figure, int32_t line, char* buffer,
+                                       int64_t capacity, int64_t* length)
+{
+    PLOTCORE_NEED_LINE(figure, line)
+    return guarded(
+        [&] { return copyText(figure->figure.plot().name(line), buffer, capacity, length); });
+}
+
+int32_t plotcore_line_ready(const plotcore_figure* figure, int32_t line)
+{
+    if (figure == nullptr || !hasLine(figure, line)) {
+        return -1;
+    }
+    return figure->figure.plot().ready(line) ? 1 : 0;
+}
+
+int32_t plotcore_line_has_time(const plotcore_figure* figure, int32_t line)
+{
+    return figure != nullptr && hasLine(figure, line) && figure->figure.plot().hasTime(line) ? 1
+                                                                                             : 0;
+}
+
 // --- x ----------------------------------------------------------------------------------------
 
 plotcore_status plotcore_set_index_axis(plotcore_figure* figure, double start, double step)
@@ -940,6 +962,19 @@ plotcore_status plotcore_get_line_number(const plotcore_figure* figure, int32_t 
     return PLOTCORE_OK;
 }
 
+plotcore_status plotcore_get_line_text(const plotcore_figure* figure, int32_t line,
+                                       const char* name, char* buffer, int64_t capacity,
+                                       int64_t* length)
+{
+    PLOTCORE_NEED_LINE(figure, line)
+    if (name == nullptr || std::string_view(name) != "axisLabel") {
+        return noSetting(name);
+    }
+    return guarded([&] {
+        return copyText(figure->figure.lineSettings(line).axisLabel, buffer, capacity, length);
+    });
+}
+
 plotcore_status plotcore_get_line_colour(const plotcore_figure* figure, int32_t line, int32_t* has,
                                          plotcore_rgba* value)
 {
@@ -1228,6 +1263,16 @@ void plotcore_scene_size(const plotcore_scene* scene, double* width, double* hei
 plotcore_rgba plotcore_scene_ground(const plotcore_scene* scene)
 {
     return scene != nullptr ? rgbaOf(scene->scene.ground) : plotcore_rgba{0.0, 0.0, 0.0, 0.0};
+}
+
+plotcore_chrome plotcore_scene_chrome(const plotcore_scene* scene)
+{
+    if (scene == nullptr) {
+        return plotcore_chrome{};
+    }
+    const Chrome& c = scene->scene.chrome;
+    return plotcore_chrome{rgbaOf(c.ground),    rgbaOf(c.ink),      rgbaOf(c.ruleMinor),
+                           rgbaOf(c.ruleMajor), rgbaOf(c.axisRule), rgbaOf(c.cursorInk)};
 }
 
 plotcore_rect plotcore_scene_area(const plotcore_scene* scene)

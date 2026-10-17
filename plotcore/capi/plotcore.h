@@ -113,6 +113,17 @@ typedef struct plotcore_rgba
     double alpha;
 } plotcore_rgba;
 
+/* What everything that is not a line is drawn in. */
+typedef struct plotcore_chrome
+{
+    plotcore_rgba ground;
+    plotcore_rgba ink;
+    plotcore_rgba rule_minor;
+    plotcore_rgba rule_major;
+    plotcore_rgba axis_rule;
+    plotcore_rgba cursor_ink;
+} plotcore_chrome;
+
 typedef struct plotcore_rect
 {
     double x;
@@ -262,6 +273,15 @@ PLOTCORE_API plotcore_status plotcore_line_extent(const plotcore_figure* figure,
                                                   double* minimum, double* maximum);
 /* The finest bucket the line is held at; one is every element. */
 PLOTCORE_API int64_t plotcore_line_base_bucket(const plotcore_figure* figure, int32_t line);
+/* A line's name, copied as plotcore_get_text copies. */
+PLOTCORE_API plotcore_status plotcore_get_line_name(const plotcore_figure* figure, int32_t line,
+                                                    char* buffer, int64_t capacity,
+                                                    int64_t* length);
+/* 1 once a line has finished arriving, 0 while it is streaming in, -1 for no
+ * line. */
+PLOTCORE_API int32_t plotcore_line_ready(const plotcore_figure* figure, int32_t line);
+/* 1 when a line is drawn against a time base, its own or the shared one. */
+PLOTCORE_API int32_t plotcore_line_has_time(const plotcore_figure* figure, int32_t line);
 
 /* --- x -------------------------------------------------------------------------------- */
 
@@ -344,6 +364,9 @@ PLOTCORE_API plotcore_status plotcore_get_line_bool(const plotcore_figure* figur
                                                     const char* name, int32_t* value);
 PLOTCORE_API plotcore_status plotcore_get_line_number(const plotcore_figure* figure, int32_t line,
                                                       const char* name, double* value);
+PLOTCORE_API plotcore_status plotcore_get_line_text(const plotcore_figure* figure, int32_t line,
+                                                    const char* name, char* buffer,
+                                                    int64_t capacity, int64_t* length);
 /* Writes 1 to `has` and the colour when the line has one of its own. */
 PLOTCORE_API plotcore_status plotcore_get_line_colour(const plotcore_figure* figure, int32_t line,
                                                       int32_t* has, plotcore_rgba* value);
@@ -405,6 +428,7 @@ PLOTCORE_API void plotcore_scene_free(plotcore_scene* scene);
 
 PLOTCORE_API void plotcore_scene_size(const plotcore_scene* scene, double* width, double* height);
 PLOTCORE_API plotcore_rgba plotcore_scene_ground(const plotcore_scene* scene);
+PLOTCORE_API plotcore_chrome plotcore_scene_chrome(const plotcore_scene* scene);
 /* The pane inside the gutters, where the lines are. */
 PLOTCORE_API plotcore_rect plotcore_scene_area(const plotcore_scene* scene);
 /* The window on screen: x from x0 to x1, y from y0 to y1. */

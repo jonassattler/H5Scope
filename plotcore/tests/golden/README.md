@@ -73,6 +73,7 @@ relative 1e-9, everything after a `|` character for character.
     area X Y W H
     view X0 X1 Y0 Y1
     ground R G B A
+    chrome INK_RGBA AXIS_RULE_RGBA CURSOR_INK_RGBA
     message |TEXT
     line INDEX R G B A WIDTH RUNS POINTS TRIANGLE_POINTS MARKERS SUM_X SUM_Y
     window Y_LOW Y_HIGH Y_LOG OWN NUMBERED SUM_VALUE_X SUM_VALUE_Y

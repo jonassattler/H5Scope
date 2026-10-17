@@ -104,6 +104,15 @@ static void contract(void)
     CHECK(plotcore_line_extent(figure, 0, &minimum, &maximum) == PLOTCORE_OK);
     CHECK(minimum == 0.0 && maximum == 99.0);
     CHECK(plotcore_line_length(figure, 0) == 1000);
+    char name[16];
+    int64_t named = 0;
+    CHECK(plotcore_get_line_name(figure, 0, name, sizeof name, &named) == PLOTCORE_OK);
+    CHECK(named == 5 && strcmp(name, "teeth") == 0);
+    CHECK(plotcore_line_ready(figure, 0) == 1 && plotcore_line_ready(figure, 9) == -1);
+    CHECK(plotcore_line_has_time(figure, 0) == 0);
+    CHECK(plotcore_set_line_text(figure, 0, "axisLabel", "volts") == PLOTCORE_OK);
+    CHECK(plotcore_get_line_text(figure, 0, "axisLabel", name, sizeof name, NULL) == PLOTCORE_OK);
+    CHECK(strcmp(name, "volts") == 0);
 
     /* A line that does not exist is a range, a setting that does not exist an
      * argument, and a call out of order a state. */
@@ -144,6 +153,7 @@ static void contract(void)
 
     /* A streamed line is not drawn until it is finished. */
     CHECK(plotcore_begin_line(figure, 300, "streamed", &line) == PLOTCORE_OK && line == 1);
+    CHECK(plotcore_line_ready(figure, 1) == 0);
     double piece[100];
     for (int i = 0; i < 100; ++i) {
         piece[i] = i;
@@ -287,6 +297,11 @@ static void digest(Out* out, plotcore_scene* scene, int index)
     put(out, "view " G " " G " " G " " G "\n", x0, x1, y0, y1);
     put(out, "ground");
     colour(out, plotcore_scene_ground(scene));
+    const plotcore_chrome chrome = plotcore_scene_chrome(scene);
+    put(out, "\nchrome");
+    colour(out, chrome.ink);
+    colour(out, chrome.axis_rule);
+    colour(out, chrome.cursor_ink);
     put(out, "\nmessage |%s\n", plotcore_scene_message(scene));
     for (int64_t i = 0; i < plotcore_scene_line_count(scene); ++i) {
         plotcore_line_info info;

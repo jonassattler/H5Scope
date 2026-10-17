@@ -244,7 +244,7 @@ void PlotWidget::paintScene(QPainter& painter, const Scene& scene) const
         drawText(painter, text);
     }
 
-    const Chrome chrome = chromeFor(figure_.settings().dark, figure_.settings().paper);
+    const Chrome& chrome = scene.chrome;
 
     // The legend: a swatch and a name a row.
     if (!scene.legend.empty()) {

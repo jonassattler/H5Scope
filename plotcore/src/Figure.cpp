@@ -699,6 +699,7 @@ Scene Figure::scene()
     scene.width = width_;
     scene.height = height_;
     scene.ground = chrome.ground;
+    scene.chrome = chrome;
     scene.area = lay.area;
     scene.x = {camera_.viewMinX(), camera_.viewMaxX()};
     scene.y = {camera_.viewMinY(), camera_.viewMaxY()};

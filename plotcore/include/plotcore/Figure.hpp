@@ -273,6 +273,10 @@ struct Scene
     double width = 0.0;
     double height = 0.0;
     Rgba ground;
+    /// What everything that is not a line is drawn in -- the ink of the text,
+    /// the legend's border, the crosshair -- so a host paints the frame in
+    /// the scope it was laid out for without working it out again.
+    Chrome chrome;
     /// The pane inside the gutters, where the lines are.
     PaneRect area;
     std::vector<DrawnLine> lines;
