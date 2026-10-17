@@ -1098,6 +1098,14 @@ repository and is not publishable as it stands.
    dark theme and a white line on a white page is no line. It is the exact
    mirror of the substitution okabe-ito already makes the other way.
 
+   On screen the same three are the theme's until somebody chooses them
+   (`PlotSurface.colorsCustom`, `drawnColorSingle` and its two neighbours),
+   which is the image ground's `backgroundCustom` rule. A binding to
+   `Theme.accent` was meant to be that and was not: DatasetMemory and a saved
+   view both write the colours back as values, so the binding was gone before
+   the first line was drawn, and View > theme left a "same" line in signal
+   white on the light theme's white ground.
+
    **The size says how many pixels; the dpi says how big they are.** Two
    settings, and both change the picture — which is what 0.6.4 got wrong by
    reading the dpi as a supersample, so 1920×1080 at 300 dpi came back at

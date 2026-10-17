@@ -478,9 +478,9 @@ Item {
             return []
         const cycle = surface.colorMode
         const reversed = surface.colorsReversed
-        const single = surface.colorSingle
-        const from = surface.colorRangeFrom
-        const to = surface.colorRangeTo
+        const single = surface.drawnColorSingle
+        const from = surface.drawnColorRangeFrom
+        const to = surface.drawnColorRangeTo
         const band = [surface.colorFrom, surface.colorTo]
         const dark = Theme.dark
         const low = surface.commonFraction(surface.viewMinY)
@@ -557,6 +557,30 @@ Item {
     property color colorSingle: Theme.accent
     property color colorRangeFrom: Theme.accent
     property color colorRangeTo: Theme.info
+    /// Whether the three colours above were chosen, which is what decides
+    /// whether they are drawn -- ImageSurface.backgroundCustom's rule, for its
+    /// reason: a colour somebody picked is a statement about this plot and a
+    /// theme must not undo it, and one nobody picked should follow the theme.
+    ///
+    /// The bindings to Theme.accent and Theme.info above were meant to be
+    /// that rule and could not be: DatasetMemory writes every name it
+    /// remembers back as a value on the first selection, and a saved view
+    /// writes them as values too, so the binding was gone before the reader
+    /// saw a line. A plot opened on the dark theme then held signal white as
+    /// a plain colour, and after View > theme a line in "same" was drawn
+    /// white on the light theme's white ground -- no line at all.
+    ///
+    /// Set by the swatches in PlotSettingsPanel, which pin all three as they
+    /// are drawn before changing one, so choosing the last line's colour does
+    /// not move the first; cleared by its "follow the theme".
+    property bool colorsCustom: false
+    /// The three as they are drawn.
+    readonly property color drawnColorSingle:
+        surface.colorsCustom ? surface.colorSingle : Theme.accent
+    readonly property color drawnColorRangeFrom:
+        surface.colorsCustom ? surface.colorRangeFrom : Theme.accent
+    readonly property color drawnColorRangeTo:
+        surface.colorsCustom ? surface.colorRangeTo : Theme.info
     /// Run the cycle the other way. Which end of a ramp is the dark one is a
     /// property of the ramp and not of the data, and the reader is the one who
     /// knows which way round they want to read it. On a palette it is the
@@ -645,8 +669,8 @@ Item {
         }
 
         if (surface.colorMode === "same")
-            return paper ? Theme.paperColor(surface.colorSingle)
-                         : surface.colorSingle
+            return paper ? Theme.paperColor(surface.drawnColorSingle)
+                         : surface.drawnColorSingle
 
         // A palette is asked which line this is rather than how far along it
         // sits, so none of the arithmetic below applies to one: not the shares
@@ -678,10 +702,10 @@ Item {
         // arithmetic is a no-op until they say otherwise.
         at = surface.colorFrom + at * (surface.colorTo - surface.colorFrom)
         if (surface.colorMode === "range") {
-            return Theme.mix(paper ? Theme.paperColor(surface.colorRangeFrom)
-                                   : surface.colorRangeFrom,
-                             paper ? Theme.paperColor(surface.colorRangeTo)
-                                   : surface.colorRangeTo,
+            return Theme.mix(paper ? Theme.paperColor(surface.drawnColorRangeFrom)
+                                   : surface.drawnColorRangeFrom,
+                             paper ? Theme.paperColor(surface.drawnColorRangeTo)
+                                   : surface.drawnColorRangeTo,
                              at)
         }
         // The ramps are the one part of this that has no second scope: they
@@ -1800,7 +1824,7 @@ Item {
     /// picture back, not the scroll position.
     readonly property var drawingSettingNames: [
         "rangeStart", "rangeStep", "rangeStop", "locks",
-        "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
+        "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo", "colorsCustom",
         "colorsReversed", "colorFrom", "colorTo",
         "gridMode", "gridStepX", "gridStepY",
         "xLog", "yLog", "minorNumbers",
@@ -1846,6 +1870,20 @@ Item {
                 && values.hasOwnProperty("showGrid")) {
             surface.gridMode = values["showGrid"] ? "loose" : "none"
         }
+        // ...and one saved before a colour could be left to the theme carries
+        // the three colours and no `colorsCustom`. They are its reader's
+        // choice wherever one of them is a colour no theme would have put
+        // there; otherwise they are the defaults of whichever theme it was
+        // saved under, and follow the one on screen now.
+        if (!values.hasOwnProperty("colorsCustom")) {
+            const chosen = (name, ofDark, ofLight) =>
+                values.hasOwnProperty(name)
+                && !Qt.colorEqual(values[name], ofDark)
+                && !Qt.colorEqual(values[name], ofLight)
+            surface.colorsCustom = chosen("colorSingle", Theme.sig500, Theme.n0)
+                || chosen("colorRangeFrom", Theme.sig500, Theme.n0)
+                || chosen("colorRangeTo", Theme.cyan500, Theme.cyan900)
+        }
     }
 
     // A window onto one dataset says nothing about the next one, and neither
@@ -1857,7 +1895,7 @@ Item {
         subject: surface
         group: surface.memoryGroup
         names: ["rangeStart", "rangeStep", "rangeStop", "locks",
-                "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo",
+                "colorMode", "colorSingle", "colorRangeFrom", "colorRangeTo", "colorsCustom",
                 "colorsReversed", "colorFrom", "colorTo",
                 "gridMode", "gridStepX", "gridStepY",
                 // Before the zoom and the pan, and that order is load-bearing:
