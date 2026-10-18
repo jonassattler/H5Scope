@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+
+# plotcore for Rust: the C interface compiled in (plotcore-sys), a safe
+# wrapper over it (plotcore), the same figure in egui (plotcore-egui), and an
+# example that walks every feature on one window (egui-demo).
+#
+# plotcore-sys compiles ../../src and ../../capi with the cc crate, so a crate
+# here is built from this repository -- a git dependency checks the whole of
+# it out -- and publishing one would need those sources vendored into it,
+# which is not done.
+
+[workspace]
+resolver = "2"
+members = ["plotcore-sys", "plotcore", "plotcore-egui", "egui-demo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+authors = ["Jonas Sattler", "Andreas Martin"]
+repository = "https://github.com/jonassattler/H5Scope"
+
+[workspace.dependencies]
+plotcore-sys = { path = "plotcore-sys" }
+plotcore = { path = "plotcore" }
+plotcore-egui = { path = "plotcore-egui" }
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev]
+# The core is the hot path even in a debug build; a ten-million-sample line
+# folded at -O0 is a slow first frame for nothing.
+opt-level = 1

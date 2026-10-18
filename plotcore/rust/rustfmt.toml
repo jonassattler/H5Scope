@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+
+# The column the C++ beside it (.clang-format) keeps to.
+max_width = 100
+use_small_heuristics = "Max"

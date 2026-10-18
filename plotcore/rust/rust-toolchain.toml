@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+
+# The oldest Rust egui 0.37 builds with, pinned so CI and a reader's machine
+# run the same clippy over the same code.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

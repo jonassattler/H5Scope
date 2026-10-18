@@ -764,6 +764,21 @@ by `tests/test_qt.py`. Develop against a local build with
 `PLOTCORE_LIBRARY=<path to libplotcore_c>`; CI builds the wheel in
 manylinux_2_28 and on Windows and uploads it, nothing more.
 
+`plotcore/rust` is the Rust workspace: `plotcore-sys` compiles `src/` and
+`capi/` with the `cc` crate and declares the header by hand (no libclang), and
+its test holds every structure's size to what the C compiler that built the
+library makes of it, because working them out by hand got two of them wrong;
+`plotcore` is the safe wrapper, whose readers and text measure are boxed and
+handed to the C side as contexts it gives back; `plotcore-egui` paints a scene
+as plotcore's triangles or as feathered polylines and hands egui's raw input
+events over as gestures; `egui-demo` walks every feature, and its
+`--self-test` drives egui headless, so `cargo test` needs no display. **Never
+ask a figure for a scene inside a closure that holds egui's context** -- the
+text measure calls back into `ctx.fonts_mut`, which takes the same lock. The
+toolchain is pinned in `rust-toolchain.toml` (egui 0.37's minimum), and
+because `plotcore-sys` reaches `../../src`, a crate is built from this
+repository and is not publishable as it stands.
+
 ## Invariants worth knowing before editing
 
 1. **One thread ever calls into HDF5.** The pinned HDF5 is not thread-safe and
