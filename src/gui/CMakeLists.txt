@@ -128,7 +128,7 @@ target_include_directories(gui PUBLIC
 # Qt6::Quick because the plot is drawn on the scene graph by gui::PlotItem, and
 # PUBLIC because PlotItem.hpp is part of this library's interface: DatasetPlot
 # and CustomPlot hand their lines to one. There is no plotting library on this
-# line any more -- see plotcore/include/plotcore/Projection.hpp for what
+# line any more -- see plotcore/cpp/include/plotcore/Projection.hpp for what
 # replaced it and why. plotcore is the arithmetic those lines are folded and
 # projected with, and PUBLIC because PlotItem.hpp hands its types out.
 target_link_libraries(gui PUBLIC Qt6::Quick Qt6::Qml h5core postproc plotcore::core)

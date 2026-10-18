@@ -50,7 +50,7 @@ target_link_libraries(test_models PRIVATE gui test_support test_main Qt6::Test)
 catch_discover_tests(test_models)
 
 # The plot's own arithmetic -- the projection, the fold, the pyramid -- is
-# asserted in plotcore/tests, which link nothing but plotcore and run with these.
+# asserted in plotcore/cpp/tests, which link nothing but plotcore and run with these.
 
 # --- the custom plot tabs -------------------------------------------------
 # Its own suite rather than more of test_models: what it covers is one feature
