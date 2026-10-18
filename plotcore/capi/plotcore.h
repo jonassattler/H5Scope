@@ -310,7 +310,7 @@ PLOTCORE_API int64_t plotcore_held_bytes(const plotcore_figure* figure);
 /*
  * The plot as a whole:
  *   bool    xLog yLog flipped minorNumbers markers cursor legend bundle dark
- *           paper stacked colours.reversed
+ *           paper stacked colours.reversed colours.custom
  *   number  gridStepX gridStepY xLogBase yLogBase highlighted colours.from
  *           colours.to
  *   text    title xLabel yLabel grid ("none" "loose" "dense" "custom")
@@ -331,6 +331,11 @@ PLOTCORE_API int64_t plotcore_held_bytes(const plotcore_figure* figure);
  *
  * A change of either scale or of the flip puts the view back, as the viewer's
  * does: a pan in decades and a pan in units have no reading that is both.
+ *
+ * The three colours are the ground's until one is chosen, and follow the
+ * ground while they are: setting one pins all three at what they are drawn as
+ * and sets colours.custom, reading one answers what is drawn, and clearing
+ * colours.custom gives them back to the ground.
  */
 PLOTCORE_API plotcore_status plotcore_set_bool(plotcore_figure* figure, const char* name,
                                                int32_t value);

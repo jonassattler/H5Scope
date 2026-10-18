@@ -223,9 +223,23 @@ LineColours LineColours::defaults(bool onDark)
     return colours;
 }
 
-Rgba seriesColor(const LineColours& colours, int series, int position, int count, bool paper,
+LineColours LineColours::drawn(bool onDark) const
+{
+    if (custom) {
+        return *this;
+    }
+    LineColours out = *this;
+    const LineColours ground = defaults(onDark);
+    out.single = ground.single;
+    out.rangeFrom = ground.rangeFrom;
+    out.rangeTo = ground.rangeTo;
+    return out;
+}
+
+Rgba seriesColor(const LineColours& chosen, int series, int position, int count, bool paper,
                  bool onDark, const std::optional<Rgba>& own)
 {
+    const LineColours colours = chosen.drawn(onDark);
     if (own.has_value() && own->valid) {
         return paper ? paperColor(*own) : *own;
     }

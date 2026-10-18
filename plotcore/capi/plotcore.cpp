@@ -637,6 +637,12 @@ plotcore_status plotcore_set_bool(plotcore_figure* figure, const char* name, int
         else if (name != nullptr && std::string_view(name) == "colours.reversed") {
             settings.colours.reversed = value != 0;
         }
+        else if (name != nullptr && std::string_view(name) == "colours.custom") {
+            if (value != 0 && !settings.colours.custom) {
+                settings.colours = settings.colours.drawn(settings.dark);
+            }
+            settings.colours.custom = value != 0;
+        }
         else {
             return noSetting(name);
         }
@@ -725,6 +731,10 @@ plotcore_status plotcore_set_colour(plotcore_figure* figure, const char* name, p
         if (field == nullptr) {
             return noSetting(name);
         }
+        // Choosing one pins all three at what they are drawn as first, so the
+        // two not chosen stay where they were -- as the viewer's swatches do.
+        settings.colours = settings.colours.drawn(settings.dark);
+        settings.colours.custom = true;
         settings.colours.*(field->member) = colourOf(value);
         figure->figure.setSettings(settings);
         return PLOTCORE_OK;
@@ -741,6 +751,9 @@ plotcore_status plotcore_get_bool(const plotcore_figure* figure, const char* nam
     }
     else if (name != nullptr && std::string_view(name) == "colours.reversed") {
         answer = settings.colours.reversed;
+    }
+    else if (name != nullptr && std::string_view(name) == "colours.custom") {
+        answer = settings.colours.custom;
     }
     else {
         return noSetting(name);
@@ -819,7 +832,9 @@ plotcore_status plotcore_get_colour(const plotcore_figure* figure, const char* n
         return noSetting(name);
     }
     if (value != nullptr) {
-        *value = rgbaOf(figure->figure.settings().colours.*(field->member));
+        // As drawn: a colour nobody chose is the ground's.
+        const FigureSettings& settings = figure->figure.settings();
+        *value = rgbaOf(settings.colours.drawn(settings.dark).*(field->member));
     }
     return PLOTCORE_OK;
 }

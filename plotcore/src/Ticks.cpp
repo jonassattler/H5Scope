@@ -44,7 +44,6 @@ bool usableBase(double base)
     return std::isfinite(base) && base > 1.0;
 }
 
-
 double fractionOn(double value, double low, double high, bool logarithmic, double base)
 {
     if (logarithmic && (!(low > 0.0) || !(high > 0.0) || !usableBase(base))) {
@@ -79,17 +78,21 @@ int decimalsFor(double span)
     return static_cast<int>(std::max(0.0, std::min(6.0, wanted)));
 }
 
-std::string labelFor(double value, double span)
+std::string labelFor(double value, double low, double high)
 {
-    const double width = std::abs(span);
+    const double width = std::abs(high - low);
     if (width >= 1e6 || (width > 0.0 && width < 1e-4)) {
         if (value == 0.0) {
             return "0";
         }
-        const double figures = std::ceil(std::log10(std::abs(value) / width)) + 2.0;
+        // Of the axis and not of the value, so every number on it has as many
+        // figures as every other: asked of each value, the count stepped up
+        // wherever a tick passed the span.
+        const double magnitude = std::max(std::abs(low), std::abs(high));
+        const double figures = std::ceil(std::log10(magnitude / width)) + 2.0;
         return toExponential(value, static_cast<int>(std::max(1.0, std::min(15.0, figures))));
     }
-    return toFixed(value, decimalsFor(span));
+    return toFixed(value, decimalsFor(high - low));
 }
 
 std::string trimmed(const std::string& text)
@@ -125,7 +128,7 @@ std::string logLabelFor(double value)
 
 std::string axisLabel(double value, double low, double high, bool logarithmic)
 {
-    return logarithmic ? logLabelFor(value) : labelFor(value, high - low);
+    return logarithmic ? logLabelFor(value) : labelFor(value, low, high);
 }
 
 std::vector<double> ticksBetween(double low, double high, double step)
@@ -394,7 +397,7 @@ TickSet tickValues(double low, double high, bool logarithmic, double base, doubl
     }
     set.values = ticksBetween(low, high, niceStep(high - low, style.target));
     for (const double v : set.values) {
-        const std::string text = labelFor(v, high - low);
+        const std::string text = labelFor(v, low, high);
         set.texts.push_back(TickLabel{text, "", text});
     }
     set.ticks = set.values;

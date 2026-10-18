@@ -120,7 +120,10 @@ struct TickStyle
 
 [[nodiscard]] double niceStep(double span, double target);
 [[nodiscard]] int decimalsFor(double span);
-[[nodiscard]] std::string labelFor(double value, double span);
+/// One tick of an axis running `low`..`high`, written: with as many figures as
+/// every other number on that axis, which is decided by the axis and not by
+/// the value (PlotFrame.labelFor).
+[[nodiscard]] std::string labelFor(double value, double low, double high);
 [[nodiscard]] std::string trimmed(const std::string& text);
 [[nodiscard]] std::string logLabelFor(double value);
 [[nodiscard]] std::string axisLabel(double value, double low, double high, bool logarithmic);

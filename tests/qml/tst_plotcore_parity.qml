@@ -95,6 +95,8 @@ TestCase {
         { low: 1, high: 1.001, log: false, base: 10 },
         { low: 99.99, high: 100.01, log: false, base: 10 },
         { low: -32768, high: 32767, log: false, base: 10 },
+        { low: 2.6e6, high: 6.6e6, log: false, base: 10 },
+        { low: -3e7, high: 4.5e7, log: false, base: 10 },
         // decades: one, two, under one, thirty, inside one, across many
         { low: 1, high: 10, log: true, base: 10 },
         { low: 1, high: 100, log: true, base: 10 },
@@ -209,10 +211,14 @@ TestCase {
     }
 
     function test_a_label_is_written_as_the_frame_writes_it() {
-        for (const span of [1, 1e-5, 2e6, 0.37, 300, 1e-4, 1e6])
-            for (const v of [0, 1.5, -2.25, 1700000123.4567, 0.000123, 12345.678])
-                compare(PlotCore.labelFor(v, span), frame.labelFor(v, span),
-                        "labelFor(" + v + ", " + span + ")")
+        // Ranges where the axis and the value disagree about how far above the
+        // span they sit, which is where the count of figures is decided.
+        for (const [low, high] of [[0, 1], [0, 1e-5], [0, 2e6], [-0.2, 0.17], [100, 400],
+                                   [1, 1.0001], [0, 1e6], [2.6e6, 6.6e6], [-3e7, 4.5e7],
+                                   [1.00012, 1.00019], [1.7e9, 1.7e9 + 2e6]])
+            for (const v of [0, 1.5, -2.25, 1700000123.4567, 0.000123, 12345.678, 4.5e6])
+                compare(PlotCore.labelFor(v, low, high), frame.labelFor(v, low, high),
+                        "labelFor(" + v + ", " + low + ", " + high + ")")
         for (const v of [1, 2, 0.001, 0.0002, 3e7, 123456, 1.23456, 5e-5, 7])
             compare(PlotCore.logLabelFor(v), frame.logLabelFor(v), "logLabelFor(" + v + ")")
     }
@@ -355,7 +361,8 @@ TestCase {
             rangeTo: surface.colorRangeTo,
             reversed: surface.colorsReversed,
             from: surface.colorFrom,
-            to: surface.colorTo
+            to: surface.colorTo,
+            custom: surface.colorsCustom
         }
     }
 
@@ -407,9 +414,13 @@ TestCase {
                     surface.colorMode = mode
                     // The defaults, and colours a token could not have put
                     // there, which paperColor() has to leave alone.
-                    surface.colorSingle = chosen ? "#3366cc" : Theme.accent
-                    surface.colorRangeFrom = chosen ? "#33cc66" : Theme.accent
-                    surface.colorRangeTo = chosen ? "#cc6633" : Theme.info
+                    // Unchosen, the values DatasetMemory would have filed on
+                    // the dark theme, which neither side may draw on the light
+                    // one.
+                    surface.colorSingle = chosen ? "#3366cc" : Theme.sig500
+                    surface.colorRangeFrom = chosen ? "#33cc66" : Theme.sig500
+                    surface.colorRangeTo = chosen ? "#cc6633" : Theme.cyan500
+                    surface.colorsCustom = chosen
                     for (const band of [[0, 1], [0.2, 0.7]]) {
                         surface.colorFrom = band[0]
                         surface.colorTo = band[1]
@@ -455,6 +466,7 @@ TestCase {
             surface.colorSingle = Theme.accent
             surface.colorRangeFrom = Theme.accent
             surface.colorRangeTo = Theme.info
+            surface.colorsCustom = false
             surface.colorFrom = 0
             surface.colorTo = 1
             surface.colorsReversed = false

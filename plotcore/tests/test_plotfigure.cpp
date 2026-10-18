@@ -715,17 +715,33 @@ TEST_CASE("a colour nobody chose follows the ground, and one somebody chose stay
     Figure figure = figureOf({ramp(10, 0.0, 1.0)});
     FigureSettings settings = figure.settings();
     REQUIRE(settings.dark);
+    REQUIRE_FALSE(settings.colours.custom);
     settings.colours.mode = "same";
-    settings.colours.rangeTo = Rgba::of(0.2, 0.4, 0.6);
+    // Held as values, as a saved view or a host's copy holds them, and not
+    // chosen: the ground's are drawn.
+    settings.colours.single = LineColours::defaults(true).single;
     figure.setSettings(settings);
     REQUIRE(figure.scene().lines.front().colour == LineColours::defaults(true).single);
-
     settings.dark = false;
     figure.setSettings(settings);
-    REQUIRE(figure.settings().colours.single == LineColours::defaults(false).single);
-    REQUIRE(figure.settings().colours.rangeFrom == LineColours::defaults(false).rangeFrom);
-    REQUIRE(figure.settings().colours.rangeTo == Rgba::of(0.2, 0.4, 0.6));
     REQUIRE(figure.scene().lines.front().colour == LineColours::defaults(false).single);
+
+    settings.colours.single = Rgba::of(0.2, 0.4, 0.6);
+    settings.colours.custom = true;
+    figure.setSettings(settings);
+    REQUIRE(figure.scene().lines.front().colour == Rgba::of(0.2, 0.4, 0.6));
+    settings.dark = true;
+    figure.setSettings(settings);
+    REQUIRE(figure.scene().lines.front().colour == Rgba::of(0.2, 0.4, 0.6));
+
+    SECTION("a view written before the flag says by its colours whether they were chosen")
+    {
+        Figure old = figureOf({ramp(10, 0.0, 1.0)});
+        REQUIRE(old.restore(R"({"plotcore":1,"colours":{"mode":"same","single":"#ffffff"}})"));
+        REQUIRE_FALSE(old.settings().colours.custom);
+        REQUIRE(old.restore(R"({"plotcore":1,"colours":{"mode":"same","single":"#336699"}})"));
+        REQUIRE(old.settings().colours.custom);
+    }
 }
 
 TEST_CASE("a window finer than what is held is drawn at what is held", "[plot]")

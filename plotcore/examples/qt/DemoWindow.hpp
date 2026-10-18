@@ -65,6 +65,7 @@ private:
     void saveView();
     void loadView();
     void exportPicture();
+    void repaintSwatches();
 
     plotcore::FigureSettings settings() const;
 
@@ -125,6 +126,9 @@ private:
     QDoubleSpinBox* exportHeight_ = nullptr;
     QDoubleSpinBox* exportScale_ = nullptr;
 
+    /// Whether the three colours below were chosen; until they are, the
+    /// ground's are drawn (LineColours::custom).
+    bool coloursCustom_ = false;
     plotcore::Rgba singleColour_;
     plotcore::Rgba rangeFromColour_;
     plotcore::Rgba rangeToColour_;
