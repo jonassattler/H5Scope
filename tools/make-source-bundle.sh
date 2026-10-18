@@ -110,6 +110,23 @@ mkdir -p "$staging"
 # along into something published.
 git archive --format=tar HEAD | tar -x -C "$staging"
 
+# ...and every submodule at the commit this one pins, which git archive leaves
+# out without a word: plotcore, the plot's arithmetic, is a repository of its
+# own and is compiled into the binary, so a bundle without it is a bundle that
+# does not build and is not the Corresponding Source. Archived from its own
+# repository rather than copied, for the reason above, and at $sha1 -- the
+# commit this one records -- rather than at whatever happens to be checked out
+# there. foreach runs inside each submodule, hence the absolute path.
+staging_root="$(cd "$staging" && pwd)"
+export staging_root
+git submodule foreach --quiet --recursive \
+  'git archive --format=tar --prefix="$displaypath/" "$sha1" | tar -x -C "$staging_root"'
+if [[ ! -f "$staging/plotcore/CMakeLists.txt" ]]; then
+  echo "error: plotcore/ is not in the bundle -- is the submodule checked out?" >&2
+  echo "       git submodule update --init" >&2
+  exit 1
+fi
+
 cat > "$staging/cmake/BundleVersion.cmake" <<EOF
 # SPDX-FileCopyrightText: 2026 Jonas Sattler
 # SPDX-License-Identifier: GPL-3.0-only

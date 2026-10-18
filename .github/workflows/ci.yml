@@ -37,6 +37,27 @@ jobs:
       - name: The release-notes gate still refuses what it should
         run: bash tools/test-release-notes.sh
 
+      # plotcore is pinned by commit, and a commit on a branch of its own
+      # repository can be force-pushed away or never merged. What main and a
+      # tag pin must be on plotcore's main. A branch may pin anything -- that
+      # is how a change to both repositories is tried before the library's
+      # half has merged -- and is told so rather than failed.
+      - name: The pinned plotcore is on plotcore's main
+        run: |
+          pinned="$(git ls-tree HEAD plotcore | awk '{print $3}')"
+          url="$(git config -f .gitmodules submodule.plotcore.url)"
+          git clone --quiet --bare "$url" "$RUNNER_TEMP/plotcore.git"
+          if git -C "$RUNNER_TEMP/plotcore.git" merge-base --is-ancestor "$pinned" main 2>/dev/null; then
+            echo "plotcore $pinned is on its main"
+            exit 0
+          fi
+          message="plotcore is pinned at $pinned, which is not on the main of $url"
+          if [ "$GITHUB_REF" = refs/heads/main ] || [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "::error::$message"
+            exit 1
+          fi
+          echo "::warning::$message -- merge the library's pull request before this one"
+
       # A tag is a release, and a release says what changed in it. Checked in
       # this job rather than in the one that publishes: that one runs after
       # both builds, so a tag pushed without notes would fail twenty-six
@@ -44,221 +65,6 @@ jobs:
       - name: A tag carries notes
         if: startsWith(github.ref, 'refs/tags/v')
         run: bash tools/release-notes.sh "${GITHUB_REF_NAME#v}" --check
-
-  # The plot's arithmetic on its own: plotcore/ with plain CMake and whatever
-  # compiler the runner has, no vcpkg, no Qt and no HDF5. Minutes rather than
-  # the better part of an hour, and the one job that notices a dependency on
-  # the viewer creeping back into the library -- the viewer's own build would
-  # carry it without complaint.
-  plotcore:
-    name: plotcore alone (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Configure
-        run: cmake -S plotcore -B build/plotcore -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build/plotcore --config Release --parallel
-
-      - name: Test
-        run: ctest --test-dir build/plotcore -C Release --output-on-failure --parallel 4
-
-      - name: Install, and build a project against what was installed
-        shell: bash
-        run: |
-          cmake --install build/plotcore --config Release --prefix "$RUNNER_TEMP/plotcore"
-          mkdir -p "$RUNNER_TEMP/consumer"
-          cat > "$RUNNER_TEMP/consumer/CMakeLists.txt" <<'EOF'
-          cmake_minimum_required(VERSION 3.26)
-          project(consumer CXX)
-          find_package(plotcore 0.1 REQUIRED)
-          add_executable(consumer main.cpp)
-          target_link_libraries(consumer PRIVATE plotcore::core)
-          EOF
-          cat > "$RUNNER_TEMP/consumer/main.cpp" <<'EOF'
-          #include <plotcore/Pyramid.hpp>
-          #include <vector>
-          int main()
-          {
-              std::vector<double> line(100000, 1.0);
-              line[777] = 9.0;
-              const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 100000, 1);
-              std::vector<double> values;
-              std::vector<double> positions;
-              long long stride = 0;
-              double step = 0.0;
-              if (!plotcore::fillWhole(pyramid, 100, values, stride, step, &positions)) {
-                  return 3;
-              }
-              for (std::size_t i = 0; i < values.size(); ++i) {
-                  if (values[i] == 9.0) {
-                      return positions[i] == 777.0 ? 0 : 1;
-                  }
-              }
-              return 2;
-          }
-          EOF
-          cmake -S "$RUNNER_TEMP/consumer" -B "$RUNNER_TEMP/consumer/build" \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/plotcore" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$RUNNER_TEMP/consumer/build" --config Release
-          if [ -x "$RUNNER_TEMP/consumer/build/consumer" ]; then
-            "$RUNNER_TEMP/consumer/build/consumer"
-          else
-            "$RUNNER_TEMP/consumer/build/Release/consumer.exe"
-          fi
-
-      # ...and from C, through the one shared library the Python and Rust
-      # bindings load: its header, its import library and its exports, as an
-      # installed package rather than as a target in this tree.
-      - name: Build a C program against the installed C interface
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/cconsumer"
-          cat > "$RUNNER_TEMP/cconsumer/CMakeLists.txt" <<'EOF'
-          cmake_minimum_required(VERSION 3.26)
-          project(cconsumer C)
-          find_package(plotcore 0.1 REQUIRED)
-          add_executable(cconsumer main.c)
-          target_link_libraries(cconsumer PRIVATE plotcore::c)
-          EOF
-          cat > "$RUNNER_TEMP/cconsumer/main.c" <<'EOF'
-          #include <plotcore.h>
-          #include <stdio.h>
-          int main(void)
-          {
-              if (plotcore_abi_version() != PLOTCORE_ABI_VERSION) {
-                  return 1;
-              }
-              double line[1000];
-              for (int i = 0; i < 1000; ++i) {
-                  line[i] = i == 777 ? 9.0 : 1.0;
-              }
-              plotcore_figure* figure = plotcore_figure_new();
-              if (plotcore_add_line(figure, line, 1000, "spike", NULL) != PLOTCORE_OK) {
-                  return 2;
-              }
-              plotcore_set_size(figure, 640, 400, 1);
-              plotcore_scene* scene = plotcore_scene_new(figure);
-              const int drawn = scene != NULL && plotcore_scene_line_count(scene) == 1;
-              printf("plotcore %s: %s\n", plotcore_version(), drawn ? "drawn" : "not drawn");
-              plotcore_scene_free(scene);
-              plotcore_figure_free(figure);
-              return drawn ? 0 : 3;
-          }
-          EOF
-          cmake -S "$RUNNER_TEMP/cconsumer" -B "$RUNNER_TEMP/cconsumer/build" \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/plotcore" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$RUNNER_TEMP/cconsumer/build" --config Release
-          export PATH="$RUNNER_TEMP/plotcore/bin:$PATH"
-          export LD_LIBRARY_PATH="$RUNNER_TEMP/plotcore/lib:$RUNNER_TEMP/plotcore/lib64"
-          if [ -x "$RUNNER_TEMP/cconsumer/build/cconsumer" ]; then
-            "$RUNNER_TEMP/cconsumer/build/cconsumer"
-          else
-            "$RUNNER_TEMP/cconsumer/build/Release/cconsumer.exe"
-          fi
-
-  # plotcore for Python: the wheel built as it would be shipped -- on Linux in
-  # the manylinux_2_28 image, which is the RHEL 8 floor's glibc, and repaired
-  # to that tag -- then installed on a plain runner and tested, PyQt6 and
-  # matplotlib included, against the golden digest the C test wrote. Uploaded
-  # as an artefact and published nowhere.
-  python:
-    name: plotcore for Python (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build the wheel (manylinux_2_28)
-        if: runner.os == 'Linux'
-        run: |
-          docker run --rm -v "$PWD:/io" -w /io quay.io/pypa/manylinux_2_28_x86_64 bash -c '
-            set -e
-            /opt/python/cp312-cp312/bin/python -m pip wheel ./plotcore/python -w /tmp/dist
-            auditwheel repair /tmp/dist/plotcore-*.whl -w /io/wheelhouse
-            chmod -R a+rwX /io/wheelhouse'
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Build the wheel (Windows)
-        if: runner.os == 'Windows'
-        run: python -m pip wheel ./plotcore/python -w wheelhouse
-
-      # What PyQt6's own Qt needs from the system to start offscreen.
-      - name: Install what Qt needs
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libgl1
-
-      - name: Install the wheel
-        shell: bash
-        run: |
-          python -m pip install wheelhouse/plotcore-*.whl
-          python -m pip install pytest PyQt6 matplotlib
-
-      - name: Test
-        shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
-        # From outside the source tree, so the package imported is the one
-        # installed and not plotcore/python/src.
-        run: |
-          cd "$RUNNER_TEMP"
-          python -m pytest -q "$GITHUB_WORKSPACE/plotcore/python/tests"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: plotcore-python-${{ runner.os }}
-          path: wheelhouse/*.whl
-
-  # plotcore for Rust: the workspace at the toolchain rust-toolchain.toml pins,
-  # formatted, linted with warnings as errors, and tested -- the golden digest,
-  # the egui adapter driven headless, and the example's walk of every feature,
-  # which needs no display because it drives egui without a window.
-  rust:
-    name: plotcore for Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    defaults:
-      run:
-        working-directory: plotcore/rust
-    steps:
-      - uses: actions/checkout@v7
-
-      # What winit and the clipboard link against to build at all.
-      - name: Install what eframe needs
-        if: runner.os == 'Linux'
-        working-directory: .
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
-                                  libxcb-xfixes0-dev libwayland-dev
-
-      # With no name, rustup installs the one rust-toolchain.toml pins.
-      - name: Toolchain
-        run: rustup toolchain install && rustup show active-toolchain
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace --locked
 
   build:
     name: Build and test (release, RHEL 8 floor)
@@ -285,10 +91,12 @@ jobs:
       # and a shallow clone answers that about the commits it was given rather
       # than the commits there are. cmake/Version.cmake refuses to version a
       # shallow build rather than reporting a wrong number, so without this
-      # every CI build would call itself unversioned.
+      # every CI build would call itself unversioned. plotcore with it, which
+      # is a submodule: github.com/jonassattler/plotcore at the pinned commit.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          submodules: true
 
       # A from-source Qt needs more room than a runner ships with, and the
       # image is mostly toolchains this build has no use for. Reclaiming them
@@ -628,6 +436,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          submodules: true
 
       # Where vcpkg lives, and it is two decisions rather than one.
       #
@@ -908,6 +717,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          submodules: true
 
       # The binaries the build jobs already produced and tested. Rebuilding
       # them here would take hours and would publish different files than the

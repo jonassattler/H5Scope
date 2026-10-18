@@ -105,7 +105,14 @@ or redirect it to read it comfortably.
 ## Building
 
 Requirements everywhere: CMake 3.26 or newer, Ninja, a C++20 compiler, and
-[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set.
+[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. The plot's
+library is a submodule, so clone with `--recursive`:
+
+```sh
+git clone --recursive https://github.com/jonassattler/H5Scope.git
+```
+
+In a clone made without it, run `git submodule update --init`.
 
 ### Linux
 
@@ -183,6 +190,9 @@ affiliated with or endorsed by them.
 ## Libraries
 
 Everything is built and version-pinned by vcpkg; no system library is used.
+The one exception is the plot itself, which is this project's own:
+[plotcore](https://github.com/jonassattler/plotcore), the plot as a library for
+C++, Python and Rust, pinned by commit as a git submodule.
 
 | Library | What it is for |
 |---|---|
