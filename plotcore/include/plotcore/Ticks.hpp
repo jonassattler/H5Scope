@@ -23,6 +23,8 @@
 // What the QML takes from Theme -- a font's pixel size, how many rules a dense
 // grid aims for -- is a parameter here, because a library has no Theme.
 
+#include "plotcore/Projection.hpp"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -105,8 +107,10 @@ struct TickStyle
 
 /// Whether `base` is a base at all: finite and above one. A test, not a clamp.
 [[nodiscard]] bool usableBase(double base);
-/// The logarithm of `value` to `base`, by the exact functions for ten and two.
-[[nodiscard]] double logOf(double value, double base);
+// The logarithm to a base is Projection.hpp's logOf, which every axis here
+// places a value through. A second definition beside it was the same function
+// twice -- inline there and not here -- which GCC linked by picking one and
+// MSVC refused.
 /// Where `value` sits on an axis running `low`..`high`, as a fraction from
 /// `low`; zero where there is no axis to place it on.
 [[nodiscard]] double fractionOn(double value, double low, double high, bool logarithmic,

@@ -44,16 +44,6 @@ bool usableBase(double base)
     return std::isfinite(base) && base > 1.0;
 }
 
-double logOf(double value, double base)
-{
-    if (base == 10.0) {
-        return std::log10(value);
-    }
-    if (base == 2.0) {
-        return std::log2(value);
-    }
-    return std::log(value) / std::log(base);
-}
 
 double fractionOn(double value, double low, double high, bool logarithmic, double base)
 {
