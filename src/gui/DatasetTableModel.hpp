@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #pragma once
@@ -103,6 +104,13 @@ public:
         /// Row-major, size == rows * columns. NaN marks a cell that could not
         /// be read, so one bad element does not discard the block around it.
         std::vector<double> values;
+        /// The table position each value was read from, when `values` is an
+        /// envelope: the element `extremesOf` found the extreme at, rather
+        /// than half a bucket along from the last one. A bucket with nothing
+        /// finite in it stands at its own start. Same size and order as
+        /// `values`, ascending along the line, and empty when the values are
+        /// the samples -- a stride already says where each of those sits.
+        std::vector<double> positions;
         double minimum = 0.0; ///< over the finite values only
         double maximum = 0.0;
         bool hasFinite = false;

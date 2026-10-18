@@ -16,15 +16,7 @@
 #include <vector>
 
 namespace h5test {
-namespace {
 
-/// The line every assertion about reading, thinning and zooming is written
-/// against: a sine with one one-sample spike in it.
-///
-/// Written out once because two datasets are made of it -- `/trace` and the `v`
-/// member of `/series/trace_pairs` -- and those two being *the same numbers* is
-/// the whole point of having both. A second loop here would be a second line
-/// the day either was touched.
 std::vector<double> traceValues()
 {
     std::vector<double> data(20000);
@@ -34,6 +26,8 @@ std::vector<double> traceValues()
     data[12345] = 9.0;
     return data;
 }
+
+namespace {
 
 std::filesystem::path makeUniqueDirectory(const std::string& stem)
 {

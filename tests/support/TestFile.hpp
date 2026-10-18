@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace h5test {
 
@@ -62,5 +63,17 @@ private:
 ///   /link_to_matrix          hard link to /matrix (cycle-detection input)
 ///
 void writeFixture(const std::string& path);
+
+/// The line every assertion about reading, thinning and zooming is written
+/// against: a sine with one one-sample spike in it.
+///
+/// Written out once because two datasets are made of it -- `/trace` and the `v`
+/// member of `/series/trace_pairs` -- and those two being *the same numbers* is
+/// the whole point of having both. A second loop here would be a second line
+/// the day either was touched.
+///
+/// Exposed so a test can say which element a drawn value is without writing
+/// the line out a second time.
+std::vector<double> traceValues();
 
 } // namespace h5test

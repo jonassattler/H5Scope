@@ -25,6 +25,15 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.2
+
+**A plot draws each peak where it is.** The highest and lowest value of each
+pixel column were drawn at fixed places inside it, so a spike could appear up
+to half a column away from the sample that holds it, and a steep rise kinked
+at every column. Both plots now draw each at its own sample, and the crosshair
+reads it there. A line drawn against a time base also reaches its last sample
+instead of stopping one short.
+
 ## 0.7.1
 
 **A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a

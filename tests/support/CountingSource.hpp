@@ -131,7 +131,21 @@ public:
             position *= info_.shape[d];
             position += (d < index.size()) ? index[d] : 0;
         }
-        return static_cast<double>(position);
+        return scrambled_ ? scramble(position) : static_cast<double>(position);
+    }
+
+    /// Answer `scramble(position)` from here on rather than the position.
+    ///
+    /// On the position itself a value and the place it is drawn at are one
+    /// number, so a check that a drawn value is the element at its position
+    /// cannot tell an element from a point drawn between two of them -- a
+    /// value of 10.5 at position 10.5 passes. Scrambled, it can.
+    void setScrambled(bool scrambled) { scrambled_ = scrambled; }
+
+    /// A whole number that is not its position, with no two neighbours alike.
+    [[nodiscard]] static double scramble(hsize_t position)
+    {
+        return static_cast<double>((position * 2654435761ULL) % 1000003ULL);
     }
 
     // --- the reads themselves ----------------------------------------------
@@ -246,6 +260,7 @@ private:
 
     h5core::DatasetInfo info_;
     std::string path_ = "/counted";
+    bool scrambled_ = false;
 
     // Written on the HDF5 thread, read on the caller's after it has drained.
     // Atomic rather than relying on that ordering, because a test that gets

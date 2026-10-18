@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
+// SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
 #pragma once
@@ -30,6 +31,12 @@
 // is the number that makes this constant-time in the size of the dataset --
 // while the levels above the base add only a third of the base's size instead
 // of all of it.
+//
+// Every level of pairs also holds where each of its values is, which doubles
+// what those levels cost. Asked for afterwards, a value's element is a walk
+// down every level below it, and a frame asks that of several thousand values:
+// it made a closer look ten times the cost of folding it. Kept from the build,
+// where the fold finds the element anyway, every answer is a copy.
 //
 // No Qt in this header, for PlotProjection.hpp's reason: it is arithmetic over
 // doubles and tests/test_plotlevels.cpp asserts it with no file, no thread and
@@ -70,6 +77,15 @@ struct PyramidLevel
     /// a pair per bucket, its two extremes in the order they occurred.
     std::vector<double> values;
 
+    /// The element each of `values` is, for a level of pairs; empty for a
+    /// base of the elements themselves, whose index already says.
+    ///
+    /// Written as the level is built, out of the fold that already finds each
+    /// extreme -- see PlotLine::positions for why the drawing wants it. Held as
+    /// doubles because that is what the renderer is handed, and exact: a double
+    /// counts every element of any line that fits in memory.
+    std::vector<double> at;
+
     [[nodiscard]] long long buckets() const
     {
         const auto size = static_cast<long long>(values.size());
@@ -101,9 +117,11 @@ struct LinePyramid
 
 /// Doubles a whole pyramid over `length` elements at base bucket `base` costs.
 ///
-/// The base is `length` doubles when `base` is 1 and `2 * ceil(length / base)`
-/// otherwise; the levels above it add a third as much again, because each is a
-/// quarter of the one below and a quarter sums to a third.
+/// Counted level by level as buildLevels() makes them rather than summed as a
+/// series, which is what this was and what it got wrong: over a base of the
+/// elements the first level above holds two values for every four elements,
+/// so the levels above come to two thirds of the base and not the third the
+/// series said. Every level of pairs also holds a position for each value.
 [[nodiscard]] long long pyramidDoubles(long long length, long long base);
 
 /// The finest base bucket whose whole pyramid fits `budget` doubles.
@@ -183,6 +201,9 @@ private:
     LinePyramid pyramid_;
     long long base_ = 1;
     long long taken_ = 0;
+    /// Elements folded into the base so far: the index of the next one, which
+    /// is what each extreme of a coarse base is counted from.
+    long long folded_ = 0;
     /// Elements read but not yet folded into the base.
     std::vector<double> carry_;
 };
@@ -202,8 +223,18 @@ private:
 /// pair per bucket otherwise. False when the pyramid cannot answer -- it holds
 /// nothing, or the window is finer than its base, or the window is not aligned
 /// to a bucket the pyramid has. The caller reads the file for those.
+///
+/// `positions`, when it is set, receives the element each value of an envelope
+/// is: one index per value in `out`, in the same order, out of the positions
+/// every level holds (PyramidLevel::at) -- a copy, or kept by the same merge
+/// that coarsens the values. The value is always the element at its position:
+/// an envelope is a choice of elements, never something drawn between two of
+/// them. That holds over a coarse base too, because the base was folded out of
+/// the elements while they were in hand. Cleared when the bucket is one,
+/// because those values *are* the elements and the step already says where
+/// each one sits.
 [[nodiscard]] bool fillWindow(const LinePyramid& pyramid, const PlotWindow& window,
-                              std::vector<double>& out);
+                              std::vector<double>& out, std::vector<double>* positions = nullptr);
 
 /// Fold the whole line into about `buckets` buckets, as the whole-line summary.
 ///
@@ -213,8 +244,12 @@ private:
 /// is a distinction only a line too large to hold raw ever notices: with a base
 /// of one every stride is a multiple of it and the answer is what the file
 /// would have given, element for element.
+///
+/// `positions` is fillWindow()'s. `step` stays half a bucket either way, since
+/// it is what turns a window back into a range of indices.
 [[nodiscard]] bool fillWhole(const LinePyramid& pyramid, int buckets, std::vector<double>& out,
-                             long long& stride, double& step);
+                             long long& stride, double& step,
+                             std::vector<double>* positions = nullptr);
 
 /// The extremes of elements `[first, last)`, out of whichever levels cover
 /// that run in the fewest buckets.
@@ -226,9 +261,8 @@ private:
 /// the base there is nothing left to cut with; with a base of one that rounds
 /// nothing.
 ///
-/// `lowAt` and `highAt` say where each extreme sat closely enough to put the
-/// two in the order they occurred -- the element itself at the base, a bucket's
-/// start or middle above it -- which is all Extremes::first() asks of them.
+/// `lowAt` and `highAt` are the elements the extremes are, read out of the
+/// positions of whichever level held each one.
 [[nodiscard]] Extremes extremesOver(const LinePyramid& pyramid, long long first, long long last);
 
 /// The smallest value above zero anywhere in the line, into `out`; false when
@@ -256,8 +290,9 @@ private:
 /// A column narrow enough to hold one or two elements holds *them*, drawn at
 /// their own positions, because an envelope of two elements is those two
 /// elements with a claim of summary on them; anything wider is its extremes,
-/// in the order they occurred, at its first element and half way along it --
-/// half a bucket apart, as every envelope here is.
+/// in the order they occurred, at the elements extremesOver() names. Drawing
+/// them at the column's first element and half way along it split a rise
+/// across two columns by distance rather than by where the extreme was.
 struct ColumnFold
 {
     std::vector<double> values;

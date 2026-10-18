@@ -2487,6 +2487,64 @@ TEST_CASE_METHOD(ControllerFixture,
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture,
+                 "an envelope's positions go on being read until they are replaced",
+                 "[plot][positions]")
+{
+    // The same contract for the second array an envelope lends: where each of
+    // its extremes is. A re-thin for another pane width and a closer look let
+    // go of runs the item is still drawing, so their positions have to be
+    // retired with their values -- or the crosshair bisects freed memory to
+    // find the spike. Dereferenced, for the reason the case above gives.
+    auto* plot = controller.datasetPlot();
+    gui::PlotItem item;
+    REQUIRE(h5test::selectAndSettle(controller, "/trace")); // 20000, a spike of 9 at 12345
+    const gui::PlotLine whole = plot->lineOf(0);
+    REQUIRE(whole.summarised);
+    REQUIRE(whole.positions != nullptr);
+
+    const auto readsSpike = [&](double low, double high) {
+        frameOver(item, low, high, -10.0, 10.0);
+        // A value of 9 is 95% of the way up a pane 300 high.
+        const QVariantMap found =
+            item.nearestSample((12345.0 - low) / (high - low) * 400.0, 300.0 * 0.05);
+        REQUIRE(found.value(QStringLiteral("valid")).toBool());
+        CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(9.0));
+        CHECK(found.value(QStringLiteral("x")).toDouble() == Catch::Approx(12345.0));
+    };
+    plot->fill(&item);
+    readsSpike(0.0, 19999.0);
+
+    SECTION("the pane changing width, which folds every line again")
+    {
+        plot->setPaneColumns(256);
+        h5test::settleFor(gui::DatasetPlot::kResizeMilliseconds + 200);
+        (void)plot->minimum();
+        readsSpike(0.0, 19999.0);
+        plot->fill(&item);
+        readsSpike(0.0, 19999.0);
+    }
+
+    SECTION("a closer look let go of on the way back out")
+    {
+        plot->setVisibleRange(8000.0, 16000.0);
+        h5test::settleFor(300);
+        plot->fill(&item);
+        const gui::PlotLine closer = plot->lineOf(0);
+        REQUIRE(closer.summarised);
+        REQUIRE(closer.positions != nullptr);
+        REQUIRE(closer.positionStart > 0.0);
+        readsSpike(8000.0, 16000.0);
+
+        plot->setVisibleRange(0.0, 19999.0);
+        h5test::settleFor(300);
+        REQUIRE(plot->lineOf(0).positionStart == 0.0);
+        readsSpike(8000.0, 16000.0); // what it was handed, still there
+        plot->fill(&item);
+        readsSpike(0.0, 19999.0);
+    }
+}
+
 TEST_CASE_METHOD(ControllerFixture, "a closer look resolves what the summary could not",
                  "[plot]")
 {

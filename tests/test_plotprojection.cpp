@@ -14,6 +14,7 @@
 // something that was drawn -- and which is why the projection is a separate
 // unit from the item that owns a scene graph node.
 
+#include "gui/PlotLevels.hpp"
 #include "gui/PlotProjection.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -1962,4 +1963,162 @@ TEST_CASE("an axis of its own with no span draws nothing", "[plot][axes]")
     line.yMin = 3.0;
     line.yMax = 3.0;
     CHECK_FALSE(gui::yMappingOf(gui::lineView(line, paneOver(0.0, 1.0, 0.0, 1.0))).usable);
+}
+
+// --- each extreme where it is ----------------------------------------------
+//
+// An envelope's two extremes did not occur at their bucket's start and its
+// middle, and drawing them there put a spike on a bucket's last sample half a
+// bucket early. The renderer's own envelope knows the index of each extreme
+// as it scans; a line handed over as an envelope says where each one is in
+// PlotLine::positions. Either way the extreme is drawn at the element it is.
+
+namespace {
+
+/// A flat line with a one-sample spike at `at`.
+std::vector<double> spikeAt(std::size_t count, std::size_t at)
+{
+    std::vector<double> values(count, 0.0);
+    values[at] = 10.0;
+    return values;
+}
+
+/// The drawn point with the smallest pixel y, which is the highest value.
+QPointF topmost(const Projected& drawn)
+{
+    QPointF best(0.0, std::numeric_limits<double>::infinity());
+    for (const QPointF& point : drawn.points) {
+        if (point.y() < best.y()) {
+            best = point;
+        }
+    }
+    return best;
+}
+
+} // namespace
+
+TEST_CASE("a spike on a bucket's last sample is drawn at that sample", "[plot][positions]")
+{
+    // A hundred thousand samples across a thousand columns is a renderer
+    // bucket of 128, and 38527 is the last sample of bucket 300. Drawn at the
+    // bucket's middle it would stand at 38464, sixty-three samples early.
+    const std::size_t spike = 128 * 300 + 127;
+    const std::vector<double> values = spikeAt(100000, spike);
+    const gui::PlotView view = paneOver(0.0, 99999.0, -1.0, 11.0);
+
+    const Projected drawn = project(lineOver(values), gui::PlotAxis{}, view);
+    REQUIRE_FALSE(drawn.points.empty());
+    const QPointF top = topmost(drawn);
+    CHECK(top.x() ==
+          Approx(gui::xFractionOf(static_cast<double>(spike), view) * view.width).epsilon(1e-12));
+}
+
+TEST_CASE("a line that names its positions is still thinned for a narrower pane",
+          "[plot][positions]")
+{
+    // An envelope at bucket 16 of a hundred thousand samples is 12,500 points,
+    // twelve a column of a thousand-column pane. The renderer folds it again,
+    // as it folds any line that dense -- naming positions is a statement about
+    // where the points are, not a licence to draw all of them.
+    const std::size_t spike = 16 * 2000 + 15;
+    const std::vector<double> raw = spikeAt(100000, spike);
+    std::vector<double> values;
+    std::vector<double> positions;
+    gui::reduceBucketsLocated(raw.data(), static_cast<long long>(raw.size()), 16, 0, values,
+                              positions);
+    REQUIRE(values.size() == 12500);
+
+    gui::PlotLine line = lineOver(values);
+    line.positionStep = 8.0;
+    line.positions = positions.data();
+    line.summarised = true;
+    const gui::PlotView view = paneOver(0.0, 99999.0, -1.0, 11.0);
+
+    const Projected drawn = project(line, gui::PlotAxis{}, view);
+    REQUIRE_FALSE(drawn.points.empty());
+    // Four stations a column is the most the renderer draws straight.
+    CHECK(drawn.points.size() <= static_cast<std::size_t>(4.0 * view.width));
+    // ...and the spike stands at its own sample, not at its place in the summary.
+    const QPointF top = topmost(drawn);
+    CHECK(top.x() ==
+          Approx(gui::xFractionOf(static_cast<double>(spike), view) * view.width).epsilon(1e-12));
+}
+
+TEST_CASE("a line that names its positions is clipped to the window by them", "[plot][positions]")
+{
+    // Zoomed in to a thousand samples of the same envelope: the points drawn
+    // are the ones whose positions are on screen, plus one either side, and
+    // every one of them stands at its own element.
+    const std::vector<double> raw = spikeAt(100000, 50007);
+    std::vector<double> values;
+    std::vector<double> positions;
+    gui::reduceBucketsLocated(raw.data(), static_cast<long long>(raw.size()), 16, 0, values,
+                              positions);
+    gui::PlotLine line = lineOver(values);
+    line.positionStep = 8.0;
+    line.positions = positions.data();
+    line.summarised = true;
+
+    const gui::PlotView view = paneOver(49500.0, 50500.0, -1.0, 11.0);
+    const Projected drawn = project(line, gui::PlotAxis{}, view);
+    REQUIRE_FALSE(drawn.points.empty());
+    for (const QPointF& point : drawn.points) {
+        const double x = view.xMin + point.x() / view.width * (view.xMax - view.xMin);
+        CHECK(x >= 49500.0 - 16.0);
+        CHECK(x <= 50500.0 + 16.0);
+        CHECK(std::abs(x - std::round(x)) < 1e-6); // an element, not between two
+    }
+    CHECK(topmost(drawn).x() ==
+          Approx(gui::xFractionOf(50007.0, view) * view.width).epsilon(1e-12));
+}
+
+TEST_CASE("a stretched line places its positions by one factor", "[plot][positions]")
+{
+    // A custom tab's Stretch spreads a line over a longer axis; its extremes
+    // land at their elements times the stretch, with no array of scaled
+    // positions anywhere.
+    const std::vector<double> values{1.0, 5.0, 2.0, 7.0};
+    const std::vector<double> positions{0.0, 3.0, 4.0, 7.0};
+    gui::PlotLine line = lineOver(values);
+    line.positionStep = 2.0;
+    line.positions = positions.data();
+    line.positionScale = 2.5;
+
+    CHECK(gui::xOf(line, gui::PlotAxis{}, 1) == Approx(7.5));
+    CHECK(gui::xOf(line, gui::PlotAxis{}, 3) == Approx(17.5));
+}
+
+TEST_CASE("a line reaches the last time of its time base", "[plot][positions]")
+{
+    // A thousand samples against a time base of a thousand, thinned to pairs
+    // of ten: its drawn points sit five positions apart, the last of them at
+    // 995. The line's last sample is at 999 -- more than half a step past it,
+    // which rounded to one past the end and dropped the last point of every
+    // line drawn at its own elements against a time base.
+    std::vector<double> times(1000);
+    std::vector<double> values(1000);
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        times[i] = 0.5 * static_cast<double>(i);
+        values[i] = static_cast<double>(i % 7);
+    }
+    std::vector<double> summary;
+    gui::reduceBuckets(times.data(), static_cast<long long>(times.size()), 10, summary);
+    REQUIRE(summary.size() == 200);
+
+    gui::PlotAxis axis;
+    axis.values = summary.data();
+    axis.count = static_cast<qsizetype>(summary.size());
+    axis.valueStep = 5.0;
+
+    const gui::PlotLine line = lineOver(values);
+    CHECK(gui::xOf(line, axis, 999) == Approx(499.5));
+    const std::vector<QPointF> drawn = gui::samplesOf(line, axis);
+    REQUIRE(drawn.size() == values.size());
+    CHECK(drawn.back().x() == Approx(499.5));
+
+    // ...and a position that has reached the time base's next point is a line
+    // longer than its axis, which still stops.
+    gui::PlotLine longer = line;
+    longer.positionStart = 5.0;
+    CHECK(std::isnan(gui::xOf(longer, axis, 999)));
 }

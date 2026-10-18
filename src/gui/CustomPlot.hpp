@@ -451,7 +451,9 @@ private:
         /// Half a bucket, as `Entry::step` is.
         double step = 1.0;
         std::vector<double> values;
-
+        /// The element each of `values` is, borrowed and retired with them.
+        /// Empty when the run is the samples. See PlotLine::positions.
+        std::vector<double> positions;
     };
 
     struct Entry
@@ -488,6 +490,11 @@ private:
         /// Filled by the last read.
         QString problem;
         std::vector<double> values;
+        /// The element each of `values` is, when they are an envelope;
+        /// borrowed and retired with them. Unscaled: a stretched line is drawn
+        /// at these times PlotLine::positionScale, so nothing is rebuilt each
+        /// time the line is handed over.
+        std::vector<double> positions;
         double step = 1.0;    ///< axis positions between drawn points
         /// Whether those values are an envelope rather than the elements. See
         /// PlotLine::summarised, which is what this is read into: a dot on a
@@ -751,6 +758,8 @@ private:
     /// std::vector move takes the buffer with it, so the pointer the item holds
     /// goes on naming the same doubles.
     void retire(std::vector<double>& values) const;
+    /// Both of a run's buffers, which are always lent together.
+    void retire(Level& level) const;
     /// Say that the lines changed. It does not touch the renderer: whatever it
     /// is drawing stays on the pane until the surface fills it again, which is
     /// a frame later and is a frame of the old picture rather than of none.
