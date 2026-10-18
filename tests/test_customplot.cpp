@@ -22,6 +22,7 @@
 #include "gui/DatasetLookup.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/FigureItem.hpp"
 #include "gui/H5Session.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotCore.hpp"
@@ -2759,6 +2760,49 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at onc
         plot->fill(&item);
         CHECK(item.lineCount() == 0);
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a figure draws a custom tab's own axes and own colours",
+                 "[custom][figure]")
+{
+    // What a custom line chooses about itself -- an axis of its own, its
+    // name, a colour of its own -- is the plot's, and the figure is told it
+    // with the lines: drawn on that axis, numbered beside the pane in that
+    // colour, under that name.
+    gui::CustomPlot* plot = tab();
+    REQUIRE(plot != nullptr);
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+    plot->setSeparateAxis(1, true);
+    plot->setAxisLabel(1, QStringLiteral("second"));
+    plot->setEntryColor(1, QColor(QStringLiteral("#ff0000")));
+    settleAll();
+
+    gui::FigureItem figure;
+    figure.setWidth(800.0);
+    figure.setHeight(500.0);
+    figure.setXMinimum(0.0);
+    figure.setXMaximum(static_cast<double>(plot->sourcePointCount() - 1));
+    figure.setDataLength(plot->sourcePointCount());
+    figure.setPlot(plot);
+    figure.refill();
+    REQUIRE(figure.lineCount() == 2);
+    figure.compose();
+    const plotcore::Scene& scene = figure.lastScene();
+    REQUIRE(scene.lines.size() == 2);
+    CHECK_FALSE(scene.lines[0].own);
+    CHECK(scene.lines[1].own);
+    CHECK(scene.lines[1].numbered);
+    CHECK(scene.lines[1].colour.red == 1.0);
+    // The axis's name, beside the pane in the line's colour.
+    bool named = false;
+    for (const plotcore::TextItem& text : scene.texts()) {
+        named = named || (text.text == "second" && text.colour.red == 1.0);
+    }
+    CHECK(named);
+    // ...and the common axis is the first line's alone.
+    CHECK(figure.viewMinY() < plot->minimum());
+    CHECK(figure.viewMaxY() > plot->maximum());
 }
 
 TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is freed", "[custom]")

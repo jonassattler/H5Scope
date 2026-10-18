@@ -61,7 +61,7 @@ ctest --preset release
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
 | `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg.** It is a repository of its own, [jonassattler/plotcore](https://github.com/jonassattler/plotcore), pinned here as a git submodule — its CI builds it alone, which is what notices a dependency on the viewer creeping back in, and builds the libraries and demos above it. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/cpp/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore, the submodule* below. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects, and `FigureItem`, which hosts plotcore's whole `Figure` and is taking its place) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
@@ -398,7 +398,10 @@ each say so on every platform rather than on the one that noticed.
 
 Both plots keep that contract through one class, `gui::BorrowedLines`: which
 item is reading, the retired store, and the rule for when either is let go
-(`lend`, `retire`, `release`). Each plot used to carry its own copy, and the
+(`lend`, `retire`, `release`). What it lends to is a `LineTarget` -- the plot
+item, or the figure item -- and what the figure item asks of a plot is a
+`LineModel`, the shape both plots already had: their lines, what those lines
+span, and the news of what is being looked at. Each plot used to carry its own copy, and the
 two defects found in it -- `fill()` into a second item leaving the first
 holding pointers, and a destroyed plot leaving its item holding them -- had
 to be fixed twice.

@@ -6,6 +6,7 @@
 #include "BorrowedLines.hpp"
 #include "DatasetLookup.hpp"
 #include "H5Thread.hpp"
+#include "LineModel.hpp"
 #include "PlotBudget.hpp"
 #include "PlotItem.hpp"
 #include "gui/PlotCore.hpp"
@@ -52,7 +53,7 @@ namespace gui {
 /// keystroke. There is no adder row -- the pipeline has one because the chain
 /// guide has to run through it, and an entry list has no chain -- so a row is
 /// an entry and the two indexings never have to be told apart.
-class CustomPlot : public QAbstractListModel
+class CustomPlot : public QAbstractListModel, public LineModel
 {
     Q_OBJECT
     QML_ELEMENT
@@ -286,7 +287,7 @@ public:
     /// Shaped as a question rather than as a property because PlotSurface asks
     /// it of *either* plot -- see the note at the top of this file about not
     /// forking those files -- and DatasetPlot answers "none" for every line.
-    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const;
+    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const override;
 
     /// Draw a line against a y axis of its own, or put it back on the common
     /// one; and hold that axis still while the rest of the plot zooms.
@@ -320,10 +321,10 @@ public:
     /// there is. Shaped as a question for the reason seriesOverride is --
     /// PlotSurface asks it of either plot, and DatasetPlot answers "common"
     /// for every line.
-    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const;
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const override;
 
     // --- what the surface and the legend ask -------------------------------
-    [[nodiscard]] QVariantList drawnSeries() const;
+    [[nodiscard]] QVariantList drawnSeries() const override;
     [[nodiscard]] int seriesCount() const;
     /// No such thing here, which is what -1 says. The legend's "first N"
     /// button exists to put a table of ten thousand rows back to the window a
@@ -333,22 +334,22 @@ public:
     [[nodiscard]] int pointCount() const;
     [[nodiscard]] int sourceSeriesCount() const;
     [[nodiscard]] bool thinned() const;
-    [[nodiscard]] double minimum() const;
-    [[nodiscard]] double maximum() const;
-    [[nodiscard]] double positiveMinimum() const;
+    [[nodiscard]] double minimum() const override;
+    [[nodiscard]] double maximum() const override;
+    [[nodiscard]] double positiveMinimum() const override;
     [[nodiscard]] int sharedSeriesCount() const { return sharedSeries_; }
-    [[nodiscard]] int sourcePointCount() const;
+    [[nodiscard]] int sourcePointCount() const override;
     [[nodiscard]] double xStart() const { return xStart_; }
     void setXStart(double value);
     [[nodiscard]] double xStep() const { return xStep_; }
     void setXStep(double value);
-    [[nodiscard]] bool xLog() const { return xLog_; }
-    void setXLog(bool logarithmic);
-    [[nodiscard]] bool hasData() const;
-    [[nodiscard]] QString error() const;
+    [[nodiscard]] bool xLog() const override { return xLog_; }
+    void setXLog(bool logarithmic) override;
+    [[nodiscard]] bool hasData() const override;
+    [[nodiscard]] QString error() const override;
     [[nodiscard]] bool empty() const { return entries_.empty(); }
 
-    Q_INVOKABLE [[nodiscard]] QString seriesLabel(int series) const;
+    Q_INVOKABLE [[nodiscard]] QString seriesLabel(int series) const override;
     Q_INVOKABLE [[nodiscard]] bool seriesVisible(int series) const;
     Q_INVOKABLE void setSeriesVisible(int series, bool visible);
     Q_INVOKABLE void selectAll();
@@ -370,24 +371,25 @@ public:
     /// is a map that can be run backwards, every time base a reader reaches for
     /// is one, and refusing all of them left a time series as the one axis of
     /// the three that could not be zoomed at all.
-    Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
+    Q_INVOKABLE void setVisibleRange(double xMin, double xMax) override;
 
     /// Where the reader is zooming, and which way. The plot tab's, for the plot
     /// tab's reasons -- see DatasetPlot::setZoomFocus, which argues it at
     /// length. PlotSurface.qml drives either one without knowing which it has.
-    Q_INVOKABLE void setZoomFocus(double x, double factor);
-    Q_INVOKABLE void clearZoomFocus();
+    Q_INVOKABLE void setZoomFocus(double x, double factor) override;
+    Q_INVOKABLE void clearZoomFocus() override;
 
     /// How wide the pane the lines are drawn in is, in device-independent
     /// pixels. The same rule the plot tab follows -- a bucket is a column --
     /// and for the same reason; see DatasetPlot::setPaneColumns -- including
     /// the debounce, so a drag of the window's edge costs one read at the end
     /// of it rather than one per sixty-four pixels.
-    Q_INVOKABLE void setPaneColumns(int columns);
+    Q_INVOKABLE void setPaneColumns(int columns) override;
 
     /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
     /// crossing, no points built on the way, and the values are **borrowed**.
     Q_INVOKABLE void fill(gui::PlotItem* target);
+    void fill(LineTarget* target) override;
 
     /// Entry `series` as a renderer would be given it, drawn or not, and the
     /// axis the tab is drawn against -- which is a time base in Dataset mode

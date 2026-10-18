@@ -36,6 +36,7 @@
 #include "gui/DatasetImage.hpp"
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/FigureItem.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/PlotBudget.hpp"
@@ -1084,6 +1085,56 @@ TEST_CASE("a zoom from the whole line to a single sample reads nothing", "[cost]
         CHECK(back.crossings == 0);
         CHECK(back.reads == 0);
     }
+}
+
+TEST_CASE("a zoom through the figure reads nothing, and draws what it asked for",
+          "[cost][plot][zoom][figure]")
+{
+    // The same descent as above, driven the way the viewer drives it now:
+    // through plotcore's figure, which tells the plot the window it is
+    // showing and the columns it has, and draws what the plot then lends it.
+    // Nothing on that path may reach the file.
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    (void)big.plot.pointCount(); // the one pass over the file
+    Counted::settleAll();
+
+    gui::FigureItem figure;
+    figure.setWidth(kZoomColumns + 120.0);
+    figure.setHeight(400.0);
+    figure.setXMinimum(0.0);
+    figure.setXMaximum(static_cast<double>(kZoomLine - 1));
+    figure.setDataLength(static_cast<double>(kZoomLine));
+    figure.setPlot(&big.plot);
+    figure.refill();
+    figure.compose();
+    REQUIRE(figure.lineCount() == 1);
+
+    const double focus = 4999999.0;
+    double low = 0.0;
+    double high = static_cast<double>(kZoomLine);
+    const double shrink =
+        std::pow(static_cast<double>(kZoomColumns) / static_cast<double>(kZoomLine),
+                 1.0 / static_cast<double>(kZoomFrames));
+    const auto cost = big.measure([&] {
+        for (int frame = 0; frame < kZoomFrames; ++frame) {
+            low = focus - (focus - low) * shrink;
+            high = focus + (high - focus) * shrink;
+            figure.setViewRange(low, high, figure.viewMinY(), figure.viewMaxY());
+            // The frame tells the plot the window; the plot folds what it holds
+            // and says it changed; the figure is lent the closer look, and the
+            // next frame draws it -- the event loop's turn, taken by hand.
+            figure.compose();
+            figure.refill();
+            figure.compose();
+            drawnMatchesTheFile(figure.drawLine(0), kZoomLine);
+        }
+    });
+    CHECK(cost.crossings == 0);
+    CHECK(cost.reads == 0);
+    CHECK(cost.elements == 0);
+    // It ends on the line itself, which is the plot having been told.
+    CHECK_FALSE(big.plot.thinned());
+    CHECK(figure.drawnPointCount() > 0);
 }
 
 TEST_CASE("a zoom over a line whose values are not their positions draws each at its element",
