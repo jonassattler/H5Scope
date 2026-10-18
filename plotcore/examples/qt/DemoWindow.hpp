@@ -65,6 +65,11 @@ private:
     void saveView();
     void loadView();
     void exportPicture();
+    /// Choose one of the three colours, pinning the other two at what they
+    /// are drawn as -- the swatch's click without its dialog.
+    void chooseColour(plotcore::Rgba& colour, plotcore::Rgba chosen);
+    /// Give the three colours back to the ground.
+    void followGround();
     void repaintSwatches();
 
     plotcore::FigureSettings settings() const;

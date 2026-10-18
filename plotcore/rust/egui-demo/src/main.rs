@@ -331,6 +331,10 @@ impl DemoApp {
             ui.label("range");
             colour(ui, figure, "colours.rangeFrom");
             colour(ui, figure, "colours.rangeTo");
+            // Choosing one pins all three; this gives them back to the ground.
+            if ui.button("follow the ground").clicked() {
+                let _ = figure.set_bool("colours.custom", false);
+            }
         });
         ui.horizontal(|ui| {
             ui.label("map's slice");
@@ -765,6 +769,27 @@ mod self_test {
         walk.app.view.strokes = Strokes::Feathered;
         walk.frame(vec![]);
         walk.app.view.strokes = Strokes::Triangles;
+
+        // A colour nobody chose is the ground's and follows it; one chosen
+        // stays where it was put until the ground is given it back.
+        let same = |a: plotcore::Rgba, b: plotcore::Rgba| {
+            (a.red - b.red).abs() + (a.green - b.green).abs() + (a.blue - b.blue).abs() < 1e-9
+        };
+        walk.app.view.figure.set_text("colours.mode", "same").unwrap();
+        let on_dark = walk.frame(vec![]).lines[0].colour;
+        walk.app.view.figure.set_bool("dark", false).unwrap();
+        let on_light = walk.frame(vec![]).lines[0].colour;
+        walk.check(!same(on_light, on_dark), "a colour nobody chose follows the ground");
+        let orange = plotcore::Rgba::new(0.9, 0.3, 0.1, 1.0);
+        walk.app.view.figure.set_colour("colours.single", orange).unwrap();
+        walk.app.view.figure.set_bool("dark", true).unwrap();
+        let kept = walk.frame(vec![]).lines[0].colour;
+        walk.check(same(kept, orange), "a colour chosen stays where it was put");
+        walk.app.view.figure.set_bool("colours.custom", false).unwrap();
+        let back = walk.frame(vec![]).lines[0].colour;
+        walk.check(same(back, on_dark), "...until the ground is given it back");
+        walk.app.view.figure.set_text("colours.mode", &plotcore::palette_names()[0]).unwrap();
+
         let figure = &mut walk.app.view.figure;
         figure.set_bool("dark", false).unwrap();
         figure.set_bool("paper", true).unwrap();
