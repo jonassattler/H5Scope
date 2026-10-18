@@ -1772,9 +1772,14 @@ long long CustomPlot::pyramidBudget() const
     return PlotBudget::instance().share() / (2LL * lines);
 }
 
+bool CustomPlot::folds(const Entry& entry, const PlotWindow& window)
+{
+    return !entry.pyramid.empty() && window.bucket >= entry.pyramid.baseBucket();
+}
+
 bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
 {
-    if (entry.pyramid.empty() || window.bucket < entry.pyramid.baseBucket()) {
+    if (!folds(entry, window)) {
         return false;
     }
     const auto at = std::find_if(entry.levels.begin(), entry.levels.end(),
@@ -1947,6 +1952,14 @@ void CustomPlot::refreshCloser()
             }
             filled = true;
             trimLevels(entry);
+            const bool kept =
+                std::any_of(entry.levels.begin(), entry.levels.end(),
+                            [&](const Level& level) { return level.window == *next; });
+            if (!kept) {
+                // The trim gave up what was just folded -- see
+                // DatasetPlot::refreshDetail.
+                break;
+            }
         }
         trimLevels(entry);
         // A loop that ran to its bound stopped because it ran out of turns
@@ -1976,7 +1989,11 @@ void CustomPlot::refreshCloser()
             }
             continue;
         }
-        if (closerWanted(entry).has_value()) {
+        // Only what the pyramid cannot fold goes to the file. A wanted run it
+        // can fold is one the ladder had no room for, and a read of it would be
+        // trimmed away as the fold was -- see DatasetPlot::refreshDetail.
+        if (const std::optional<PlotWindow> want = closerWanted(entry);
+            want.has_value() && !folds(entry, *want)) {
             wanted = true;
         }
     }
@@ -2026,7 +2043,7 @@ void CustomPlot::askForCloser()
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const Entry& entry = entries_[i];
         const std::optional<PlotWindow> want = closerWanted(entry);
-        if (!want.has_value()) {
+        if (!want.has_value() || folds(entry, *want)) {
             continue;
         }
         rows.push_back(static_cast<int>(i));

@@ -1171,6 +1171,12 @@ void DatasetPlot::refreshDetail()
         }
         filled = true;
         trimLevels();
+        if (levelAt(*wanted_) < 0) {
+            // The trim gave up what was just folded: a ladder shorter than the
+            // runs the policy wants, which a small budget gives. Asking again
+            // would fold it again and give it up again.
+            break;
+        }
     }
     // A loop that ran to its bound stopped because it ran out of turns rather
     // than because the ladder was full, which means wantedLevel() and
@@ -1188,6 +1194,16 @@ void DatasetPlot::refreshDetail()
     if (!wanted_.has_value()) {
         // Everything worth holding is held. Not a read, not a signal, not even
         // a timer -- which is what makes panning inside a run free.
+        settle_.stop();
+        return;
+    }
+    if (folds(*wanted_)) {
+        // Wanted and not held, and the pyramid answers it -- so the ladder had
+        // no room for it, and the file would answer it no differently: the
+        // reply would be trimmed away as the fold was. This used to go to the
+        // file, which is how a zoom into 7777777 of a ten-million-element line
+        // read once where a zoom into the middle of it read nothing.
+        wanted_.reset();
         settle_.stop();
         return;
     }
@@ -1223,7 +1239,7 @@ void DatasetPlot::trimLevels()
     }
 }
 
-bool DatasetPlot::fillDetail(const PlotWindow& detail)
+bool DatasetPlot::folds(const PlotWindow& detail) const
 {
     if (drawn_.empty()) {
         return false;
@@ -1231,12 +1247,17 @@ bool DatasetPlot::fillDetail(const PlotWindow& detail)
     // Every drawn line, or none of them. A run half folded out of memory and
     // half read from the file would be two pictures of one moment, and the half
     // that had not arrived yet would be the one the reader noticed.
-    for (const int series : drawn_) {
+    return std::all_of(drawn_.begin(), drawn_.end(), [&](int series) {
         const auto pyramid = pyramids_.find(series);
-        if (pyramid == pyramids_.end() || pyramid->second.empty() ||
-            detail.bucket < pyramid->second.baseBucket()) {
-            return false;
-        }
+        return pyramid != pyramids_.end() && !pyramid->second.empty() &&
+               detail.bucket >= pyramid->second.baseBucket();
+    });
+}
+
+bool DatasetPlot::fillDetail(const PlotWindow& detail)
+{
+    if (!folds(detail)) {
+        return false;
     }
 
     int at = levelAt(detail);

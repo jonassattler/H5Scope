@@ -39,6 +39,10 @@ kept the dark theme's white after a switch to the light theme, and was drawn
 white on white. Every number along a plot axis is also written to the same
 number of figures now, where one axis could mix `3.00e+6` with `4.500e+6`.
 
+**A zoom into a long line no longer pauses to read it again.** Zooming towards
+some places on it — 7777777 of a ten-million-sample line, for one — went to
+the file once in the middle of the gesture for a run the plot already held.
+
 ## 0.7.1
 
 **A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a

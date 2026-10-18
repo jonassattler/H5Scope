@@ -237,6 +237,82 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
     }
 }
 
+TEST_CASE("a full ladder keeps the runs the policy is still asking for", "[levels]")
+{
+    // The two halves of the policy are asked of every frame in turn -- what to
+    // fold next, then what to give up when there are more runs than room -- and
+    // they used to answer from two pieces of arithmetic. Zooming into 7777777 of
+    // a ten-million-element line, the fourth octave in towards the pointer was
+    // the run furthest from the pane's bucket, so a full ladder gave it up the
+    // moment it was folded and was asked for it again on the next turn. Here the
+    // two are run against each other as DatasetPlot::refreshDetail runs them --
+    // the pane's own run first, then whatever is wanted, trimming after each,
+    // once as the focus arrives and once as the range does -- and no refresh
+    // may fold a run twice or end still wanting one.
+    constexpr long long kLength = 10000000;
+    constexpr int kPane = 2048;
+    plotcore::PlotFocus focus;
+    focus.inward = true;
+    focus.active = true;
+
+    std::vector<plotcore::HeldLevel> held;
+    const auto viewOf = [&](double low, double high) {
+        plotcore::LevelView view;
+        view.length = kLength;
+        view.low = low;
+        view.high = high;
+        view.paneBuckets = kPane;
+        view.detailBuckets = 2 * kPane;
+        view.prefetchOctaves = plotcore::kPrefetchOctaves;
+        return view;
+    };
+    const auto hold = [&](const plotcore::PlotWindow& window, const plotcore::LevelView& view) {
+        held.push_back(plotcore::HeldLevel{window, true});
+        while (held.size() > static_cast<std::size_t>(plotcore::kHeldLevels)) {
+            held.erase(held.begin() + static_cast<long>(plotcore::coldestLevel(held, view, focus)));
+        }
+    };
+    const auto refresh = [&](const plotcore::LevelView& view) {
+        const auto isHeld = [&](const plotcore::PlotWindow& window) {
+            return std::any_of(held.begin(), held.end(),
+                               [&](const plotcore::HeldLevel& level) { return level.window == window; });
+        };
+        if (const std::optional<plotcore::PlotWindow> own =
+                plotcore::windowFor(view.low, view.high, view.length, view.detailBuckets);
+            own.has_value() && !isHeld(*own)) {
+            hold(*own, view);
+        }
+        std::vector<plotcore::PlotWindow> folded;
+        for (int turn = 0; turn < 64; ++turn) {
+            const std::optional<plotcore::PlotWindow> want = plotcore::wantedLevel(held, view, focus);
+            if (!want.has_value()) {
+                break;
+            }
+            INFO("turn " << turn << " wants " << want->first << "+" << want->span << " at "
+                         << want->bucket);
+            REQUIRE(std::find(folded.begin(), folded.end(), *want) == folded.end());
+            folded.push_back(*want);
+            hold(*want, view);
+        }
+        CHECK_FALSE(plotcore::wantedLevel(held, view, focus).has_value());
+    };
+
+    for (const double at : {7777777.0, 4999999.0, 9876543.0, 1234567.0}) {
+        focus.position = at;
+        double low = 0.0;
+        double high = static_cast<double>(kLength);
+        const double shrink =
+            std::pow(static_cast<double>(kPane) / static_cast<double>(kLength), 1.0 / 20.0);
+        for (int frame = 0; frame < 20; ++frame) {
+            INFO("focus " << at << " frame " << frame);
+            refresh(viewOf(low, high)); // the focus arrives first
+            low = at - (at - low) * shrink;
+            high = at + (high - at) * shrink;
+            refresh(viewOf(low, high));
+        }
+    }
+}
+
 TEST_CASE("a pointer that moved gives up the guesses made about the old one", "[levels]")
 {
     plotcore::LevelView view;

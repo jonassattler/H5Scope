@@ -374,6 +374,48 @@ TEST_CASE_METHOD(PlotFixture, "a zoom into a member reads nothing either",
     CHECK(highest == Approx(9.0));
 }
 
+TEST_CASE_METHOD(PlotFixture, "a tab zoomed towards any point reads nothing", "[custom][cost]")
+{
+    // The custom tab's half of "a zoom reads nothing wherever the pointer is"
+    // in tests/test_cost.cpp: the same fill-and-trim loop, the same policy,
+    // and the same rule that a run the pyramid can fold is never asked of the
+    // file -- held here at both ends of the line and in the middle, in and
+    // back out, on the widest pane a tab is given.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/trace[:]"));
+    REQUIRE(plot->sourcePointCount() == 20000);
+    plot->setPaneColumns(8192);
+    settleAll();
+    h5test::settleFor(gui::CustomPlot::kResizeMilliseconds + 200);
+    settleAll();
+
+    const double shrink = std::pow(16.0 / 20000.0, 1.0 / 20.0);
+    for (const double focus : {10.5, 12345.0, 19990.5}) {
+        INFO("focus " << focus);
+        double low = 0.0;
+        double high = 20000.0;
+        plot->setVisibleRange(low, high);
+        const long long before = gui::CustomPlot::hyperslabs();
+        for (int frame = 0; frame < 20; ++frame) {
+            plot->setZoomFocus(focus, 1.0 / shrink);
+            low = focus - (focus - low) * shrink;
+            high = focus + (high - focus) * shrink;
+            plot->setVisibleRange(low, high);
+            REQUIRE(plot->lineOf(0).values != nullptr);
+        }
+        for (int frame = 0; frame < 20; ++frame) {
+            plot->setZoomFocus(focus, shrink);
+            low = focus - (focus - low) / shrink;
+            high = focus + (high - focus) / shrink;
+            plot->setVisibleRange(low, high);
+        }
+        settleAll();
+        h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+        settleAll();
+        CHECK(gui::CustomPlot::hyperslabs() - before == 0);
+    }
+}
+
 TEST_CASE_METHOD(PlotFixture, "an entry has to name one line, and says so when it does not",
                  "[custom]")
 {
