@@ -12,10 +12,12 @@
 // two thousand vertices without losing the one that matters, and how a stroke
 // a chosen number of pixels wide is built out of triangles.
 //
-// Split out of PlotItem so that it can be tested without a window. The whole
-// of it is arithmetic over doubles and two output vectors; it links QtGui for
-// QPointF and QColor and nothing else. tests/test_customplot.cpp asserts the x
-// arithmetic through samplesOf() below, which is the shape the boundary used to
+// Split out of PlotItem so that it can be tested without a window, and out of
+// the viewer so that it can be used without one. The whole of it is arithmetic
+// over doubles and two output vectors, and it links nothing: the point and the
+// colour it hands out are its own (Types.hpp), where they were QPointF and
+// QColor and were the only reason it needed Qt. tests/test_customplot.cpp
+// asserts the x arithmetic through samplesOf() below, which is the shape the boundary used to
 // have -- it filled a QXYSeries with data-space points -- and which survives as
 // a seam precisely because the renderer no longer needs it.
 //
@@ -53,15 +55,14 @@
 // and it is a gap for exactly the reason a NaN is one -- there is no place on
 // the pane that would be a true reading of it.
 
-#include <QtCore/QPointF>
-#include <QtGui/QColor>
+#include "plotcore/Types.hpp"
 
 #include <cmath>
 
 #include <optional>
 #include <vector>
 
-namespace gui {
+namespace plotcore {
 
 /// One line to draw.
 ///
@@ -76,7 +77,7 @@ namespace gui {
 struct PlotLine
 {
     const double* values = nullptr;
-    qsizetype count = 0;
+    long long count = 0;
 
     /// Where sample `i` sits along the shared axis, before the axis turns a
     /// position into an x: `positionStart + i * positionStep`.
@@ -119,7 +120,7 @@ struct PlotLine
     /// `values`.
     ///
     /// What a line folded onto a logarithmic axis's columns is drawn from --
-    /// see LogColumns in PlotLevels.hpp. Its points are one or two per pixel
+    /// see LogColumns in Levels.hpp. Its points are one or two per pixel
     /// column, so they are evenly spaced on the *pane* and nowhere near evenly
     /// spaced in position, and no start and step can say where they are. When
     /// this is set the two above and the axis are not consulted: the model that
@@ -151,7 +152,7 @@ struct PlotLine
     /// Supplied by the caller rather than chosen here: every colour in this
     /// application resolves through Theme.qml, and a renderer that picked its
     /// own would be the one place that did not.
-    QColor colour;
+    Rgba colour;
 
     /// How strongly the line is drawn, multiplied into the colour's own alpha.
     ///
@@ -264,7 +265,7 @@ struct PlotAxis
     /// falls between two of them takes the nearer; interpolating would invent
     /// an x, which is the same mistake as inventing a y.
     const double* values = nullptr;
-    qsizetype count = 0;
+    long long count = 0;
 
     /// Axis positions between one of those values and the next.
     ///
@@ -300,7 +301,7 @@ struct PlotAxis
     ///
     /// Borrowed on the same terms as everything else here.
     const double* closerValues = nullptr;
-    qsizetype closerCount = 0;
+    long long closerCount = 0;
     /// The axis position `closerValues[0]` is the x of. A run does not start at
     /// the beginning of the line, which is the whole of what makes it a run.
     double closerStart = 0.0;
@@ -516,13 +517,13 @@ struct PlotProjected
 
 /// Where sample `at` of `line` sits along x -- or NaN when it sits nowhere,
 /// which is a sample past the end of a time base or one whose x did not read.
-[[nodiscard]] double xOf(const PlotLine& line, const PlotAxis& axis, qsizetype at);
+[[nodiscard]] double xOf(const PlotLine& line, const PlotAxis& axis, long long at);
 
 /// Every drawable sample of `line`, in **data** coordinates and in drawing
 /// order, with the undrawable ones simply absent.
 ///
 /// Nothing in the renderer calls this: the whole design is that a sample
-/// becomes a pixel without ever becoming a QPointF in data space, because
+/// becomes a pixel without ever becoming a Point in data space, because
 /// sixteen bytes a point built and copied per refill is what the old boundary
 /// cost. It exists as the seam tests/test_customplot.cpp asserts the x
 /// arithmetic through, and it agrees with projectLine() by construction --
@@ -532,7 +533,7 @@ struct PlotProjected
 /// a logarithmic axis could not place is still reported. That is the right
 /// answer to what this is asked -- where the samples are -- and it is why the
 /// agreement above is an agreement over a linear view.
-[[nodiscard]] std::vector<QPointF> samplesOf(const PlotLine& line, const PlotAxis& axis);
+[[nodiscard]] std::vector<Point> samplesOf(const PlotLine& line, const PlotAxis& axis);
 
 /// Where `value` sits up the pane, as a fraction from the bottom, and where
 /// `x` sits along it.
@@ -559,15 +560,15 @@ struct PlotProjected
 /// the left. So x still grows away from the origin and so does y, and the
 /// origin is still the bottom-left corner -- which is what "the same plot with
 /// x and y swapped" means, and what a rotation would not have given.
-[[nodiscard]] QPointF transposedPoint(const QPointF& upright, const PlotView& view);
-[[nodiscard]] QPointF uprightPoint(const QPointF& onPane, const PlotView& view);
+[[nodiscard]] Point transposedPoint(const Point& upright, const PlotView& view);
+[[nodiscard]] Point uprightPoint(const Point& onPane, const PlotView& view);
 
 /// Project `line` into `points` in item coordinates, splitting the strokes at
 /// gaps, and append each stroke to `runs`. Both vectors are appended to, so a
 /// set of lines projects into one pair of buffers.
 ///
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
-                          std::vector<QPointF>& points, std::vector<PlotRun>& runs);
+                          std::vector<Point>& points, std::vector<PlotRun>& runs);
 
 /// How far a mitred join may reach past the stroke before it is given up.
 ///
@@ -610,7 +611,7 @@ inline constexpr double kMinStrokeWidth = 0.25;
 /// allocated. PlotItem passes a sink that writes each vertex where it belongs
 /// and the copy disappears.
 template<typename Place>
-void strokeRunInto(const QPointF* points, int count, double width, Place&& place)
+void strokeRunInto(const Point* points, int count, double width, Place&& place)
 {
     if (points == nullptr || count < 2) {
         return;
@@ -632,7 +633,7 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
     // Screen space has no memory of which side was "left", so the test is
     // simply whether this station's offset still points the way the last one
     // did. It costs a dot product per station and nothing else.
-    QPointF carried;
+    Point carried;
 
     // The normal of the segment leaving station `k`. A segment of no length has
     // no direction, so it keeps the one before it -- which happens in an
@@ -643,7 +644,7 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
     // clamps every coordinate to ten million, whose square is 1e14 and has
     // nearly three hundred orders of magnitude of headroom. hypot was costing
     // about four nanoseconds a station for a guarantee that cannot be needed.
-    const auto normalAfter = [&](int k, QPointF fallback) {
+    const auto normalAfter = [&](int k, Point fallback) {
         const double sx = points[k + 1].x() - points[k].x();
         const double sy = points[k + 1].y() - points[k].y();
         const double square = sx * sx + sy * sy;
@@ -651,11 +652,11 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
             return fallback;
         }
         const double inverse = 1.0 / std::sqrt(square);
-        return QPointF(-sy * inverse, sx * inverse);
+        return Point(-sy * inverse, sx * inverse);
     };
 
-    QPointF entering = normalAfter(0, QPointF(0.0, -1.0));
-    QPointF leaving = entering;
+    Point entering = normalAfter(0, Point(0.0, -1.0));
+    Point leaving = entering;
     for (int i = 0; i < count; ++i) {
         if (i > 0) {
             entering = leaving;
@@ -675,19 +676,19 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
         // opposed normals points *along* the stroke, so a miter cut to length
         // there is not a join at all, it is a whisker standing out of the line
         // -- and at 180 degrees it is the spear kMiterLimit is named for.
-        QPointF offset = leaving;
+        Point offset = leaving;
         if (i > 0 && i < count - 1) {
             const double dot = entering.x() * leaving.x() + entering.y() * leaving.y();
             const double sum = 1.0 + dot;
             if (sum >= kMiterFloor) {
                 offset =
-                    QPointF((entering.x() + leaving.x()) / sum, (entering.y() + leaving.y()) / sum);
+                    Point((entering.x() + leaving.x()) / sum, (entering.y() + leaving.y()) / sum);
             }
         }
 
         // ...and it goes on the side the run has been using. See `carried`.
         if (i > 0 && offset.x() * carried.x() + offset.y() * carried.y() < 0.0) {
-            offset = QPointF(-offset.x(), -offset.y());
+            offset = Point(-offset.x(), -offset.y());
         }
         carried = offset;
 
@@ -699,7 +700,7 @@ void strokeRunInto(const QPointF* points, int count, double width, Place&& place
 }
 
 /// The same, collected into a vector. What the tests assert against.
-void strokeRun(const QPointF* points, int count, double width, std::vector<QPointF>& out);
+void strokeRun(const Point* points, int count, double width, std::vector<Point>& out);
 
 /// How many sides a marker is drawn with.
 ///
@@ -713,6 +714,6 @@ inline constexpr int kMarkerSides = 8;
 
 /// Append one marker of `radius` at `centre`, as exactly kMarkerSides vertices
 /// in triangle-strip order.
-void markerAt(const QPointF& centre, double radius, std::vector<QPointF>& out);
+void markerAt(const Point& centre, double radius, std::vector<Point>& out);
 
-} // namespace gui
+} // namespace plotcore

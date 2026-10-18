@@ -4,7 +4,7 @@
 
 #include "DatasetTableModel.hpp"
 
-#include "gui/PlotLevels.hpp"
+#include "gui/PlotCore.hpp"
 
 #include "h5core/Error.hpp"
 
@@ -386,7 +386,7 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
     };
 
     // The extremes of a bucket, and a read cut back to a whole number of them,
-    // are gui::extremesOf() and gui::wholeBuckets() -- see PlotLevels.hpp. They
+    // are gui::extremesOf() and gui::wholeBuckets() -- see plotcore/Levels.hpp. They
     // used to be a struct and two lambdas here, and CustomPlot::readLine had a
     // second copy of the same arithmetic that agreed with this one only because
     // a test compared the two element for element.

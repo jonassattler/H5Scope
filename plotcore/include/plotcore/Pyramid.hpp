@@ -14,7 +14,7 @@
 // waited for is the read.
 //
 // What makes it unnecessary is a property of the envelope, stated in
-// PlotLevels.hpp and spent here:
+// Levels.hpp and spent here:
 //
 //   **An envelope can be coarsened exactly, and only coarsened.**
 //
@@ -38,19 +38,19 @@
 // it made a closer look ten times the cost of folding it. Kept from the build,
 // where the fold finds the element anyway, every answer is a copy.
 //
-// No Qt in this header, for PlotProjection.hpp's reason: it is arithmetic over
-// doubles and tests/test_plotlevels.cpp asserts it with no file, no thread and
-// no window. The .cpp uses QThreadPool for the build, which is the one part
-// that is worth spreading over the machine.
+// No Qt anywhere in it, for Projection.hpp's reason: it is arithmetic over
+// doubles and plotcore/tests/test_plotlevels.cpp asserts it with no file, no
+// thread and no window. The build is the one part worth spreading over the
+// machine, and it goes over the pool in Parallel.hpp.
 
-#include "gui/PlotLevels.hpp"
-#include "gui/PlotProjection.hpp"
+#include "plotcore/Levels.hpp"
+#include "plotcore/Projection.hpp"
 
 #include <cstddef>
 #include <span>
 #include <vector>
 
-namespace gui {
+namespace plotcore {
 
 /// Octaves between one held level and the next.
 ///
@@ -286,7 +286,7 @@ private:
 
 /// A line folded onto columns that are not all the same width.
 ///
-/// What a logarithmic x axis is drawn from: see LogColumns in PlotLevels.hpp.
+/// What a logarithmic x axis is drawn from: see LogColumns in Levels.hpp.
 /// A column narrow enough to hold one or two elements holds *them*, drawn at
 /// their own positions, because an envelope of two elements is those two
 /// elements with a claim of summary on them; anything wider is its extremes,
@@ -314,4 +314,4 @@ struct ColumnFold
 /// `out` is cleared first. Its size is at most twice the number of columns.
 void foldColumns(const LinePyramid& pyramid, std::span<const double> edges, ColumnFold& out);
 
-} // namespace gui
+} // namespace plotcore

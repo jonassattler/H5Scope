@@ -3,7 +3,7 @@
 
 // The fold and the ladder, with nothing open.
 //
-// Everything in gui::PlotLevels is doubles and a vector: which runs to hold,
+// Everything in plotcore::PlotLevels is doubles and a vector: which runs to hold,
 // which to draw from, which to read next, which to give up, and how a bucket is
 // made out of elements. So it is asserted here directly rather than through a
 // model that would have to open a file and cross a thread to be asked -- the
@@ -14,9 +14,9 @@
 // towards where the pointer is, which is the one thing the surface always knew
 // and never said.
 
-#include "gui/PlotLevels.hpp"
-#include "gui/PlotProjection.hpp"
-#include "gui/PlotPyramid.hpp"
+#include "plotcore/Levels.hpp"
+#include "plotcore/Projection.hpp"
+#include "plotcore/Pyramid.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -33,10 +33,10 @@ namespace {
 
 const double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-gui::HeldLevel held(long long first, long long span, long long bucket, int columns,
-                    bool complete = true)
+plotcore::HeldLevel held(long long first, long long span, long long bucket, int columns,
+                         bool complete = true)
 {
-    return gui::HeldLevel{gui::PlotWindow{first, span, bucket, columns}, complete};
+    return plotcore::HeldLevel{plotcore::PlotWindow{first, span, bucket, columns}, complete};
 }
 
 } // namespace
@@ -47,7 +47,7 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
     // wrong way up -- which is the failure the ordering rule exists for.
     const std::vector<double> falling{4.0, 3.0, 2.0, 1.0};
     std::vector<double> folded;
-    gui::reduceBuckets(falling.data(), 4, 4, folded);
+    plotcore::reduceBuckets(falling.data(), 4, 4, folded);
 
     REQUIRE(folded.size() == 2);
     CHECK(folded[0] == 4.0);
@@ -57,7 +57,7 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
     {
         const std::vector<double> rising{1.0, 2.0, 3.0, 4.0};
         std::vector<double> out;
-        gui::reduceBuckets(rising.data(), 4, 4, out);
+        plotcore::reduceBuckets(rising.data(), 4, 4, out);
         REQUIRE(out.size() == 2);
         CHECK(out[0] == 1.0);
         CHECK(out[1] == 4.0);
@@ -67,7 +67,7 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
     {
         const std::vector<double> one{7.0};
         std::vector<double> out;
-        gui::reduceBuckets(one.data(), 1, 1, out);
+        plotcore::reduceBuckets(one.data(), 1, 1, out);
         REQUIRE(out.size() == 2);
         CHECK(out[0] == 7.0);
         CHECK(out[1] == 7.0);
@@ -79,7 +79,7 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
         // across the hole, which is a reading of data that was never taken.
         const std::vector<double> gapped{1.0, 2.0, kNaN, kNaN, 5.0, 6.0};
         std::vector<double> out;
-        gui::reduceBuckets(gapped.data(), 6, 2, out);
+        plotcore::reduceBuckets(gapped.data(), 6, 2, out);
         REQUIRE(out.size() == 6);
         CHECK(out[0] == 1.0);
         CHECK(std::isnan(out[2]));
@@ -91,7 +91,7 @@ TEST_CASE("a bucket answers with its two extremes in the order they occurred", "
     {
         const std::vector<double> odd{1.0, 2.0, 3.0, 4.0, 5.0};
         std::vector<double> out;
-        gui::reduceBuckets(odd.data(), 5, 2, out);
+        plotcore::reduceBuckets(odd.data(), 5, 2, out);
         REQUIRE(out.size() == 6);
         CHECK(out[4] == 5.0);
         CHECK(out[5] == 5.0);
@@ -104,46 +104,46 @@ TEST_CASE("a read of up to kReadRun never stops inside a bucket", "[levels]")
     // both plots to, and it is this function that keeps it true: a read cut
     // back to whole buckets leaves no bucket half-read for the next one to read
     // again from its start.
-    CHECK(gui::wholeBuckets(1000, 64) == 960);
-    CHECK(gui::wholeBuckets(64, 64) == 64);
+    CHECK(plotcore::wholeBuckets(1000, 64) == 960);
+    CHECK(plotcore::wholeBuckets(64, 64) == 64);
     // A bucket wider than a whole read is the one case that cannot be cut back.
-    CHECK(gui::wholeBuckets(50, 64) == 50);
+    CHECK(plotcore::wholeBuckets(50, 64) == 50);
 }
 
 TEST_CASE("the finest run that covers the pane is the one drawn", "[levels]")
 {
-    gui::LevelView view;
+    plotcore::LevelView view;
     view.length = 100000;
     view.low = 40000.0;
     view.high = 41000.0;
     view.paneBuckets = 512;
 
-    const std::vector<gui::HeldLevel> ladder{
+    const std::vector<plotcore::HeldLevel> ladder{
         held(0, 100000, 64, 1563),    // the whole line, coarse
         held(32768, 32768, 16, 2048), // covers, finer
         held(40960, 4096, 2, 2048),   // finer still, but starts inside the view
     };
 
     // The third is the finest but does not cover 40000, so the second is drawn.
-    CHECK(gui::drawnLevel(ladder, view) == 1);
+    CHECK(plotcore::drawnLevel(ladder, view) == 1);
 
     SECTION("a run that has not come back yet is not drawn from")
     {
-        std::vector<gui::HeldLevel> partial = ladder;
+        std::vector<plotcore::HeldLevel> partial = ladder;
         partial[1].complete = false;
-        CHECK(gui::drawnLevel(partial, view) == 0);
+        CHECK(plotcore::drawnLevel(partial, view) == 0);
     }
 
     SECTION("nothing at all when no run covers")
     {
-        const std::vector<gui::HeldLevel> away{held(90000, 4096, 2, 2048)};
-        CHECK(gui::drawnLevel(away, view) == -1);
+        const std::vector<plotcore::HeldLevel> away{held(90000, 4096, 2, 2048)};
+        CHECK(plotcore::drawnLevel(away, view) == -1);
     }
 }
 
 TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
 {
-    gui::LevelView view;
+    plotcore::LevelView view;
     view.length = 1000000;
     view.low = 500000.0;
     view.high = 510000.0;
@@ -151,15 +151,16 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
     view.detailBuckets = 2048;
 
     // A run that already answers the pane, so what is left is idle work.
-    const std::optional<gui::PlotWindow> on =
-        gui::windowFor(view.low, view.high, view.length, view.detailBuckets);
+    const std::optional<plotcore::PlotWindow> on =
+        plotcore::windowFor(view.low, view.high, view.length, view.detailBuckets);
     REQUIRE(on.has_value());
-    const std::vector<gui::HeldLevel> ladder{held(on->first, on->span, on->bucket, on->columns)};
+    const std::vector<plotcore::HeldLevel> ladder{
+        held(on->first, on->span, on->bucket, on->columns)};
 
     SECTION("with no focus it reads outwards, as it always did")
     {
-        const gui::PlotFocus none;
-        const std::optional<gui::PlotWindow> next = gui::wantedLevel(ladder, view, none);
+        const plotcore::PlotFocus none;
+        const std::optional<plotcore::PlotWindow> next = plotcore::wantedLevel(ladder, view, none);
         REQUIRE(next.has_value());
         // Wider than the run in hand: the octave out is the direction that
         // cannot be had for free.
@@ -168,14 +169,14 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
 
     SECTION("zooming in, it reads the octaves in towards the pointer")
     {
-        gui::PlotFocus focus;
+        plotcore::PlotFocus focus;
         focus.active = true;
         focus.inward = true;
         // Near the left edge of the pane rather than in the middle, which is
         // the case the view's own centre got wrong.
         focus.position = 501000.0;
 
-        const std::optional<gui::PlotWindow> next = gui::wantedLevel(ladder, view, focus);
+        const std::optional<plotcore::PlotWindow> next = plotcore::wantedLevel(ladder, view, focus);
         REQUIRE(next.has_value());
         // Finer and narrower than the run in hand...
         CHECK(next->bucket < on->bucket);
@@ -189,15 +190,16 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
         // A run costs its span, and each octave in is half the span of the one
         // above it. This is why kFocusOctavesIn can be four where
         // kPrefetchOctaves has to be two.
-        gui::PlotFocus focus;
+        plotcore::PlotFocus focus;
         focus.active = true;
         focus.inward = true;
         focus.position = 505000.0;
 
-        std::vector<gui::HeldLevel> going = ladder;
+        std::vector<plotcore::HeldLevel> going = ladder;
         long long inward = 0;
-        for (int step = 0; step < gui::kFocusOctavesIn; ++step) {
-            const std::optional<gui::PlotWindow> next = gui::wantedLevel(going, view, focus);
+        for (int step = 0; step < plotcore::kFocusOctavesIn; ++step) {
+            const std::optional<plotcore::PlotWindow> next =
+                plotcore::wantedLevel(going, view, focus);
             REQUIRE(next.has_value());
             if (next->span >= on->span) {
                 break; // reached the outward half of the ladder
@@ -211,18 +213,19 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
 
     SECTION("a run already in hand is never asked for twice")
     {
-        gui::PlotFocus focus;
+        plotcore::PlotFocus focus;
         focus.active = true;
         focus.inward = true;
         focus.position = 505000.0;
 
-        std::vector<gui::HeldLevel> going = ladder;
+        std::vector<plotcore::HeldLevel> going = ladder;
         for (int step = 0; step < 24; ++step) {
-            const std::optional<gui::PlotWindow> next = gui::wantedLevel(going, view, focus);
+            const std::optional<plotcore::PlotWindow> next =
+                plotcore::wantedLevel(going, view, focus);
             if (!next.has_value()) {
                 break;
             }
-            for (const gui::HeldLevel& already : going) {
+            for (const plotcore::HeldLevel& already : going) {
                 INFO("step " << step);
                 REQUIRE_FALSE(already.window == *next);
             }
@@ -236,24 +239,24 @@ TEST_CASE("the ladder reads towards where the reader is zooming", "[levels]")
 
 TEST_CASE("a pointer that moved gives up the guesses made about the old one", "[levels]")
 {
-    gui::LevelView view;
+    plotcore::LevelView view;
     view.length = 1000000;
     view.low = 500000.0;
     view.high = 510000.0;
     view.paneBuckets = 1024;
     view.detailBuckets = 2048;
 
-    const std::optional<gui::PlotWindow> on =
-        gui::windowFor(view.low, view.high, view.length, view.detailBuckets);
+    const std::optional<plotcore::PlotWindow> on =
+        plotcore::windowFor(view.low, view.high, view.length, view.detailBuckets);
     REQUIRE(on.has_value());
 
-    const std::vector<gui::HeldLevel> ladder{
+    const std::vector<plotcore::HeldLevel> ladder{
         held(0, 1000000, 1024, 977),                        // 0: the way back out
         held(on->first, on->span, on->bucket, on->columns), // 1: on screen
         held(500000, 1024, 1, 1024),                        // 2: read towards the old pointer
     };
 
-    gui::PlotFocus focus;
+    plotcore::PlotFocus focus;
     focus.active = true;
     focus.inward = true;
     // The reader has moved to the other end of the pane. Level 2 is finer than
@@ -261,7 +264,7 @@ TEST_CASE("a pointer that moved gives up the guesses made about the old one", "[
     // somewhere they are not.
     focus.position = 509500.0;
 
-    CHECK(gui::coldestLevel(ladder, view, focus) == 2);
+    CHECK(plotcore::coldestLevel(ladder, view, focus) == 2);
 
     SECTION("but the way back out is kept, however far from the bucket on screen")
     {
@@ -269,37 +272,37 @@ TEST_CASE("a pointer that moved gives up the guesses made about the old one", "[
         // by distance alone would give it up first -- and it is the run the
         // reader lands on the moment they zoom out, which is the direction that
         // cannot be answered by anything finer.
-        std::vector<gui::HeldLevel> without{ladder[0], ladder[1]};
-        CHECK(gui::coldestLevel(without, view, focus) == 0);
+        std::vector<plotcore::HeldLevel> without{ladder[0], ladder[1]};
+        CHECK(plotcore::coldestLevel(without, view, focus) == 0);
     }
 
     SECTION("a guess that still covers the pointer is not given up for it")
     {
-        std::vector<gui::HeldLevel> still = ladder;
+        std::vector<plotcore::HeldLevel> still = ladder;
         still[2] = held(509312, 1024, 1, 1024); // where the pointer actually is
-        CHECK(gui::coldestLevel(still, view, focus) != 2);
+        CHECK(plotcore::coldestLevel(still, view, focus) != 2);
     }
 
     SECTION("with no focus it ranks by distance alone, as it always did")
     {
-        const gui::PlotFocus none;
-        CHECK(gui::coldestLevel(ladder, view, none) == 0);
+        const plotcore::PlotFocus none;
+        CHECK(plotcore::coldestLevel(ladder, view, none) == 0);
     }
 }
 
 TEST_CASE("a view with nothing to say asks for nothing", "[levels]")
 {
-    const std::vector<gui::HeldLevel> ladder{held(0, 1024, 1, 1024)};
-    const gui::PlotFocus none;
+    const std::vector<plotcore::HeldLevel> ladder{held(0, 1024, 1, 1024)};
+    const plotcore::PlotFocus none;
 
-    gui::LevelView empty;
+    plotcore::LevelView empty;
     CHECK_FALSE(empty.usable());
-    CHECK_FALSE(gui::wantedLevel(ladder, empty, none).has_value());
-    CHECK(gui::drawnLevel(ladder, empty) == -1);
+    CHECK_FALSE(plotcore::wantedLevel(ladder, empty, none).has_value());
+    CHECK(plotcore::drawnLevel(ladder, empty) == -1);
 
     SECTION("nor does one zoomed out past what a second read could add")
     {
-        gui::LevelView whole;
+        plotcore::LevelView whole;
         whole.length = 1000;
         whole.low = 0.0;
         whole.high = 1000.0;
@@ -307,7 +310,7 @@ TEST_CASE("a view with nothing to say asks for nothing", "[levels]")
         whole.detailBuckets = 2048;
         // The whole-line summary is already finer than a bucket, so there is
         // nothing to read.
-        CHECK_FALSE(gui::wantedLevel(ladder, whole, none).has_value());
+        CHECK_FALSE(plotcore::wantedLevel(ladder, whole, none).has_value());
     }
 }
 
@@ -353,7 +356,7 @@ std::vector<double> readWould(const std::vector<double>& line, long long first, 
         want.assign(line.begin() + first, line.begin() + first + take);
         return want;
     }
-    gui::reduceBuckets(line.data() + first, take, bucket, want);
+    plotcore::reduceBuckets(line.data() + first, take, bucket, want);
     return want;
 }
 
@@ -384,13 +387,13 @@ TEST_CASE("an envelope coarsened is an envelope read at that bucket", "[levels][
         for (const long long factor : {2LL, 4LL, 16LL}) {
             INFO("fine " << fine << " factor " << factor);
             std::vector<double> at;
-            gui::reduceBuckets(line.data(), (long long)line.size(), fine, at);
+            plotcore::reduceBuckets(line.data(), (long long)line.size(), fine, at);
 
             std::vector<double> coarsened;
-            gui::coarsenEnvelope(at.data(), (long long)at.size() / 2, factor, coarsened);
+            plotcore::coarsenEnvelope(at.data(), (long long)at.size() / 2, factor, coarsened);
 
             std::vector<double> read;
-            gui::reduceBuckets(line.data(), (long long)line.size(), fine * factor, read);
+            plotcore::reduceBuckets(line.data(), (long long)line.size(), fine * factor, read);
             same(coarsened, read);
         }
     }
@@ -401,7 +404,8 @@ TEST_CASE("a pyramid answers every window the way the file would", "[levels][pyr
     // Large enough that the build spreads over the pool rather than staying on
     // this thread, which is the path a reader actually takes.
     const std::vector<double> line = testLine(200000);
-    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), (long long)line.size(), 1);
+    const plotcore::LinePyramid pyramid =
+        plotcore::pyramidOf(line.data(), (long long)line.size(), 1);
 
     REQUIRE_FALSE(pyramid.empty());
     CHECK(pyramid.length == 200000);
@@ -422,10 +426,10 @@ TEST_CASE("a pyramid answers every window the way the file would", "[levels][pyr
                     continue;
                 }
                 INFO("bucket " << bucket << " first " << first);
-                const gui::PlotWindow window{first, span, bucket,
-                                             static_cast<int>((span + bucket - 1) / bucket)};
+                const plotcore::PlotWindow window{first, span, bucket,
+                                                  static_cast<int>((span + bucket - 1) / bucket)};
                 std::vector<double> got;
-                REQUIRE(gui::fillWindow(pyramid, window, got));
+                REQUIRE(plotcore::fillWindow(pyramid, window, got));
                 same(got, readWould(line, first, span, bucket));
             }
         }
@@ -435,7 +439,7 @@ TEST_CASE("a pyramid answers every window the way the file would", "[levels][pyr
     {
         // The reason the plot reads an envelope and not a stride, asserted all
         // the way up the pyramid rather than only at the bottom.
-        for (const gui::PyramidLevel& level : pyramid.levels) {
+        for (const plotcore::PyramidLevel& level : pyramid.levels) {
             const long long at = 5011 / level.bucket;
             if (at >= level.buckets()) {
                 continue;
@@ -453,13 +457,14 @@ TEST_CASE("a pyramid answers every window the way the file would", "[levels][pyr
 
     SECTION("a window finer than the base is refused rather than approximated")
     {
-        const gui::LinePyramid coarse = gui::pyramidOf(line.data(), (long long)line.size(), 16);
+        const plotcore::LinePyramid coarse =
+            plotcore::pyramidOf(line.data(), (long long)line.size(), 16);
         REQUIRE(coarse.baseBucket() == 16);
         std::vector<double> got;
-        CHECK_FALSE(gui::fillWindow(coarse, gui::PlotWindow{0, 1024, 1, 1024}, got));
-        CHECK_FALSE(gui::fillWindow(coarse, gui::PlotWindow{0, 4096, 8, 512}, got));
+        CHECK_FALSE(plotcore::fillWindow(coarse, plotcore::PlotWindow{0, 1024, 1, 1024}, got));
+        CHECK_FALSE(plotcore::fillWindow(coarse, plotcore::PlotWindow{0, 4096, 8, 512}, got));
         // ...and at the base and above it answers as the file would.
-        CHECK(gui::fillWindow(coarse, gui::PlotWindow{0, 16384, 16, 1024}, got));
+        CHECK(plotcore::fillWindow(coarse, plotcore::PlotWindow{0, 16384, 16, 1024}, got));
         same(got, readWould(line, 0, 16384, 16));
     }
 }
@@ -469,15 +474,16 @@ TEST_CASE("a pyramid over a coarse base still answers exactly", "[levels][pyrami
     // The hundred-million and billion-element case: too large to hold raw, so
     // the base is an envelope and every level above it is derived from that.
     const std::vector<double> line = testLine(100000);
-    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), (long long)line.size(), 8);
+    const plotcore::LinePyramid pyramid =
+        plotcore::pyramidOf(line.data(), (long long)line.size(), 8);
 
     REQUIRE(pyramid.baseBucket() == 8);
     for (const long long bucket : {8LL, 16LL, 32LL, 128LL, 1024LL}) {
         INFO("bucket " << bucket);
         const long long span = std::min<long long>(bucket * 512, 100000);
         std::vector<double> got;
-        REQUIRE(gui::fillWindow(
-            pyramid, gui::PlotWindow{0, span, bucket, static_cast<int>(span / bucket)}, got));
+        REQUIRE(plotcore::fillWindow(
+            pyramid, plotcore::PlotWindow{0, span, bucket, static_cast<int>(span / bucket)}, got));
         same(got, readWould(line, 0, span, bucket));
     }
 }
@@ -485,12 +491,13 @@ TEST_CASE("a pyramid over a coarse base still answers exactly", "[levels][pyrami
 TEST_CASE("the whole-line summary comes out of the pyramid", "[levels][pyramid]")
 {
     const std::vector<double> line = testLine(50000);
-    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), (long long)line.size(), 1);
+    const plotcore::LinePyramid pyramid =
+        plotcore::pyramidOf(line.data(), (long long)line.size(), 1);
 
     long long stride = 0;
     double step = 0.0;
     std::vector<double> got;
-    REQUIRE(gui::fillWhole(pyramid, 1024, got, stride, step));
+    REQUIRE(plotcore::fillWhole(pyramid, 1024, got, stride, step));
 
     // Exactly what a read at that stride would have answered -- which is what
     // makes this a replacement for the read rather than a second opinion.
@@ -500,8 +507,9 @@ TEST_CASE("the whole-line summary comes out of the pyramid", "[levels][pyramid]"
 
     SECTION("and a coarse base rounds the stride up to one it can answer exactly")
     {
-        const gui::LinePyramid coarse = gui::pyramidOf(line.data(), (long long)line.size(), 16);
-        REQUIRE(gui::fillWhole(coarse, 1024, got, stride, step));
+        const plotcore::LinePyramid coarse =
+            plotcore::pyramidOf(line.data(), (long long)line.size(), 16);
+        REQUIRE(plotcore::fillWhole(coarse, 1024, got, stride, step));
         CHECK(stride % 16 == 0);
         CHECK(stride >= (50000 + 1023) / 1024);
         same(got, readWould(line, 0, 50000, stride));
@@ -584,8 +592,8 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
                 std::vector<double> plain;
                 std::vector<double> values;
                 std::vector<double> positions;
-                gui::reduceBuckets(line.data(), length, bucket, plain);
-                gui::reduceBucketsLocated(line.data(), length, bucket, 0, values, positions);
+                plotcore::reduceBuckets(line.data(), length, bucket, plain);
+                plotcore::reduceBucketsLocated(line.data(), length, bucket, 0, values, positions);
                 same(values, plain); // the same fold, with nothing taken out or put in
                 placedOn(line, values, positions, 0, bucket);
             }
@@ -597,7 +605,8 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
         for (const std::vector<double>& line : lines) {
             const auto length = static_cast<long long>(line.size());
             for (const long long base : {1LL, 4LL, 16LL}) {
-                const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, base);
+                const plotcore::LinePyramid pyramid =
+                    plotcore::pyramidOf(line.data(), length, base);
                 for (const long long bucket : {16LL, 64LL, 256LL, 1024LL}) {
                     for (const long long first : {0LL, 4096LL}) {
                         const long long span = std::min(bucket * 64, length - first);
@@ -606,11 +615,11 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
                         }
                         INFO("line of " << length << " base " << base << " bucket " << bucket
                                         << " first " << first);
-                        const gui::PlotWindow window{
+                        const plotcore::PlotWindow window{
                             first, span, bucket, static_cast<int>((span + bucket - 1) / bucket)};
                         std::vector<double> values;
                         std::vector<double> positions;
-                        REQUIRE(gui::fillWindow(pyramid, window, values, &positions));
+                        REQUIRE(plotcore::fillWindow(pyramid, window, values, &positions));
                         // Asking where they are changes none of them.
                         same(values, readWould(line, first, span, bucket));
                         placedOn(line, values, positions, first, bucket);
@@ -625,12 +634,13 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
         for (const std::vector<double>& line : lines) {
             const auto length = static_cast<long long>(line.size());
             for (const long long base : {1LL, 16LL}) {
-                const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, base);
+                const plotcore::LinePyramid pyramid =
+                    plotcore::pyramidOf(line.data(), length, base);
                 long long stride = 0;
                 double step = 0.0;
                 std::vector<double> values;
                 std::vector<double> positions;
-                REQUIRE(gui::fillWhole(pyramid, 500, values, stride, step, &positions));
+                REQUIRE(plotcore::fillWhole(pyramid, 500, values, stride, step, &positions));
                 INFO("line of " << length << " base " << base << " stride " << stride);
                 REQUIRE(stride > 1);
                 CHECK(step == static_cast<double>(stride) / 2.0);
@@ -644,8 +654,8 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
     {
         for (const std::vector<double>& line : lines) {
             const auto length = static_cast<long long>(line.size());
-            const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), length, 1);
-            for (const gui::PyramidLevel& level : pyramid.levels) {
+            const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), length, 1);
+            for (const plotcore::PyramidLevel& level : pyramid.levels) {
                 // Every level holds where each of its values is, and nothing else.
                 INFO("level of bucket " << level.bucket);
                 if (level.bucket == 1) {
@@ -658,8 +668,8 @@ TEST_CASE("an envelope names the element each extreme is, and holds nothing else
             for (long long from = 0; from < length; from += 997) {
                 for (const long long width : {3LL, 70LL, 1500LL, 9000LL}) {
                     const long long to = std::min(from + width, length);
-                    const gui::Extremes want = gui::extremesOf(line.data(), from, to);
-                    const gui::Extremes got = gui::extremesOver(pyramid, from, to);
+                    const plotcore::Extremes want = plotcore::extremesOf(line.data(), from, to);
+                    const plotcore::Extremes got = plotcore::extremesOver(pyramid, from, to);
                     INFO("line of " << length << " run " << from << ".." << to);
                     REQUIRE(got.found() == want.found());
                     if (!want.found()) {
@@ -677,10 +687,11 @@ TEST_CASE("a run drawn sample for sample names no positions", "[levels][pyramid]
 {
     // The values are the elements and the step already says where each sits.
     const std::vector<double> line = testLine(5000);
-    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 5000, 1);
+    const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 5000, 1);
     std::vector<double> values;
     std::vector<double> positions{1.0, 2.0};
-    REQUIRE(gui::fillWindow(pyramid, gui::PlotWindow{1024, 1024, 1, 1024}, values, &positions));
+    REQUIRE(plotcore::fillWindow(pyramid, plotcore::PlotWindow{1024, 1024, 1, 1024}, values,
+                                 &positions));
     CHECK(values.size() == 1024);
     CHECK(positions.empty());
 }
@@ -700,13 +711,13 @@ TEST_CASE("a pyramid streamed in pieces is the pyramid of the whole line", "[lev
         // element at a time.
         for (const long long piece : {4096LL, 1000LL, 7LL, 1LL}) {
             INFO("base " << base << " piece " << piece);
-            gui::PyramidBuilder builder(length, base);
+            plotcore::PyramidBuilder builder(length, base);
             for (long long at = 0; at < length; at += piece) {
                 builder.add(line.data() + at, std::min(piece, length - at));
             }
             CHECK(builder.taken() == length);
-            const gui::LinePyramid streamed = builder.finish();
-            const gui::LinePyramid whole = gui::pyramidOf(line.data(), length, base);
+            const plotcore::LinePyramid streamed = builder.finish();
+            const plotcore::LinePyramid whole = plotcore::pyramidOf(line.data(), length, base);
 
             REQUIRE(streamed.length == whole.length);
             REQUIRE(streamed.levels.size() == whole.levels.size());
@@ -733,9 +744,9 @@ TEST_CASE("a pyramid whose reads stopped short answers only for what it holds", 
 
     for (const long long base : {1LL, 8LL}) {
         INFO("base " << base);
-        gui::PyramidBuilder builder(kPromised, base);
+        plotcore::PyramidBuilder builder(kPromised, base);
         builder.add(line.data(), static_cast<long long>(line.size()));
-        const gui::LinePyramid pyramid = builder.finish();
+        const plotcore::LinePyramid pyramid = builder.finish();
 
         CHECK(pyramid.length == 20000);
 
@@ -743,20 +754,20 @@ TEST_CASE("a pyramid whose reads stopped short answers only for what it holds", 
         long long stride = 0;
         double step = 0.0;
         std::vector<double> got;
-        REQUIRE(gui::fillWhole(pyramid, 512, got, stride, step));
+        REQUIRE(plotcore::fillWhole(pyramid, 512, got, stride, step));
         same(got, readWould(line, 0, 20000, stride));
 
         // ...a run reaching past it stops where it does...
         std::vector<double> run;
-        REQUIRE(gui::fillWindow(pyramid, gui::PlotWindow{16384, 16384, 16, 1024}, run));
+        REQUIRE(plotcore::fillWindow(pyramid, plotcore::PlotWindow{16384, 16384, 16, 1024}, run));
         same(run, readWould(line, 16384, 16384, 16));
 
         // ...and the extremes of a range over the end are the extremes of
         // what is inside it.
-        const gui::Extremes found = gui::extremesOver(pyramid, 19000, kPromised);
+        const plotcore::Extremes found = plotcore::extremesOver(pyramid, 19000, kPromised);
         REQUIRE(found.found());
         std::vector<double> tail;
-        gui::reduceBuckets(line.data() + 19000, 1000, 1000, tail);
+        plotcore::reduceBuckets(line.data() + 19000, 1000, 1000, tail);
         CHECK(std::min(tail[0], tail[1]) == found.lowest);
         CHECK(std::max(tail[0], tail[1]) == found.highest);
     }
@@ -767,26 +778,25 @@ TEST_CASE("the base bucket is the finest the budget affords", "[levels][pyramid]
     // A pyramid costs its base and a third again, so the budget decides how
     // fine the base can be -- and below the base the file is the only answer,
     // which is the one thing this number changes.
-    CHECK(gui::baseBucketFor(10000000, 1 << 28) == 1); // 10M raw in 256M doubles
-    CHECK(gui::baseBucketFor(10000000, 1 << 20) > 1);  // ...and not in one
-    CHECK(gui::baseBucketFor(0, 1 << 20) == 1);
+    CHECK(plotcore::baseBucketFor(10000000, 1 << 28) == 1); // 10M raw in 256M doubles
+    CHECK(plotcore::baseBucketFor(10000000, 1 << 20) > 1);  // ...and not in one
+    CHECK(plotcore::baseBucketFor(0, 1 << 20) == 1);
 
     for (const long long length : {1000LL, 10000000LL, 1000000000LL}) {
         for (const long long budget : {1LL << 16, 1LL << 22, 1LL << 28}) {
-            const long long base = gui::baseBucketFor(length, budget);
+            const long long base = plotcore::baseBucketFor(length, budget);
             INFO("length " << length << " budget " << budget << " base " << base);
             CHECK(base >= 1);
             // A power of two, because every window's bucket is one and a level
             // that did not divide them could answer none of them.
             CHECK((base & (base - 1)) == 0);
             // It fits, unless a single bucket does not -- which cannot happen.
-            CHECK(gui::pyramidDoubles(length, base) <= budget);
+            CHECK(plotcore::pyramidDoubles(length, base) <= budget);
         }
     }
 }
 
-TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
-          "[levels][pyramid]")
+TEST_CASE("a pyramid is coarsened in place when the budget is turned down", "[levels][pyramid]")
 {
     // The direction that is free, and the one that matters: a reader who
     // notices this program holding three gigabytes and turns the RAM budget
@@ -797,34 +807,34 @@ TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
         line[i] = std::sin(static_cast<double>(i) / 97.0);
     }
 
-    gui::LinePyramid fine =
-        gui::pyramidOf(line.data(), static_cast<long long>(line.size()), 1);
+    plotcore::LinePyramid fine =
+        plotcore::pyramidOf(line.data(), static_cast<long long>(line.size()), 1);
     REQUIRE(fine.baseBucket() == 1);
     const std::size_t before = fine.doubles();
 
     SECTION("what it costs afterwards is what a pyramid at that base costs")
     {
-        REQUIRE(gui::coarsenTo(fine, 16));
+        REQUIRE(plotcore::coarsenTo(fine, 16));
         CHECK(fine.baseBucket() == 16);
         // Seven times smaller: a base of the elements is one double each, and
         // every level of pairs is two values and two positions a bucket, so
         // what is left is the levels from sixteen up.
         CHECK(fine.doubles() < before / 6);
-        CHECK(static_cast<long long>(fine.doubles())
-              <= gui::pyramidDoubles(static_cast<long long>(line.size()), 16));
+        CHECK(static_cast<long long>(fine.doubles()) <=
+              plotcore::pyramidDoubles(static_cast<long long>(line.size()), 16));
     }
 
     SECTION("every picture at or above the new base is the picture it was")
     {
-        gui::LinePyramid coarse = fine;
-        REQUIRE(gui::coarsenTo(coarse, 16));
+        plotcore::LinePyramid coarse = fine;
+        REQUIRE(plotcore::coarsenTo(coarse, 16));
 
         for (const long long bucket : {16LL, 64LL, 256LL, 1024LL}) {
-            gui::PlotWindow window{0, static_cast<long long>(line.size()), bucket};
+            plotcore::PlotWindow window{0, static_cast<long long>(line.size()), bucket};
             std::vector<double> before;
             std::vector<double> after;
-            REQUIRE(gui::fillWindow(fine, window, before));
-            REQUIRE(gui::fillWindow(coarse, window, after));
+            REQUIRE(plotcore::fillWindow(fine, window, before));
+            REQUIRE(plotcore::fillWindow(coarse, window, after));
             INFO("bucket " << bucket);
             CHECK(before == after);
         }
@@ -832,12 +842,12 @@ TEST_CASE("a pyramid is coarsened in place when the budget is turned down",
 
     SECTION("a base already coarse enough is left alone, and one level survives")
     {
-        CHECK_FALSE(gui::coarsenTo(fine, 1));
+        CHECK_FALSE(plotcore::coarsenTo(fine, 1));
         CHECK(fine.baseBucket() == 1);
 
         // Past the top: there is nothing finer to give up, and a pyramid of the
         // whole line in a handful of buckets is still a pyramid.
-        REQUIRE(gui::coarsenTo(fine, 1LL << 40));
+        REQUIRE(plotcore::coarsenTo(fine, 1LL << 40));
         CHECK(fine.levels.size() == 1);
         CHECK_FALSE(fine.empty());
     }
@@ -858,13 +868,13 @@ TEST_CASE("any run's extremes come out of the pyramid as the elements' own",
 
     SECTION("over a base of one")
     {
-        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), count, 1);
+        const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), count, 1);
         for (const long long first : {0LL, 1LL, 13LL, 1999LL, 2003LL, 4095LL, 40000LL}) {
             for (const long long take : {1LL, 2LL, 3LL, 17LL, 400LL, 4097LL, 9999LL}) {
                 const long long last = std::min(first + take, count);
                 INFO("run " << first << ".." << last);
-                const gui::Extremes want = gui::extremesOf(line.data(), first, last);
-                const gui::Extremes got = gui::extremesOver(pyramid, first, last);
+                const plotcore::Extremes want = plotcore::extremesOf(line.data(), first, last);
+                const plotcore::Extremes got = plotcore::extremesOver(pyramid, first, last);
                 REQUIRE(got.found() == want.found());
                 if (!want.found()) {
                     continue; // a run of nothing but NaN is a gap, and says so
@@ -881,15 +891,15 @@ TEST_CASE("any run's extremes come out of the pyramid as the elements' own",
 
     SECTION("over a coarse base, rounded out to it")
     {
-        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), count, 8);
+        const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), count, 8);
         for (const long long first : {0LL, 5LL, 1003LL, 40001LL}) {
             for (const long long take : {1LL, 9LL, 1000LL}) {
                 const long long last = std::min(first + take, count);
                 const long long from = (first / 8) * 8;
                 const long long to = std::min(((last + 7) / 8) * 8, count);
                 INFO("run " << first << ".." << last << " rounded to " << from << ".." << to);
-                const gui::Extremes want = gui::extremesOf(line.data(), from, to);
-                const gui::Extremes got = gui::extremesOver(pyramid, first, last);
+                const plotcore::Extremes want = plotcore::extremesOf(line.data(), from, to);
+                const plotcore::Extremes got = plotcore::extremesOver(pyramid, first, last);
                 REQUIRE(got.found() == want.found());
                 if (want.found()) {
                     CHECK(got.lowest == want.lowest);
@@ -925,17 +935,18 @@ TEST_CASE("a logarithmic pane is folded one envelope per column, from the first 
     for (long long i = 0; i < kLength; ++i) {
         line[static_cast<std::size_t>(i)] = std::sin(static_cast<double>(i) / 7.0);
     }
-    const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), kLength, 1);
+    const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), kLength, 1);
 
     const double low = 1.0;
     const double high = static_cast<double>(kLength);
-    const std::optional<gui::LogColumns> columns = gui::logColumnsFor(low, high, kColumns);
+    const std::optional<plotcore::LogColumns> columns =
+        plotcore::logColumnsFor(low, high, kColumns);
     REQUIRE(columns.has_value());
 
     std::vector<double> edges;
-    gui::edgesAlong(*columns, 0.0, 1.0, edges);
-    gui::ColumnFold fold;
-    gui::foldColumns(pyramid, edges, fold);
+    plotcore::edgesAlong(*columns, 0.0, 1.0, edges);
+    plotcore::ColumnFold fold;
+    plotcore::foldColumns(pyramid, edges, fold);
 
     REQUIRE(fold.values.size() == fold.positions.size());
     CHECK(fold.summarised);
@@ -963,9 +974,8 @@ TEST_CASE("a logarithmic pane is folded one envelope per column, from the first 
         for (int tenth = 0; tenth < 10; ++tenth) {
             const double from = std::exp2(std::log2(high) * tenth / 10.0);
             const double to = std::exp2(std::log2(high) * (tenth + 1) / 10.0);
-            const auto drawn = std::count_if(
-                fold.positions.begin(), fold.positions.end(),
-                [&](double at) { return at >= from && at < to; });
+            const auto drawn = std::count_if(fold.positions.begin(), fold.positions.end(),
+                                             [&](double at) { return at >= from && at < to; });
             // As many elements as there are, where there are fewer than the
             // tenth has columns; a column's worth or more everywhere else.
             const double elements = std::ceil(to) - std::ceil(from);
@@ -1001,7 +1011,7 @@ TEST_CASE("a logarithmic pane is folded one envelope per column, from the first 
             if (last <= first) {
                 continue;
             }
-            const gui::Extremes want = gui::extremesOf(line.data(), first, last);
+            const plotcore::Extremes want = plotcore::extremesOf(line.data(), first, last);
             INFO("column " << c << " elements " << first << ".." << last);
             if (last - first <= 2) {
                 for (long long i = first; i < last; ++i, ++at) {
@@ -1028,7 +1038,7 @@ TEST_CASE("a logarithmic pane is folded one envelope per column, from the first 
 TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave at a time",
           "[levels][log]")
 {
-    const std::optional<gui::LogColumns> here = gui::logColumnsFor(10.0, 1e5, 1000);
+    const std::optional<plotcore::LogColumns> here = plotcore::logColumnsFor(10.0, 1e5, 1000);
     REQUIRE(here.has_value());
 
     SECTION("a pan inside the margin is served by the columns in hand")
@@ -1037,10 +1047,10 @@ TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave a
         // pane either way needs nothing new -- which is what keeps a drag from
         // folding on every frame of it.
         const double tenth = std::pow(1e4, 0.1);
-        CHECK(gui::logColumnsServe(*here, 10.0 * tenth, 1e5 * tenth, 1000));
-        CHECK(gui::logColumnsServe(*here, 10.0 / tenth, 1e5 / tenth, 1000));
+        CHECK(plotcore::logColumnsServe(*here, 10.0 * tenth, 1e5 * tenth, 1000));
+        CHECK(plotcore::logColumnsServe(*here, 10.0 / tenth, 1e5 / tenth, 1000));
         // A whole pane is past the margin.
-        CHECK_FALSE(gui::logColumnsServe(*here, 1e5, 1e9, 1000));
+        CHECK_FALSE(plotcore::logColumnsServe(*here, 1e5, 1e9, 1000));
     }
 
     SECTION("a pan that does need new columns finds the same edges where they overlap")
@@ -1048,7 +1058,7 @@ TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave a
         // Aligned to a fixed grid in log2(x), so the edges are not derived from
         // the view: two views folded apart agree edge for edge where they meet,
         // and the envelope between two edges cannot change under the pointer.
-        const std::optional<gui::LogColumns> there = gui::logColumnsFor(100.0, 1e6, 1000);
+        const std::optional<plotcore::LogColumns> there = plotcore::logColumnsFor(100.0, 1e6, 1000);
         REQUIRE(there.has_value());
         CHECK(there->density == here->density);
         const long long k = std::max(here->first, there->first);
@@ -1059,8 +1069,8 @@ TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave a
     {
         for (const double decades : {1.0, 2.0, 3.3, 6.0, 12.0}) {
             const double octaves = decades * std::log2(10.0);
-            const std::optional<gui::LogColumns> grid =
-                gui::logColumnsFor(1.0, std::pow(10.0, decades), 1000);
+            const std::optional<plotcore::LogColumns> grid =
+                plotcore::logColumnsFor(1.0, std::pow(10.0, decades), 1000);
             REQUIRE(grid.has_value());
             INFO("decades " << decades);
             const double perColumn = static_cast<double>(grid->density) * octaves / 1000.0;
@@ -1074,20 +1084,20 @@ TEST_CASE("a logarithmic pane's columns are aligned, and change only an octave a
     {
         // No column is twice as wide as another there, and the linear path --
         // which also reads below the pyramid's base -- is the right one.
-        CHECK_FALSE(gui::logColumnsFor(1000.0, 1900.0, 1000).has_value());
-        CHECK(gui::logColumnsFor(1000.0, 2000.0, 1000).has_value());
+        CHECK_FALSE(plotcore::logColumnsFor(1000.0, 1900.0, 1000).has_value());
+        CHECK(plotcore::logColumnsFor(1000.0, 2000.0, 1000).has_value());
         // ...and a window this axis cannot have is not folded either.
-        CHECK_FALSE(gui::logColumnsFor(0.0, 1000.0, 1000).has_value());
-        CHECK_FALSE(gui::logColumnsFor(-5.0, 1000.0, 1000).has_value());
-        CHECK_FALSE(gui::logColumnsFor(1.0, 1000.0, 0).has_value());
+        CHECK_FALSE(plotcore::logColumnsFor(0.0, 1000.0, 1000).has_value());
+        CHECK_FALSE(plotcore::logColumnsFor(-5.0, 1000.0, 1000).has_value());
+        CHECK_FALSE(plotcore::logColumnsFor(1.0, 1000.0, 0).has_value());
     }
 
     SECTION("the edges come out ascending whichever way the axis runs")
     {
         std::vector<double> forwards;
         std::vector<double> backwards;
-        gui::edgesAlong(*here, 0.0, 2.0, forwards);
-        gui::edgesAlong(*here, 1e6, -2.0, backwards);
+        plotcore::edgesAlong(*here, 0.0, 2.0, forwards);
+        plotcore::edgesAlong(*here, 1e6, -2.0, backwards);
         REQUIRE_FALSE(forwards.empty());
         CHECK(std::is_sorted(forwards.begin(), forwards.end()));
         CHECK(std::is_sorted(backwards.begin(), backwards.end()));
@@ -1120,15 +1130,15 @@ TEST_CASE("the smallest value above zero comes out of the line, not out of its s
         for (std::size_t i = 0; i < time.size(); ++i) {
             time[i] = static_cast<double>(i) / 1000.0;
         }
-        const gui::LinePyramid pyramid = gui::pyramidOf(time.data(), 20000, 1);
+        const plotcore::LinePyramid pyramid = plotcore::pyramidOf(time.data(), 20000, 1);
         double smallest = 0.0;
-        REQUIRE(gui::smallestPositive(pyramid, smallest));
+        REQUIRE(plotcore::smallestPositive(pyramid, smallest));
         CHECK(smallest == 0.001);
 
         // The summary's answer, for contrast: the first pair is the zero and
         // the end of the first bucket.
         std::vector<double> summary;
-        gui::reduceBuckets(time.data(), 20000, 22, summary);
+        plotcore::reduceBuckets(time.data(), 20000, 22, summary);
         CHECK(brute(summary) > 0.02);
     }
 
@@ -1141,17 +1151,17 @@ TEST_CASE("the smallest value above zero comes out of the line, not out of its s
             }
         }
         line[17777] = 1e-9; // the answer, hidden next to negatives
-        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 30000, 1);
+        const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 30000, 1);
         double smallest = 0.0;
-        REQUIRE(gui::smallestPositive(pyramid, smallest));
+        REQUIRE(plotcore::smallestPositive(pyramid, smallest));
         CHECK(smallest == brute(line));
         CHECK(smallest == 1e-9);
 
         SECTION("and over a coarse base, never below the truth")
         {
-            const gui::LinePyramid coarse = gui::pyramidOf(line.data(), 30000, 16);
+            const plotcore::LinePyramid coarse = plotcore::pyramidOf(line.data(), 30000, 16);
             double answer = 0.0;
-            REQUIRE(gui::smallestPositive(coarse, answer));
+            REQUIRE(plotcore::smallestPositive(coarse, answer));
             CHECK(answer >= 1e-9);
         }
     }
@@ -1159,18 +1169,18 @@ TEST_CASE("the smallest value above zero comes out of the line, not out of its s
     SECTION("nothing above zero is no answer")
     {
         const std::vector<double> line{-1.0, 0.0, -3.0, kNaN, -0.0};
-        const gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 5, 1);
+        const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 5, 1);
         double smallest = 42.0;
-        CHECK_FALSE(gui::smallestPositive(pyramid, smallest));
+        CHECK_FALSE(plotcore::smallestPositive(pyramid, smallest));
     }
 }
 
 TEST_CASE("a pane's width is taken at once the first time and at the end of a drag after that",
           "[levels][pane]")
 {
-    using Step = gui::PaneColumns::Step;
-    gui::PaneColumns pane;
-    REQUIRE(pane.applied == gui::kDefaultColumns);
+    using Step = plotcore::PaneColumns::Step;
+    plotcore::PaneColumns pane;
+    REQUIRE(pane.applied == plotcore::kDefaultColumns);
 
     SECTION("the first measurement is applied without waiting")
     {
@@ -1204,16 +1214,16 @@ TEST_CASE("a pane's width is taken at once the first time and at the end of a dr
     SECTION("a width is never nothing and never past the most a line is thinned to")
     {
         REQUIRE(pane.request(0) == Step::Apply);
-        CHECK(pane.wanted == gui::kMinPoints / 2);
+        CHECK(pane.wanted == plotcore::kMinPoints / 2);
         pane.apply();
         CHECK(pane.request(1 << 20) == Step::Wait);
-        CHECK(pane.wanted == gui::kMaxPoints / 2);
+        CHECK(pane.wanted == plotcore::kMaxPoints / 2);
     }
 }
 
 TEST_CASE("a zoom focus is a finite point and a direction, or none", "[levels][focus]")
 {
-    gui::ZoomFocus focus;
+    plotcore::ZoomFocus focus;
     CHECK_FALSE(focus.active);
 
     focus.set(12.5, 2.0);
@@ -1239,7 +1249,7 @@ TEST_CASE("a zoom focus is a finite point and a direction, or none", "[levels][f
 
 TEST_CASE("a log fold's grid serves the axis it was made on and no other", "[levels][fold]")
 {
-    gui::LogFoldGrid grid;
+    plotcore::LogFoldGrid grid;
     CHECK_FALSE(grid.serves(0.0, 1.0, 0, 1024, 1.0, 1e6));
 
     grid.remake(0.0, 1.0, 0, 1024, 1.0, 1e6);
@@ -1268,22 +1278,22 @@ TEST_CASE("a pyramid is coarsened to a smaller budget and refuses a larger one",
           "[levels][pyramid][budget]")
 {
     const std::vector<double> line = testLine(30000);
-    gui::LinePyramid pyramid = gui::pyramidOf(line.data(), 30000, 1);
+    plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 30000, 1);
     REQUIRE(pyramid.baseBucket() == 1);
 
     // Enough for the base it has: nothing to do.
-    CHECK(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK(plotcore::fitToBudget(pyramid, plotcore::pyramidDoubles(30000, 1)));
     CHECK(pyramid.baseBucket() == 1);
 
     // Less: coarsened in the call, to the base the budget affords.
-    const long long small = gui::pyramidDoubles(30000, 16);
-    CHECK(gui::fitToBudget(pyramid, small));
-    CHECK(pyramid.baseBucket() == gui::baseBucketFor(30000, small));
+    const long long small = plotcore::pyramidDoubles(30000, 16);
+    CHECK(plotcore::fitToBudget(pyramid, small));
+    CHECK(pyramid.baseBucket() == plotcore::baseBucketFor(30000, small));
     CHECK(pyramid.baseBucket() > 1);
 
     // More again: a finer base is elements this no longer has, so it says so
     // and leaves the pyramid as it is.
     const long long coarse = pyramid.baseBucket();
-    CHECK_FALSE(gui::fitToBudget(pyramid, gui::pyramidDoubles(30000, 1)));
+    CHECK_FALSE(plotcore::fitToBudget(pyramid, plotcore::pyramidDoubles(30000, 1)));
     CHECK(pyramid.baseBucket() == coarse);
 }

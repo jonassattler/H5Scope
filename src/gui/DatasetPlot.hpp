@@ -9,7 +9,7 @@
 #include "PlotItem.hpp"
 
 #include "PlotBudget.hpp"
-#include "PlotLevels.hpp"
+#include "gui/PlotCore.hpp"
 #include <QColor>
 #include <QVariant>
 
@@ -137,7 +137,7 @@ class DatasetPlot : public QObject
     /// decides what a column *is*: on a logarithmic axis a pixel column at the
     /// left holds a handful of elements and one at the right holds thousands,
     /// so a line folded into buckets of equal element width is folded wrong
-    /// for almost all of the pane. See LogColumns in PlotLevels.hpp. The base
+    /// for almost all of the pane. See LogColumns in plotcore/Levels.hpp. The base
     /// does not come with it, because it moves nothing that is drawn.
     ///
     /// On `xAxisChanged` for that signal's reason: the same points, drawn at
@@ -614,7 +614,7 @@ private:
     /// The cache the closer look is served out of, and the reason a zoom stopped
     /// costing a read. `lines_` above is derived from these -- it is the top of
     /// each pyramid, folded to the pane's width -- and so is every run in
-    /// `levels_` whose bucket the pyramid can answer. See PlotPyramid.hpp.
+    /// `levels_` whose bucket the pyramid can answer. See plotcore/Pyramid.hpp.
     ///
     /// Keyed as `lines_` is and pruned with it. Not borrowed by the renderer:
     /// what reaches PlotLine is always a vector in `lines_` or in a Detail, so
@@ -711,11 +711,11 @@ private:
     H5Requests requests_;
 
 public:
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kDefaultColumns = gui::kDefaultColumns;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kMaxPoints = gui::kMaxPoints;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kMinPoints = gui::kMinPoints;
     /// Doubles the *renderer* walks, all drawn lines together.
     ///
@@ -739,13 +739,13 @@ public:
     /// thousands -- and small enough that the answers in hand never amount to
     /// a second copy of everything already drawn.
     static constexpr std::size_t kReadBatch = 256;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kSettleMilliseconds = gui::kSettleMilliseconds;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kHeldLevels = gui::kHeldLevels;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
     /// Lines past which no closer look is read at all.
     ///
@@ -755,7 +755,7 @@ public:
     /// whole cost of the selection again to sharpen something nobody can
     /// follow. They stretch, as they always did.
     static constexpr int kWindowedSeries = static_cast<int>(kReadBatch);
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kColumnQuantum = gui::kColumnQuantum;
 };
 

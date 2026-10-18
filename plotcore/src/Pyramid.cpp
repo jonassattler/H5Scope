@@ -2,19 +2,18 @@
 // SPDX-FileCopyrightText: 2026 Andreas Martin
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "PlotPyramid.hpp"
+#include "plotcore/Pyramid.hpp"
 
-#include "PlotLevels.hpp"
+#include "plotcore/Levels.hpp"
 
-#include <QSemaphore>
-#include <QThreadPool>
+#include "plotcore/Parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
 
-namespace gui {
+namespace plotcore {
 
 namespace {
 
@@ -48,32 +47,21 @@ constexpr long long kFoldGrain = 1 << 16;
 template<typename F>
 void overRanges(long long units, long long work, F body)
 {
-    const int threads = std::max(QThreadPool::globalInstance()->maxThreadCount(), 1);
-    const long long pieces = std::min<long long>(std::min<long long>(threads, units),
+    const long long pieces = std::min<long long>(std::min<long long>(poolThreads(), units),
                                                  std::max<long long>(1, work / kFoldGrain));
     if (pieces <= 1) {
         body(0, units);
         return;
     }
     const long long each = (units + pieces - 1) / pieces;
-    QSemaphore done;
-    long long started = 0;
-    for (long long piece = 0; piece < pieces; ++piece) {
+    // parallelFor returns when every piece has, which is what makes `body`
+    // safe to capture by reference and the output safe to read on return.
+    parallelFor(pieces, [&](long long piece) {
         const long long from = piece * each;
-        if (from >= units) {
-            break;
+        if (from < units) {
+            body(from, std::min(from + each, units));
         }
-        const long long to = std::min(from + each, units);
-        ++started;
-        QThreadPool::globalInstance()->start([&done, &body, from, to] {
-            body(from, to);
-            done.release();
-        });
-    }
-    // Acquired rather than left to the pool's own wait: this blocks until every
-    // piece is finished, which is what makes `body` safe to capture by
-    // reference and the output safe to read on return.
-    done.acquire(static_cast<int>(started));
+    });
 }
 
 } // namespace
@@ -132,8 +120,7 @@ bool coarsenTo(LinePyramid& pyramid, long long base)
     if (drop == 0) {
         return false;
     }
-    pyramid.levels.erase(pyramid.levels.begin(),
-                         pyramid.levels.begin() + static_cast<long>(drop));
+    pyramid.levels.erase(pyramid.levels.begin(), pyramid.levels.begin() + static_cast<long>(drop));
     // The vectors that went are the whole point, so the capacity goes with
     // them: a std::vector erased out of the front of another leaves the
     // survivors where they were, but the elements removed are destroyed and
@@ -717,4 +704,4 @@ bool smallestPositive(const LinePyramid& pyramid, double& out)
     return found;
 }
 
-} // namespace gui
+} // namespace plotcore

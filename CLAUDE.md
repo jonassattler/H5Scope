@@ -58,11 +58,12 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem` + `PlotProjection`) with the cache under it (`PlotLevels` + `PlotPyramid` + `PlotBudget`), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
+| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg** — `cmake -S plotcore` builds and tests it alone, and a CI job does exactly that, because the viewer's build would carry a dependency on the viewer creeping back in without complaint. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`), and they run with the viewer's. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
-| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_member`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`, `test_plotprojection`, `test_plotlevels`) plus the Qt Quick Test QML suites under `tests/qml/`. |
+| `tests/` | Catch2 suites (`test_h5core`, `test_postprocess`, `test_member`, `test_h5thread`, `test_models`, `test_example`, `test_cost`, `test_customplot`) plus the Qt Quick Test QML suites under `tests/qml/`. |
 | `cmake/`, `ports/`, `packaging/` | Version counting, licence collection, the `xcb-util-cursor` overlay port, icons and the Windows resource. |
 
 QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
@@ -155,29 +156,29 @@ across the two that Qt reports on every flip. Gestures arrive in pixels, so
 `zoomAt`, `panBy`, `zoomToRegion` and `dataXAt`/`dataYAt` read each axis off
 the coordinate it runs along; the zoom modifiers name the pane's directions.
 
-The plot is drawn by this program and not by a library. `gui::PlotProjection`
-is the arithmetic — where a sample lands, which samples are drawable, where a
+The plot is drawn by this program and not by a library. `plotcore::Projection`
+(`plotcore/include/plotcore/Projection.hpp`) is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without
 losing the one that matters, which run of a line a zoomed-in reader is asking to
 have read again, and how a stroke is built out of triangles — and
-it has no renderer in it, which is what lets `tests/test_plotprojection.cpp`
+it has no renderer in it, which is what lets `plotcore/tests/test_plotprojection.cpp`
 assert all of it with no window. `gui::PlotItem` is the part that has one.
 `src/qml/PlotFrame.qml` draws the gutters, the rules, the ticks and the labels.
-Read the header of `PlotProjection.hpp` before changing any of it: the three
+Read the header of `Projection.hpp` before changing any of it: the three
 things listed there are why this is ours rather than Qt Graphs', and each of
 them is a defect of the thing it replaced.
 
-`gui::PlotLevels` is its sibling and holds everything *above* one picture: the
+`plotcore::Levels` is its sibling and holds everything *above* one picture: the
 fold a line is reduced by (`reduceBuckets`) and the policy over the runs it is
 reduced into — which one is drawn, which is read next, which is given up. Both
 plots call it. They used to carry a copy each, together with nine constants
 duplicated between them under comments saying they had to match, which is how a
 custom tab came to read one hyperslab per bucket for a release while the Plot
 tab read one per sixty-four thousand elements. It is Qt-free for
-`PlotProjection`'s reason, and `tests/test_plotlevels.cpp` asserts it with no
-file, no thread and no window.
+`Projection`'s reason, and `plotcore/tests/test_plotlevels.cpp` asserts it with
+no file, no thread and no window.
 
-`gui::PlotPyramid` is what those runs are folded *out of*, and it is why they
+`plotcore::Pyramid` is what those runs are folded *out of*, and it is why they
 cost nothing. One property of an envelope carries the whole design:
 
 > **An envelope can be coarsened exactly, and only coarsened.** The smallest and
@@ -313,7 +314,7 @@ put half of it into one bucket — blank below that bucket's middle, a few
 straight strokes above it, at every zoom, because every run and the renderer's
 own envelope were bucketed the same way. Four pieces replace it:
 
-- **`gui::LogColumns`** (`PlotLevels`) is the grid: edge `k` at
+- **`gui::LogColumns`** (`Levels`) is the grid: edge `k` at
   `2^(k / density)`, the density a power of two giving one to two edges per
   pixel column, half a pane of margin either side. Aligned in log2(x) for the
   reason `PlotWindow` is aligned — a pan moves which edges are on screen, never
@@ -321,7 +322,7 @@ own envelope were bucketed the same way. Four pieces replace it:
   refills (`logColumnsServe`). It applies only to a window spanning **an octave
   or more**; under that, no column is twice another's width and the linear path,
   which also reads below the pyramid's base, is the right one.
-- **`gui::foldColumns`** (`PlotPyramid`) folds a line onto those edges out of
+- **`gui::foldColumns`** (`Pyramid`) folds a line onto those edges out of
   the pyramid already held (`extremesOver` answers any run, aligned or not, from
   a few buckets of each level), so it reads nothing. A column of one or two
   elements holds *them*, at their own positions; anything wider is its extremes

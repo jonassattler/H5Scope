@@ -4,7 +4,7 @@
 #include "DatasetPlot.hpp"
 
 #include "gui/PlotBudget.hpp"
-#include "gui/PlotLevels.hpp"
+#include "gui/PlotCore.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -425,8 +425,8 @@ void DatasetPlot::readMissing() const
     //
     // Nothing about the picture changes. fillWhole() answers with exactly what
     // a read at that stride answered with, element for element, because
-    // coarsening an envelope is exact -- which is the property PlotLevels.hpp
-    // states and PlotPyramid.hpp spends.
+    // coarsening an envelope is exact -- which is the property plotcore/Levels.hpp
+    // states and plotcore/Pyramid.hpp spends.
     buildPyramids();
 
     std::map<int, std::vector<double>> replaced;

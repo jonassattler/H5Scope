@@ -45,6 +45,74 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: bash tools/release-notes.sh "${GITHUB_REF_NAME#v}" --check
 
+  # The plot's arithmetic on its own: plotcore/ with plain CMake and whatever
+  # compiler the runner has, no vcpkg, no Qt and no HDF5. Minutes rather than
+  # the better part of an hour, and the one job that notices a dependency on
+  # the viewer creeping back into the library -- the viewer's own build would
+  # carry it without complaint.
+  plotcore:
+    name: plotcore alone (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: cmake -S plotcore -B build/plotcore -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/plotcore --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/plotcore -C Release --output-on-failure --parallel 4
+
+      - name: Install, and build a project against what was installed
+        shell: bash
+        run: |
+          cmake --install build/plotcore --config Release --prefix "$RUNNER_TEMP/plotcore"
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cat > "$RUNNER_TEMP/consumer/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.26)
+          project(consumer CXX)
+          find_package(plotcore 0.1 REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE plotcore::core)
+          EOF
+          cat > "$RUNNER_TEMP/consumer/main.cpp" <<'EOF'
+          #include <plotcore/Pyramid.hpp>
+          #include <vector>
+          int main()
+          {
+              std::vector<double> line(100000, 1.0);
+              line[777] = 9.0;
+              const plotcore::LinePyramid pyramid = plotcore::pyramidOf(line.data(), 100000, 1);
+              std::vector<double> values;
+              std::vector<double> positions;
+              long long stride = 0;
+              double step = 0.0;
+              if (!plotcore::fillWhole(pyramid, 100, values, stride, step, &positions)) {
+                  return 3;
+              }
+              for (std::size_t i = 0; i < values.size(); ++i) {
+                  if (values[i] == 9.0) {
+                      return positions[i] == 777.0 ? 0 : 1;
+                  }
+              }
+              return 2;
+          }
+          EOF
+          cmake -S "$RUNNER_TEMP/consumer" -B "$RUNNER_TEMP/consumer/build" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/plotcore" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/consumer/build" --config Release
+          if [ -x "$RUNNER_TEMP/consumer/build/consumer" ]; then
+            "$RUNNER_TEMP/consumer/build/consumer"
+          else
+            "$RUNNER_TEMP/consumer/build/Release/consumer.exe"
+          fi
+
   build:
     name: Build and test (release, RHEL 8 floor)
     runs-on: ubuntu-latest

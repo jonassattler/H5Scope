@@ -21,7 +21,7 @@
 // the same few lines in DatasetPlot and in CustomPlot. They are here now, and
 // the plots decide only *when* to lend, retire or release.
 
-#include "PlotProjection.hpp"
+#include "gui/PlotCore.hpp"
 
 #include <QPointer>
 

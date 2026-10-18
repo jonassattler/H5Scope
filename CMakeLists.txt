@@ -253,10 +253,16 @@ h5scope_collect_third_party_licenses("${H5SCOPE_THIRD_PARTY_LICENSES}")
 # each module at <root>/<uri-as-path> automatically.
 set(QT_QML_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/qml")
 
+include(CTest)
+
+# The plot's arithmetic, a project of its own that builds without any of the
+# above -- see plotcore/CMakeLists.txt. Its tests run with the viewer's.
+set(PLOTCORE_BUILD_TESTS ${BUILD_TESTING})
+add_subdirectory(plotcore)
+
 add_subdirectory(src)
 add_subdirectory(tools)
 
-include(CTest)
 if(BUILD_TESTING)
   find_package(Catch2 3 CONFIG REQUIRED)
   add_subdirectory(tests)

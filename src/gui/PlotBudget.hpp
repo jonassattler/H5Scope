@@ -28,6 +28,8 @@
 // Settings > RAM budget is low, medium or greedy, and each is a fraction of
 // what the machine actually has.
 
+#include "plotcore/Budget.hpp"
+
 #include <QObject>
 
 #include <cstddef>
@@ -35,12 +37,9 @@
 namespace gui {
 
 /// How much of the machine the plots may spend on holding what they read.
-enum class Appetite
-{
-    Low,
-    Medium,
-    Greedy,
-};
+/// The tiers are plotcore's arithmetic (plotcore/Budget.hpp); sharing the
+/// answer out between the viewer's plots, and saying when it moves, is this.
+using plotcore::Appetite;
 
 /// The one budget every plot object draws its share from.
 ///
@@ -59,12 +58,9 @@ public:
     [[nodiscard]] Appetite appetite() const { return appetite_; }
     void setAppetite(Appetite appetite);
 
-    /// Physical memory, in bytes, or 0 when it could not be found out.
-    ///
-    /// sysconf on Linux and GlobalMemoryStatusEx on Windows -- both are in the
-    /// C library and the platform SDK, so this adds no dependency and nothing
-    /// for the RHEL 8 floor to be missing.
-    [[nodiscard]] static long long physicalMemory();
+    /// Physical memory, in bytes, or 0 when it could not be found out. See
+    /// plotcore::physicalMemory().
+    [[nodiscard]] static long long physicalMemory() { return plotcore::physicalMemory(); }
 
     /// Doubles every plot may hold between them, at the current appetite.
     [[nodiscard]] long long total() const;

@@ -5,8 +5,7 @@
 
 #include "H5Session.hpp"
 #include "PlotBudget.hpp"
-#include "PlotLevels.hpp"
-#include "PlotPyramid.hpp"
+#include "gui/PlotCore.hpp"
 #include "h5core/Dataset.hpp"
 #include "h5core/Error.hpp"
 #include "h5core/File.hpp"
@@ -105,7 +104,7 @@ struct Ask
     ///
     /// Set on the whole-line read and never on a closer look: the point of the
     /// pyramid is that after the whole-line read there are no closer looks to
-    /// make. See PlotPyramid.hpp, and DatasetPlot, which reads the same way for
+    /// make. See plotcore/Pyramid.hpp, and DatasetPlot, which reads the same way for
     /// the same reason.
     long long budget = 0;
     /// Whether `expression` is a postproc::Script rather than a slice.
@@ -328,7 +327,7 @@ struct Reply
         // One pass, at the finest bucket the budget affords, and every closer
         // look afterwards is a fold of it in memory rather than another read --
         // which is the arrangement DatasetPlot reads by and the reason the two
-        // tabs feel alike on a ten-million-element slice. See PlotPyramid.hpp.
+        // tabs feel alike on a ten-million-element slice. See plotcore/Pyramid.hpp.
         //
         // The walk is the envelope walk below, handing each hyperslab to the
         // builder instead of folding it here. Whatever a read leaves that does
@@ -363,7 +362,7 @@ struct Reply
 
         // ...and the whole-line summary out of it, which is exactly what the
         // walk below would have answered with: coarsening an envelope is the
-        // same question as reading at that bucket. See PlotLevels.hpp.
+        // same question as reading at that bucket. See plotcore/Levels.hpp.
         long long stride = 1;
         if (!fillWhole(pyramid, static_cast<int>(buckets), answer.values, stride, answer.step,
                        &answer.positions)) {

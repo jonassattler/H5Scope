@@ -8,8 +8,7 @@
 #include "H5Thread.hpp"
 #include "PlotBudget.hpp"
 #include "PlotItem.hpp"
-#include "PlotLevels.hpp"
-#include "PlotPyramid.hpp"
+#include "gui/PlotCore.hpp"
 
 #include <QAbstractListModel>
 #include <QColor>
@@ -528,7 +527,7 @@ private:
         /// custom tab costs no read: the whole-line pass keeps the elements it
         /// touched, at the finest bucket the budget affords, so every closer
         /// look afterwards is arithmetic. DatasetPlot holds one of these per
-        /// drawn line for exactly the same reason -- see PlotPyramid.hpp, which
+        /// drawn line for exactly the same reason -- see plotcore/Pyramid.hpp, which
         /// is the one copy of it.
         ///
         /// Not borrowed by the renderer: what reaches PlotLine is always
@@ -537,7 +536,7 @@ private:
         LinePyramid pyramid;
 
         /// This line folded onto a logarithmic axis's columns, and where each
-        /// of its points is. See LogColumns in PlotLevels.hpp and
+        /// of its points is. See LogColumns in plotcore/Levels.hpp and
         /// DatasetPlot::fold_, which is the same thing for the Plot tab.
         ///
         /// Borrowed by the renderer on the terms `values` is. Mutable because
@@ -645,7 +644,7 @@ private:
     /// frame -- once per entry per level per policy call.
     void recomputeView();
     /// What the reader is looking at of `entry`, as the policy in
-    /// PlotLevels.hpp wants it. An unusable view -- an entry not drawn, one
+    /// plotcore/Levels.hpp wants it. An unusable view -- an entry not drawn, one
     /// that would not read, or one already drawn sample for sample -- is how
     /// "read no closer look at all" is said.
     [[nodiscard]] LevelView levelView(const Entry& entry) const;
@@ -873,18 +872,18 @@ private:
     QTimer resize_;
 
 public:
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kDefaultColumns = gui::kDefaultColumns;
     static constexpr int kMaxPoints = gui::kMaxPoints;
     static constexpr int kColumnQuantum = gui::kColumnQuantum;
     static constexpr int kMinPoints = gui::kMinPoints;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kSettleMilliseconds = gui::kSettleMilliseconds;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kResizeMilliseconds = gui::kResizeMilliseconds;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kPrefetchOctaves = gui::kPrefetchOctaves;
-    /// See PlotLevels.hpp, which is where the argument for it is.
+    /// See plotcore/Levels.hpp, which is where the argument for it is.
     static constexpr int kHeldLevels = gui::kHeldLevels;
     /// Lines past which adding a whole dataset asks first.
     ///
