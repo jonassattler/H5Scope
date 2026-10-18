@@ -60,7 +60,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg.** It is a repository of its own, [jonassattler/plotcore](https://github.com/jonassattler/plotcore), pinned here as a git submodule — its CI builds it alone, which is what notices a dependency on the viewer creeping back in, and builds the libraries and examples above it. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore, the submodule* below. |
+| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg.** It is a repository of its own, [jonassattler/plotcore](https://github.com/jonassattler/plotcore), pinned here as a git submodule — its CI builds it alone, which is what notices a dependency on the viewer creeping back in, and builds the libraries and demos above it. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/cpp/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore, the submodule* below. |
 | `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
@@ -159,11 +159,11 @@ across the two that Qt reports on every flip. Gestures arrive in pixels, so
 the coordinate it runs along; the zoom modifiers name the pane's directions.
 
 The plot is drawn by this program and not by a library. `plotcore::Projection`
-(`plotcore/include/plotcore/Projection.hpp`) is the arithmetic — where a sample lands, which samples are drawable, where a
+(`plotcore/cpp/include/plotcore/Projection.hpp`) is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without
 losing the one that matters, which run of a line a zoomed-in reader is asking to
 have read again, and how a stroke is built out of triangles — and
-it has no renderer in it, which is what lets `plotcore/tests/test_plotprojection.cpp`
+it has no renderer in it, which is what lets `plotcore/cpp/tests/test_plotprojection.cpp`
 assert all of it with no window. `gui::PlotItem` is the part that has one.
 `src/qml/PlotFrame.qml` draws the gutters, the rules, the ticks and the labels.
 Read the header of `Projection.hpp` before changing any of it: the three
@@ -177,7 +177,7 @@ plots call it. They used to carry a copy each, together with nine constants
 duplicated between them under comments saying they had to match, which is how a
 custom tab came to read one hyperslab per bucket for a release while the Plot
 tab read one per sixty-four thousand elements. It is Qt-free for
-`Projection`'s reason, and `plotcore/tests/test_plotlevels.cpp` asserts it with
+`Projection`'s reason, and `plotcore/cpp/tests/test_plotlevels.cpp` asserts it with
 no file, no thread and no window.
 
 `plotcore::Pyramid` is what those runs are folded *out of*, and it is why they
@@ -699,7 +699,7 @@ minutes over.
 ## plotcore, the submodule
 
 plotcore is also what three standalone libraries are built on — C++, Python
-and Rust — with a Qt, a PyQt6 and an egui example, and the viewer's port of its
+and Rust — with a Qt, a PyQt6 and an egui demo, and the viewer's port of its
 own frame and gestures is how they draw the plot this application draws. It
 lives in [jonassattler/plotcore](https://github.com/jonassattler/plotcore),
 whose CLAUDE.md is where the library is written up; this repository pins one
@@ -897,7 +897,7 @@ of it, and why the pin moves in the same pull request as the QML.
    file, even when the ladder has no room to keep it (`DatasetPlot::folds`,
    `CustomPlot::folds`), because the file would answer it no differently and
    the reply would be trimmed away as the fold was. Both halves of the policy
-   read one list of what is wanted (`pathOf` in `plotcore/src/Levels.cpp`):
+   read one list of what is wanted (`pathOf` in `plotcore/cpp/src/Levels.cpp`):
    until 0.7.2 `coldestLevel` ranked by distance alone, so a full ladder gave
    up the fourth octave in towards the pointer the moment it was folded, was
    asked for it again until the loop ran out of turns, and sent it to the
