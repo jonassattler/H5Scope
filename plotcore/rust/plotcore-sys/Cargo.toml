@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+
+[package]
+name = "plotcore-sys"
+description = "plotcore's C interface, compiled in: the bindings plotcore is built on."
+links = "plotcore"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+cc = "1.2"
+
+[lints]
+workspace = true

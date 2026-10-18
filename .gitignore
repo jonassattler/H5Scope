@@ -9,6 +9,9 @@ compile_commands.json
 vcpkg_installed/
 .cache/
 
+# Where cargo builds plotcore/rust.
+/plotcore/rust/target/
+
 # What Python leaves behind running plotcore/python and its tests.
 __pycache__/
 .pytest_cache/

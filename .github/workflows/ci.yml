@@ -221,6 +221,45 @@ jobs:
           name: plotcore-python-${{ runner.os }}
           path: wheelhouse/*.whl
 
+  # plotcore for Rust: the workspace at the toolchain rust-toolchain.toml pins,
+  # formatted, linted with warnings as errors, and tested -- the golden digest,
+  # the egui adapter driven headless, and the example's walk of every feature,
+  # which needs no display because it drives egui without a window.
+  rust:
+    name: plotcore for Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: plotcore/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      # What winit and the clipboard link against to build at all.
+      - name: Install what eframe needs
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
+                                  libxcb-xfixes0-dev libwayland-dev
+
+      # With no name, rustup installs the one rust-toolchain.toml pins.
+      - name: Toolchain
+        run: rustup toolchain install && rustup show active-toolchain
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
   build:
     name: Build and test (release, RHEL 8 floor)
     runs-on: ubuntu-latest
