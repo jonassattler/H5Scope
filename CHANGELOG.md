@@ -43,6 +43,12 @@ number of figures now, where one axis could mix `3.00e+6` with `4.500e+6`.
 some places on it — 7777777 of a ten-million-sample line, for one — went to
 the file once in the middle of the gesture for a run the plot already held.
 
+**The plot is also a library.** `plotcore/` builds on its own with plain CMake,
+with no Qt and no HDF5, and draws the plot this program draws. It comes with a C
+interface, a Qt widget, a Python package (PyQt6 and matplotlib) and a Rust crate
+(egui), each with an example that walks every feature. They are built and
+tested in CI but not published anywhere yet.
+
 ## 0.7.1
 
 **A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a
