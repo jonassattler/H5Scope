@@ -14,7 +14,9 @@ constraint is written down.
 
 Requires CMake ≥ 3.26, Ninja, a C++20 compiler, and vcpkg with `VCPKG_ROOT`
 set. There is no system-library fallback: without a toolchain file the
-configure fails by design.
+configure fails by design. `plotcore/` is a git submodule, so clone with
+`--recursive`, or run `git submodule update --init` in a clone that has an
+empty `plotcore/` (the configure stops and says so).
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg
@@ -58,7 +60,7 @@ ctest --preset release
 |---|---|
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
-| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg** — `cmake -S plotcore` builds and tests it alone, and a CI job does exactly that, because the viewer's build would carry a dependency on the viewer creeping back in without complaint. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore as a library* below. |
+| `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg.** It is a repository of its own, [jonassattler/plotcore](https://github.com/jonassattler/plotcore), pinned here as a git submodule — its CI builds it alone, which is what notices a dependency on the viewer creeping back in, and builds the libraries and examples above it. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore, the submodule* below. |
 | `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
@@ -694,90 +696,40 @@ zeros (`clipped`); and `pow(0.5)` is a square root. `add`, `multiply` and
 pooled arrays of plain numbers rather than structs of vectors, which GCC took
 minutes over.
 
-## plotcore as a library
+## plotcore, the submodule
 
 plotcore is also what three standalone libraries are built on — C++, Python
-and Rust — and the viewer's port of its own frame and gestures is how they draw
-the plot this application draws. Four layers, each the only place its question
-is answered:
+and Rust — with a Qt, a PyQt6 and an egui example, and the viewer's port of its
+own frame and gestures is how they draw the plot this application draws. It
+lives in [jonassattler/plotcore](https://github.com/jonassattler/plotcore),
+whose CLAUDE.md is where the library is written up; this repository pins one
+commit of it at `plotcore/`. The viewer builds it with `add_subdirectory`,
+links `plotcore::core`, runs its C++ tests with its own, and includes nothing
+but its public headers.
 
-- **`Format`, `Ticks`, `Camera`, `Palettes`** are PlotFrame.qml's and
-  PlotSurface.qml's functions and Theme.qml's colours, *ported* rather than
-  reasoned out again, and `tests/qml/tst_plotcore_parity.qml` asks the QML and
-  the port the same questions through `tests/PlotCoreProbe` and compares the
-  answers exactly — values bit for bit, labels character for character, colours
-  to a sixteen-bit step. That includes JavaScript's own number formatting
-  (`toFixed`, `toExponential`, and Qt's V4 `toPrecision`, which is not
-  ECMAScript's). **A change to how the viewer numbers, rules, zooms or colours
-  an axis is a change to both, or the parity suite fails** — which is the
-  point of it.
-- **`Plot`** holds lines: copied in (the pyramid *is* the copy) or streamed
-  through `PyramidBuilder`, at the base the budget affords, with an optional
-  `LineReader` below it. Every picture is a fold of what is held; with no
-  reader, a window finer than the base is drawn *at* the base rather than from
-  the whole-line summary.
-- **`Figure`** is the whole plot a host drives: lines, settings, the camera,
-  the gestures, and a `Scene` out — strokes, rules and text in pane pixels with
-  y down, flipping already applied. A host measures text, forwards events and
-  paints; it decides nothing. Three things are this layer's own, all from #30
-  and all about a line: **moved and scaled** (`LineSettings::scale`/`shift`,
-  Alt-drag, Alt+Control+wheel, Control-click to put back), **stacked** in
-  bands, and **a time per line**. A moved line stays in the common axis's
-  extent and is numbered on it — an axis appearing beside the pane on the first
-  pixel of a drag widened the gutter and moved every x under the pointer — and
-  only a line on an axis of its own, or stacked, is numbered beside the pane.
-  `state()`/`restore()` write a view as JSON (`src/Json.*`, private), passing
-  over what they cannot read as the viewer's saved views do.
-- **`capi/plotcore.h`** is `Figure` as C, built as one shared library
-  (`plotcore_c`, exporting nothing else, its C++ runtime linked in). Settings
-  are **named, not laid out** — `plotcore_set_bool(f, "xLog", 1)`, the names a
-  saved view writes — so a new setting is a new name and not a new ABI. Nothing
-  is borrowed across it, every failure is a status with
-  `plotcore_last_error()` beside it, and `test_capi.c` is compiled as C.
+**A change to plotcore is two pull requests.** The library's lands first, in
+its repository and under its CI. Then one here moves the pin —
+`git -C plotcore fetch && git -C plotcore checkout <sha>`, and commit
+`plotcore` — together with whatever the viewer needs to change with it, so
+that `test_cost`, `test_customplot` and the parity suite run against both
+halves at once. A branch here may pin a library commit that has not merged
+yet, which is how the pair is tried together, and CI warns that it is
+unmerged; on `main` and on a tag the pinned commit must be on plotcore's own
+`main`, and CI fails otherwise. The release's source bundle carries the
+submodule at the pinned commit (`tools/make-source-bundle.sh`), because it is
+compiled into the binary.
 
-`plotcore/tests/golden/` is what holds the three languages to one plot: a
-script of settings and gestures, and the digest of every scene it asks for.
-`test_capi` writes it (`--write`) and checks it; the Python and Rust tests
-check the same file through their own bindings. A changed line in
-`expected.txt` is a changed picture, so read the diff before committing one.
-
-`plotcore/qt` (`PLOTCORE_WITH_QT`, on in the viewer's build) is a `QWidget`
-over a `Figure`, and `plotcore/examples/qt` walks every feature on one window;
-`--self-test` walks them itself offscreen and is the `plotcore_qt_demo` ctest
-test.
-
-`plotcore/python` is the Python library: ctypes over the C interface
-(`_native.py` declares the header line for line and checks the ABI version
-before anything is called), so it links no Python and one `py3-none` wheel per
-platform serves every version. scikit-build-core builds it from `plotcore/`
-one directory up (`cmake.source-dir = ".."`, the `SKBUILD` block in its
-CMakeLists), which also means the wheel is built from the repository and not
-from an sdist. Two rules from the boundary: **a scene is copied out whole**
-into numpy, so nothing Python holds points into the library; and **a reader's
-callback is kept by the token the C side holds**, released when the C side
-says it has let go of it, which is the only moment index bookkeeping in Python
-could not get wrong. `plotcore.qt` is the PyQt6 widget, `plotcore.mpl` draws
-on matplotlib's own axes from each run's data-unit values
-(`plotcore_scene_line_run_values`) with the figure's gestures under them, and
-`plotcore/examples/pyqt6/demo.py --self-test` is the Qt example's walk, run
-by `tests/test_qt.py`. Develop against a local build with
-`PLOTCORE_LIBRARY=<path to libplotcore_c>`; CI builds the wheel in
-manylinux_2_28 and on Windows and uploads it, nothing more.
-
-`plotcore/rust` is the Rust workspace: `plotcore-sys` compiles `src/` and
-`capi/` with the `cc` crate and declares the header by hand (no libclang), and
-its test holds every structure's size to what the C compiler that built the
-library makes of it, because working them out by hand got two of them wrong;
-`plotcore` is the safe wrapper, whose readers and text measure are boxed and
-handed to the C side as contexts it gives back; `plotcore-egui` paints a scene
-as plotcore's triangles or as feathered polylines and hands egui's raw input
-events over as gestures; `egui-demo` walks every feature, and its
-`--self-test` drives egui headless, so `cargo test` needs no display. **Never
-ask a figure for a scene inside a closure that holds egui's context** -- the
-text measure calls back into `ctx.fonts_mut`, which takes the same lock. The
-toolchain is pinned in `rust-toolchain.toml` (egui 0.37's minimum), and
-because `plotcore-sys` reaches `../../src`, a crate is built from this
-repository and is not publishable as it stands.
+One rule from that boundary is the viewer's, and is enforced here:
+**`Format`, `Ticks`, `Camera` and `Palettes` are PlotFrame.qml's and
+PlotSurface.qml's functions and Theme.qml's colours, ported** rather than
+reasoned out again, and `tests/qml/tst_plotcore_parity.qml` asks the QML and
+the port the same questions through `tests/PlotCoreProbe` and compares the
+answers exactly — values bit for bit, labels character for character, colours
+to a sixteen-bit step. That includes JavaScript's own number formatting
+(`toFixed`, `toExponential`, and Qt's V4 `toPrecision`, which is not
+ECMAScript's). **A change to how the viewer numbers, rules, zooms or colours
+an axis is a change to both, or the parity suite fails** — which is the point
+of it, and why the pin moves in the same pull request as the QML.
 
 ## Invariants worth knowing before editing
 

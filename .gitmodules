@@ -1,0 +1,3 @@
+[submodule "plotcore"]
+	path = plotcore
+	url = https://github.com/jonassattler/plotcore.git

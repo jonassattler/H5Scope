@@ -256,11 +256,19 @@ set(QT_QML_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/qml")
 include(CTest)
 
 # The plot's arithmetic, a project of its own that builds without any of the
-# above -- see plotcore/CMakeLists.txt. Its tests run with the viewer's.
+# above. It is its own repository too, github.com/jonassattler/plotcore,
+# pinned here as a git submodule, so a clone made without --recursive has an
+# empty directory where it should be -- said here rather than as a CMake
+# error about a missing CMakeLists.txt.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plotcore/CMakeLists.txt")
+  message(FATAL_ERROR
+    "H5Scope: plotcore/ is empty. It is a git submodule; fetch it with\n"
+    "  git submodule update --init\n"
+    "or clone with --recursive.")
+endif()
+# Its tests run with the viewer's, on the viewer's toolchains. Its Qt widget
+# and examples are its own repository's to build; the viewer uses neither.
 set(PLOTCORE_BUILD_TESTS ${BUILD_TESTING})
-# ...and its Qt adapter and example, built against this Qt so that CI holds
-# them to it.
-set(PLOTCORE_WITH_QT ON)
 add_subdirectory(plotcore)
 
 add_subdirectory(src)
