@@ -144,7 +144,7 @@ PlotView lineView(const PlotLine& line, const PlotView& view)
     PlotView own = view;
     own.yMin = line.yMin;
     own.yMax = line.yMax;
-    own.yLog = false;
+    own.yLog = line.ownYLog;
     return own;
 }
 
@@ -617,6 +617,165 @@ PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const Plot
     }
     closeRun();
     return added(true);
+}
+
+std::optional<NearestSample> nearestSample(std::span<const PlotLine> lines,
+                                           std::span<const PlotAxis> axes, const PlotView& pane,
+                                           double px, double py)
+{
+    // Searched upright, as the lines were projected, with the pointer moved
+    // there first and the answer moved back: on a transposed pane the pointer's
+    // height is what says which x it is over. See PlotView::transposed.
+    const PlotView upright = uprightView(pane);
+    if (pane.transposed) {
+        const Point at = uprightPoint(Point(px, py), pane);
+        px = at.x();
+        py = at.y();
+    }
+    const double w = upright.width;
+    const double h = upright.height;
+    const AxisMapping xMap = xMappingOf(pane);
+    if (!(w > 0.0) || !(h > 0.0) || !xMap.usable || lines.empty() || axes.empty()) {
+        return std::nullopt;
+    }
+    // In the data's own units, through the axis's own scale -- so on a
+    // logarithmic axis the pointer resolves to the x it is actually over
+    // rather than to the one it would be over if the axis were linear.
+    const double wanted = xMap.valueAt(px / w);
+
+    double bestDistance = std::numeric_limits<double>::infinity();
+    int bestLine = -1;
+    double bestX = 0.0;
+    double bestY = 0.0;
+    double bestPx = 0.0;
+    double bestPy = 0.0;
+
+    // Per line, because a line on an axis of its own is drawn through that
+    // axis: snapping it through the common one would put the crosshair's dot
+    // somewhere the stroke is not.
+    AxisMapping yMap;
+    const auto consider = [&](int index, long long at, double x, double value) {
+        // A sample the axes cannot place is not a sample the crosshair may snap
+        // to: it was not drawn, and a readout of it would name a point that is
+        // not on the pane.
+        if (!xMap.draws(x) || !yMap.draws(value)) {
+            return false;
+        }
+        const double sx = xMap.fractionOf(x) * w;
+        const double sy = h - yMap.fractionOf(value) * h;
+        const double distance = (sx - px) * (sx - px) + (sy - py) * (sy - py);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestLine = index;
+            bestX = x;
+            bestY = value;
+            bestPx = sx;
+            bestPy = sy;
+        }
+        (void)at;
+        return true;
+    };
+
+    for (std::size_t slot = 0; slot < lines.size(); ++slot) {
+        const auto index = static_cast<int>(slot);
+        const PlotLine& line = lines[slot];
+        const PlotAxis& axis =
+            axes.size() == 1 ? axes.front() : axes[std::min(slot, axes.size() - 1)];
+        if (line.values == nullptr || line.count <= 0) {
+            continue;
+        }
+        yMap = yMappingOf(lineView(line, pane));
+
+        if (axis.explicitX() || line.xs != nullptr ||
+            !(std::abs(line.positionStep * axis.step) > 0.0)) {
+            // A time base need not be monotonic, so there is no index to solve
+            // for and the line is searched. Affordable because a line drawn
+            // against one is a custom plot entry, and those are thinned on the
+            // way out of the file like everything else.
+            for (long long i = 0; i < line.count; ++i) {
+                const double value = line.values[i];
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                const double x = xOf(line, axis, i);
+                if (std::isfinite(x)) {
+                    consider(index, i, x, value);
+                }
+            }
+            continue;
+        }
+
+        // x is affine in the index, so the nearest one is arithmetic -- or, for
+        // a line that names where each point is, a bisection of those, for
+        // the reason projectLine bisects them: an envelope's extremes are at
+        // their own elements, not half a bucket apart, and a guess from the
+        // step can start the walk on the wrong one of a pair.
+        long long centre = 0;
+        if (line.positions != nullptr) {
+            if (!(std::abs(axis.step) > 0.0) || !(line.positionScale > 0.0)) {
+                continue;
+            }
+            const double position = (wanted - axis.start) / axis.step / line.positionScale;
+            if (!std::isfinite(position)) {
+                continue;
+            }
+            const double* const end = line.positions + line.count;
+            long long after = std::lower_bound(line.positions, end, position) - line.positions;
+            after = std::min(after, line.count - 1);
+            centre = after;
+            if (after > 0 &&
+                position - line.positions[after - 1] < line.positions[after] - position) {
+                centre = after - 1;
+            }
+        }
+        else {
+            const double x0 = axis.start + line.positionStart * axis.step;
+            const double dx = line.positionStep * axis.step;
+            const double exact = (wanted - x0) / dx;
+            if (!std::isfinite(exact)) {
+                continue;
+            }
+            centre = static_cast<long long>(
+                std::clamp(std::llround(exact), 0LL, static_cast<long long>(line.count - 1)));
+        }
+
+        // Outward from there until a drawable sample turns up. A gap wider than
+        // this is a gap the crosshair declines to reach across, which is the
+        // same answer the line itself gives: there is nothing drawn there.
+        constexpr long long kReach = 64;
+        for (long long step = 0; step <= kReach; ++step) {
+            bool found = false;
+            for (const long long at : {centre - step, centre + step}) {
+                if (at < 0 || at >= line.count) {
+                    continue;
+                }
+                const double value = line.values[at];
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                // What the walk is looking for is a sample that could be
+                // *taken*, not one that is merely finite. Stopping on a value
+                // the axes declined to place -- every non-positive one on a
+                // logarithmic axis -- ended the search having considered
+                // nothing, and the crosshair then found no sample at all in a
+                // pane full of them.
+                found = consider(index, at, xOf(line, axis, at), value) || found;
+            }
+            if (found) {
+                break;
+            }
+        }
+    }
+
+    if (bestLine < 0) {
+        return std::nullopt;
+    }
+    if (pane.transposed) {
+        const Point drawn = transposedPoint(Point(bestPx, bestPy), pane);
+        bestPx = drawn.x();
+        bestPy = drawn.y();
+    }
+    return NearestSample{bestLine, bestX, bestY, bestPx, bestPy};
 }
 
 void strokeRun(const Point* points, int count, double width, std::vector<Point>& out)

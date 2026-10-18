@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: 2026 Jonas Sattler
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# One plot, driven through every gesture and setting the hosts forward, and
+# written down after each step that changes the picture. The C test, the
+# Python tests and the Rust tests each run this through their own binding and
+# must write down exactly expected.txt -- which is what says three libraries
+# are one plot. See README.md beside this file for the language of it.
+
+size 800 500 1
+
+# --- one line, the gestures ----------------------------------------------------
+line walk 200000 12345 walk
+scene
+wheel 300 250 360 none
+scene
+wheel 300 250 240 shift
+wheel 300 250 -120 control
+scene
+press 400 250 left none
+move 450 260 none
+move 520 270 none
+release 520 270 left none
+scene
+press 200 100 right none
+move 500 400 none
+scene
+release 500 400 right none
+scene
+hover 410 220
+scene
+leave
+double 400 250 left
+scene
+view 1000 1500 -20 40
+scene
+
+# --- the axes -------------------------------------------------------------------
+reset
+set_text grid dense
+set_bool minorNumbers 1
+set_text title Signal and noise
+set_text xLabel sample
+set_text yLabel volts
+scene
+set_text grid none
+scene
+set_text grid custom
+set_number gridStepX 25000
+set_number gridStepY 10
+scene
+set_text grid loose
+line quadratic 5000 0.001 squares
+set_bool yLog 1
+set_bool xLog 1
+scene
+set_number xLogBase 2
+set_number yLogBase 2.718281828459045
+scene
+wheel 500 300 600 none
+scene
+set_bool xLog 0
+set_bool yLog 0
+set_bool flipped 1
+scene
+wheel 400 200 240 shift
+scene
+set_bool flipped 0
+
+# --- the lines ------------------------------------------------------------------
+line square 3000 250 -40 60 square
+line holes 3000 50 holes
+set_bool markers 1
+set_text colours.mode tol muted
+set_bool legend 1
+set_text legendCorner bottom-left
+scene
+set_text colours.mode viridis
+set_bool colours.reversed 1
+set_number colours.from 0.2
+set_number colours.to 0.8
+scene
+set_text colours.mode same
+set_colour colours.single 0.2 0.4 0.6 1
+line_colour 2 0.9 0.1 0.1 1
+scene
+set_text colours.mode range
+set_number highlighted 2
+set_bool bundle 1
+scene
+set_bool dark 0
+set_bool paper 1
+scene
+set_bool dark 1
+set_bool paper 0
+set_number highlighted -1
+set_text colours.mode okabe-ito
+line_bool 1 visible 0
+scene
+line_bool 1 visible 1
+remove 1
+scene
+
+# --- axes of their own ----------------------------------------------------------
+line_bool 1 ownAxis 1
+line_text 1 axisLabel square wave
+scene
+line_bool 1 axisFixed 1
+wheel 400 250 360 control
+scene
+line_bool 1 axisFixed 0
+line_bool 1 ownAxis 0
+reset
+press_line 2 20 alt
+move_by 0 40 none
+release_here left none
+scene
+wheel_line 2 20 240 alt|control
+scene
+click_line 2 20 control
+scene
+set_bool stacked 1
+scene
+set_bool flipped 1
+scene
+set_bool flipped 0
+set_bool stacked 0
+
+# --- time -----------------------------------------------------------------------
+time ramp 200000 0 0.001
+scene
+line_time 2 ramp 3000 50 0.05
+scene
+time none
+scene
+
+# --- written down and read back -------------------------------------------------
+wheel 350 260 480 none
+state
+set_text grid none
+set_bool markers 0
+set_text title changed
+line_number 2 shift 3
+reset
+scene
+restore
+scene
+
+# --- held under a budget --------------------------------------------------------
+clear
+budget 1048576
+line walk 1000000 999 tight
+scene
+view 4000 4100 -100 100
+scene

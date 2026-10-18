@@ -258,6 +258,9 @@ include(CTest)
 # The plot's arithmetic, a project of its own that builds without any of the
 # above -- see plotcore/CMakeLists.txt. Its tests run with the viewer's.
 set(PLOTCORE_BUILD_TESTS ${BUILD_TESTING})
+# ...and its Qt adapter and example, built against this Qt so that CI holds
+# them to it.
+set(PLOTCORE_WITH_QT ON)
 add_subdirectory(plotcore)
 
 add_subdirectory(src)

@@ -113,6 +113,56 @@ jobs:
             "$RUNNER_TEMP/consumer/build/Release/consumer.exe"
           fi
 
+      # ...and from C, through the one shared library the Python and Rust
+      # bindings load: its header, its import library and its exports, as an
+      # installed package rather than as a target in this tree.
+      - name: Build a C program against the installed C interface
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/cconsumer"
+          cat > "$RUNNER_TEMP/cconsumer/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.26)
+          project(cconsumer C)
+          find_package(plotcore 0.1 REQUIRED)
+          add_executable(cconsumer main.c)
+          target_link_libraries(cconsumer PRIVATE plotcore::c)
+          EOF
+          cat > "$RUNNER_TEMP/cconsumer/main.c" <<'EOF'
+          #include <plotcore.h>
+          #include <stdio.h>
+          int main(void)
+          {
+              if (plotcore_abi_version() != PLOTCORE_ABI_VERSION) {
+                  return 1;
+              }
+              double line[1000];
+              for (int i = 0; i < 1000; ++i) {
+                  line[i] = i == 777 ? 9.0 : 1.0;
+              }
+              plotcore_figure* figure = plotcore_figure_new();
+              if (plotcore_add_line(figure, line, 1000, "spike", NULL) != PLOTCORE_OK) {
+                  return 2;
+              }
+              plotcore_set_size(figure, 640, 400, 1);
+              plotcore_scene* scene = plotcore_scene_new(figure);
+              const int drawn = scene != NULL && plotcore_scene_line_count(scene) == 1;
+              printf("plotcore %s: %s\n", plotcore_version(), drawn ? "drawn" : "not drawn");
+              plotcore_scene_free(scene);
+              plotcore_figure_free(figure);
+              return drawn ? 0 : 3;
+          }
+          EOF
+          cmake -S "$RUNNER_TEMP/cconsumer" -B "$RUNNER_TEMP/cconsumer/build" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/plotcore" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/cconsumer/build" --config Release
+          export PATH="$RUNNER_TEMP/plotcore/bin:$PATH"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/plotcore/lib:$RUNNER_TEMP/plotcore/lib64"
+          if [ -x "$RUNNER_TEMP/cconsumer/build/cconsumer" ]; then
+            "$RUNNER_TEMP/cconsumer/build/cconsumer"
+          else
+            "$RUNNER_TEMP/cconsumer/build/Release/cconsumer.exe"
+          fi
+
   build:
     name: Build and test (release, RHEL 8 floor)
     runs-on: ubuntu-latest

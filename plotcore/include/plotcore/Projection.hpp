@@ -60,6 +60,7 @@
 #include <cmath>
 
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace plotcore {
@@ -188,6 +189,14 @@ struct PlotLine
     bool ownY = false;
     double yMin = 0.0;
     double yMax = 1.0;
+    /// Whether that window is logarithmic, to the view's own y base.
+    ///
+    /// The viewer's separate axes are linear and leave this false, for the
+    /// reason above. A line moved or scaled *on* the common axis -- which a
+    /// library's figure offers (plotcore::Figure) -- is still a reading of that
+    /// axis and keeps its scale: its window is a share of the common one in
+    /// the common one's positions.
+    bool ownYLog = false;
 };
 
 /// One closer look at a line: an aligned run of it, to be summarised at a
@@ -569,6 +578,31 @@ struct PlotProjected
 ///
 PlotProjected projectLine(const PlotLine& line, const PlotAxis& axis, const PlotView& view,
                           std::vector<Point>& points, std::vector<PlotRun>& runs);
+
+/// The sample a crosshair snaps to: which line, its value and x, and where it
+/// was drawn on the pane.
+struct NearestSample
+{
+    int line = -1;
+    double x = 0.0;
+    double y = 0.0;
+    double px = 0.0;
+    double py = 0.0;
+};
+
+/// The drawn sample nearest (`px`, `py`) on `pane`, which carries its width and
+/// height: each line through its own y axis (lineView) and `axes[i]` -- or
+/// `axes[0]` for every line when there is one -- so the dot lands where the
+/// stroke is. A gap wider than a few dozen samples is not reached across, and a
+/// sample the axes cannot place is not a sample at all. Nothing when nothing
+/// is drawn near.
+///
+/// The viewer's PlotItem::nearestSample, moved here so the crosshair of every
+/// plot built on this library is that one.
+[[nodiscard]] std::optional<NearestSample> nearestSample(std::span<const PlotLine> lines,
+                                                         std::span<const PlotAxis> axes,
+                                                         const PlotView& pane, double px,
+                                                         double py);
 
 /// How far a mitred join may reach past the stroke before it is given up.
 ///
