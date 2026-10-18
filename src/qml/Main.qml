@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Window
 import H5Scope.Backend
@@ -296,7 +297,7 @@ ApplicationWindow {
         currentTabId: window.currentTabId
         treeTagsVisible: window.treeTagsVisible
 
-        onOpenRequested: filePicker.open()
+        onOpenRequested: window.chooseFile()
         onRecentRequested: (path) => AppController.openFile(path)
         onReloadRequested: AppController.openFile(AppController.filePath)
         onCloseRequested: AppController.closeFile()
@@ -765,13 +766,52 @@ ApplicationWindow {
         }
     }
 
-    // The file picker is the application's own, not the platform's: a native
-    // dialog would arrive in the host's palette and typeface, which is the one
-    // window in this program that would not look like the program. See
+    /// File > Open: whichever of the two dialogs below the reader chose under
+    /// Settings. Asked at the moment of opening rather than bound, so a change
+    /// of mind takes effect on the next Ctrl+O and nothing has to be rebuilt.
+    function chooseFile() {
+        if (AppController.nativeFileDialog) {
+            // Where the last file came from, which is what FilePicker does on
+            // its own in onAboutToShow; a FileDialog has no such hook.
+            nativePicker.currentFolder = FileSystem.folderOf(AppController.filePath)
+            nativePicker.open()
+        } else {
+            filePicker.open()
+        }
+    }
+
+    // The file picker is the application's own by default, not the platform's:
+    // a native dialog arrives in the host's palette and typeface, which is the
+    // one window in this program that would not look like the program. See
     // FilePicker.qml.
     FilePicker {
         id: filePicker
 
         onFileChosen: (path) => AppController.openFile(path)
     }
+
+    // ...and the platform's, for a reader who asked for it under Settings:
+    // their bookmarks, their mounts and their desktop's own search are worth
+    // more to them than the dialog matching the window. On Linux it is the
+    // xdg-desktop-portal's (see main.cpp); where there is no portal, Qt Quick
+    // draws one of its own instead.
+    //
+    // The filter is the picker's list rather than a second copy of it, so the
+    // two dialogs cannot disagree about what this program opens.
+    FileDialog {
+        id: nativePicker
+
+        title: qsTr("Open HDF5 File")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [
+            qsTr("HDF5 files (%1)").arg(filePicker.hdf5Filters.join(" ")),
+            qsTr("All files (*)")
+        ]
+
+        onAccepted: AppController.openUrl(selectedFile)
+    }
+
+    /// Both, exposed for the QML suite: neither is in the item tree.
+    readonly property alias ownFilePicker: filePicker
+    readonly property alias nativeFilePicker: nativePicker
 }

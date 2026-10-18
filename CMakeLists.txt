@@ -228,6 +228,35 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # already right.
   set_property(TARGET XCB::CURSOR APPEND PROPERTY
     INTERFACE_LINK_LIBRARIES XCB::RENDER XCB::RENDERUTIL XCB::IMAGE)
+
+  # The native file dialog's platform theme exists, which is to say this Qt
+  # was built with D-Bus. Otherwise the failure is src/CMakeLists' import of a
+  # plugin target that does not resolve, which says nothing about why.
+  if(NOT TARGET Qt6::QXdgDesktopPortalThemePlugin)
+    message(FATAL_ERROR
+      "This Qt has no xdg-desktop-portal platform theme, so it was built "
+      "without qtbase's dbus feature. vcpkg.json asks for it; a vcpkg_installed "
+      "tree from before it did needs the configure run again.")
+  endif()
+
+  # ...and D-Bus is opened at run time rather than linked. Linked, the binary
+  # needs libdbus-1.so.3 before main() and does not start without it -- see
+  # vcpkg.json. The runtime choice is made by cmake/triplets, reached through
+  # VCPKG_OVERLAY_TRIPLETS, so a configure that bypasses the presets builds the
+  # stock triplet's linked Qt and lands here. verify-binary.sh checks the
+  # executable itself; this is the same fact hours earlier.
+  if(TARGET Qt6::DBus)
+    get_target_property(h5scope_dbus_links Qt6::DBus INTERFACE_LINK_LIBRARIES)
+    if(h5scope_dbus_links MATCHES "dbus-1")
+      message(FATAL_ERROR
+        "Qt6::DBus links libdbus-1 (${h5scope_dbus_links}), so the binary would "
+        "need libdbus-1.so.3 from the host. cmake/triplets builds qtbase with "
+        "-DINPUT_dbus=runtime, and reaches vcpkg through "
+        "VCPKG_OVERLAY_TRIPLETS -- set by the Linux presets in "
+        "CMakePresets.json. A configure that bypasses the presets has to pass "
+        "it itself.")
+    endif()
+  endif()
 endif()
 
 # Module mode is deliberate: vcpkg's hdf5 wrapper hooks find_package(HDF5) to

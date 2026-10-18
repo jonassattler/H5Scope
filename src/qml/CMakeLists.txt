@@ -92,7 +92,8 @@ qt_add_qml_module(appqml
 #   Qt.labs.folderlistmodel  FilePicker.qml lists directories with it rather
 #                            than handing the job to the platform's file
 #                            dialog, so the picker is drawn from Theme like
-#                            every other surface here.
+#                            every other surface here -- unless the reader
+#                            asks for the platform's under Settings.
 #   QtQuick.Shapes           AppIcon.qml draws the orientation controls'
 #                            glyphs as vector paths, and Caret.qml the
 #                            expander chevron, because the design system ships
@@ -102,7 +103,10 @@ qt_add_qml_module(appqml
 #                            one control this application does not draw itself.
 #                            See the note there: picking a colour out of a
 #                            wheel is a solved problem and Qt ships the
-#                            solution.
+#                            solution. Main.qml takes its FileDialog too, for
+#                            Settings > Native File Dialog, which on Linux
+#                            is answered by the portal theme src/CMakeLists
+#                            imports.
 target_link_libraries(appqml PRIVATE
   Qt6::Quick
   gui

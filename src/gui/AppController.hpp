@@ -208,6 +208,23 @@ private:
     Q_PROPERTY(int minExportDpi READ minExportDpi CONSTANT)
     Q_PROPERTY(int maxExportDpi READ maxExportDpi CONSTANT)
 
+    /// Whether File > Open asks the desktop for its own file dialog rather
+    /// than showing this application's.
+    ///
+    /// Off by default, because the application's picker is drawn from Theme
+    /// like every other surface here and the platform's is not -- see
+    /// FilePicker.qml. But a file dialog is also the one window whose habits
+    /// a reader brings from every other program they use: the bookmarks they
+    /// keep there, the network places their desktop has mounted, the search
+    /// box and the recent-documents list. A reader who wants those back can
+    /// have them, and is remembered as wanting them.
+    ///
+    /// On Windows it is Explorer's dialog. On Linux it is whatever the
+    /// desktop's xdg-desktop-portal offers, GNOME's or KDE's; where no portal
+    /// is running, Qt Quick draws a dialog of its own in its place.
+    Q_PROPERTY(bool nativeFileDialog READ nativeFileDialog WRITE setNativeFileDialog NOTIFY
+                   nativeFileDialogChanged)
+
     Q_PROPERTY(bool hasFile READ hasFile NOTIFY fileChanged)
 
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -335,6 +352,9 @@ public:
     void setPlotExportCustomDpi(bool on);
     [[nodiscard]] int plotExportDpi() const { return plotExportDpi_; }
     void setPlotExportDpi(int dpi);
+
+    [[nodiscard]] bool nativeFileDialog() const { return nativeFileDialog_; }
+    void setNativeFileDialog(bool on);
 
     /// How many device pixels one logical unit of the picture becomes.
     ///
@@ -637,6 +657,7 @@ signals:
     /// One signal for both numbers: they are one setting, and nothing binds to
     /// either of them without binding to the size they make together.
     void plotExportSizeChanged();
+    void nativeFileDialogChanged();
     void fileChanged();
     void busyChanged();
     /// The answer to openFile(), which only says that an open was started.
@@ -710,6 +731,7 @@ private:
     int plotExportHeight_ = 1080;
     bool plotExportCustomDpi_ = false;
     int plotExportDpi_ = 300;
+    bool nativeFileDialog_ = false;
     bool fileOpen_ = false;
     QString filePath_;
     QString currentPath_;

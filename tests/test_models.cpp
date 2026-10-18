@@ -3344,6 +3344,63 @@ TEST_CASE("what a copied plot looks like is remembered", "[controller]")
     }
 }
 
+TEST_CASE("whose file dialog File > Open shows is remembered", "[controller]")
+{
+    // The fifth thing kept between runs, and the first that is about the
+    // desktop rather than about the plots: Settings > Native File Dialog.
+
+    SECTION("it is the application's own until the reader says otherwise")
+    {
+        REQUIRE(QCoreApplication::organizationName().isEmpty());
+
+        gui::AppController controller;
+        CHECK_FALSE(controller.nativeFileDialog());
+
+        // One notification per change and none for a setting that is already
+        // so: the menu's bullet is bound to it, and the row toggles it.
+        QSignalSpy changed(&controller, &gui::AppController::nativeFileDialogChanged);
+        controller.setNativeFileDialog(true);
+        CHECK(controller.nativeFileDialog());
+        CHECK(changed.count() == 1);
+        controller.setNativeFileDialog(true);
+        CHECK(changed.count() == 1);
+        controller.setNativeFileDialog(false);
+        CHECK_FALSE(controller.nativeFileDialog());
+        CHECK(changed.count() == 2);
+    }
+
+    SECTION("and it is still the reader's choice next session")
+    {
+        // The harness the export settings above are tested through: a named
+        // application, settings in a directory of their own, both put back.
+        QTemporaryDir home;
+        REQUIRE(home.isValid());
+        const QSettings::Format wasFormat = QSettings::defaultFormat();
+        const QString wasOrganization = QCoreApplication::organizationName();
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, home.path());
+        QCoreApplication::setOrganizationName(QStringLiteral("H5ScopeDialogTest"));
+        const QScopeGuard restore([&] {
+            QCoreApplication::setOrganizationName(wasOrganization);
+            QSettings::setDefaultFormat(wasFormat);
+        });
+
+        {
+            gui::AppController writing;
+            CHECK_FALSE(writing.nativeFileDialog());
+            writing.setNativeFileDialog(true);
+        }
+        gui::AppController reading;
+        CHECK(reading.nativeFileDialog());
+
+        // ...and turned off again is off again, rather than a choice that can
+        // only ever be made once.
+        reading.setNativeFileDialog(false);
+        gui::AppController again;
+        CHECK_FALSE(again.nativeFileDialog());
+    }
+}
+
 TEST_CASE("the recent list keeps what opened, newest first", "[controller]")
 {
     // No organisation name is set in the test binary, so nothing here touches

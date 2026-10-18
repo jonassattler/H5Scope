@@ -15,6 +15,12 @@ import H5Scope.Backend
 /// drawn from Theme, this one is too: same hairlines, same mono machine labels,
 /// same 2px radius, same single primary button per view.
 ///
+/// It is the default and not the only answer. The host's dialog is also the
+/// one carrying the reader's bookmarks, mounts and search, and a reader who
+/// would rather have those than the match can say so under Settings > Native
+/// File Dialog; Main.qml's chooseFile() is where the two part. The extensions
+/// below are what both of them filter on.
+///
 /// The listing itself comes from Qt.labs.folderlistmodel, so no directory
 /// walking happens in this file; FileSystem supplies the well-known locations
 /// and the formatting QML has no answer for.

@@ -216,6 +216,14 @@ Rectangle {
         onTriggered: bar.plotSettingsRequested()
     }
 
+    // Not checkable, for darkAction's reason: the bullet follows
+    // AppController.nativeFileDialog through AppMenuItem.marked.
+    Action {
+        id: nativeDialogAction
+        text: qsTr("Native File Dialog")
+        onTriggered: AppController.nativeFileDialog = !AppController.nativeFileDialog
+    }
+
     Action {
         id: aboutAction
         text: qsTr("About H5Scope…")
@@ -408,7 +416,8 @@ Rectangle {
         // Between View and Help, and on its own rather than folded into View,
         // because it is the one drawer in this bar that is not about the file
         // or about what is drawn from it. It says how much of the machine this
-        // program may use.
+        // program may use, what leaves it as a picture, and how it meets the
+        // desktop around it.
         AppMenu {
             title: qsTr("Settings")
 
@@ -444,6 +453,16 @@ Rectangle {
             // the reader types and a drawer has nowhere to type into -- see
             // PlotSettingsDialog.
             AppMenuItem { action: plotSettingsAction }
+
+            // Whose dialog File > Open shows: this application's, drawn from
+            // Theme, or the desktop's own, with the reader's bookmarks and
+            // mounts in it. A row and not a submenu of two, because it is a
+            // yes or a no, and a yes or a no in this bar is a bullet -- see
+            // Tree Tags and Dark Theme under View.
+            AppMenuItem {
+                action: nativeDialogAction
+                marked: AppController.nativeFileDialog
+            }
         }
 
         AppMenu {

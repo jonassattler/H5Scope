@@ -132,6 +132,39 @@ So the library is built statically and linked in, like Qt and HDF5:
 `xcb-util-cursor-devel` is needed there for *qtbase's own* configure test at
 build time. Nothing in the published binary depends on it.
 
+### The one library that is opened rather than linked
+
+Settings > Native File Dialog asks the desktop for its own dialog. On Windows
+that is part of the platform plugin already linked. On Linux a dynamic Qt
+reaches GNOME's or KDE's through a theme plugin from the host, which a static
+binary cannot load; the one it can carry is Qt's xdg-desktop-portal theme,
+which asks the desktop over D-Bus. So qtbase is built with its `dbus` feature
+on Linux, and the root `CMakeLists.txt` asserts the theme exists.
+
+The feature as vcpkg builds it would link `libdbus-1` — and vcpkg's dbus port
+builds only a shared library, so the executable would need `libdbus-1.so.3`
+before `main` and not start without it. That is the libxcb-cursor failure the
+other way round, and it would take `--license` on a headless box with it.
+
+Qt's other way of having D-Bus is to open the library with `dlopen` when a
+connection is first asked for, and that is the one used:
+
+- `cmake/triplets/x64-linux.cmake` overlays the stock triplet *under its own
+  name* and adds `-DINPUT_dbus=runtime` to qtbase's configure;
+  `x64-linux-release.cmake`, CI's, carries the same line. The Linux presets
+  set `VCPKG_OVERLAY_TRIPLETS` so the local tree uses it.
+- The root `CMakeLists.txt` fails the configure if `Qt6::DBus` links
+  `dbus-1`, which is what a configure that bypassed the presets — and so
+  built the stock triplet — would produce.
+- `tools/ci/verify-binary.sh` fails the build if `libdbus` ever appears in the
+  executable's `NEEDED` list.
+
+The dbus port is still built, because qtbase's feature depends on it, and is
+then never linked. `vcpkg.json` lists it without default features to keep its
+`systemd` feature, and libsystemd with it, out of the build. Where the host has
+no `libdbus-1.so.3`, or no portal is running, Qt Quick draws a file dialog of
+its own in place of the desktop's and nothing else changes.
+
 `tools/check-glibc-floor.sh` is what makes "runs on RHEL 8" checkable rather
 than asserted, and it works on any ELF:
 

@@ -84,15 +84,27 @@ without being forked. The tabs answer to the *file* rather than to the tree, so
 `AppController::openFile`/`closeFile` empty them — but the **saved views do
 not**: they are written to `QSettings` and outlive both the tabs and the file,
 and each reports how much of whatever is open it can still draw. Those, the
-recent-files list, the RAM budget under Settings and the export settings under
-Settings > Plot Settings are the only four things this program remembers
-between runs, and all of them are guarded by
+recent-files list, the RAM budget under Settings, the export settings under
+Settings > Plot Settings and Settings > Native File Dialog are the only five
+things this program remembers between runs, and all of them are guarded by
 `QCoreApplication::organizationName().isEmpty()` so the tests and
-`make-screenshots` never touch the user's settings. A fifth follows
+`make-screenshots` never touch the user's settings. A sixth follows
 `ramBudget`'s shape exactly: clamped on the way in from `QSettings` as well as
 from QML, written in the setter under the guard, one `NOTIFY` of its own. The
 export group has grown that way twice now — the size, then the density — and
-both times without a new mechanism.
+the file dialog once, each time without a new mechanism.
+
+**Native File Dialog** (`AppController::nativeFileDialog`, off by default) is
+the one place the platform draws something this application would otherwise
+draw itself. `Main.qml`'s `chooseFile()` asks it at the moment of opening and
+shows either `FilePicker` or a `QtQuick.Dialogs.FileDialog`, which filters on
+the picker's own `hdf5Filters`. Windows answers that dialog from the platform
+plugin already linked. Linux answers it from the **xdg-desktop-portal platform
+theme**, the only native dialog a static Qt can carry, which `main.cpp` names
+before `QGuiApplication` on xcb and wayland — overriding `QT_QPA_PLATFORMTHEME`,
+whose values are plugins no static binary has; `-platformtheme` still wins.
+Where there is no portal, Qt Quick draws a stand-in. Invariant 4 says what the
+theme costs the build.
 
 A line of a custom tab may also carry a **colour of its own**
 (`CustomPlot::Entry::colour`, `seriesOverride`), which sits over whatever
@@ -753,6 +765,16 @@ of it, and why the pin moves in the same pull request as the QML.
    `tools/check-glibc-floor.sh` and `tools/ci/verify-*` prove it. Do not add a
    dependency the target may not have — `libxcb-cursor` is already handled by
    `ports/xcb-util-cursor` and asserted at configure time.
+
+   `libdbus-1` is the same problem solved the other way: the portal theme needs
+   Qt D-Bus, vcpkg would link it to a libdbus that only exists as a shared
+   library, and so `cmake/triplets` builds qtbase with `-DINPUT_dbus=runtime`
+   and Qt `dlopen`s it instead. **That is why the Linux presets use an overlay
+   triplet named `x64-linux`**, and why its qtbase line is written out again in
+   `x64-linux-release.cmake` rather than included — vcpkg hashes a triplet's
+   own text, not what it includes. The root `CMakeLists.txt` refuses a Qt whose
+   `Qt6::DBus` links `dbus-1`, and `verify-binary.sh` refuses a `NEEDED`
+   libdbus. See `docs/BUILDING.md`.
 5. **Design tokens are the only source of visual values.** No hex colour, no
    font family, no raw pixel number outside `Theme.qml`, and **no animations
    anywhere** — this application changes state between one frame and the next.

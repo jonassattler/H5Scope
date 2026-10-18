@@ -43,6 +43,11 @@ qt_import_qml_plugins(H5Scope)
 # leaving QXcbIntegrationPlugin in the list on Windows is not a plugin that
 # never loads, it is a link against a name CMake cannot resolve, and the
 # configure fails.
+#
+# The xdg-desktop-portal platform theme is the native file dialog on Linux, for
+# a reader who asks for one under Settings (see vcpkg.json for why it is this
+# theme, and main.cpp for how it is chosen). Windows needs nothing named for
+# that: its native dialog is part of the platform plugin above.
 if(WIN32)
   set(h5scope_platform_plugins Qt6::QWindowsIntegrationPlugin)
 else()
@@ -51,6 +56,7 @@ else()
     Qt6::QWaylandXdgShellIntegrationPlugin
     Qt6::QXcbIntegrationPlugin
     Qt6::QXcbGlxIntegrationPlugin
+    Qt6::QXdgDesktopPortalThemePlugin
   )
 endif()
 
