@@ -160,9 +160,9 @@ int PlotCoreProbe::decimalsFor(double span) const
     return plotcore::decimalsFor(span);
 }
 
-QString PlotCoreProbe::labelFor(double value, double span) const
+QString PlotCoreProbe::labelFor(double value, double low, double high) const
 {
-    return textOf(plotcore::labelFor(value, span));
+    return textOf(plotcore::labelFor(value, low, high));
 }
 
 QString PlotCoreProbe::logLabelFor(double value) const
@@ -328,6 +328,7 @@ QColor PlotCoreProbe::seriesColor(const QVariantMap& colours, int series, int po
     line.reversed = colours.value(QStringLiteral("reversed")).toBool();
     line.from = colours.value(QStringLiteral("from")).toDouble();
     line.to = colours.value(QStringLiteral("to")).toDouble();
+    line.custom = colours.value(QStringLiteral("custom")).toBool();
     std::optional<plotcore::Rgba> colour;
     if (own.isValid() && !own.isNull()) {
         colour = rgbaOf(own);

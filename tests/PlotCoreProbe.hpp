@@ -36,7 +36,7 @@ public:
     // --- PlotFrame.qml ---------------------------------------------------
     [[nodiscard]] Q_INVOKABLE double niceStep(double span, double target) const;
     [[nodiscard]] Q_INVOKABLE int decimalsFor(double span) const;
-    [[nodiscard]] Q_INVOKABLE QString labelFor(double value, double span) const;
+    [[nodiscard]] Q_INVOKABLE QString labelFor(double value, double low, double high) const;
     [[nodiscard]] Q_INVOKABLE QString logLabelFor(double value) const;
     [[nodiscard]] Q_INVOKABLE double fractionOn(double value, double low, double high,
                                                 bool logarithmic, double base) const;

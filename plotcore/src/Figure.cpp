@@ -226,21 +226,6 @@ void Figure::setSettings(const FigureSettings& settings)
     if (!usableBase(next.yLogBase)) {
         next.yLogBase = settings_.yLogBase;
     }
-    if (next.dark != settings_.dark) {
-        // A colour nobody chose is the ground's default, and follows the
-        // ground: the viewer's are bindings to Theme.accent and Theme.info.
-        // Left where it was, "same" would be drawn signal white on white.
-        const LineColours was = LineColours::defaults(settings_.dark);
-        const LineColours now = LineColours::defaults(next.dark);
-        const auto follow = [](Rgba& colour, const Rgba& from, const Rgba& to) {
-            if (colour == from) {
-                colour = to;
-            }
-        };
-        follow(next.colours.single, was.single, now.single);
-        follow(next.colours.rangeFrom, was.rangeFrom, now.rangeFrom);
-        follow(next.colours.rangeTo, was.rangeTo, now.rangeTo);
-    }
     const bool reset = next.xLog != settings_.xLog || next.yLog != settings_.yLog ||
                        next.flipped != settings_.flipped ||
                        (next.xLog && next.xLogBase != settings_.xLogBase) ||
@@ -1341,7 +1326,8 @@ std::string Figure::state() const
         .set("rangeTo", Value::of(hexOf(settings_.colours.rangeTo)))
         .set("reversed", Value::of(settings_.colours.reversed))
         .set("from", Value::of(settings_.colours.from))
-        .set("to", Value::of(settings_.colours.to));
+        .set("to", Value::of(settings_.colours.to))
+        .set("custom", Value::of(settings_.colours.custom));
     Value lines = Value::array();
     for (const LineSettings& line : lines_) {
         Value one = Value::object();
@@ -1427,6 +1413,23 @@ bool Figure::restore(const std::string& text)
         next.colours.reversed = colours->boolOr("reversed", next.colours.reversed);
         next.colours.from = colours->numberOr("from", next.colours.from);
         next.colours.to = colours->numberOr("to", next.colours.to);
+        if (colours->find("custom") != nullptr) {
+            next.colours.custom = colours->boolOr("custom", next.colours.custom);
+        }
+        else {
+            // A view written before a colour could be left to the ground: its
+            // colours are a choice wherever one of them is a colour neither
+            // ground would have put there -- the viewer's migration.
+            const LineColours dark = LineColours::defaults(true);
+            const LineColours light = LineColours::defaults(false);
+            const auto chosen = [](const Rgba& c, const Rgba& a, const Rgba& b) {
+                const auto same = [](const Rgba& x, const Rgba& y) { return hexOf(x) == hexOf(y); };
+                return !same(c, a) && !same(c, b);
+            };
+            next.colours.custom = chosen(next.colours.single, dark.single, light.single) ||
+                                  chosen(next.colours.rangeFrom, dark.rangeFrom, light.rangeFrom) ||
+                                  chosen(next.colours.rangeTo, dark.rangeTo, light.rangeTo);
+        }
     }
     next.highlighted = static_cast<int>(root.numberOr("highlighted", next.highlighted));
     next.bundle = root.boolOr("bundle", next.bundle);

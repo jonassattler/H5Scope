@@ -253,6 +253,9 @@ class DemoWindow(QMainWindow):
             button.clicked.connect(lambda _=False, n=name: self._pick_colour(n))
             self.swatches[name] = button
             swatches.addWidget(button)
+        follow = QPushButton("follow the ground")
+        follow.clicked.connect(self._follow_ground)
+        swatches.addWidget(follow)
         form.addRow("Same / range", swatches)
 
         self.band_from = QSlider(Qt.Orientation.Horizontal)
@@ -476,18 +479,32 @@ class DemoWindow(QMainWindow):
         self._refresh_view_boxes()
 
     def _ground_changed(self) -> None:
-        # The defaults follow the ground, so the swatches are read back.
+        # Colours nobody chose follow the ground, so the swatches show it.
         self._apply_settings()
-        for name, button in self.swatches.items():
-            paint_swatch(button, self.figure.settings[name])
+        self._repaint_swatches()
 
     def _pick_colour(self, name: str) -> None:
         chosen = QColorDialog.getColor(qcolor(self.figure.settings[name]), self)
         if chosen.isValid():
-            self.figure.settings[name] = (chosen.redF(), chosen.greenF(), chosen.blueF(),
-                                          chosen.alphaF())
-            paint_swatch(self.swatches[name], self.figure.settings[name])
-            self.plot.update()
+            self.choose_colour(name, (chosen.redF(), chosen.greenF(), chosen.blueF(),
+                                      chosen.alphaF()))
+
+    def choose_colour(self, name: str, colour) -> None:
+        """One of the three colours, as the swatch's click sets it without its
+        dialog. The figure pins the other two at what they are drawn as."""
+        self.figure.settings[name] = colour
+        self._repaint_swatches()
+        self.plot.update()
+
+    def _follow_ground(self) -> None:
+        self.figure.settings["colours.custom"] = False
+        self._repaint_swatches()
+        self.plot.update()
+
+    def _repaint_swatches(self) -> None:
+        # As drawn: the ground's until one is chosen.
+        for name, button in self.swatches.items():
+            paint_swatch(button, self.figure.settings[name])
 
     def _apply_style(self) -> None:
         self.figure.style["lineWidth"] = self.line_width.value()
@@ -664,8 +681,7 @@ class DemoWindow(QMainWindow):
             self.stacked.setChecked(s["stacked"])
             self.dark.setChecked(s["dark"])
             self.paper.setChecked(s["paper"])
-            for name, button in self.swatches.items():
-                paint_swatch(button, s[name])
+            self._repaint_swatches()
         finally:
             self.refreshing = False
         self.refresh_lines()
@@ -821,6 +837,24 @@ class DemoWindow(QMainWindow):
         self.x_axis.setCurrentIndex(3)
         check(len(frame().lines) == 8, "a shared time that wanders")
         self.x_axis.setCurrentIndex(0)
+
+        # A colour nobody chose is the ground's and follows it; one chosen
+        # stays where it was put until the ground is given it back.
+        def drawn_in():
+            return np.array(frame().lines[0].colour[:3])
+
+        self.colour_mode.setCurrentText("same")
+        on_dark = drawn_in()
+        self.dark.setChecked(False)
+        check(not np.allclose(drawn_in(), on_dark), "a colour nobody chose follows the ground")
+        orange = (0.9, 0.3, 0.1, 1.0)
+        self.choose_colour("colours.single", orange)
+        self.dark.setChecked(True)
+        check(np.allclose(drawn_in(), orange[:3]), "a colour chosen stays where it was put")
+        self._follow_ground()
+        check(np.allclose(drawn_in(), on_dark), "...until the ground is given it back")
+        self.colour_mode.setCurrentIndex(0)
+
         self.dark.setChecked(False)
         self.paper.setChecked(True)
         frame()

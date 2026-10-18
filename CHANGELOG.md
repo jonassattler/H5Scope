@@ -34,6 +34,11 @@ at every column. Both plots now draw each at its own sample, and the crosshair
 reads it there. A line drawn against a time base also reaches its last sample
 instead of stopping one short.
 
+**A line nobody coloured follows the theme.** One left at its default colour
+kept the dark theme's white after a switch to the light theme, and was drawn
+white on white. Every number along a plot axis is also written to the same
+number of figures now, where one axis could mix `3.00e+6` with `4.500e+6`.
+
 ## 0.7.1
 
 **A custom tab can be drawn with x and y swapped**, as `plot(y, x)` draws a

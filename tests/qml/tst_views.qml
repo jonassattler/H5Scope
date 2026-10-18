@@ -3774,6 +3774,7 @@ TestCase {
         // the other half of the rule: this maps the two colours a *token* can
         // have put on a line and nothing else.
         plot.colorSingle = Theme.categoricalPalettes["tol bright"][1]
+        plot.colorsCustom = true
         compare(String(plot.seriesColor(0, 0, 4, true)).toLowerCase(),
                 String(Theme.categoricalPalettes["tol bright"][1]).toLowerCase(),
                 "a colour the reader chose is the colour they chose")
@@ -3788,6 +3789,7 @@ TestCase {
 
         plot.colorMode = "okabe-ito"
         plot.colorSingle = Theme.accent
+        plot.colorsCustom = false
         Theme.dark = was
     }
 
@@ -4137,6 +4139,36 @@ TestCase {
     /// not, because matplotlib's log(0.001) over log(10) is an ulp short of
     /// -3 -- so it counts one power crossed there and two over 1..10. A
     /// reader comparing the two figures sees the ulp, so it is kept.
+    /// Every number on a linear axis is written to as many figures as every
+    /// other, and the crosshair's to as many again.
+    ///
+    /// The count was asked of each value, so it stepped up wherever a tick
+    /// passed the span: an axis from 2.6 to 6.6 million read "3.00e+6" beside
+    /// "4.500e+6".
+    function test_every_number_on_an_axis_has_as_many_figures() {
+        const win = openLogPlot()
+        const frame = logPlot(win).frame
+        const figures = (text) => {
+            const mantissa = text.split("e")[0]
+            const point = mantissa.indexOf(".")
+            return point < 0 ? 0 : mantissa.length - point - 1
+        }
+        for (const [low, high] of [[2.6e6, 6.6e6], [0, 1e7], [-3e7, 4.5e7],
+                                   [1.00012, 1.00019], [0.5, 950.5]]) {
+            const found = frame.tickValues(low, high, false, 10, 1000, false)
+            const counts = found.texts.filter((t) => t.text !== "0")
+                                      .map((t) => figures(t.text))
+            verify(counts.length > 1, low + ".." + high)
+            for (const count of counts) {
+                compare(count, counts[0], low + ".." + high + ": "
+                        + found.texts.map((t) => t.text).join(" "))
+            }
+            const between = (low + high) / 2 + (high - low) / 7
+            compare(figures(frame.axisLabel(between, low, high, false)), counts[0],
+                    "the crosshair over " + low + ".." + high)
+        }
+    }
+
     function test_the_ticks_are_matplotlibs_window_for_window() {
         const win = openLogPlot()
         const frame = logPlot(win).frame
@@ -6352,6 +6384,67 @@ TestCase {
         plot.highlighted = -1
     }
 
+    /// A line nobody coloured is drawn in the theme's accent, whichever theme
+    /// is on, and one somebody coloured keeps its colour on either.
+    ///
+    /// By the time a plot is on screen DatasetMemory has written its default
+    /// colours back as values, and a saved view writes them as values too, so
+    /// a binding to Theme.accent could not be what kept them following the
+    /// theme: after View > theme, a line in "same" was drawn in the dark
+    /// theme's signal white on the light theme's white ground. See
+    /// PlotSurface.colorsCustom.
+    function test_a_line_nobody_coloured_follows_the_theme() {
+        verify(select("/cube"))
+        const view = createTemporaryObject(dataComponent, testCase, viewSize)
+        waitForRendering(view)
+        view.show("plot")
+        const plot = findChild(view, "plotSurface")
+        const was = Theme.dark
+        try {
+            Theme.dark = true
+            plot.colorMode = "same"
+            verify(!plot.colorsCustom)
+            // What DatasetMemory and a saved view do: put the colours back as
+            // the values they were when they were filed.
+            plot.colorSingle = Theme.accent
+            plot.colorRangeFrom = Theme.accent
+            plot.colorRangeTo = Theme.info
+            compare(String(plot.seriesColor(0, 0, 6)), String(Theme.accent))
+
+            Theme.dark = false
+            compare(String(plot.seriesColor(0, 0, 6)), String(Theme.accent),
+                    "the light theme's accent, not the dark theme's white")
+            plot.colorMode = "range"
+            compare(String(plot.seriesColor(0, 0, 1)),
+                    String(Theme.mix(Theme.accent, Theme.info, 0.5)),
+                    "both ends of a range follow it as well")
+
+            // A colour somebody chose is theirs on either ground.
+            plot.colorMode = "same"
+            plot.colorSingle = "#336699"
+            plot.colorsCustom = true
+            compare(String(plot.seriesColor(0, 0, 6)), String(Qt.color("#336699")))
+            Theme.dark = true
+            compare(String(plot.seriesColor(0, 0, 6)), String(Qt.color("#336699")))
+
+            // A view saved before the flag existed: its colours are a choice
+            // only where no theme would have put them there.
+            plot.applyDrawingSettings({ colorMode: "same", colorSingle: Theme.sig500,
+                                        colorRangeFrom: Theme.sig500,
+                                        colorRangeTo: Theme.cyan500 })
+            verify(!plot.colorsCustom, "a view of the dark theme's defaults")
+            Theme.dark = false
+            compare(String(plot.seriesColor(0, 0, 6)), String(Theme.accent))
+            plot.applyDrawingSettings({ colorMode: "same", colorSingle: "#336699" })
+            verify(plot.colorsCustom, "a view of a colour somebody chose")
+            compare(String(plot.seriesColor(0, 0, 6)), String(Qt.color("#336699")))
+        } finally {
+            Theme.dark = was
+            plot.colorMode = "okabe-ito"
+            plot.colorsCustom = false
+        }
+    }
+
     function test_a_colour_cycle_gives_the_lines_different_colours() {
         verify(select("/cube"))
         const view = createTemporaryObject(dataComponent, testCase, viewSize)
@@ -6389,6 +6482,9 @@ TestCase {
         plot.colorMode = "range"
         plot.colorRangeFrom = "#000000"
         plot.colorRangeTo = "#ffffff"
+        // Chosen, as the settings panel's swatches choose them: unchosen, the
+        // ends are the theme's. See PlotSurface.colorsCustom.
+        plot.colorsCustom = true
         // Three lines take the quarters, so the middle one is halfway between
         // black and white -- which is grey, in RGB, as the mix is defined.
         const middle = plot.seriesColor(1, 1, 3)
@@ -6405,6 +6501,7 @@ TestCase {
         verify(Math.abs(plot.seriesColor(0, 0, 1).r - 0.5) < 0.01)
 
         plot.colorMode = "same"
+        plot.colorsCustom = false
     }
 
     /// A palette gives each line a colour of its own, and starts over rather

@@ -69,9 +69,17 @@ struct LineColours
     /// The reader's slice of a map, from 0 to 1.
     double from = 0.0;
     double to = 1.0;
+    /// Whether `single`, `rangeFrom` and `rangeTo` were chosen, which is what
+    /// decides whether they are drawn: until they are, the ground's defaults
+    /// are, so a line nobody coloured follows the ground. The viewer's
+    /// PlotSurface.colorsCustom, for its reason.
+    bool custom = false;
 
     /// The defaults the viewer opens on, for a dark ground or a light one.
     [[nodiscard]] static LineColours defaults(bool onDark);
+    /// These colours as they are drawn on that ground: the chosen ones, or
+    /// the ground's defaults when none were chosen.
+    [[nodiscard]] LineColours drawn(bool onDark) const;
 };
 
 /// `PlotSurface.seriesColor`: the colour line `series` is drawn in, being

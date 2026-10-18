@@ -339,12 +339,10 @@ QWidget* DemoWindow::linesPanel()
     const auto colourButton = [&](QPushButton*& button, Rgba& colour) {
         button = new QPushButton;
         paintSwatch(button, colour);
-        connect(button, &QPushButton::clicked, this, [this, button, &colour] {
+        connect(button, &QPushButton::clicked, this, [this, &colour] {
             const QColor chosen = QColorDialog::getColor(qcolor(colour), this);
             if (chosen.isValid()) {
-                colour = rgba(chosen);
-                paintSwatch(button, colour);
-                applySettings();
+                chooseColour(colour, rgba(chosen));
             }
         });
     };
@@ -356,6 +354,9 @@ QWidget* DemoWindow::linesPanel()
     swatches->addWidget(new QLabel(QStringLiteral("range")));
     swatches->addWidget(rangeFrom_);
     swatches->addWidget(rangeTo_);
+    auto* follow = new QPushButton(QStringLiteral("follow the ground"));
+    connect(follow, &QPushButton::clicked, this, &DemoWindow::followGround);
+    swatches->addWidget(follow);
     form->addRow(QStringLiteral("Same / range"), swatches);
 
     bandFrom_ = new QSlider(Qt::Horizontal);
@@ -400,18 +401,10 @@ QWidget* DemoWindow::linesPanel()
     dark_ = new QCheckBox(QStringLiteral("dark"));
     dark_->setChecked(true);
     paper_ = new QCheckBox(QStringLiteral("publication"));
-    connect(dark_, &QCheckBox::toggled, this, [this](bool dark) {
-        // The defaults follow the ground (Figure::setSettings), so the panel's
-        // swatches are read back from it rather than kept.
+    connect(dark_, &QCheckBox::toggled, this, [this] {
+        // Colours nobody chose follow the ground, so the swatches show it.
         applySettings();
-        const plotcore::LineColours& colours = plot_->figure().settings().colours;
-        singleColour_ = colours.single;
-        rangeFromColour_ = colours.rangeFrom;
-        rangeToColour_ = colours.rangeTo;
-        paintSwatch(single_, singleColour_);
-        paintSwatch(rangeFrom_, rangeFromColour_);
-        paintSwatch(rangeTo_, rangeToColour_);
-        (void)dark;
+        repaintSwatches();
     });
     connect(paper_, &QCheckBox::toggled, this, settingsChanged);
     auto* ground = new QHBoxLayout;
@@ -644,6 +637,7 @@ plotcore::FigureSettings DemoWindow::settings() const
     out.colours.single = singleColour_;
     out.colours.rangeFrom = rangeFromColour_;
     out.colours.rangeTo = rangeToColour_;
+    out.colours.custom = coloursCustom_;
     out.colours.from = std::min(bandFrom_->value(), bandTo_->value()) / 100.0;
     out.colours.to = std::max(bandFrom_->value(), bandTo_->value()) / 100.0;
     out.legend = legend_->isChecked();
@@ -673,6 +667,40 @@ void DemoWindow::applyStyle()
     style.lineWidth = lineWidth_->value();
     plot_->figure().setStyle(style);
     plot_->update();
+}
+
+void DemoWindow::chooseColour(Rgba& colour, Rgba chosen)
+{
+    if (!coloursCustom_) {
+        // Pinned at what they are drawn as, so choosing one leaves the other
+        // two where they were.
+        const plotcore::FigureSettings& now = plot_->figure().settings();
+        const plotcore::LineColours drawn = now.colours.drawn(now.dark);
+        singleColour_ = drawn.single;
+        rangeFromColour_ = drawn.rangeFrom;
+        rangeToColour_ = drawn.rangeTo;
+        coloursCustom_ = true;
+    }
+    colour = chosen;
+    applySettings();
+    repaintSwatches();
+}
+
+void DemoWindow::followGround()
+{
+    coloursCustom_ = false;
+    applySettings();
+    repaintSwatches();
+}
+
+void DemoWindow::repaintSwatches()
+{
+    // As drawn: the ground's until chosen.
+    const plotcore::FigureSettings& now = plot_->figure().settings();
+    const plotcore::LineColours drawn = now.colours.drawn(now.dark);
+    paintSwatch(single_, drawn.single);
+    paintSwatch(rangeFrom_, drawn.rangeFrom);
+    paintSwatch(rangeTo_, drawn.rangeTo);
 }
 
 void DemoWindow::refreshLines()
@@ -895,9 +923,8 @@ void DemoWindow::loadView()
     singleColour_ = s.colours.single;
     rangeFromColour_ = s.colours.rangeFrom;
     rangeToColour_ = s.colours.rangeTo;
-    paintSwatch(single_, singleColour_);
-    paintSwatch(rangeFrom_, rangeFromColour_);
-    paintSwatch(rangeTo_, rangeToColour_);
+    coloursCustom_ = s.colours.custom;
+    repaintSwatches();
     bandFrom_->setValue(static_cast<int>(std::lround(s.colours.from * 100)));
     bandTo_->setValue(static_cast<int>(std::lround(s.colours.to * 100)));
     legend_->setChecked(s.legend);
@@ -1087,6 +1114,26 @@ int DemoWindow::selfTest(const QString& picture)
     xAxis_->setCurrentIndex(3);
     check(frame().lines.size() == 8, "a shared time that wanders");
     xAxis_->setCurrentIndex(0);
+
+    // A colour nobody chose is the ground's and follows it; one chosen stays
+    // where it was put until the ground is given it back.
+    colourMode_->setCurrentText(QStringLiteral("same"));
+    const auto drawnIn = [&] { return frame().lines.front().colour; };
+    const auto same = [](Rgba a, Rgba b) {
+        return std::abs(a.red - b.red) + std::abs(a.green - b.green) + std::abs(a.blue - b.blue) <
+               1e-9;
+    };
+    const Rgba onDark = drawnIn();
+    dark_->setChecked(false);
+    check(!same(drawnIn(), onDark), "a colour nobody chose follows the ground");
+    const Rgba orange = Rgba::of(0.9, 0.3, 0.1);
+    chooseColour(singleColour_, orange);
+    dark_->setChecked(true);
+    check(same(drawnIn(), orange), "a colour chosen stays where it was put");
+    followGround();
+    check(same(drawnIn(), onDark), "...until the ground is given it back");
+    colourMode_->setCurrentIndex(0);
+
     dark_->setChecked(false);
     paper_->setChecked(true);
     frame();

@@ -65,6 +65,12 @@ private:
     void saveView();
     void loadView();
     void exportPicture();
+    /// Choose one of the three colours, pinning the other two at what they
+    /// are drawn as -- the swatch's click without its dialog.
+    void chooseColour(plotcore::Rgba& colour, plotcore::Rgba chosen);
+    /// Give the three colours back to the ground.
+    void followGround();
+    void repaintSwatches();
 
     plotcore::FigureSettings settings() const;
 
@@ -125,6 +131,9 @@ private:
     QDoubleSpinBox* exportHeight_ = nullptr;
     QDoubleSpinBox* exportScale_ = nullptr;
 
+    /// Whether the three colours below were chosen; until they are, the
+    /// ground's are drawn (LineColours::custom).
+    bool coloursCustom_ = false;
     plotcore::Rgba singleColour_;
     plotcore::Rgba rangeFromColour_;
     plotcore::Rgba rangeToColour_;

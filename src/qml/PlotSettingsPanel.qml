@@ -365,11 +365,13 @@ SettingsPanel {
                        ? qsTr("first line") : qsTr("every line")
                 value: panel.target
                        ? (panel.target.colorMode === "range"
-                          ? panel.target.colorRangeFrom : panel.target.colorSingle)
+                          ? panel.target.drawnColorRangeFrom
+                          : panel.target.drawnColorSingle)
                        : Theme.accent
                 onPicked: chosen => {
                     if (!panel.target)
                         return
+                    panel.pinColours()
                     if (panel.target.colorMode === "range")
                         panel.target.colorRangeFrom = chosen
                     else
@@ -380,13 +382,28 @@ SettingsPanel {
             ColorSwatchButton {
                 label: qsTr("last line")
                 visible: !!panel.target && panel.target.colorMode === "range"
-                value: panel.target ? panel.target.colorRangeTo : Theme.info
+                value: panel.target ? panel.target.drawnColorRangeTo : Theme.info
                 onPicked: chosen => {
-                    if (panel.target) panel.target.colorRangeTo = chosen
+                    if (!panel.target)
+                        return
+                    panel.pinColours()
+                    panel.target.colorRangeTo = chosen
                 }
             }
 
             Item { Layout.fillWidth: true }
+        }
+
+        // The image ground's control, for the same rule: until a colour is
+        // chosen it is the theme's, and this is how to give it back.
+        AppToolButton {
+            width: parent.width
+            visible: !!panel.target && (panel.target.colorMode === "same"
+                                        || panel.target.colorMode === "range")
+            text: qsTr("follow the theme")
+            size: "sm"
+            enabled: panel.target ? panel.target.colorsCustom : false
+            onClicked: { if (panel.target) panel.target.colorsCustom = false }
         }
 
         AppCheckBox {
@@ -1035,6 +1052,19 @@ SettingsPanel {
     /// answered with the opposite of what they pressed; "same" is one line
     /// down the list for whoever wants it.
     property string lastMap: "viridis"
+
+    /// Make the three colours the reader's, at what they are drawn as now --
+    /// which is the theme's until this is called. Before one of them is
+    /// changed, so that choosing the last line's colour leaves the first
+    /// line's where it was rather than at whatever the property last held.
+    function pinColours() {
+        if (!panel.target || panel.target.colorsCustom)
+            return
+        panel.target.colorSingle = panel.target.drawnColorSingle
+        panel.target.colorRangeFrom = panel.target.drawnColorRangeFrom
+        panel.target.colorRangeTo = panel.target.drawnColorRangeTo
+        panel.target.colorsCustom = true
+    }
 
     /// Whether `mode` names a palette rather than a map.
     function isPalette(mode) {
