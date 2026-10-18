@@ -746,6 +746,24 @@ over a `Figure`, and `plotcore/examples/qt` walks every feature on one window;
 `--self-test` walks them itself offscreen and is the `plotcore_qt_demo` ctest
 test.
 
+`plotcore/python` is the Python library: ctypes over the C interface
+(`_native.py` declares the header line for line and checks the ABI version
+before anything is called), so it links no Python and one `py3-none` wheel per
+platform serves every version. scikit-build-core builds it from `plotcore/`
+one directory up (`cmake.source-dir = ".."`, the `SKBUILD` block in its
+CMakeLists), which also means the wheel is built from the repository and not
+from an sdist. Two rules from the boundary: **a scene is copied out whole**
+into numpy, so nothing Python holds points into the library; and **a reader's
+callback is kept by the token the C side holds**, released when the C side
+says it has let go of it, which is the only moment index bookkeeping in Python
+could not get wrong. `plotcore.qt` is the PyQt6 widget, `plotcore.mpl` draws
+on matplotlib's own axes from each run's data-unit values
+(`plotcore_scene_line_run_values`) with the figure's gestures under them, and
+`plotcore/examples/pyqt6/demo.py --self-test` is the Qt example's walk, run
+by `tests/test_qt.py`. Develop against a local build with
+`PLOTCORE_LIBRARY=<path to libplotcore_c>`; CI builds the wheel in
+manylinux_2_28 and on Windows and uploads it, nothing more.
+
 ## Invariants worth knowing before editing
 
 1. **One thread ever calls into HDF5.** The pinned HDF5 is not thread-safe and
