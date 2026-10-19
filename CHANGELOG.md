@@ -25,6 +25,25 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.3
+
+**File › Open can show your desktop's own dialog.** Settings › Native File
+Dialog, off by default, swaps this program's file picker for the platform's:
+Explorer's on Windows, and on Linux the one your desktop offers through
+xdg-desktop-portal — KDE's or GNOME's, with your bookmarks and mounts in it.
+It is remembered between runs. Where no portal is running, a plain Qt dialog
+stands in. The Linux binary asks nothing new of the system for it: D-Bus is
+used where there is one, and the program starts the same without it.
+
+On Linux this program now sets its own `QT_QPA_PLATFORMTHEME`, since the
+values usually found there name plugins it cannot load; `-platformtheme`
+still chooses another.
+
+**The plot library has a repository of its own**,
+[jonassattler/plotcore](https://github.com/jonassattler/plotcore), where it is
+released separately. It is a submodule here, so a clone needs `--recursive`;
+the source archive attached to this release already includes it.
+
 ## 0.7.2
 
 **A plot draws each peak where it is.** The highest and lowest value of each
