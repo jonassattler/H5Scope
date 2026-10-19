@@ -743,7 +743,7 @@ SettingsPanel {
             }
         }
 
-        /// The digits between two decades. See PlotFrame.minorNumbers.
+        /// The digits between two decades. See plotcore's minorNumbersOf.
         ///
         /// Under the two boxes above rather than in the drawing row, because
         /// it is a question about this scale and does nothing without one --
@@ -787,7 +787,7 @@ SettingsPanel {
         // width off them wants more of them, and lining a picture up with
         // something else wants the steps stated. "On" answered only the first.
         //
-        // The numbered ticks do not move with this -- see PlotFrame.gridMode.
+        // The numbered ticks do not move with this -- see plotcore's gridValues.
         AppComboBox {
             objectName: "gridModeBox"
 
@@ -815,7 +815,7 @@ SettingsPanel {
             // no use for the first: a rule every 1 up an axis running to a
             // million is a million rules, and what a reader means there is a
             // multiplication -- 10 for the decades, 2 for the doublings. See
-            // PlotFrame.gridValues.
+            // plotcore's gridValues.
             text: panel.logScale
                   ? qsTr("a rule every, along x and along y -- a step in the "
                          + "data's own units on a linear axis, and a factor "
@@ -839,8 +839,8 @@ SettingsPanel {
                 // Negative is not a narrower grid, it is a grid drawn
                 // backwards; zero is "none" said in the wrong control. Both
                 // come back as nothing ruled on that axis, which is what
-                // PlotFrame does with a step it cannot use, so the box and the
-                // picture agree.
+                // plotcore's gridValues does with a step it cannot use, so the
+                // box and the picture agree.
                 onCommitted: amount => {
                     if (panel.target)
                         panel.target.gridStepX = Math.max(0, amount)

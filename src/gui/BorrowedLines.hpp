@@ -5,9 +5,9 @@
 
 // The half of the borrow contract that both plots keep, kept once.
 //
-// A plot hands its PlotItem pointers straight into its own vectors and copies
-// nothing (see PlotLine::values), so whatever the item was handed must not be
-// freed while the item can still draw it. There are two honest ways to obey
+// A plot hands the item that draws it pointers straight into its own vectors
+// and copies nothing (see PlotLine::values), so whatever the item was handed
+// must not be freed while the item can still draw it. There are two honest ways to obey
 // that: empty the item first, which blanks the pane, or let the old values
 // outlive the change until the item is handed their replacement. Both plots
 // need both, and each carried its own copy of the record that makes them work

@@ -41,7 +41,6 @@
 #include "gui/H5TreeModel.hpp"
 #include "gui/PlotBudget.hpp"
 #include "gui/PlotCore.hpp"
-#include "gui/PlotItem.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/TreeFilterProxyModel.hpp"
 #include "postproc/Pipeline.hpp"
@@ -432,22 +431,30 @@ TEST_CASE("the plot reads its lines in batches", "[cost][plot]")
         // file -- and a change that made it do so would not look like a bug,
         // it would look like the plot had become slow.
         //
-        // This is the *renderer's* window, and it is still true of it word for
-        // word. The model has a window of its own now -- see the closer-look
-        // case below -- and the boundary between them is exactly this: the item
-        // never reads, the model reads once the view has stopped moving.
-        gui::PlotItem item;
+        // Asked of the figure, which is what the viewer draws through: every
+        // window it draws, it tells the plot about, and the plot answers out of
+        // what it holds -- see the closer-look case below, which is the same
+        // boundary seen from the plot's side.
         (void)counted.plot.pointCount();
         Counted::settleAll();
-        counted.plot.fill(&item);
-        REQUIRE(item.lineCount() == DatasetPlot::initialSeriesLimit());
+        gui::FigureItem figure;
+        figure.setWidth(640.0);
+        figure.setHeight(400.0);
+        figure.setXMinimum(0.0);
+        figure.setXMaximum(499.0);
+        figure.setDataLength(500.0);
+        figure.setPlot(&counted.plot);
+        figure.refill();
+        figure.compose();
+        REQUIRE(figure.lineCount() == DatasetPlot::initialSeriesLimit());
 
         const auto cost = counted.measure([&] {
             for (int step = 0; step < 100; ++step) {
-                item.setXMin(static_cast<double>(step));
-                item.setXMax(200.0 + static_cast<double>(step) * 0.5);
-                item.setYMin(-static_cast<double>(step));
-                item.setYMax(static_cast<double>(step));
+                figure.setViewRange(static_cast<double>(step),
+                                    200.0 + static_cast<double>(step) * 0.5,
+                                    -static_cast<double>(step), static_cast<double>(step));
+                figure.compose();
+                figure.refill();
             }
         });
 

@@ -22,13 +22,27 @@
 // is heading -- goes on to the plot, which is what decides what to fold or
 // read.
 //
-// It draws in two ways, as PlotItem did and for its reason. With a graphics
-// API the scene becomes scene-graph nodes: the lines one geometry node of
-// triangle strips, the rules and boxes rectangles, the numbers text nodes. Qt
-// Quick's software renderer -- what every headless run gets -- draws no custom
-// geometry at all, so there the whole scene is painted with QPainter
-// (ScenePainter) into one texture. Both are translations of one Scene and
-// decide nothing.
+// It carries **two** renderers, and that is not a hedge:
+//
+//   * Scene-graph nodes, which is what runs on a machine with a graphics API:
+//     the rules and boxes rectangles, the numbers text nodes, and the lines a
+//     single QSGGeometryNode of mitred triangle strips -- one node and one
+//     draw call for the whole plot. Measured on the evaluation branch at ten
+//     thousand lines, 346.85 ms a frame with a node per line against 12.05 ms
+//     batched.
+//
+//   * QPainter (ScenePainter) into one texture, which is what runs under Qt
+//     Quick's software renderer. That renderer draws no custom geometry at
+//     all -- it knows rectangles, images, nine-patches and glyphs, and
+//     silently drops everything else. The offscreen platform declares no RHI
+//     capability, so the whole QML suite and tools/make-screenshots run on
+//     exactly that renderer, and an item that drew nothing there would take
+//     twenty pixel tests with it.
+//
+// Both are translations of one Scene and decide nothing, so the fallback is a
+// page of painting and not a second plot. Nothing else in this application
+// needs a fallback, because nothing else in it draws anything a rectangle
+// cannot.
 
 #include "gui/LineModel.hpp"
 #include "gui/LineTarget.hpp"
@@ -139,9 +153,31 @@ class FigureItem : public QQuickItem, public LineTarget, public plotcore::LineSo
     Q_PROPERTY(double viewMaxX READ viewMaxX NOTIFY viewChanged FINAL)
     Q_PROPERTY(double viewMinY READ viewMinY NOTIFY viewChanged FINAL)
     Q_PROPERTY(double viewMaxY READ viewMaxY NOTIFY viewChanged FINAL)
+    /// How far x may be magnified -- the data's length over sixteen, and never
+    /// less than 256 -- and so the narrowest x window there is; and the share
+    /// of the window a drag keeps over the data.
+    Q_PROPERTY(double maxZoom READ maxZoom NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double minimumSpanX READ minimumSpanX NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double panKeep READ panKeep CONSTANT FINAL)
+    /// How many lines the legend on the plot names before it counts the rest,
+    /// and how much of the pane a pointer is taken to cover: plotcore's
+    /// FigureStyle, which is where the argument for each is.
+    Q_PROPERTY(int legendRowLimit READ legendRowLimit CONSTANT FINAL)
+    Q_PROPERTY(double pointerSize READ pointerSize CONSTANT FINAL)
     Q_PROPERTY(bool zoomed READ zoomed NOTIFY viewChanged FINAL)
+    /// What each axis runs between at a zoom of one: x's ends, or one empty
+    /// power of the base where a logarithmic x has nothing to run between,
+    /// and y's padded extent of the lines on the common axis.
+    Q_PROPERTY(double xBoundLow READ xBoundLow NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double xBoundHigh READ xBoundHigh NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double yBoundLow READ yBoundLow NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double yBoundHigh READ yBoundHigh NOTIFY viewChanged FINAL)
     /// The pane inside the gutters, in this item's coordinates.
     Q_PROPERTY(QRectF area READ area NOTIFY drew FINAL)
+    /// The band being drawn, and the legend on the plot, in this item's
+    /// coordinates; an empty rectangle where there is none.
+    Q_PROPERTY(QRectF band READ band NOTIFY drew FINAL)
+    Q_PROPERTY(QRectF legendRect READ legendRect NOTIFY drew FINAL)
 
     // --- what the last frame said ----------------------------------------------------
     /// The sample under the pointer: `{ valid, line, series, x, y, px, py,
@@ -155,7 +191,8 @@ class FigureItem : public QQuickItem, public LineTarget, public plotcore::LineSo
     /// Whether the pointer is over the pane: what Ctrl+C copies the plot by.
     Q_PROPERTY(bool hovered READ hovered NOTIFY hoveredChanged FINAL)
     /// Points and unbroken strokes drawn for the last frame, over every line
-    /// together -- PlotItem's two counts, which do not depend on the machine.
+    /// together: two counts, which do not depend on the machine, and which the
+    /// cost tests hold a zoom to.
     Q_PROPERTY(int drawnPointCount READ drawnPointCount NOTIFY drew FINAL)
     Q_PROPERTY(int drawnRunCount READ drawnRunCount NOTIFY drew FINAL)
 
@@ -191,6 +228,16 @@ public:
     /// The window named in values -- the four boxes -- clipped to what the
     /// axes can draw.
     Q_INVOKABLE void setViewRange(double x0, double x1, double y0, double y1);
+    /// The gestures, named rather than performed with a pointer: a wheel
+    /// turned by `factor` about (`px`, `py`) on the pane's "x", "y" or "both";
+    /// a drag of (`dx`, `dy`) pixels; a band from one corner to another, false
+    /// when it is too small to be one. Each goes the way the pointer's would.
+    Q_INVOKABLE void zoomAt(double px, double py, double factor, const QString& axes);
+    Q_INVOKABLE void panBy(double dx, double dy);
+    Q_INVOKABLE bool zoomToRegion(double px0, double py0, double px1, double py1);
+    /// A value written as its axis writes its ticks.
+    Q_INVOKABLE [[nodiscard]] QString xNumber(double value);
+    Q_INVOKABLE [[nodiscard]] QString yNumber(double value);
     /// The value under a pixel of this item, as the band reads it.
     Q_INVOKABLE [[nodiscard]] double dataXAt(double px, double py) const;
     Q_INVOKABLE [[nodiscard]] double dataYAt(double py, double px) const;
@@ -204,9 +251,41 @@ public:
     /// The numbers a band being drawn writes beside itself, as `{ key, text,
     /// x, y, width, height, turn }` in this item's coordinates.
     Q_INVOKABLE [[nodiscard]] QVariantList bandLabels() const;
-    /// The scene's marks, for a test: `{ kind, layer, clipped, x0, y0, x1,
-    /// y1, text, turn }` each, the ones under the lines first.
+    /// The scene's marks, for a test: `{ kind, layer, under, clipped, x0, y0,
+    /// x1, y1, fill, stroke, width, radius, dashed, text, base, exponent,
+    /// role, across, down, colour, turn }` each, the ones under the lines
+    /// first.
     Q_INVOKABLE [[nodiscard]] QVariantList marks() const;
+    /// The lines the last frame drew, for a test: `{ line, series, colour,
+    /// width, runs, points, markers, own, yLow, yHigh }` each, in the order
+    /// they were drawn -- the colour with the opacity it was drawn at.
+    Q_INVOKABLE [[nodiscard]] QVariantList drawnLines() const;
+    /// The legend on the plot as it was laid out: `{ line, series, name,
+    /// colour, x0, y0, x1, y1 }` a row, the swatch from (x0, y0) to (x1, y1).
+    Q_INVOKABLE [[nodiscard]] QVariantList legendRows() const;
+    /// An axis of the last frame as it was numbered and ruled, in its own
+    /// values (plotcore::SceneAxis): `"x"` or `"y"` for a common one, or the
+    /// line whose own axis it is. `{ line, low, high, logarithmic, base,
+    /// logNumbers, ticks: [{ value, at, text, base, exponent, width }], grid:
+    /// [{ at, major }], minor: [{ at, text }] }`, every `at` a fraction of the
+    /// axis; empty where there is no such axis. `"picture x"` and `"picture
+    /// y"` are the common axes of the last picture() -- its axes are kept, and
+    /// not the rest of its scene, so that a test can ask what the picture was
+    /// numbered on without this item holding a second copy of every line.
+    Q_INVOKABLE [[nodiscard]] QVariantMap axis(const QVariant& which) const;
+    /// The axes of the lines' own, in the order they stand beside the pane --
+    /// each as axis() answers, with the `series` its line is, and `colour`,
+    /// `label` and the box it stands in (`x`, `y`, `width`, `height`) -- or
+    /// the last picture's, when `picture`.
+    Q_INVOKABLE [[nodiscard]] QVariantList sideAxes(bool picture = false) const;
+
+    // --- the arithmetic the surface answers with, which is plotcore's ---------------
+    Q_INVOKABLE [[nodiscard]] static bool usableBase(double base);
+    Q_INVOKABLE [[nodiscard]] static double baseFor(const QString& mode, double custom);
+    Q_INVOKABLE [[nodiscard]] static double valueAlong(double low, double high, double at,
+                                                       bool logarithmic, double base);
+    Q_INVOKABLE [[nodiscard]] static double axisPosition(double value, bool logarithmic,
+                                                         double base);
     /// The picture that leaves the application: the pane laid out again at
     /// `width` by `height` units, drawn at `scale` device pixels a unit, in the
     /// page's colours on no ground when `publication`, with the crosshair
@@ -321,8 +400,19 @@ public:
     [[nodiscard]] double viewMaxX() const;
     [[nodiscard]] double viewMinY() const;
     [[nodiscard]] double viewMaxY() const;
+    [[nodiscard]] double maxZoom() const { return figure_.camera().maxZoom; }
+    [[nodiscard]] double minimumSpanX() const { return figure_.camera().x.minimumSpan; }
+    [[nodiscard]] double panKeep() const { return figure_.camera().panKeep; }
+    [[nodiscard]] int legendRowLimit() const { return figure_.style().legendRows; }
+    [[nodiscard]] double pointerSize() const { return figure_.style().pointerSize; }
     [[nodiscard]] bool zoomed() const;
+    [[nodiscard]] double xBoundLow() const { return figure_.camera().x.bounds.low; }
+    [[nodiscard]] double xBoundHigh() const { return figure_.camera().x.bounds.high; }
+    [[nodiscard]] double yBoundLow() const { return figure_.camera().y.bounds.low; }
+    [[nodiscard]] double yBoundHigh() const { return figure_.camera().y.bounds.high; }
     [[nodiscard]] QRectF area() const;
+    [[nodiscard]] QRectF band() const;
+    [[nodiscard]] QRectF legendRect() const;
     [[nodiscard]] QVariantMap reading() const;
     [[nodiscard]] bool selecting() const { return scene_.band.has_value(); }
     [[nodiscard]] QString message() const { return QString::fromStdString(scene_.message); }
@@ -338,9 +428,10 @@ public:
     [[nodiscard]] const plotcore::Figure& figure() const { return figure_; }
     /// The last frame's scene.
     [[nodiscard]] const plotcore::Scene& lastScene() const { return scene_; }
-    /// Lay the frame out now, as the next frame would: what a test that has
-    /// no window asks before it reads the scene.
-    void compose();
+    /// Lay the frame out now, as the next frame would: what a test asks
+    /// before it reads the scene, so that a setting changed a line before is
+    /// in the answer without waiting for a frame to be drawn.
+    Q_INVOKABLE void compose();
 
 Q_SIGNALS:
     void plotChanged();
@@ -382,6 +473,8 @@ private:
     void setHovered(bool on);
     /// The view changed under a gesture: say so, and draw it.
     void moved();
+    /// moved(), and the frame laid out at once: see the .cpp.
+    void movedNow();
 
     [[nodiscard]] QSGNode* buildNodes(QSGNode* root);
     [[nodiscard]] QSGNode* buildPainted(QSGNode* root);
@@ -389,6 +482,17 @@ private:
     plotcore::Figure figure_;
     plotcore::FigureSettings settings_;
     plotcore::Scene scene_;
+    /// Whether anything has changed since the frame was last laid out, and
+    /// the window it was laid out for -- which decides the forms of a line.
+    bool stale_ = true;
+    QQuickWindow* composedIn_ = nullptr;
+    struct PictureAxes
+    {
+        plotcore::SceneAxis x;
+        plotcore::SceneAxis y;
+        std::vector<plotcore::SceneAxis> sides;
+    };
+    PictureAxes pictureAxes_;
     SceneFonts fonts_;
 
     QPointer<QObject> plotObject_;

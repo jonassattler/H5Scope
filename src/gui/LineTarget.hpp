@@ -6,10 +6,9 @@
 // Whatever a plot lends its lines to.
 //
 // A plot hands its lines over as pointers into its own vectors (PlotLine
-// borrows), and BorrowedLines is the record of who is holding them. That used
-// to be a PlotItem and nothing else; the figure that draws through plotcore is
-// a second kind of holder, and the contract is the same for both: take the
-// lines, and let go of them when told.
+// borrows), and BorrowedLines is the record of who is holding them: the
+// FigureItem that draws them, or a test standing in for one. The contract is
+// the same for any holder: take the lines, and let go of them when told.
 
 #include "gui/PlotCore.hpp"
 

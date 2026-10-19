@@ -7,7 +7,6 @@
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
 #include "LineModel.hpp"
-#include "PlotItem.hpp"
 
 #include "PlotBudget.hpp"
 #include "gui/PlotCore.hpp"
@@ -307,7 +306,6 @@ public:
     /// it last filled before anything can free or prune those vectors, which
     /// is why there are exactly two places in the .cpp that destroy a line and
     /// both of them release first.
-    Q_INVOKABLE void fill(gui::PlotItem* target);
     void fill(LineTarget* target) override;
 
     /// Line `series` of the table as a renderer would be given it, drawn or
@@ -419,7 +417,7 @@ private:
         // so that a throw half way through leaves the old storage intact. A
         // copy here is the use-after-free. It deep-copies every mapped vector
         // into the new storage and then destroys the originals -- freeing the
-        // exact buffers PlotItem is holding a `PlotLine::values` pointer into,
+        // exact buffers the figure is holding a `PlotLine::values` pointer into,
         // while it is drawing them.
         //
         // Whether that happened was down to the standard library. std::map's
@@ -456,7 +454,7 @@ private:
     // MSVC's library and nowhere else, which is a segfault on Windows CI and a
     // green run everywhere a reader would be looking.
     static_assert(!std::is_copy_constructible_v<Detail>,
-                  "a Detail must relocate by moving: a copy frees the values PlotItem borrows");
+                  "a Detail must relocate by moving: a copy frees the values the figure borrows");
 
     /// The window the view asks for, or nothing when the whole-line summary is
     /// already as good: zoomed out, too many lines drawn to be worth

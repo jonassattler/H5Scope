@@ -1462,11 +1462,6 @@ DatasetTableModel::SampleRequest DatasetPlot::detailRequestFor(int series,
                                  first, span, detail.columns, series, 1, 1, {}, true};
 }
 
-void DatasetPlot::fill(PlotItem* target)
-{
-    fill(static_cast<LineTarget*>(target));
-}
-
 void DatasetPlot::fill(LineTarget* target)
 {
     if (target == nullptr) {

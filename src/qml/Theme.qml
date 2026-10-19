@@ -4,6 +4,7 @@
 pragma Singleton
 
 import QtQuick
+import H5Scope.Backend
 
 /// Design tokens for the whole application -- the TBD design system, ported.
 ///
@@ -208,12 +209,11 @@ QtObject {
 
     // --- lines -----------------------------------------------------------
     // `1px solid border` does the structural work everywhere.
-    /// The light scope's hairline, named rather than written in place.
-    ///
-    /// Because the picture that leaves this application needs it while the
-    /// reader is still in the dark theme: a publication export is drawn in the
-    /// light scope whatever is on screen, and `border` resolves to the dark
-    /// value at that moment. See the paper block further down.
+    /// The light scope's hairline, named rather than written in place: the
+    /// light value of `border`. It was named for the picture that leaves this
+    /// application, which is drawn in the light scope whatever is on screen;
+    /// that picture's colours are plotcore's now (chromeFor's paper), and this
+    /// is the same value there.
     readonly property color lineLight:    "#DFE3E5"
     readonly property color border:       dark ? n4 : lineLight
     readonly property color borderStrong: dark ? n6 : n9
@@ -561,173 +561,7 @@ QtObject {
     /// Floor for a text pane, so a one-word element still reads as a pane and
     /// the stack keeps an even rhythm.
     readonly property int textPaneMinHeight: 72
-    /// The Data Viewer's plot. A line is a hairline like every other stroke in
-    /// the system; the marker is the smallest dot that still reads as one.
-    readonly property real plotLineWidth: 1.0
-    readonly property real plotMarkerSize: 4.0
-    /// How strongly a line in a bundle is drawn. A single line keeps full
-    /// strength -- it has nothing to separate from.
-    ///
-    /// Translucency is what shows where a bundle piles up: fifty opaque
-    /// hairlines over one another are a solid band, and the same fifty at part
-    /// strength say how many are there. Colour now says *which* line each one
-    /// is, so this no longer has to do that job as well, but it still does
-    /// this one.
-    ///
-    /// The two scopes are nowhere near each other, and the arithmetic is why.
-    /// A translucent line is its colour mixed with the ground it is drawn on.
-    /// Mixing toward black gives a dimmer version of the colour, and dim on
-    /// black is still a line; mixing toward white floods the colour with white,
-    /// and pale on white is nothing -- the same asymmetry `rowStripe` above
-    /// runs into. Measured: the palettes' weakest entry reads at 3.4:1 through
-    /// 0.55 on black and at 1.7:1 through 0.55 on white, which is a line the
-    /// reader has to hunt for. 0.95 is the value that brings the light scope
-    /// back to the dark one's 3.4:1, by the same rule the light scope is
-    /// solved for throughout this file -- so the light theme keeps a little of
-    /// the piling-up and spends the rest on being legible, which is the trade
-    /// a white ground forces.
-    readonly property real plotSeriesOpacity: dark ? 0.55 : 0.95
-    /// Inset between the chart's frame and its plot area, where the axis
-    /// labels live. The left side takes more because a y label is a number of
-    /// several digits written sideways-on to the axis, where an x label is a
-    /// column index under it; the other two sides are air, and take a gap.
-    readonly property int plotMargin: s7
-    readonly property int plotLabelMargin: s10
-    /// How far an exponent on a logarithmic axis sits above the line of the
-    /// number it raises: the `3` of `10³`, set in `readoutMinor`.
-    ///
-    /// matplotlib's mathtext puts a superscript's baseline at a little under
-    /// half the height of the type it raises. `readout` is ten pixels, and
-    /// four is that on the spacing ladder -- enough that the exponent reads as
-    /// raised rather than as a smaller digit beside the power, and not so much
-    /// that it leaves the line of type the gutter was measured for.
-    readonly property int plotExponentRaise: s3
-    /// The band a right-drag draws over the plot to say which region to go to.
-    ///
-    /// An alpha rather than a mix, for `surfaceMatch`'s reason and a stronger
-    /// one: what is underneath a selection band is the picture itself -- the
-    /// ground, the grid and however many strokes -- so there is no one colour
-    /// to mix against. What matters is that the curve stays legible through it,
-    /// because the band is drawn *while* the reader is deciding where to stop.
-    readonly property color plotBandFill: dark ? Qt.rgba(1, 1, 1, 0.14)
-                                               : Qt.rgba(0, 0, 0, 0.12)
-    /// The ground under a legend drawn on the plot rather than beside it.
-    ///
-    /// Opaque would be simpler and is wrong: a legend in a corner covers part
-    /// of the pane, and a reader has to be able to see that a stroke runs
-    /// under it rather than stopping there. Heavier than `rampVeil`, which
-    /// veils eighteen pixels of a scale; this one has text standing on it.
-    readonly property color plotLegendGround: dark ? Qt.rgba(0, 0, 0, 0.78)
-                                                   : Qt.rgba(1, 1, 1, 0.84)
-    /// How much of the screen a pointer covers, from its own hotspot down and
-    /// to the right.
-    ///
-    /// Not a measurement this program can make: the cursor belongs to the
-    /// window system and its size is the reader's own setting. This is the
-    /// common one -- a 24-pixel arrow whose hotspot is its tip -- and it exists
-    /// so that a readout which follows the pointer can be drawn beside it
-    /// rather than underneath it. Wrong by a few pixels on a reader who has
-    /// scaled their cursor up; wrong by the whole of it if nothing tries.
-    readonly property int pointerSize: 24
-    /// The ground under the numbers a region drag writes beside its band.
-    ///
-    /// The legend's veil, and the same one on purpose: what both have to hold
-    /// up is a line of type standing on the picture, over a stroke as often as
-    /// over the ground. Two veils at two weights would read as two different
-    /// kinds of thing being said about one plot.
-    readonly property color plotReadoutGround: theme.plotLegendGround
-    /// How many lines a legend drawn on the plot names before it stops and
-    /// says how many are left.
-    ///
-    /// A plot of ten thousand lines has a legend ten thousand rows tall, which
-    /// is not a legend -- it is the picture replaced by a list of what is in
-    /// it. Twelve is about a third of a pane at this application's row height,
-    /// which is as much of the drawing as a caption may take.
-    readonly property int plotLegendRows: 12
-    /// The swatch beside a name in it: a stroke of line, not a block of
-    /// colour, because what it stands for is a stroke.
-    readonly property int plotLegendSwatch: s6
-    /// How much finer the dense grid is than the numbered ticks.
-    ///
-    /// Four, which after niceStep's rounding to 1, 2 or 5 is usually five
-    /// minor rules between two labels and sometimes two. Not a raw number at
-    /// its use site, because it is the one quantity that decides what "dense"
-    /// means and it is read by both axes.
-    readonly property int plotGridDenseFactor: 4
 
-    /// The ink on the plot: the exact inverse of the ground under it.
-    ///
-    /// Everywhere else in this application a label is `textSecondary` and that
-    /// is right -- a form is mostly chrome, and chrome that reads as loudly as
-    /// the value beside it is chrome competing with the value. A plot is not
-    /// that. Its ground is the one surface in the UI at pure black or pure
-    /// white (`surfaceInset`), and everything written on it -- the numbers on
-    /// the ticks, the names of the axes, the title -- is a *reading* rather
-    /// than a label for one. So it is set at the full step, which on either
-    /// ground is the opposite end of the neutral ramp: 21:1, the most this
-    /// system can spend, on the one picture a reader takes away and looks at
-    /// somewhere else.
-    readonly property color plotInk: dark ? n11 : n0
-
-    // --- the picture that leaves -----------------------------------------
-    // Publication colours: the light scope, named *without* the `dark` switch
-    // in front of them.
-    //
-    // That is the whole of why this block exists. A plot exported for
-    // publication is drawn on paper -- white, or the page's own colour through
-    // a transparent ground -- and the reader who asks for it is usually
-    // sitting in the dark theme, where every token above resolves to its dark
-    // value. `Theme.dark` cannot be flipped for the length of a grab: it is a
-    // singleton the whole window is bound to, so the picture would be bought
-    // with a frame of the application in the wrong colours.
-    //
-    // So the frame drawn for the picture takes these instead. They are not new
-    // colours -- each is the light-scope value of the token it stands in for --
-    // which is what keeps a publication export and the light theme the same
-    // picture.
-    readonly property color paperInk:       n0
-    readonly property color paperRuleMinor: lineLight
-    readonly property color paperRuleMajor: n9
-    readonly property color paperAxisRule:  n6
-    /// A publication line is drawn solid. Translucency is there to show where
-    /// a bundle piles up (see plotSeriesOpacity); a line printed at part
-    /// strength on white is a line somebody will complain about.
-    readonly property real paperSeriesOpacity: 1.0
-    /// The two semantic colours a *line* can be drawn in, as paper resolves
-    /// them. `accent` and `info` are the defaults behind the plot's "same" and
-    /// "range" modes, and both of them flip with the scope.
-    readonly property color paperAccent: n0
-    readonly property color paperInfo:   cyan900
-
-    /// One colour the reader's own settings put on a line, as it must be
-    /// drawn on paper.
-    ///
-    /// The plot's colour cycles are answered by `paperPalettes` further down,
-    /// which is a straight second reading of the same table. This is for the
-    /// three colours that are not a cycle at all -- `colorSingle`, the two
-    /// ends of a "range", and a line the reader gave a colour of its own --
-    /// because those are *values* by the time they get here and there is no
-    /// binding left to re-resolve.
-    ///
-    /// So they are mapped by value, and only the two that a token can have
-    /// put there. The first of them is not a nicety: the accent is signal
-    /// white on the dark theme, and a white line on paper is not a faint line
-    /// -- it is no line at all. That substitution is the exact mirror of the
-    /// one okabe-ito already makes in the other direction, and it is stated
-    /// there in the same words: a colour that *is* the ground is not a line.
-    ///
-    /// What it costs is small and worth saying: a reader who picks signal
-    /// white or signal cyan out of the swatch by hand gets paper's version of
-    /// it rather than the colour they pointed at. Which is the same answer
-    /// the light theme would give them for the first of those and a shade
-    /// deeper for the second, and both are legible on a page.
-    function paperColor(c) {
-        if (Qt.colorEqual(c, theme.sig500))
-            return theme.paperAccent
-        if (Qt.colorEqual(c, theme.cyan500))
-            return theme.paperInfo
-        return c
-    }
 
     /// A settings panel's rows are taller than a table's: each carries a
     /// control, not a line of text.
@@ -885,8 +719,8 @@ QtObject {
     ///
     /// Two things ask for it, and neither is a number on the axis in its own
     /// right: the exponent of a power written `10³`, raised as matplotlib's
-    /// mathtext raises it (PlotFrame's TickLabel), and the subdivisions of a
-    /// logarithmic decade (PlotFrame.minorNumbers), which are marks on the way
+    /// mathtext raises it (plotcore's TickLabel), and the subdivisions of a
+    /// logarithmic decade (plotcore's minorNumbersOf), which are marks on the way
     /// between two of the axis's numbers. Eight of those per decade in the face the
     /// axis itself is set in is an axis with two kinds of number down it,
     /// arguing about which is the scale.
@@ -903,39 +737,27 @@ QtObject {
         letterSpacing: 0
     })
 
-    // --- colour ramps for plotted lines ----------------------------------
-    // The one place this system spends colour on something that is not state.
+    // --- the plot's colour maps and cycles ------------------------------
+    // plotcore's (plotcore/cpp/src/Palettes.cpp, where the argument for every
+    // one of them is written), read through gui::PlotColours rather than held
+    // here a second time. They were held here first, with plotcore's a port kept
+    // equal to them by a parity suite; the plot is plotcore's now, and a second
+    // copy of its colours here would be the copy that drifts.
     //
-    // It is not decoration: a bundle of lines separated only by overlap stops
-    // being readable at a dozen of them, and a colour that says *which line*
-    // is carrying data exactly as the position of the line does. That is the
-    // same argument the system makes for amber and red -- colour means
-    // something -- applied to a quantity rather than to a status. Which is why
-    // it lives behind a setting whose default is still the single accent.
-    //
-    // The stops are named colour maps, kept as they are defined elsewhere so
-    // that a plot exported from here and one drawn by anything else agree.
-    // They are here rather than in PlotSurface because Theme is the one file
-    // allowed to hold a literal colour; see tools/check-design-tokens.sh.
-    //
-    // A perceptual ramp runs from dark to light, so its first line sits close
-    // to the plot's own ground. That is what the ramp is, and the reader who
-    // wants every line at equal weight has "same" and "range" for it.
-    readonly property var colorRamps: ({
-        // Not black-to-white: the system's own neutral ramp, from the step
-        // above the surfaces to signal white, so the darkest line is still a
-        // line and not the background.
-        "grayscale": [n5, n7, n9, n10, n11],
-        "viridis":   ["#440154", "#3B528B", "#21918C", "#5EC962", "#FDE725"],
-        "inferno":   ["#000004", "#420A68", "#932667", "#DD513A", "#FCA50A",
-                      "#FCFFA4"],
-        "hot":       ["#0B0000", "#E60000", "#FF7A00", "#FFF34D", "#FFFFFF"],
-        "cool":      ["#00FFFF", "#FF00FF"]
-    })
+    // A ramp answers "how far along is this" -- a line among lines, or a value
+    // along an image's or a table's range -- and a palette answers "which line
+    // is this". They are offered here because the rest of the window shows
+    // them: the plot settings' swatches, and the image and the table, which
+    // colour a value with the same maps.
+    readonly property var colorRamps: {
+        const out = ({})
+        for (const name of PlotColours.rampNames())
+            out[name] = PlotColours.ramp(name)
+        return out
+    }
 
     /// The ramps in the order the plot settings offer them.
-    readonly property var colorRampNames: ["grayscale", "viridis", "inferno",
-                                           "hot", "cool"]
+    readonly property var colorRampNames: PlotColours.rampNames()
 
     /// The ramps a *value* is placed on: an image's pixel, a table cell's
     /// fill. The plot's list with its neutral grey swapped for a true
@@ -959,153 +781,18 @@ QtObject {
     readonly property var valueRampLabels: ["grayscale"].concat(
         colorRampNames.filter(name => name !== "grayscale"))
 
-    // --- categorical palettes for plotted lines ---------------------------
-    // A ramp answers "how far along is this line". A palette answers "which
-    // line is this". They are different questions, and the ramps above are the
-    // wrong instrument for the second one: a ramp puts its neighbours next to
-    // each other by construction, so lines 7 and 8 of a viridis differ by a
-    // shade nobody can name and the legend is the only thing separating them.
-    // A palette spends its colours the other way -- every entry as far from
-    // every other as the space allows -- which is what lets a stroke be
-    // identified on its own, without reading a key. That is what a plot of
-    // named lines actually needs, so it is what the plot opens on.
-    //
-    // Both palettes are generated rather than borrowed, by farthest-point
-    // selection in CIELAB under CIEDE2000: each colour in turn is the one
-    // furthest from the ground it is drawn on, from the accent drawn over it,
-    // and from every colour already taken. That ordering is the point -- the
-    // first k entries are near-maximally separated for *any* k, so six lines
-    // are as distinguishable as twenty and simply take the first six.
-    //
-    // The two scopes are the same hues solved twice, for the rule the light
-    // scope above is solved for: a colour reads against white as strongly as
-    // its counterpart reads against black. A line therefore keeps its identity
-    // when the theme flips -- the green one is still the green one -- and
-    // changes only its weight. Where a hue has no deep form that is still a
-    // colour (the cyans and the yellows, which go grey or olive before they go
-    // dark) it is lightened until it does, which is the concession the signal
-    // colours already make at amber700 and red700.
-    //
-    // Every entry clears WCAG's 3:1 non-text contrast against its own scope's
-    // ground -- 3.9:1 at the very worst -- so no line is drawn in something
-    // the reader has to hunt for on either theme.
-    //
-    // The three published cycles below are here on a different argument, and
-    // it beats that one. `spectrum` and `safe` are solved for this
-    // application's two grounds and for nothing else, which means a figure
-    // drawn here and the same figure redrawn by a collaborator in matplotlib
-    // or R are two different pictures of one dataset. Okabe-Ito and Paul Tol's
-    // sets are the ones a reader's field already agrees on -- they are what
-    // journals ask for and what every plotting library ships -- so a plot
-    // exported from here lands in a paper beside plots that match it. That is
-    // worth more than a contrast figure, so they are kept at their published
-    // values, entry for entry, and are what this plot opens on. Okabe-Ito's
-    // order has one departure, argued where it is made: its achromatic entry
-    // is drawn last rather than first, so that a plot of one line opens on a
-    // colour.
-    //
-    // What it costs, stated plainly so that nobody "fixes" it later: these
-    // were designed for ink on paper, and it shows in the light scope. Okabe-
-    // Ito's yellow carries about 1.25:1 against white and Tol bright's yellow
-    // and grey are little better. On the dark theme they are all comfortable.
-    // Deepening them would make the light theme easier and would also mean
-    // that "Okabe-Ito" here is not Okabe-Ito, which is the whole of what they
-    // are being taken for. A reader who wants a cycle solved for a screen has
-    // `spectrum` and `safe` one pick away.
-    //
-    // A *function* of which ground rather than a plain object, and that is the
-    // whole of what lets the picture that leaves be drawn in the light scope
-    // while the reader stays in the dark one. Three of these five differ
-    // between the scopes and two do not; writing the light set out a second
-    // time for the picture would be five palettes kept in two places, and the
-    // two that do not differ would be the ones to drift. See `paperPalettes`
-    // below, which is this called with the other answer.
-    function palettesFor(onDark) {
-        return ({
-            // Okabe and Ito's Color Universal Design set, the eight of it.
-            //
-            // Black is the one entry that cannot survive the dark scope -- it is
-            // the ground -- so it is drawn at signal white there, which is the
-            // same substitution every dark-theme port of this palette makes. The
-            // other seven are identical in both scopes: they were chosen to hold
-            // apart under all three dichromacies, and re-solving them for a black
-            // ground would be a different palette wearing this one's name.
-            //
-            // The achromatic entry is drawn *last* rather than first, and that
-            // is the one departure from the published order in this table. Its
-            // colours are the published colours and its cycle is the published
-            // cycle; what moved is where the set starts. Published, it starts
-            // on black -- which is fine in a figure of eight lines and is the
-            // wrong opening for a plot that usually has one, because the first
-            // thing this application draws is then the only line on the pane
-            // and it is drawn in an ink the reader cannot tell from the
-            // chrome. So the cycle opens on the orange and closes on the
-            // black. A reader comparing a figure from here with one from
-            // matplotlib still finds the same eight colours saying the same
-            // eight things; they are offset by one.
-            "okabe-ito": ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
-                          "#0072B2", "#D55E00", "#CC79A7", onDark ? n11 : n0],
-            // Paul Tol's bright scheme: seven, colour-blind safe, and the one most
-            // often reached for where a handful of lines need naming.
-            "tol bright": ["#4477AA", "#EE6677", "#228833", "#CCBB44", "#66CCEE",
-                           "#AA3377", "#BBBBBB"],
-            // ...and his muted scheme, nine of them, for the same job where the
-            // bright one is louder than the page wants. Tol's pale grey for "data
-            // that is not a category" is deliberately left out: every entry here
-            // is a line, and a line drawn in the colour reserved for "none of
-            // these" is a line saying something it does not mean.
-            "tol muted": ["#CC6677", "#332288", "#DDCC77", "#117733", "#88CCEE",
-                          "#882255", "#44AA99", "#999933", "#AA4499"],
-            // Twenty colours, no two closer than 13.1 dE00 in either scope. For
-            // scale: matplotlib's tab20 manages 12.1 across its twenty, and does
-            // it against one ground rather than two.
-            "spectrum": onDark
-                ? ["#B64EF5", "#F6330C", "#009700", "#0089C4", "#C99400",
-                   "#FF9DBB", "#00CFC6", "#ACB5FF", "#64F44D", "#FFA379",
-                   "#FF005E", "#F09AFF", "#6173FF", "#808700", "#F200AE",
-                   "#009276", "#C76700", "#12C8FF", "#00B46A", "#B3C300"]
-                : ["#9C33DB", "#D01F00", "#007C00", "#0089C3", "#6C4E00",
-                   "#7D003F", "#006A65", "#003989", "#063A00", "#6F2500",
-                   "#D4004C", "#6C0081", "#085AFC", "#696F00", "#C90090",
-                   "#009276", "#A55500", "#006684", "#006237", "#444B00"],
-            // Ten that hold apart under protanopia, deuteranopia and tritanopia as
-            // well as under ordinary vision: 7.8 dE00 at the worst, simulated
-            // four ways in both scopes. tab10 falls to 1.9 on the same measure and
-            // Okabe-Ito's seven reach 8.7 -- but Okabe-Ito's yellow carries 1.3:1
-            // against white, which is a line the light theme cannot show at all.
-            //
-            // Shorter than the spectrum on purpose. Colours that survive all three
-            // dichromacies at once are a small set, and padding the list would
-            // only be a longer list of colours some readers cannot tell apart.
-            "safe": onDark
-                ? ["#0088CB", "#B37400", "#FFAE7F", "#CCB5FF", "#FB0080",
-                   "#00F3BD", "#FF8798", "#00A98C", "#798DFF", "#FC43E7"]
-                : ["#007BB8", "#945F00", "#602800", "#001AB4", "#D00069",
-                   "#00523E", "#930036", "#008B73", "#0050C5", "#A20094"]
-        })
+    /// The palettes as the scope on screen resolves them: the same hues solved
+    /// for whichever ground the plot is standing on, so flipping the theme
+    /// changes every line's colour with it.
+    readonly property var categoricalPalettes: {
+        const out = ({})
+        for (const name of PlotColours.paletteNames())
+            out[name] = PlotColours.palette(name, theme.dark)
+        return out
     }
 
-    /// The palettes as the scope on screen resolves them.
-    readonly property var categoricalPalettes: theme.palettesFor(theme.dark)
-
-    /// ...and as the light scope does, whatever is on screen.
-    ///
-    /// The picture that leaves is drawn on paper, and until 0.6.4 that meant
-    /// every stroke in one black ink -- which threw away the one thing a
-    /// palette is for. A figure of six traces pasted into a document was six
-    /// identical black strokes and a caption that could no longer say which
-    /// was which. The colours are kept now, and they are the light scope's
-    /// because that is the scope the picture is drawn in: see the paper block
-    /// above, which makes the same argument about the chrome.
-    ///
-    /// Only three of the five move. Okabe-Ito's last entry is the ground in
-    /// whichever scope it is drawn in -- black on paper, signal white on the
-    /// dark theme -- and `spectrum` and `safe` were solved against both
-    /// grounds. Tol's two are published values and are the same everywhere.
-    readonly property var paperPalettes: theme.palettesFor(false)
-
     /// The palettes in the order the plot settings offer them, which is the
-    /// order they are argued in above: the published cycles first, Okabe-Ito
+    /// order plotcore argues them in: the published cycles first, Okabe-Ito
     /// at the head of them because it is the one the plot opens on, then the
     /// two generated for this application's own two grounds -- `spectrum`
     /// first of those, because it is the one that separates the most lines.
@@ -1114,9 +801,7 @@ QtObject {
     /// way they should be read (see PlotSettingsPanel.paletteLabels). They are
     /// also what a saved view and a dataset's remembered settings store, so a
     /// key is not renamed once it has been shipped.
-    readonly property var categoricalPaletteNames: ["okabe-ito", "tol bright",
-                                                    "tol muted", "spectrum",
-                                                    "safe"]
+    readonly property var categoricalPaletteNames: PlotColours.paletteNames()
 
     /// The state colour for "how much of this still fits", which is the
     /// three-way a saved view reports: 2 is all of it, 1 some of it, 0 none.
@@ -1125,8 +810,8 @@ QtObject {
     /// Here rather than in the panel that draws it because two surfaces draw
     /// this dot -- the data rail and the drawer at the end of the tab strip --
     /// and a colour decided in two places is a colour that ends up different
-    /// in the two places. It is the same kind of mapping `categoricalColor`
-    /// below is: an application's question answered in the system's colours.
+    /// in the two places. It is the same kind of mapping `inkOn` below is: an
+    /// application's question answered in the system's colours.
     function matchColor(state, inverted) {
         if (state >= 2)
             return inverted ? theme.positiveInvert : theme.positive
@@ -1135,49 +820,13 @@ QtObject {
         return inverted ? theme.dangerInvert : theme.danger
     }
 
-    /// A colour `position` of the way along `stops`, interpolated in RGB.
-    ///
-    /// A function rather than a table because the number of lines is not known
-    /// until the plot is drawn: five stops have to serve two lines and five
-    /// hundred. Linear in RGB rather than in HSV -- HSV walks the long way
-    /// round the wheel between two stops and invents hues that are in neither.
+    /// A colour `position` of the way along `stops`: plotcore's rampColor,
+    /// so that a table cell and a line on the same map agree about what colour
+    /// a place along it is.
     function rampColor(stops, position) {
         if (!stops || stops.length === 0)
             return theme.accent
-        if (stops.length === 1)
-            return stops[0]
-        const at = Math.max(0, Math.min(1, position)) * (stops.length - 1)
-        const lower = Math.floor(at)
-        const upper = Math.min(lower + 1, stops.length - 1)
-        return theme.mix(stops[lower], stops[upper], at - lower)
-    }
-
-    /// The colour line `position` takes from the palette `stops`, which
-    /// repeats.
-    ///
-    /// rampColor's counterpart, and the difference between them is the whole
-    /// difference between the two kinds of cycle: a ramp is asked for a place
-    /// along a continuum and interpolates to reach it, a palette is asked
-    /// which entry a line *is* and can only hand one back.
-    ///
-    /// Repeating rather than running out is what makes two hundred lines
-    /// drawable at all. The twenty-first line takes the first colour again,
-    /// and the legend beside it is what tells the two apart -- which is the
-    /// same bargain every plotting library makes, and a better one than
-    /// silently drawing the rest in grey.
-    ///
-    /// The modulo is written to stay positive because reversing a cycle counts
-    /// backwards from its end, and JavaScript's % keeps the sign of its left
-    /// operand: -1 % 20 is -1, and stops[-1] is undefined.
-    function categoricalColor(stops, position) {
-        if (!stops || stops.length === 0)
-            return theme.accent
-        const n = stops.length
-        const at = Math.round(position)
-        // Qt.color rather than the stored string: rampColor's neighbours all
-        // return a colour, and a caller that compares two of them should not
-        // have to know which of the two cycles it asked.
-        return Qt.color(stops[((at % n) + n) % n])
+        return PlotColours.rampColor(stops, position)
     }
 
     /// The ink that reads on `fill`.

@@ -1301,7 +1301,7 @@ QSize AppController::plotExportLayout(double paneWidth, double paneHeight,
     }
     double scale = plotExportScale(displayRatio);
 
-    // A composition too small to draw is not a composition. PlotFrame spends
+    // A composition too small to draw is not a composition. The figure spends
     // a fixed number of points on its gutters before it has drawn anything,
     // so past some point the picture is all margin and no plot. The floor is
     // the same one a chosen size is held to, and it is worth knowing how far

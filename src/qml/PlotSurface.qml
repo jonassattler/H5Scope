@@ -5,31 +5,35 @@ import QtQuick
 import H5Scope.Backend
 
 /// The Data Viewer's plot presentation: every row of the table as one line,
-/// with x running along the columns.
+/// with x running along the columns -- and a custom tab's lines, drawn by the
+/// same surface.
 ///
 /// Which values those are is the data settings panel's business, not this
 /// file's -- this is one more reading of exactly the table the grid shows, so
 /// a rank-4 dataset plots on the same terms it browses.
 ///
-/// The points never cross into QML. AppController.datasetPlot samples the file
-/// and hands every drawn line to the PlotFrame's item in one call -- a pointer
-/// into the cache it already holds, plus the arithmetic that puts a sample at
-/// an x. Nothing is built on the way and nothing is copied.
+/// The plot itself is plotcore's: its Figure decides the axes, their numbers
+/// and rules, the gestures, the colours, the crosshair, the legend on the
+/// plot and the band with what it writes, and FigureItem draws it on the
+/// scene graph. That is the plot every other host of plotcore draws, so the
+/// viewer and the library are one plot. Until 0.8 this file and PlotFrame.qml
+/// were a second copy of it in QML, and a feature written into one of them --
+/// the band's readout -- was missing from the other; the reasons written over
+/// that QML went to plotcore with the arithmetic they were about.
 ///
-/// This surface used to draw through Qt Graphs, and most of what is below is
-/// older than that decision: the zoom and pan arithmetic, the two-of-three x
-/// axis, the colour cycles, the legend and the settings are all
-/// library-agnostic and none of them moved. What went is the graph itself, the
-/// Loader that existed only to defeat the library holding on to what a series
-/// last drew, and the re-fill that existed only to make a recoloured line
-/// redraw. See docs on PlotFrame.qml for what replaced the chrome.
+/// What is left here is the reader's side of it: the settings, under the
+/// names the settings panel writes, the dataset's memory files and a saved
+/// view keeps; the x axis as a range of three numbers; the legend beside the
+/// plot; the picture that leaves; and what to say when there is nothing to
+/// draw. Each setting is handed to the figure as it is, and the figure is what
+/// answers for what it does.
 Item {
     id: surface
 
     // --- settings, written by PlotSettingsPanel -------------------------
     /// How closely the grid is ruled: "none", "loose", "dense" or "custom",
     /// and under "custom" how far apart the rules go on each axis. See the
-    /// note on PlotFrame.gridMode, which is where the four are drawn.
+    /// argument over plotcore's gridValues, which is where the four are drawn.
     property string gridMode: "loose"
     property real gridStepX: 0.0
     property real gridStepY: 0.0
@@ -37,8 +41,8 @@ Item {
     ///
     /// A property of the *axis* and not of the window: the four bounds stay in
     /// the data's own units, the ticks print the numbers the data has, and what
-    /// changes is how far apart two of them are drawn. See PlotFrame.fractionOn
-    /// and gui::AxisMapping, which are the one rule in its two implementations.
+    /// changes is how far apart two of them are drawn. See plotcore's fractionOn
+    /// (Ticks.hpp), which is the rule wherever the plot places a value.
     ///
     /// Two things follow from it here and nowhere else. The gestures are
     /// arithmetic over an axis's span, so on a logarithmic axis they are
@@ -58,10 +62,9 @@ Item {
     /// Only where things are *drawn* changes. The window is still a window
     /// onto x and onto y -- zoomX and panX are still about x, the models are
     /// still asked for a range of x -- so flipping moves nothing the reader
-    /// has arranged and costs no read; it is the renderer (PlotItem.transposed)
-    /// and the frame (PlotFrame.transposed) that lay the same numbers out the
-    /// other way. What had to learn about it here is every gesture, because a
-    /// gesture arrives in the pane's pixels: see zoomAt, panBy and dataXAt.
+    /// has arranged and costs no read; it is the figure (plotcore's Figure, its
+    /// frame and its strokes alike) that lays the same numbers out the other
+    /// way, and its Camera that reads every gesture back through it.
     property bool flipped: false
 
     /// Which base each of those logarithms is taken to: "10", "2", "e", or
@@ -94,41 +97,20 @@ Item {
     readonly property real yLogBase:
         surface.baseFor(surface.yLogBaseMode, surface.yLogBaseCustom)
 
-    /// Whether `base` is a base at all.
-    ///
-    /// Only a number above one is. At exactly one the logarithm is a division
-    /// by zero and every value on the axis would sit in the same place; below
-    /// it the axis runs backwards, which is a different request from the one
-    /// this answers. The same test gui::mappingOver makes, so that the chrome
-    /// and the renderer cannot disagree about whether an axis exists.
-    ///
-    /// A test and not a clamp, and that is the honest shape for it: the legal
-    /// bases are open at one, so there is no nearest legal value to correct a
-    /// bad one to. What the panel does with a refusal is put the box back to
-    /// the base in force, which says no rather than inventing a yes.
+    /// Whether `base` is a base at all, and the base a mode and its number
+    /// resolve to -- ten for anything this build does not recognise. plotcore's
+    /// usableBase (Ticks.cpp) and baseFor (Camera.cpp), where the argument for
+    /// each is; asked here because the panel validates against them.
     function usableBase(base) {
-        return isFinite(base) && base > 1
+        return figure.usableBase(base)
     }
 
-    /// The base a mode and its number resolve to.
-    ///
-    /// Ten for anything this build does not recognise, which is the stance the
-    /// rest of the surface takes on a remembered setting it cannot read: a
-    /// saved view naming a base from some later version costs the reader that
-    /// base and not the whole of their view. It is also the last guard on the
-    /// number itself -- everything downstream may assume this answered.
     function baseFor(mode, custom) {
-        if (mode === "2")
-            return 2
-        if (mode === "e")
-            return Math.E
-        if (mode === "custom")
-            return surface.usableBase(custom) ? custom : 10
-        return 10
+        return figure.baseFor(mode, custom)
     }
 
     /// Whether the subdivisions between two powers carry their digit. See
-    /// PlotFrame.minorNumbers, and minorNumbersOf for where they appear.
+    /// plotcore's minorNumbersOf (Ticks.hpp) for where they appear.
     property bool minorNumbers: false
     property bool showMarkers: false
     /// Whether pointing at the plot reads the sample under the pointer: a
@@ -136,8 +118,8 @@ Item {
     property bool showCursor: true
 
     /// A title over the pane, and a name for each axis. Empty draws nothing
-    /// and costs no room -- see PlotFrame's gutters, which grow for these only
-    /// when there is something in them.
+    /// and costs no room -- see plotcore's Figure::layout, whose gutters grow
+    /// for these only when there is something in them.
     ///
     /// They are for the picture that leaves this application rather than for
     /// the one on screen: what is being drawn is already named in the slice
@@ -148,9 +130,9 @@ Item {
     property string yLabel: ""
 
     /// Whether the lines are named on the plot as well as beside it, and in
-    /// which corner. See PlotOverlayLegend for why a second legend exists at
-    /// all: this one is a caption on the picture and is part of what "copy
-    /// plot" copies.
+    /// which corner. See the legend on the plot in plotcore's Figure::compose
+    /// for why a second legend exists at all: this one is a caption on the
+    /// picture and is part of what "copy plot" copies.
     property bool legendOnPlot: false
     property string legendCorner: "topRight"
 
@@ -283,33 +265,11 @@ Item {
     /// an override that falls back to itself, which is a binding loop.
     property real positiveMinX: surface.gridPositiveMinX
 
-    /// The x axis's ends as it is actually drawn between them.
-    ///
-    /// The same two numbers on a linear axis, and every gesture below is
-    /// measured against these rather than against the pair above so that there
-    /// is one answer to "where does this axis run".
-    ///
-    /// An axis with no positive part gets one empty decade, which is what the
-    /// y axis's `padded` does with the same situation and for the same reason:
-    /// a frame with legible numbers on it beats a frame with none. It also
-    /// keeps a *number* in every one of these, which matters more than it
-    /// looks. Left at the bounds it cannot use, this reached log10 of a
-    /// negative -- so the window was NaN, and NaN travelled out through
-    /// `setVisibleRange` into the model and out through the footer, which
-    /// printed "x NaN … NaN" under a pane that was explaining itself perfectly
-    /// well. Every reader of a degenerate axis guards for it, but a number
-    /// nothing has to guard for is better than a guard in every reader.
-    readonly property var xBounds: {
-        if (!surface.xLog)
-            return ({ low: surface.axisMinX, high: surface.axisMaxX })
-        const low = surface.positiveMinX
-        if (!(low > 0) || !(surface.axisMaxX > low))
-            return ({ low: 1.0, high: surface.xLogBase })
-        return ({ low: low, high: surface.axisMaxX })
-    }
-
-    readonly property real axisLowX: surface.xBounds.low
-    readonly property real axisHighX: surface.xBounds.high
+    /// The x axis's ends as it is actually drawn between them: its own, or one
+    /// empty power of the base where a logarithmic x has nothing above zero
+    /// to run between (plotcore's xBounds). The figure's answer.
+    readonly property real axisLowX: figure.xBoundLow
+    readonly property real axisHighX: figure.xBoundHigh
 
     // Where the points sit is the plot's own business -- they are built in
     // fill() and never cross into QML -- so the resolved start and step are
@@ -330,204 +290,20 @@ Item {
         value: surface.rangeValid ? surface.resolved.step : 1.0
     }
 
-    // The one fact about the scale the plot object has to know. On a
-    // logarithmic x axis a pixel column at the left holds a handful of elements
-    // and one at the right holds thousands, so a line folded into buckets of
-    // equal element width is folded wrong for nearly all of the pane -- see
-    // LogColumns in plotcore/Levels.hpp. Unconditional, unlike the two above: every
-    // x axis has a scale, a time base included.
-    Binding {
-        target: surface.plot
-        property: "xLog"
-        value: surface.xLog
-    }
-
     // --- the y axis: the values, and nothing to set about them -----------
-    /// `low`..`high` with a little air at each end, so a line at the extreme is
-    /// a line and not part of the frame. A flat series has no span to take a
-    /// share of, and gets a unit of room instead.
-    ///
-    /// In the axis's own scale, which is what makes it the same air on either
-    /// one: a twentieth of a *decade* below the smallest value rather than a
-    /// twentieth of the value itself, which on a trace running from 1e-9 to 1
-    /// would be nine decades of margin over the top and none at all underneath.
-    ///
-    /// A flat line on a logarithmic axis runs between the powers either side
-    /// of it -- see the branch below.
-    ///
-    /// A logarithmic axis with nothing above zero to draw between gets one
-    /// empty decade. It draws nothing either way -- there is no value it could
-    /// place -- and an axis with legible numbers on it is a better answer than
-    /// one with none, which is what a span of zero would give.
-    function padded(low, high, logarithmic, base) {
-        if (logarithmic) {
-            if (!(low > 0) || !(high > 0) || !surface.usableBase(base))
-                return ({ low: 1.0, high: base > 1 ? base : 10.0 })
-            let from = surface.logOf(low, base)
-            let to = surface.logOf(high, base)
-            if (!(to > from)) {
-                // A flat line is widened to the powers either side of it,
-                // which is matplotlib's `LogLocator.nonsingular`: the power
-                // strictly below and the power strictly above, so a line at 5
-                // runs 1 to 10 and one at 10 runs 1 to 100. Then the air, as
-                // for any other line.
-                const at = Math.abs(from - Math.round(from)) < 1e-10
-                         ? Math.round(from) : from
-                from = Number.isInteger(at) ? at - 1 : Math.floor(at)
-                to = Number.isInteger(at) ? at + 1 : Math.ceil(at)
-            }
-            const air = (to - from) * 0.05
-            return ({ low: Math.pow(base, from - air),
-                      high: Math.pow(base, to + air) })
-        }
-        const air = high > low ? (high - low) * 0.05 : 1.0
-        return ({ low: low - air, high: high + air })
-    }
+    /// The whole of the y axis, the padded extent of the lines drawn on the
+    /// common axis -- or a nominal one when every line is on an axis of its
+    /// own. The figure's answer (plotcore's padded); there is no manual band:
+    /// the reader has the wheel and the drag for looking closer at part of it.
+    readonly property real lowerBound: figure.yBoundLow
+    readonly property real upperBound: figure.yBoundHigh
 
-    /// The extent of the values being drawn, which is the whole of the y axis.
-    /// There is no manual band: the reader has the wheel and the drag for
-    /// looking closer at part of it, and a second way to say the same thing --
-    /// two boxes that also had to be kept from crossing, and that went stale
-    /// the moment the selection moved -- is a control that earns nothing.
-    ///
-    /// The bottom is the smallest value under a linear axis and the smallest
-    /// *positive* one under a logarithmic axis, which is why the plot objects
-    /// report both. Taking the ordinary minimum and clamping it would put a
-    /// trace whose one zero sample sits among a thousand readings of about a
-    /// hundred into a pane running from some invented floor up to a hundred --
-    /// every decade of it empty but the last.
-    ///
-    /// Guarded like every other reader of the sample: `drawable` tests `active`
-    /// first, so a hidden plot's bindings never reach the file.
-    ///
-    /// A plot with no common axis -- every line on one of its own -- has a
-    /// nominal one instead, 0..1 or one power of the base, so that the zoom,
-    /// the pan and the band go on working in fractions of it; see
-    /// separateAxes, which is what reads those fractions.
-    readonly property var valueBounds: {
-        if (!surface.drawable)
-            return ({ low: 0.0, high: 1.0 })
-        if (!surface.sharedAxis)
-            return surface.yLog ? ({ low: 1.0, high: surface.yLogBase })
-                                : ({ low: 0.0, high: 1.0 })
-        return surface.padded(surface.yLog ? surface.plot.positiveMinimum
-                                           : surface.plot.minimum,
-                              surface.plot.maximum, surface.yLog,
-                              surface.yLogBase)
-    }
-
-    readonly property real lowerBound: surface.valueBounds.low
-    readonly property real upperBound: surface.valueBounds.high
-
-    // --- the lines on axes of their own ----------------------------------
     /// Whether there is a common y axis at all. There is not when every drawn
-    /// line has been given one of its own, and then the frame numbers nothing
-    /// in the common axis's place and rules nothing across the pane: the
-    /// rules are the common axis's, and a grid ruled at a nominal axis would
-    /// be a grid of nothing.
-    ///
-    /// Asked of the plot object, which counts it: DatasetPlot answers with
-    /// every drawn line, because its lines are never separate.
+    /// line has been given one of its own. Asked of the plot object, which
+    /// counts it: DatasetPlot answers with every drawn line, because its lines
+    /// are never separate.
     readonly property bool sharedAxis: !surface.drawable || !surface.plot
                                        || surface.plot.sharedSeriesCount > 0
-
-    /// Where the window on the common axis sits within the whole of it, as
-    /// a fraction from the bottom -- in the axis's own positions, so on a
-    /// logarithmic common axis a zoom into the top decade is a zoom into the
-    /// top of every separate axis too.
-    function commonFraction(value) {
-        const from = surface.axisPosition(surface.lowerBound, surface.yLog,
-                                          surface.yLogBase)
-        const to = surface.axisPosition(surface.upperBound, surface.yLog,
-                                        surface.yLogBase)
-        if (!(to > from))
-            return 0.0
-        return (surface.axisPosition(value, surface.yLog, surface.yLogBase)
-                - from) / (to - from)
-    }
-
-    /// Every drawn line that is on an axis of its own, in drawing order, as
-    /// `{ series, line, fixed, low, high, label, colour, paperColour }` --
-    /// `line` being its place in what the item was handed, `series` its row,
-    /// and `label` the name the reader gave the axis (CustomPlot::setAxisLabel).
-    ///
-    /// **A separate axis zooms by the common axis's fractions.** Its whole
-    /// is the line's own extent, with the air a lone line would get, so it is
-    /// the axis that line would have if it were the only one on the plot; and
-    /// the window on it is the same share of that whole the common axis is
-    /// showing of its own. So one gesture zooms every axis at once, about the
-    /// same place on the pane, and no axis needs a zoom or a pan of its own to
-    /// be remembered, reset or saved. A *fixed* axis ignores the fractions and
-    /// shows its whole, which is what "exclude from zooming" asks.
-    ///
-    /// Always linear: the plot settings are the common axis's, logarithm
-    /// included, and a separate axis is the line as it would be drawn alone.
-    readonly property var separateAxes: {
-        if (!surface.drawable || !surface.plot)
-            return []
-        // Named so that this binding depends on them: seriesColor() and
-        // seriesAxis() are calls, and a call creates no dependency on what it
-        // reads. `drawnSeries` is announced with every change a separate axis
-        // can follow -- a line ticked, a box ticked, a re-read.
-        const drawn = surface.plot.drawnSeries
-        // Nothing separate is nothing to ask about, and this binding runs on
-        // every frame of a zoom: the Plot tab can be ten thousand lines, none
-        // of them ever separate, and asking each of them per frame would be a
-        // cost paid for a feature it does not have.
-        if (surface.plot.sharedSeriesCount >= drawn.length)
-            return []
-        const cycle = surface.colorMode
-        const reversed = surface.colorsReversed
-        const single = surface.drawnColorSingle
-        const from = surface.drawnColorRangeFrom
-        const to = surface.drawnColorRangeTo
-        const band = [surface.colorFrom, surface.colorTo]
-        const dark = Theme.dark
-        const low = surface.commonFraction(surface.viewMinY)
-        const high = surface.commonFraction(surface.viewMaxY)
-        const found = []
-        for (let i = 0; i < drawn.length; ++i) {
-            const axis = surface.plot.seriesAxis(drawn[i])
-            if (!axis.separate)
-                continue
-            const whole = axis.finite ? surface.padded(axis.low, axis.high, false, 10)
-                                      : ({ low: 0.0, high: 1.0 })
-            const bottom = axis.fixed ? 0.0 : low
-            const top = axis.fixed ? 1.0 : high
-            const span = whole.high - whole.low
-            found.push({
-                series: drawn[i],
-                line: i,
-                fixed: axis.fixed,
-                low: whole.low + bottom * span,
-                high: whole.low + top * span,
-                label: axis.label ? axis.label : "",
-                colour: surface.seriesColor(drawn[i], i, drawn.length, false),
-                paperColour: surface.seriesColor(drawn[i], i, drawn.length, true)
-            })
-        }
-        return found
-    }
-
-    /// Put each line on the axis it belongs to. Part of restyling, because a
-    /// fill hands the item lines on the common axis and this is what moves
-    /// them off it -- and on its own whenever the window moves, because that
-    /// moves every separate axis with it.
-    function pushSeriesAxes() {
-        const count = frame.lines.lineCount()
-        const own = {}
-        for (let i = 0; i < surface.separateAxes.length; ++i)
-            own[surface.separateAxes[i].line] = surface.separateAxes[i]
-        for (let line = 0; line < count; ++line) {
-            const axis = own[line]
-            if (axis)
-                frame.lines.setSeriesYRange(line, axis.low, axis.high)
-            else
-                frame.lines.clearSeriesYRange(line)
-        }
-    }
-
-    onSeparateAxesChanged: surface.pushSeriesAxes()
 
     // --- which line is which ---------------------------------------------
     /// How the lines are coloured: the name of one of Theme's categorical
@@ -649,593 +425,86 @@ Item {
     /// one thing a colour cycle exists to not be: six traces pasted into a
     /// document were six identical strokes with a caption naming colours that
     /// were not in the picture.
+    /// The colour of line `series`, drawn `position` of `count`, on the screen
+    /// or, with `paper`, in the light scope a publication picture is drawn in.
+    /// plotcore's seriesColor, which is where the argument for it is written:
+    /// a palette by series so a line keeps its colour when another is hidden,
+    /// a map by place at the middles of its shares. The legend beside the
+    /// plot asks it, so that its swatches are the strokes' colours.
     function seriesColor(series, position, count, paper) {
-        // A colour the reader gave this line beats every cycle, and beats it
-        // first: a cycle answers "which line is this" for lines that are alike,
-        // and the lines of a custom tab were each put there on purpose. The
-        // override is per line and nothing else moves, which is the same
-        // promise a palette makes about its own index and for the same reason
-        // -- a reader watching one stroke must not see it change under them
-        // because they said something about another.
-        //
-        // Asked of the plot rather than held here, because both plots are
-        // drawn by this file and only one of them has any: DatasetPlot answers
-        // "no" for every line. Plot tab lines are rows or columns of one
-        // dataset and their place in the table is what identifies them.
-        if (surface.plot) {
-            const own = surface.plot.seriesOverride(series)
-            if (own !== undefined && own !== null)
-                return paper ? Theme.paperColor(own) : own
-        }
-
-        if (surface.colorMode === "same")
-            return paper ? Theme.paperColor(surface.drawnColorSingle)
-                         : surface.drawnColorSingle
-
-        // A palette is asked which line this is rather than how far along it
-        // sits, so none of the arithmetic below applies to one: not the shares
-        // -- there is no continuum to take shares of -- and not the reader's
-        // band. The line's own index is the answer, counted along a cycle that
-        // repeats, and it does not move when a line is added or taken away.
-        // That is the second thing a palette buys over a map: on a map every
-        // line changes colour when one of them is unticked.
-        //
-        // `series` and not `position`, which is the whole of that promise.
-        // Asked where the line sat among the drawn ones, a palette kept the
-        // promise only until the reader unticked something: hiding the first
-        // of five lines handed the second line the first one's colour, and the
-        // reader watching one stroke saw it change under them -- the exact
-        // failure a palette is here to not have.
-        const palette = paper ? Theme.paperPalettes[surface.colorMode]
-                              : Theme.categoricalPalettes[surface.colorMode]
-        if (palette) {
-            return Theme.categoricalColor(
-                palette,
-                surface.colorsReversed ? palette.length - 1 - series : series)
-        }
-
-        let at = count > 0 ? (position + 1) / (count + 1) : 0.5
-        if (surface.colorsReversed)
-            at = 1 - at
-        // Across the reader's own slice of the map rather than across the
-        // whole of it. Untouched that slice is the whole of it, so the
-        // arithmetic is a no-op until they say otherwise.
-        at = surface.colorFrom + at * (surface.colorTo - surface.colorFrom)
-        if (surface.colorMode === "range") {
-            return Theme.mix(paper ? Theme.paperColor(surface.drawnColorRangeFrom)
-                                   : surface.drawnColorRangeFrom,
-                             paper ? Theme.paperColor(surface.drawnColorRangeTo)
-                                   : surface.drawnColorRangeTo,
-                             at)
-        }
-        // The ramps are the one part of this that has no second scope: they
-        // are named colour maps kept as they are defined elsewhere, so a
-        // viridis on paper is the viridis a reader in the light theme sees and
-        // the viridis matplotlib draws. See Theme.colorRamps.
-        return Theme.rampColor(Theme.colorRamps[surface.colorMode], at)
+        return figure.seriesColor(series, position, count, !!paper)
     }
 
-    /// How strongly a line is drawn. One line has nothing to separate from and
-    /// takes full strength; a bundle separates by overlap and is drawn under
-    /// it. A highlighted line comes forward and the rest go further back, so
-    /// the one being followed is the one that reads.
-    ///
-    /// Only a bundle is drawn under. A custom tab's lines used to be as well,
-    /// so adding a second line to one dimmed the first to 0.55 on the dark
-    /// theme -- two lines chosen one at a time, each drawn fainter than it was
-    /// alone, when there was no pile-up to show.
-    function seriesOpacity(series, count) {
-        if (surface.highlighted >= 0)
-            return series === surface.highlighted ? 1.0
-                                                  : Theme.plotSeriesOpacity / 2
-        return surface.bundle && count > 1 ? Theme.plotSeriesOpacity : 1.0
-    }
+    // --- the view ---------------------------------------------------------
+    // The window as a zoom and a pan on each axis, which is what a dataset's
+    // memory files and puts back; the figure holds it and moves it. See
+    // plotcore's Camera for every rule a gesture keeps.
+    property alias zoomX: figure.zoomX
+    property alias panX: figure.panX
+    property alias zoomY: figure.zoomY
+    property alias panY: figure.panY
+    readonly property bool zoomed: figure.zoomed
+    /// How far x may be magnified, the narrowest x window that makes, and how
+    /// much of the window a drag keeps over the data: plotcore's Camera.
+    readonly property real maxZoom: figure.maxZoom
+    readonly property real minimumSpanX: figure.minimumSpanX
+    readonly property real panKeep: figure.panKeep
+    readonly property real viewMinX: figure.viewMinX
+    readonly property real viewMaxX: figure.viewMaxX
+    readonly property real viewMinY: figure.viewMinY
+    readonly property real viewMaxY: figure.viewMaxY
 
-    /// How heavily. A line being followed is drawn thicker as well as brighter:
-    /// at a hairline, opacity alone is not enough to pick one out of fifty.
-    function seriesWidth(series) {
-        return series === surface.highlighted ? Theme.plotLineWidth * 2
-                                              : Theme.plotLineWidth
-    }
-
-    // --- the view on those bounds ---------------------------------------
-    // Zoom and pan are the axes' own, not a transform over the drawn image:
-    // ValueAxis carries `zoom` and `pan`, and its visible range works out as
-    //
-    //     centre = (min + max) / 2 + pan
-    //     span   = (max - min) / zoom
-    //
-    // so the labels, the grid and the line all follow one another and stay
-    // exact. Scaling the rendered picture instead would blur the line and
-    // leave the axis printing numbers that are no longer under their ticks.
-    //
-    // A zoom below 1 is not offered: 1 is the whole of the data, and a window
-    // wider than it is mostly empty axis. Which is also what keeps the pan
-    // clamp below simple -- the window is never larger than what it moves
-    // over, so "a quarter of it on the data" is always something it can do.
-    property real zoomX: 1.0
-    property real panX: 0.0
-    property real zoomY: 1.0
-    property real panY: 0.0
-
-    /// Ceiling on magnification.
-    ///
-    /// This was 256 flat, and the note beside it said why: the sample behind
-    /// the plot held at most a couple of thousand points of the *whole* line,
-    /// so past that there was nothing further to resolve and zooming only
-    /// stretched what was already drawn.
-    ///
-    /// That is no longer true. The plot object reads the run the reader is
-    /// looking at again, at a finer bucket, whenever they stop moving -- see
-    /// DatasetPlot::setVisibleRange -- so each octave in is an octave of real
-    /// detail until the line is drawn sample for sample. The ceiling is
-    /// therefore about the data rather than about the cache: enough
-    /// magnification to put a handful of elements across the pane, and no more,
-    /// because a pane showing fewer than that is showing a gap between two
-    /// samples rather than a line.
-    readonly property real maxZoom: Math.max(256.0, surface.dataLength / 16)
-
-    /// ...and what that ceiling is *for*, in the x the axis prints: the
-    /// narrowest window the x axis may show.
-    ///
-    /// On a linear axis the two are one statement, and maxZoom goes on being
-    /// the one the arithmetic uses. On a logarithmic one they come apart,
-    /// because a zoom there is a share of the *decades* and the same share is
-    /// a different number of elements at every place along the axis. The
-    /// linear ceiling read that way was wrong at both ends at once: at the low
-    /// end of six decades it let the reader zoom into the gap between the
-    /// first two samples and on past it, and at the high end it stopped them
-    /// with a hundred and seventy elements still across the pane. The window
-    /// is what the ceiling was about, so on a logarithmic axis it is the window
-    /// that is held to it -- see logZoomCeiling.
-    readonly property real minimumSpanX:
-        Math.abs(surface.axisMaxX - surface.axisMinX) / surface.maxZoom
-
-    /// The largest zoom that keeps a logarithmic window at least `minimumSpan`
-    /// wide in the data's own units, when the value at `held` -- a position,
-    /// so a logarithm -- stays at `fraction` of the pane.
-    ///
-    /// The window's width grows with its span in decades, so the answer is a
-    /// bisection of that span rather than a formula: the width is a difference
-    /// of two powers, and solving it in closed form is a quadratic in one of
-    /// them for no gain over fifty halvings of a number already in hand. A
-    /// window that cannot be made that wide at all is the whole axis, which is
-    /// a zoom of one.
-    function logZoomCeiling(full, held, fraction, minimumSpan, base) {
-        if (!(full > 0) || !(minimumSpan > 0))
-            return surface.maxZoom
-        const width = (span) => Math.pow(base, held + (1 - fraction) * span)
-                                - Math.pow(base, held - fraction * span)
-        if (!(width(full) > minimumSpan))
-            return 1.0
-        let narrow = 0.0
-        let wide = full
-        for (let i = 0; i < 60; ++i) {
-            const mid = (narrow + wide) / 2
-            if (width(mid) >= minimumSpan)
-                wide = mid
-            else
-                narrow = mid
-        }
-        return Math.max(1.0, full / wide)
-    }
-
-    readonly property bool zoomed: zoomX !== 1.0 || zoomY !== 1.0
-                                   || panX !== 0.0 || panY !== 0.0
-
-    /// The plot area, in this item's coordinates: the frame minus the margins
-    /// the axis labels live in. Every gesture below is measured against it,
-    /// because a fraction of the whole item is not a fraction of the axis.
-    readonly property rect plotRect: frame.area
+    /// The plot area, in the figure's coordinates -- inset from this item by
+    /// contentLeft, the legend beside it -- minus the gutters the labels live
+    /// in. Every gesture below is measured in the same coordinates.
+    readonly property rect plotRect: figure.area
 
     function resetView() {
-        surface.clearZoomFocus()
-        zoomX = 1.0
-        panX = 0.0
-        zoomY = 1.0
-        panY = 0.0
+        figure.resetView()
     }
 
-    /// Where a value sits along an axis, in the units the zoom and the pan are
-    /// measured in -- and back again.
-    ///
-    /// The whole of what a logarithmic axis changes about the gestures, and
-    /// the two are the only lines below that know which scale they are on.
-    /// Zoom and pan are arithmetic over an axis's *span*, and on a logarithmic
-    /// axis the only span that means anything is a count of decades: a wheel
-    /// notch has to take the same bite out of a pane showing 1 to 10 as out of
-    /// one showing 1e6 to 1e7, and a drag has to move by so many decades rather
-    /// than by so many units. Measured in the data's own units instead, one
-    /// notch at the low end of a six-decade axis would zoom past every float
-    /// there is while the high end had not visibly moved at all.
-    ///
-    /// So `panX` and `panY` are in decades while their axis is logarithmic,
-    /// and that is why switching a scale resets the view: a pan of 40 is four
-    /// decades or it is forty units, and there is no reading of it that is both.
-    function axisPosition(value, logarithmic, base) {
-        return logarithmic ? surface.logOf(value, base) : value
-    }
-
-    function axisValue(position, logarithmic, base) {
-        return logarithmic ? Math.pow(base, position) : position
-    }
-
-    /// The logarithm of `value` to `base`. PlotFrame.logOf, and the reason the
-    /// two exact cases are worth branching for is written there.
-    function logOf(value, base) {
-        if (base === 10)
-            return Math.log10(value)
-        if (base === 2)
-            return Math.log2(value)
-        return Math.log(value) / Math.log(base)
-    }
-
-    /// The value `at` of the way from `low` to `high`. The inverse of
-    /// PlotFrame.fractionOn, and the same arithmetic gui::AxisMapping::valueAt
-    /// does -- which is what makes a pointer position resolve to the value the
-    /// tick under it prints.
-    function valueAlong(low, high, at, logarithmic, base) {
-        const from = surface.axisPosition(low, logarithmic, base)
-        const to = surface.axisPosition(high, logarithmic, base)
-        return surface.axisValue(from + at * (to - from), logarithmic, base)
-    }
-
-    /// The window the axes are actually showing, worked out with the same
-    /// arithmetic ValueAxis uses. The footer prints these, because once the
-    /// view has been moved the range of the data is no longer the range on
-    /// screen and only one of the two is worth reading.
-    function visibleLow(low, high, zoom, pan, logarithmic, base) {
-        const from = surface.axisPosition(low, logarithmic, base)
-        const to = surface.axisPosition(high, logarithmic, base)
-        return surface.axisValue((from + to) / 2.0 + pan - (to - from) / zoom / 2.0,
-                                 logarithmic, base)
-    }
-
-    function visibleHigh(low, high, zoom, pan, logarithmic, base) {
-        const from = surface.axisPosition(low, logarithmic, base)
-        const to = surface.axisPosition(high, logarithmic, base)
-        return surface.axisValue((from + to) / 2.0 + pan + (to - from) / zoom / 2.0,
-                                 logarithmic, base)
-    }
-
-    readonly property real viewMinX:
-        visibleLow(axisLowX, axisHighX, zoomX, panX, xLog, xLogBase)
-    readonly property real viewMaxX:
-        visibleHigh(axisLowX, axisHighX, zoomX, panX, xLog, xLogBase)
-    readonly property real viewMinY:
-        visibleLow(lowerBound, upperBound, zoomY, panY, yLog, yLogBase)
-    readonly property real viewMaxY:
-        visibleHigh(lowerBound, upperBound, zoomY, panY, yLog, yLogBase)
-
-    /// How much of the window must still be over the data, as a share of it.
-    ///
-    /// The window may be dragged past the ends of the data on either axis --
-    /// to look at the last samples away from the frame's edge, to line an
-    /// extreme up with a rule, or to see a trace's start with air before it --
-    /// but not off it altogether. A pane of nothing but empty axis is a reader
-    /// who has lost the plot and has to hunt for it with no idea which way it
-    /// went, so a quarter of the pane always stays on the data: enough that the
-    /// line is plainly still there and which way it lies is obvious.
-    readonly property real panKeep: 0.25
-
-    /// Pan clamped so that at least panKeep of the window stays over the data.
-    ///
-    /// It used to keep the whole window inside the data, so with the zoom at
-    /// 1 the only legal pan was none and the view could never be dragged at
-    /// all. In positions, like every gesture: the window is `full / zoom` wide
-    /// and its centre may go as far past either end of the data as leaves
-    /// `panKeep` of it on the near side. One rule for every path that moves
-    /// the window -- the drag, the wheel, the band and the four boxes -- so a
-    /// wheel notch after a drag off the edge zooms where the reader is rather
-    /// than snapping them back inside.
-    function clampPan(pan, zoom, low, high, logarithmic, base) {
-        const full = surface.axisPosition(high, logarithmic, base)
-                   - surface.axisPosition(low, logarithmic, base)
-        const span = full / zoom
-        const room = full / 2.0 + span * (0.5 - surface.panKeep)
-        return Math.max(-room, Math.min(room, pan))
-    }
-
-    /// Zoom one axis by `factor` while holding the value at `fraction` of the
-    /// visible span still -- which is what makes the wheel zoom into whatever
-    /// the pointer is over rather than into the middle of the frame.
-    ///
-    /// Returns the new { zoom, pan } for the caller to assign, because QML has
-    /// no out-parameters and two of these run per wheel tick.
-    function zoomedAxis(zoom, pan, low, high, fraction, factor, logarithmic, base,
-                        minimumSpan) {
-        // In positions rather than in values, which is the whole of what makes
-        // this work on either scale: "hold the value under the pointer still"
-        // is "hold its position still", and a position is a decade count on a
-        // logarithmic axis.
-        const from = surface.axisPosition(low, logarithmic, base)
-        const to = surface.axisPosition(high, logarithmic, base)
-        const full = to - from
-        const span = full / zoom
-        const held = (from + to) / 2.0 + pan - span / 2.0 + fraction * span
-        // The ceiling where the pointer is, on a logarithmic axis that has
-        // one -- see minimumSpanX -- and the flat one everywhere else.
-        const ceiling = logarithmic && minimumSpan > 0
-                      ? surface.logZoomCeiling(full, held, fraction, minimumSpan, base)
-                      : surface.maxZoom
-        // Never *out* past where the reader already is, though: a ceiling
-        // that fell below the zoom in hand -- the pointer moved to where the
-        // elements are sparser -- is not a reason to throw them back out.
-        const next = Math.max(1.0, Math.min(Math.max(ceiling, zoom), zoom * factor))
-        const nextSpan = full / next
-        const centre = held - fraction * nextSpan + nextSpan / 2.0
-        return { zoom: next,
-                 pan: surface.clampPan(centre - (from + to) / 2.0, next, low, high,
-                                       logarithmic, base) }
-    }
-
-    /// Zoom about (px, py) by `factor`, on the axes `axes` names: "x", "y" or
-    /// "both" -- the *pane's* x and y, across it and up it, so that Shift
-    /// stretches what runs across the pane whichever way round it is drawn.
-    ///
-    /// One axis at a time is what the modifiers ask for, and it is not a
-    /// convenience. A plot of a long trace is read by stretching time without
-    /// changing what an amplitude is worth, and a plot of a narrow band is read
-    /// the other way round; a zoom that always takes both makes either of those
-    /// a zoom followed by a correcting pan, done by eye. Shift for x and Ctrl
-    /// for y, which is the pair every other plot in the field uses.
-    function zoomAt(px, py, factor, axes) {
-        const area = surface.plotRect
-        if (area.width <= 0 || area.height <= 0)
-            return
-        const across = Math.max(0, Math.min(1, (px - area.x) / area.width))
-        // y grows downward on screen and upward on the axis.
-        const up = 1.0 - Math.max(0, Math.min(1, (py - area.y) / area.height))
-        // Which data axis runs which way. On a flipped pane x runs up it, so
-        // the pointer's height is where it is along x, and a request for the
-        // pane's x is a request for data y.
-        const fx = surface.flipped ? up : across
-        const fy = surface.flipped ? across : up
-        const which = !surface.flipped ? axes
-                    : axes === "x" ? "y" : axes === "y" ? "x" : axes
-
-        if (which !== "y") {
-            // Where the pointer is, in the x the axis prints, before the zoom
-            // moves anything -- which is the value zoomedAxis() is about to
-            // hold still under it.
-            //
-            // This is the one thing the surface has always known and never
-            // said. Only the *resulting* range crossed into the plot object, so
-            // the runs it read ahead of a zoom were centred on the middle of
-            // the frame, and a reader zooming into one corner walked off them
-            // after a step or two and waited for the file each time. Told where
-            // the zoom is going, it reads that way instead -- and reads at once
-            // rather than after the gesture stops, because an inward run costs
-            // half the span of the one above it.
-            //
-            // Through valueAlong rather than by interpolating the two bounds,
-            // which is the same distinction: on a logarithmic axis the value
-            // halfway across the pane is the geometric mean of its ends and
-            // not the arithmetic one, and a focus taken the other way would
-            // send the read towards a place the pointer is nowhere near.
-            surface.pushZoomFocus(
-                surface.valueAlong(surface.viewMinX, surface.viewMaxX, fx,
-                                   surface.xLog, surface.xLogBase),
-                factor)
-
-            const x = surface.zoomedAxis(surface.zoomX, surface.panX,
-                                         surface.axisLowX, surface.axisHighX,
-                                         fx, factor, surface.xLog,
-                                         surface.xLogBase, surface.minimumSpanX)
-            surface.zoomX = x.zoom
-            surface.panX = x.pan
-        }
-        if (which !== "x") {
-            const y = surface.zoomedAxis(surface.zoomY, surface.panY,
-                                         surface.lowerBound, surface.upperBound,
-                                         fy, factor, surface.yLog,
-                                         surface.yLogBase)
-            surface.zoomY = y.zoom
-            surface.panY = y.pan
-        }
-    }
-
-    /// The zoom and pan that put `from`..`to` on an axis running `low`..`high`.
-    ///
-    /// The inverse of visibleLow/visibleHigh, which is what makes it exact:
-    /// asked for the window those two report, it gives back the zoom and pan
-    /// they were computed from. Clamped the way every other path here is --
-    /// never below 1, never past maxZoom, never so far off the data that less
-    /// than panKeep of it is on screen -- so a window nobody can be shown comes
-    /// back as the nearest one that can be.
-    function viewedAxis(low, high, from, to, logarithmic, base, minimumSpan) {
-        const axisFrom = surface.axisPosition(low, logarithmic, base)
-        const axisTo = surface.axisPosition(high, logarithmic, base)
-        const wantFrom = surface.axisPosition(from, logarithmic, base)
-        const wantTo = surface.axisPosition(to, logarithmic, base)
-        const full = axisTo - axisFrom
-        const span = Math.abs(wantTo - wantFrom)
-        if (!(full > 0) || !(span > 0))
-            return { zoom: 1.0, pan: 0.0 }
-        const centre = (wantFrom + wantTo) / 2.0
-        // Held about the middle of what was asked for, which is where a stated
-        // window is centred. See zoomedAxis for the ceiling itself.
-        const ceiling = logarithmic && minimumSpan > 0
-                      ? surface.logZoomCeiling(full, centre, 0.5, minimumSpan, base)
-                      : surface.maxZoom
-        const zoom = Math.max(1.0, Math.min(ceiling, full / span))
-        return { zoom: zoom,
-                 pan: surface.clampPan(centre - (axisFrom + axisTo) / 2.0,
-                                       zoom, low, high, logarithmic, base) }
-    }
-
-    /// `from`..`to` cut down to the part of a logarithmic axis that exists.
-    ///
-    /// A reader can type a zero into the four boxes under Plot Settings, and a
-    /// saved view can carry a window from before the scale was turned on;
-    /// neither is a window on this axis, because there is no place at or below
-    /// zero for it to reach.
-    ///
-    /// Clipped to the axis's own low end rather than refused, which is what
-    /// matplotlib does with a limit it cannot use: what was asked for is
-    /// mostly reachable, and the part that is not is not there to be shown.
-    /// Without it such a window resolved to a logarithm of minus infinity, an
-    /// infinite span, and a zoom of one -- so asking to look at 0 to 100 on an
-    /// axis running to a million showed the whole million, which is the
-    /// opposite of what was asked.
-    ///
-    /// A window with nothing above zero in it at all is the whole axis, which
-    /// is what a request to look at nothing resolves to everywhere else here.
-    function positiveSpan(from, to, low, high, logarithmic) {
-        if (!logarithmic)
-            return ({ from: from, to: to })
-        if (!(to > 0))
-            return ({ from: low, to: high })
-        return ({ from: Math.max(from, low), to: to })
-    }
-
-    /// Put the window at exactly these four numbers, in data coordinates.
-    ///
-    /// The one way in for everything that states a window rather than nudging
-    /// one: the region band, and the four boxes under Plot Settings > View.
-    /// Both of those are the reader saying where to look, which is the same
-    /// thing said twice -- so it is arithmetic in one place and the boxes
-    /// report the band's answer without either knowing about the other.
+    /// Put the window at exactly these four numbers: the four boxes under
+    /// Plot Settings > View.
     function setViewRange(x0, x1, y0, y1) {
-        const wantX = surface.positiveSpan(Math.min(x0, x1), Math.max(x0, x1),
-                                           surface.axisLowX, surface.axisHighX,
-                                           surface.xLog)
-        const wantY = surface.positiveSpan(Math.min(y0, y1), Math.max(y0, y1),
-                                           surface.lowerBound, surface.upperBound,
-                                           surface.yLog)
-        const x = surface.viewedAxis(surface.axisLowX, surface.axisHighX,
-                                     wantX.from, wantX.to, surface.xLog,
-                                     surface.xLogBase, surface.minimumSpanX)
-        const y = surface.viewedAxis(surface.lowerBound, surface.upperBound,
-                                     wantY.from, wantY.to, surface.yLog,
-                                     surface.yLogBase)
-        surface.zoomX = x.zoom
-        surface.panX = x.pan
-        surface.zoomY = y.zoom
-        surface.panY = y.pan
+        figure.setViewRange(x0, x1, y0, y1)
     }
 
-    /// What a pixel on the pane stands for, on each axis.
-    ///
-    /// Out here rather than inside zoomToRegion because the band's own readout
-    /// needs exactly these two answers: a number written beside a rectangle
-    /// and the window that rectangle resolves to must be one reading of one
-    /// pixel, or the numbers are a promise the zoom does not keep. See
-    /// PlotBand, which asks rather than reimplements.
-    ///
-    /// Clamped to the pane, because a drag that runs off the edge says "to the
-    /// edge" -- which is what the band draws and what the zoom then takes.
-    ///
-    /// Each is read off the coordinate its axis runs along, which is the first
-    /// argument while the pane is upright and the second once it is flipped:
-    /// x up the pane, y across it. The second may be left off by anything that
-    /// never asks about a flipped pane.
-    function dataXAt(px, py) {
-        const area = surface.plotRect
-        if (surface.flipped) {
-            if (area.height <= 0)
-                return surface.viewMinX
-            const up = Math.max(0, Math.min(1, (py - area.y) / area.height))
-            return surface.valueAlong(surface.viewMinX, surface.viewMaxX, 1.0 - up,
-                                      surface.xLog, surface.xLogBase)
-        }
-        if (area.width <= 0)
-            return surface.viewMinX
-        const at = Math.max(0, Math.min(1, (px - area.x) / area.width))
-        return surface.valueAlong(surface.viewMinX, surface.viewMaxX, at,
-                                  surface.xLog, surface.xLogBase)
+    // The gestures, named, in the figure's coordinates -- what a test drives
+    // the plot with. Each goes the way the pointer's would.
+    function zoomAt(px, py, factor, axes) {
+        figure.zoomAt(px, py, factor, axes)
     }
 
-    /// The same, down the other axis. y grows downward on screen and upward on
-    /// the axis, so the top of the pane is the larger value.
-    function dataYAt(py, px) {
-        const area = surface.plotRect
-        if (surface.flipped) {
-            if (area.width <= 0)
-                return surface.viewMinY
-            const across = Math.max(0, Math.min(1, (px - area.x) / area.width))
-            return surface.valueAlong(surface.viewMinY, surface.viewMaxY, across,
-                                      surface.yLog, surface.yLogBase)
-        }
-        if (area.height <= 0)
-            return surface.viewMinY
-        const at = Math.max(0, Math.min(1, (py - area.y) / area.height))
-        return surface.valueAlong(surface.viewMinY, surface.viewMaxY, 1.0 - at,
-                                  surface.yLog, surface.yLogBase)
+    function panBy(dx, dy) {
+        figure.panBy(dx, dy)
     }
 
-    /// Go to the region a right-drag has just drawn, in this item's pixels.
-    ///
-    /// Two things happen here and the order of them is the whole feature. The
-    /// focus is pushed *first*, with the magnification the move amounts to, so
-    /// that the closer look the model reads is read towards the region and
-    /// goes out in the same turn rather than after the settle -- a stated
-    /// region is not a gesture that might carry on, it is a reader who has
-    /// already said where they are going. Then the window moves, and the
-    /// bindings under it push the range.
-    ///
-    /// A band under a few pixels in either direction is a slip rather than a
-    /// request: a two-pixel-tall window is a magnification of several hundred
-    /// on an axis the reader never meant to touch, and the way out of it would
-    /// be a reset. Refused whole rather than clamped to one axis, because
-    /// which axis was meant is not something this can know.
     function zoomToRegion(px0, py0, px1, py1) {
-        const area = surface.plotRect
-        if (area.width <= 0 || area.height <= 0)
-            return false
-        const left = Math.min(px0, px1)
-        const right = Math.max(px0, px1)
-        const top = Math.min(py0, py1)
-        const bottom = Math.max(py0, py1)
-        if (right - left < surface.minimumBand
-                || bottom - top < surface.minimumBand)
-            return false
-
-        // The band's top edge is the axis's larger value -- see dataYAt -- and
-        // its right edge too; on a flipped pane those are x's and y's the
-        // other way round, which dataXAt and dataYAt know.
-        const x0 = surface.dataXAt(left, bottom)
-        const x1 = surface.dataXAt(right, top)
-        const y0 = surface.dataYAt(bottom, left)
-        const y1 = surface.dataYAt(top, right)
-
-        // The middle of the band and the magnification it amounts to, both
-        // measured the way the axis measures: on a logarithmic one the middle
-        // of the band is the geometric mean of its ends, and a band a decade
-        // wide on a pane of six is six times in however many units that
-        // decade holds. Taken the linear way, a band over the first decades of
-        // a wide axis sent the read to the far end of it.
-        const span = surface.axisPosition(surface.viewMaxX, surface.xLog, surface.xLogBase)
-                   - surface.axisPosition(surface.viewMinX, surface.xLog, surface.xLogBase)
-        const band = surface.axisPosition(x1, surface.xLog, surface.xLogBase)
-                   - surface.axisPosition(x0, surface.xLog, surface.xLogBase)
-        if (span > 0 && band > 0)
-            surface.pushZoomFocus(surface.valueAlong(x0, x1, 0.5, surface.xLog,
-                                                     surface.xLogBase),
-                                  span / band)
-        surface.setViewRange(x0, x1, y0, y1)
-        return true
+        return figure.zoomToRegion(px0, py0, px1, py1)
     }
 
-    /// The smallest band that counts as one. See zoomToRegion.
-    readonly property int minimumBand: Theme.gapL
+    /// What a pixel stands for on each axis, as the band reads it.
+    function dataXAt(px, py) {
+        return figure.dataXAt(px, py === undefined ? 0 : py)
+    }
 
-    /// Whether a region is being drawn right now.
-    ///
-    /// The crosshair goes off while it is. What the reader is doing during a
-    /// band is choosing an interval; the band writes that interval out in the
-    /// axes' own numbers, and a second readout snapped to whichever sample
-    /// happens to be nearest the pointer is a second answer to a question
-    /// nobody asked twice -- drawn over the first one, in the same pane, in
-    /// the same face. It comes back the moment the button does.
-    readonly property bool selecting: band.active
+    function dataYAt(py, px) {
+        return figure.dataYAt(py, px === undefined ? 0 : px)
+    }
 
-    /// Which axes a wheel event with these modifiers zooms.
-    ///
-    /// Shift alone is x, Ctrl alone is y, and everything else -- neither, both,
-    /// or one of them with a third key held -- is both. Both is the default
-    /// rather than nothing, because a modifier this file does not know about is
-    /// a modifier some window manager put there and not an instruction.
+    /// Where `value` sits along an axis, and the value `at` a fraction of a
+    /// window: plotcore's axisPosition and valueAlong, the one place that
+    /// knows what a logarithmic axis does to a position.
+    function axisPosition(value, logarithmic, base) {
+        return figure.axisPosition(value, logarithmic, base)
+    }
+
+    function valueAlong(low, high, at, logarithmic, base) {
+        return figure.valueAlong(low, high, at, logarithmic, base)
+    }
+
+    /// Which axes a wheel event with these modifiers zooms: Shift alone is x,
+    /// Ctrl alone is y, and everything else is both.
     function zoomAxesFor(modifiers) {
         const shift = (modifiers & Qt.ShiftModifier) !== 0
         const control = (modifiers & Qt.ControlModifier) !== 0
@@ -1246,61 +515,9 @@ Item {
         return "both"
     }
 
-    /// Drag the view by a pointer movement. The content follows the pointer,
-    /// so the axis moves the other way.
-    function panBy(dx, dy) {
-        const area = surface.plotRect
-        if (area.width <= 0 || area.height <= 0)
-            return
-        // A drag is not a zoom and has nowhere it is heading, so what is read
-        // ahead goes back to being measured from the run on screen. It also
-        // stops the read going out on every frame of the drag: only a focus
-        // skips the settle.
-        surface.clearZoomFocus()
-        // In positions, so that a drag of so many pixels moves the view by the
-        // share of the axis those pixels are -- which is the same sentence on
-        // either scale and is a count of decades on one of them.
-        const spanX = (surface.axisPosition(surface.axisHighX, surface.xLog,
-                                           surface.xLogBase)
-                       - surface.axisPosition(surface.axisLowX, surface.xLog,
-                                              surface.xLogBase)) / surface.zoomX
-        const spanY = (surface.axisPosition(surface.upperBound, surface.yLog,
-                                           surface.yLogBase)
-                       - surface.axisPosition(surface.lowerBound, surface.yLog,
-                                              surface.yLogBase)) / surface.zoomY
-        // The share of each axis the drag moved along it. Upright, x runs to
-        // the right and y up; flipped, x runs up and y to the right -- and up
-        // is minus dy either way, because the pane counts downwards.
-        const alongX = surface.flipped ? -dy / area.height : dx / area.width
-        const alongY = surface.flipped ? dx / area.width : -dy / area.height
-        surface.panX = surface.clampPan(surface.panX - alongX * spanX,
-                                        surface.zoomX, surface.axisLowX,
-                                        surface.axisHighX, surface.xLog,
-                                        surface.xLogBase)
-        surface.panY = surface.clampPan(surface.panY - alongY * spanY,
-                                        surface.zoomY, surface.lowerBound,
-                                        surface.upperBound, surface.yLog,
-                                        surface.yLogBase)
-    }
-
-    /// A round tick spacing giving roughly `target` ticks across `span`:
-    /// 1, 2 or 5 times a power of ten, which is what every axis in every
-    /// plotting library settles on and what a reader can add up in their head.
-    ///
-    /// Written here in the first place because Qt Graphs computed its
-    /// automatic spacing from the axis's *declared* range and not from the
-    /// range it was showing, so a zoomed-in axis kept the spacing of the whole
-    /// dataset and printed one lonely tick. PlotFrame has its own copy, which
-    /// is the one the ticks are drawn from; this one is what the QML suite
-    /// reads and what the footer's readouts round against.
-    function niceStep(span, target) {
-        if (!(span > 0))
-            return 0
-        const raw = span / Math.max(1, target)
-        const magnitude = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10))
-        const scaled = raw / magnitude
-        return magnitude * (scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10)
-    }
+    /// Whether a region is being drawn right now, which is when the crosshair
+    /// is put away for it.
+    readonly property bool selecting: figure.selecting
 
     /// Where the graph starts, which is the legend's right edge while it is
     /// open. Read off the panel's own x rather than off `legendOpen`, so the
@@ -1318,72 +535,71 @@ Item {
         color: Theme.surfaceInset
     }
 
-    // The frame and the lines. PlotFrame draws the gutters, the rules, the
-    // ticks and their labels; the item inside it draws the strokes.
-    //
-    // What this replaced was a Loader holding a GraphsView, discarded and
-    // rebuilt on every change of selection. That was not a design -- it was
-    // Qt Graphs tax. A series there held on to what it last drew, so reusing
-    // one left the old path on screen underneath the new one in the pixel
-    // coordinates of the axes it had been drawn against, and neither emptying
-    // it nor taking it out of the graph cleared it; nor could it simply be
-    // destroyed, because removeSeries() kept the raw pointer in a cleanup list
-    // it read on its next polish. Throwing the whole view away answered both
-    // and cost a blank frame every time the reader picked a dataset.
-    //
-    // Nothing here retains anything. fill() hands the item a pointer to the
-    // lines and the item projects them; a new selection is a new set of
-    // pointers and the frame after it is the new picture.
-    PlotFrame {
-        id: frame
+    // The plot. Everything that decides it is the figure's; this hands it the
+    // settings, the faces and the x axis, and it hands the plot object the
+    // window and asks it for its lines.
+    FigureItem {
+        id: figure
+
+        objectName: "plotFigure"
 
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
+        // Nothing to look at is nothing to zoom. The same condition the
+        // message answers to: an axis with no value it can place has no window
+        // either, and a drag over one would be moving a view whose ends are
+        // not numbers. Disabled, the figure takes no pointer at all, and so
+        // reads nothing under it either.
+        enabled: surface.drawable && surface.logReason === ""
 
-        viewMinX: surface.viewMinX
-        viewMaxX: surface.viewMaxX
-        viewMinY: surface.viewMinY
-        viewMaxY: surface.viewMaxY
-        gridMode: surface.gridMode
+        plot: surface.plot ? surface.plot : null
+        active: surface.active && surface.sourceUsable
+        xMinimum: surface.axisMinX
+        xMaximum: surface.axisMaxX
+        xPositiveMinimum: surface.positiveMinX
+        dataLength: surface.dataLength
+
+        grid: surface.gridMode
         gridStepX: surface.gridStepX
         gridStepY: surface.gridStepY
         xLog: surface.xLog
         yLog: surface.yLog
         xLogBase: surface.xLogBase
         yLogBase: surface.yLogBase
+        flipped: surface.flipped
         minorNumbers: surface.minorNumbers
-        tickTarget: surface.tickTarget
-
+        markers: surface.showMarkers
+        crosshair: surface.showCursor
         title: surface.plotTitle
         xLabel: surface.xLabel
         yLabel: surface.yLabel
-        transposed: surface.flipped
+        legend: surface.legendOnPlot
+        legendCorner: surface.legendCorner
+        colourMode: surface.colorMode
+        colourSingle: surface.colorSingle
+        colourRangeFrom: surface.colorRangeFrom
+        colourRangeTo: surface.colorRangeTo
+        coloursReversed: surface.colorsReversed
+        colourFrom: surface.colorFrom
+        colourTo: surface.colorTo
+        coloursCustom: surface.colorsCustom
+        highlighted: surface.highlighted
+        bundle: surface.bundle
+        dark: Theme.dark
 
-        commonAxis: surface.sharedAxis
-        sideAxes: surface.separateAxes
-
-        markers: surface.showMarkers
-        markerSize: Theme.plotMarkerSize
-        showCursor: surface.showCursor && !surface.selecting
-
-        // Declared in here rather than beside the frame, which is what makes
-        // it part of the picture: copyImage() grabs this item, and a caption
-        // that was a sibling of the frame would be a caption on everything but
-        // the copy. PlotFrame stays ignorant of it -- that file knows the
-        // numbers and not the names, and this is handed the surface instead.
-        PlotOverlayLegend {
-            objectName: "plotOverlayLegend"
-
-            target: surface
-            corner: surface.legendCorner
-            area: frame.area
-        }
+        tickFont: Theme.readout
+        tickMinorFont: Theme.readoutMinor
+        titleFont: Theme.bodyStrong
+        axisNameFont: Theme.bodySmall
+        legendFont: Theme.monoSmall
+        noteFont: Theme.micro
     }
 
     /// What the pointer is over, snapped to the nearest drawn sample:
-    /// `{ valid, line, x, y, px, py }`. Invalid when the pointer is elsewhere
-    /// or the reader has turned the cursor off.
-    readonly property var reading: frame.reading
+    /// `{ valid, line, series, x, y, px, py, xText, yText }`, `line` being its
+    /// place among the drawn lines. Invalid when the pointer is elsewhere, the
+    /// reader has turned the crosshair off, or a band is being drawn.
+    readonly property var reading: figure.reading
 
     /// The same thing written out, for the bar below the plot to print.
     ///
@@ -1391,11 +607,13 @@ Item {
     /// plotting library puts it and it is the wrong place here, because this
     /// application already has a strip along the foot of every view whose whole
     /// job is to say what is on screen in numbers -- and a second readout in a
-    /// second style, over the top of the picture, is a second convention.
+    /// second style, over the top of the picture, is a second convention. So
+    /// the figure is told not to write it (FigureItem.readout), and this
+    /// writes it in the bar.
     ///
-    /// The frame knows the numbers; only the thing being drawn knows the names,
-    /// and the index it hands back is a position in the drawn set rather than a
-    /// row of any table.
+    /// The figure knows the numbers -- written as a reading is, to the digits
+    /// the sample was taken with (plotcore's readingText) -- and only the
+    /// thing being drawn knows the names.
     readonly property var readingFacts: {
         if (!surface.reading.valid)
             return []
@@ -1412,408 +630,81 @@ Item {
                            .arg(surface.plot.seriesLabel(drawn[position])))
             }
         }
-        facts.push(qsTr("x %1").arg(surface.readingNumber(surface.reading.x)))
-        facts.push(qsTr("y %1").arg(surface.readingNumber(surface.reading.y)))
+        facts.push(qsTr("x %1").arg(surface.reading.xText))
+        facts.push(qsTr("y %1").arg(surface.reading.yText))
         return facts
     }
 
-    /// A value on an axis, written the way that axis writes its own ticks.
-    ///
-    /// Asked of the frame rather than worked out again: `labelFor` takes its
-    /// decimals off the span on screen -- enough to tell two ticks apart and no
-    /// more -- so a number drawn beside the band and the numbers printed under
-    /// the axis it is drawn over are one rule, and they agree as the reader
-    /// zooms. Six significant figures everywhere was the other thing it could
-    /// be, and on an axis running 0 to 100 that is "30.0119" against ticks
-    /// reading 20, 40, 60: four digits of noise about a position nobody can
-    /// point at that precisely.
-    ///
-    /// `xLogNumbers` rather than `xLog`, for the same reason the ticks
-    /// themselves are written from it: a logarithmic axis zoomed inside a
-    /// decade is numbered the linear way, and a band's readout that did not
-    /// follow it there would print a different number from the tick beside it.
+    /// A value on an axis, written the way that axis writes its own ticks --
+    /// what the band's corners are written in. The figure's answer.
     function xNumber(value) {
-        return frame.axisLabel(value, surface.viewMinX, surface.viewMaxX,
-                               frame.xLogNumbers)
+        return figure.xNumber(value)
     }
 
     function yNumber(value) {
-        return frame.axisLabel(value, surface.viewMinY, surface.viewMaxY,
-                               frame.yLogNumbers)
-    }
-
-    /// One reading, written. Six significant figures, except for a whole
-    /// number: the default x axis is the element's own index, and "12.0000" is
-    /// four digits of decoration on a count.
-    ///
-    /// Not the same question as xNumber above, and deliberately not answered
-    /// the same way: the crosshair reads a *sample*, whose value is a
-    /// measurement and is worth all the digits it was taken with, while a band
-    /// reads positions in the view, where a digit finer than the pane can
-    /// resolve is a digit nobody asked for.
-    function readingNumber(value) {
-        if (!isFinite(value))
-            return String(value)
-        return Number.isInteger(value) ? String(value) : value.toPrecision(6)
+        return figure.yNumber(value)
     }
 
     // --- taking the picture away ------------------------------------------
     /// Put what is drawn on the clipboard, as an image.
     ///
-    /// The frame and not this item: the frame is the plot -- the ground, the
-    /// rules, the ticks, their labels, the title, the axis names, the strokes
-    /// and the caption in the corner. What it leaves out is the legend panel
-    /// on the left, which is a control the reader opens to decide which lines
-    /// there are rather than a part of the drawing. That is what the legend on
-    /// the plot is for, and it is why that one lives inside the frame.
+    /// The plot and not this item: the ground, the rules, the numbers, the
+    /// title, the axis names, the strokes and the legend on the plot. What it
+    /// leaves out is the legend panel on the left, which is a control the
+    /// reader opens to decide which lines there are rather than a part of the
+    /// drawing; that is what the legend on the plot is for.
     ///
-    /// The grab is asynchronous and nothing here waits for it; ImageClipboard
-    /// says how it went, and the settings panel prints that.
+    /// The figure lays the picture out again at the size asked for, in the
+    /// page's colours when it is for publication, with the crosshair where it
+    /// is now when Settings asks for it, and paints it -- a picture of the
+    /// figure rather than a grab of the window, so it is not bought with a
+    /// frame of the application in the wrong colours, and its ground can be
+    /// left clear without the two grabs a clear ground used to need.
     ///
-    /// What is grabbed is no longer this window's own frame but a second one
-    /// built for the purpose (PlotPicture.qml), because four things under
-    /// Settings > Plot Settings ask the picture to differ from the pane --
-    /// publication colours, a size of the reader's choosing, a density of
-    /// their choosing, the crosshair in or out -- and none of the first three
-    /// can be had by re-styling the frame on screen: a grab renders the scene
-    /// as it stands, so the picture would be bought with a frame of the
-    /// application in the wrong colours, at the wrong size and with its type
-    /// at the wrong one.
+    /// Two sizes and not one, which is the whole of what Settings > Plot
+    /// Settings offers here: `page` is what the picture is *composed* at, in
+    /// logical units, and `asked` is the pixels it is *rendered* into. The dpi
+    /// is the ratio between them, so a figure stated at 1920 by 1080 comes
+    /// back at 1920 by 1080 whatever the density -- composed in fewer units as
+    /// the density rises, which is what makes the type on it grow to its true
+    /// point size. Both are AppController's answers, so the dialog's readout
+    /// and this cannot be two.
     function copyImage() {
         if (!surface.drawable)
             return false
-
-        // A second press cancels the first, which is what ImageClipboard does
-        // with the grab itself; the picture the abandoned grab was of goes
-        // with it rather than waiting for a `copied` that will never come.
-        surface.dropPicture()
-
-        // Two sizes and not one, which is the whole of what Settings > Plot
-        // Settings offers here: `page` is what the picture is *composed* at,
-        // in logical units, and `asked` is the pixels it is *rendered* into.
-        // The dpi is the ratio between them, so a figure stated at 1920 by
-        // 1080 comes back at 1920 by 1080 whatever the density -- composed in
-        // fewer units as the density rises, which is what makes the type on
-        // it grow to its true point size.
-        //
-        // Both answered by AppController rather than worked out here: which
-        // of the two the reader stated is its question, and a second reading
-        // of it in QML is a second answer waiting to disagree with the one
-        // the dialog prints.
-        const page = AppController.plotExportLayout(frame.width, frame.height,
+        const page = AppController.plotExportLayout(figure.width, figure.height,
                                                     surface.pixelRatio)
-        const asked = AppController.plotExportPixels(frame.width, frame.height,
+        const asked = AppController.plotExportPixels(figure.width, figure.height,
                                                      surface.pixelRatio)
         if (page.width <= 0 || page.height <= 0)
             return false
-
-        const publication = AppController.plotExportPublication
-        picture = pictureComponent.createObject(surface, {
-            pageWidth: page.width,
-            pageHeight: page.height,
-            surface: surface,
-            sourceLines: frame.lines,
-            publication: publication,
-            includeCursor: AppController.plotExportCursor
-        })
-        if (!picture)
-            return false
-        if (!picture.take()) {
-            surface.dropPicture()
-            return false
-        }
-
-        // The grab is told the pixels, and the item it is given was laid out
-        // in units -- so this is where the two meet and the density is
-        // applied. Rounding the composition to whole units leaves the ratio a
-        // fraction of a percent off the density asked for, which is a
-        // sub-pixel stretch nobody can see; the alternative is handing the
-        // reader a pixel count that is not the one they typed.
-        const started = ImageClipboard.copyItem(
-            picture, asked, publication, AppController.plotExportTaggedDpi())
-        if (!started)
-            surface.dropPicture()
-        return started
+        const image = figure.picture(page.width, page.height,
+                                     asked.width / page.width,
+                                     AppController.plotExportPublication,
+                                     AppController.plotExportCursor)
+        return ImageClipboard.copyImage(image, AppController.plotExportTaggedDpi())
     }
 
-    /// The picture waiting for its grab, and nothing the rest of the time.
-    ///
-    /// It has to outlive the call that made it -- a grab is one more frame
-    /// rendered, and there is no frame to render from inside a QML call -- and
-    /// it must not outlive the answer, because it is a second copy of every
-    /// drawn line.
-    property var picture: null
-
-    function dropPicture() {
-        if (picture) {
-            picture.destroy()
-            picture = null
-        }
-    }
-
-    // Whichever way the grab went, the picture has been read from and is done.
-    // Every surface in the window hears this and drops its own, which is
-    // right: a copy started while another was in flight cancels that one, and
-    // the cancelled grab never answers.
-    Connections {
-        target: ImageClipboard
-
-        function onCopied() { surface.dropPicture() }
-        function onFailed(reason) { surface.dropPicture() }
-    }
-
-    Component {
-        id: pictureComponent
-
-        PlotPicture {}
-    }
+    /// Device pixels per logical one, which is what a picture taken at the
+    /// display's scale is drawn at.
+    readonly property real pixelRatio: Math.max(1, Screen.devicePixelRatio)
 
     // Ctrl+C with the pointer over the pane, which is the other half of what
     // was asked for -- a reader looking at a plot should not have to open a
     // panel to take it away.
     //
     // A Shortcut rather than a Keys handler because neither the plot nor the
-    // frame holds the keyboard: the focus is wherever the reader last typed,
+    // figure holds the keyboard: the focus is wherever the reader last typed,
     // usually the slice bar or the tree's filter, and a plot that stole it to
     // offer a copy would take the caret out of a line somebody was writing.
     //
-    // `frame.hovered` is what makes it unambiguous with more than one plot in
+    // `figure.hovered` is what makes it unambiguous with more than one plot in
     // the window: only one pane can be under the pointer, so only one of these
     // is ever enabled. Nothing else in this application binds Ctrl+C.
     Shortcut {
         sequences: [StandardKey.Copy]
-        enabled: surface.active && surface.drawable && frame.hovered
+        enabled: surface.active && surface.drawable && figure.hovered
         onActivated: surface.copyImage()
-    }
-
-    /// Hand the lines over and dress them.
-    ///
-    /// One crossing into C++ for the whole plot rather than one per line, and
-    /// no points built on the way: see DatasetPlot::fill. The lines are
-    /// borrowed, so the model empties the item before it frees them -- which is
-    /// why there is nothing here to tear down.
-    function refill() {
-        // Here as well as on every change of the view, because a plot object
-        // that has just been reset -- a new dataset, a rearranged table -- has
-        // forgotten what was on screen, and this is the first moment it is
-        // being spoken to again.
-        surface.pushColumns()
-        surface.pushRange()
-        if (!surface.drawable) {
-            frame.lines.clear()
-            return
-        }
-        surface.plot.fill(frame.lines)
-        surface.restyle()
-    }
-
-    /// Re-colour what is drawn, without re-reading or re-filling it.
-    ///
-    /// The line this replaced said: "Qt Graphs redraws a series when its
-    /// points change and not when its colour does, so a recoloured line keeps
-    /// its old stroke on screen until something marks it dirty. Re-filling is
-    /// what marks it." Sixty-four crossings into C++, each building a couple of
-    /// thousand QPointF, to change a hue. A colour is now a property of the
-    /// line and the item redraws from the values it already has.
-    function restyle() {
-        const drawn = surface.plot ? surface.plot.drawnSeries : []
-        for (let i = 0; i < drawn.length; ++i) {
-            // Two indices, and the difference between them is what a palette
-            // holds still by: `i` is the line's place in what was handed to the
-            // item, `drawn[i]` is which line of the legend it is. The colour
-            // answers to the second, the way the opacity and the width already
-            // did.
-            frame.lines.setSeriesColor(
-                i, surface.seriesColor(drawn[i], i, drawn.length))
-            frame.lines.setSeriesOpacity(i, surface.seriesOpacity(drawn[i],
-                                                                   drawn.length))
-            frame.lines.setSeriesWidth(i, surface.seriesWidth(drawn[i]))
-        }
-        surface.pushSeriesAxes()
-    }
-
-    /// Tell the plot object what is on screen.
-    ///
-    /// Not a setting and nothing is drawn from it: it is what lets the object
-    /// decide whether the lines are worth reading again at a finer bucket, and
-    /// the answer is usually no -- a range that resolves to the run already in
-    /// hand costs nothing at all on the other side. The read, when there is
-    /// one, waits for the gesture to stop and then goes out asynchronously, so
-    /// nothing here waits for it and no frame is missed.
-    ///
-    /// Guarded by `active` like every other path into the plot object: a reader
-    /// browsing a large dataset as a table must not pay for a closer look at a
-    /// plot nobody has asked to see.
-    function pushRange() {
-        if (!surface.active || !surface.plot)
-            return
-        surface.plot.setVisibleRange(surface.viewMinX, surface.viewMaxX)
-    }
-
-    /// Tell it where the reader is zooming, and which way.
-    ///
-    /// Pushed before the axis moves, so that the range arriving a moment later
-    /// -- through the bindings, in the same turn -- is read towards the pointer
-    /// rather than towards the middle of the frame. Guarded by `active` like
-    /// every other path into the plot object.
-    function pushZoomFocus(x, factor) {
-        if (!surface.active || !surface.plot)
-            return
-        surface.plot.setZoomFocus(x, factor)
-    }
-
-    function clearZoomFocus() {
-        if (!surface.active || !surface.plot)
-            return
-        surface.plot.clearZoomFocus()
-    }
-
-    /// Tell it how wide the pane is, in columns.
-    ///
-    /// A bucket is a column: what a line is thinned to is a property of the
-    /// pane it is drawn in and not a constant, and the number used to be a
-    /// constant in both directions -- fewer buckets than pixels on a wide
-    /// screen, which draws an envelope as a hatch of separated teeth instead of
-    /// a band, and more points than anyone can tell apart on a narrow one.
-    ///
-    /// The frame rather than the plot area inside it, which is not a rounding:
-    /// the area's left gutter is measured off the widest y tick label, that
-    /// label is measured off the extent of the data, and the extent moves when
-    /// the resolution does -- a finer bucket can find a more extreme value. So
-    /// a resolution taken from the area is a resolution that decides the gutter
-    /// that decides the resolution, which is exactly the binding loop Qt
-    /// reported the first time this was written that way. The frame's own width
-    /// depends on nothing the plot draws.
-    ///
-    /// It overestimates by the gutters, which is what the renderer's tolerance
-    /// for a few points per column is for -- see kSamplesPerColumn. Quantised
-    /// on the other side, so dragging the window's edge does not re-read the
-    /// file once a pixel.
-    ///
-    /// In *device* pixels, which is the other half of "a bucket is a column".
-    /// A pane is laid out in logical pixels and drawn into a framebuffer with
-    /// devicePixelRatio of them for each one, so thinning to the logical width
-    /// on a HiDPI screen hands the renderer one bucket per two or three
-    /// physical columns -- a band drawn at half or a third of the resolution
-    /// the display has, which is the whole of what oversampling would have
-    /// bought and is free to ask for correctly instead.
-    ///
-    /// Along x, which on a flipped pane is up it: the frame's height, less the
-    /// title's line, which is as independent of what the plot draws as the
-    /// width's gutter is.
-    function pushColumns() {
-        if (!surface.active || !surface.plot)
-            return
-        const extent = surface.flipped ? frame.height - frame.gutterTop
-                                       : frame.width - frame.gutterRight
-        surface.plot.setPaneColumns(Math.round(extent * surface.pixelRatio))
-    }
-
-    /// Device pixels per logical one, which is the other factor in the pane's
-    /// width. A property rather than a call so that dragging the window onto a
-    /// display with a different scaling re-thins the lines for it -- a resize
-    /// would otherwise be the only thing that ever noticed.
-    ///
-    /// Unqualified `Screen`, which is how an attached property is reached: it
-    /// attaches to the object whose scope names it, and that is this item.
-    readonly property real pixelRatio: Math.max(1, Screen.devicePixelRatio)
-
-    onPixelRatioChanged: surface.pushColumns()
-
-    onViewMinXChanged: surface.pushRange()
-    onViewMaxXChanged: surface.pushRange()
-
-    // A window does not survive a change of scale, and cannot: the pan is a
-    // distance along the axis, and the axis has just changed what a distance
-    // along it is. A pan of forty is four decades or it is forty units, and
-    // there is no reading of the number that is both -- so the reader who
-    // ticks the box gets the whole of the data on the new scale, which is the
-    // picture they asked to see.
-    onXLogChanged: surface.resetView()
-    onYLogChanged: surface.resetView()
-    // ...and so does a change of base, for exactly the reason: the pan is a
-    // count of powers, and the base is what says how big a power is. Four
-    // decades and four octaves are not the same distance along the same axis.
-    onXLogBaseChanged: { if (surface.xLog) surface.resetView() }
-    onYLogBaseChanged: { if (surface.yLog) surface.resetView() }
-
-    // A resized window is a different number of columns, and what a line is
-    // thinned to follows it. Quantised on the other side, so a drag of the
-    // frame's edge re-reads every sixty-four pixels rather than every one.
-    Connections {
-        target: frame
-        function onWidthChanged() { surface.pushColumns() }
-        function onHeightChanged() { surface.pushColumns() }
-    }
-    onFlippedChanged: surface.pushColumns()
-
-    Component.onCompleted: surface.refill()
-    onActiveChanged: refillSoon.restart()
-
-    /// Refill at the end of the turn, once, however many things have asked.
-    ///
-    /// `Qt.callLater(surface.refill)` did this, and it is the wrong tool here:
-    /// the delayed queue holds the *function*, not the object it came from, so
-    /// a refill armed in the turn a custom tab is closed runs after the surface
-    /// has been destroyed. Every run of the QML suite printed two of them --
-    /// "QQmlVMEMetaObject: Internal error - attempted to evaluate a function in
-    /// an invalid context", followed by a TypeError on the first property
-    /// refill() touches. Closing a tab is the case, and there are two of them
-    /// because two surfaces are torn down: the plot object says `changed` as it
-    /// is dismantled and the tab's `active` goes false, and each of those arms
-    /// a call whose object is gone before it runs.
-    ///
-    /// What kept that from being a crash rather than a warning is that *every*
-    /// property of a destroyed surface fails to resolve, so the function threw
-    /// on its first line instead of reaching `plot.fill(frame.lines)` with an
-    /// item that no longer exists. That is luck, not a design, and it is the
-    /// kind of luck that reads as noise in the log until the day it does not
-    /// hold.
-    ///
-    /// A Timer is a child of this item: it is destroyed with the surface and
-    /// its pending fire goes with it. Interval zero and `restart()` coalesce
-    /// exactly as callLater did -- the same idiom ObjectTree's `reveal` uses,
-    /// for the same reason.
-    Timer {
-        id: refillSoon
-
-        interval: 0
-        onTriggered: surface.refill()
-    }
-
-    // Colour and emphasis are assigned to the lines rather than bound, because
-    // a line belongs to a C++ item and not to the QML object tree; but which
-    // lines exist has not changed, so these restyle rather than re-fill.
-    onColorModeChanged: surface.restyle()
-    onColorSingleChanged: surface.restyle()
-    onColorRangeFromChanged: surface.restyle()
-    onColorRangeToChanged: surface.restyle()
-    onColorsReversedChanged: surface.restyle()
-    onColorFromChanged: surface.restyle()
-    onColorToChanged: surface.restyle()
-    onHighlightedChanged: surface.restyle()
-
-    // The palettes are the theme's own -- the same hues solved for whichever
-    // ground the plot is standing on -- so flipping the theme changes what
-    // every line is drawn in, and by how much (plotSeriesOpacity is the
-    // theme's too). None of that reaches the series on its own: the line above
-    // says why these are assignments and not bindings, and an assignment does
-    // not re-run when what it was computed from changes. Without this, View ->
-    // Dark Theme repainted the whole application and left the plot drawn in
-    // the palette of the theme the reader had just left.
-    Connections {
-        target: Theme
-        function onDarkChanged() { surface.restyle() }
-    }
-
-    Connections {
-        target: surface.plot
-        enabled: surface.active
-        function onChanged() { refillSoon.restart() }
-        // The same lines, moved along x. Nothing has to be re-read and no line
-        // has appeared or gone away -- but where a point sits along x is the
-        // axis the item was handed, so it has to be handed the new one.
-        function onXAxisChanged() { refillSoon.restart() }
     }
 
     /// The properties a saved view keeps.
@@ -1923,158 +814,6 @@ Item {
         names: ["seriesFromRows"]
     }
 
-    // --- zoom and pan ----------------------------------------------------
-    // Over the frame rather than inside it. This began as a way around
-    // GraphsView's own wheel and drag handlers, which zoomed about the centre
-    // of the frame rather than about the pointer; it stays because zoom and pan
-    // are properties of the *view* and not of the drawing, so they belong to
-    // the object that owns the window onto the data.
-    Item {
-        objectName: "plotGestures"
-
-        anchors.fill: parent
-        // The same inset as the graph, so a pointer position in this item is a
-        // pointer position in the graph's own coordinates -- which is what
-        // plotRect and every gesture below are measured against.
-        anchors.leftMargin: surface.contentLeft
-        // Nothing to look at is nothing to zoom. The same condition the
-        // message above answers to: an axis with no value it can place has no
-        // window either, and a drag over one would be moving a view whose ends
-        // are not numbers.
-        enabled: surface.drawable && surface.logReason === ""
-
-        WheelHandler {
-            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-            // acceptedModifiers is deliberately left alone. Its default is
-            // Qt.KeyboardModifierMask, which means "whatever is held"; naming
-            // Shift and Control there would require *both* of them at once,
-            // which is the opposite of what this reads.
-            //
-            // One notch is 120 eighths of a degree; a trackpad sends fractions
-            // of that, and the exponential keeps both feeling the same. Held
-            // down, Shift turns a wheel's vertical delta into a horizontal one
-            // on several platforms, so the horizontal one is read when there is
-            // no vertical one -- the notch the reader turned, wherever the
-            // window system filed it.
-            onWheel: (event) => {
-                const turned = event.angleDelta.y !== 0 ? event.angleDelta.y
-                                                        : event.angleDelta.x
-                surface.zoomAt(event.x, event.y, Math.pow(1.25, turned / 120),
-                               surface.zoomAxesFor(event.modifiers))
-            }
-        }
-
-        DragHandler {
-            id: panner
-
-            target: null
-            cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-
-            /// The translation already applied. DragHandler reports the whole
-            /// movement since the press, and the axes want the step.
-            property point applied: Qt.point(0, 0)
-
-            onActiveChanged: applied = Qt.point(0, 0)
-            onActiveTranslationChanged: {
-                surface.panBy(activeTranslation.x - applied.x,
-                              activeTranslation.y - applied.y)
-                applied = activeTranslation
-            }
-        }
-
-        // The way back, without hunting for a button: the same gesture every
-        // map and image viewer uses, and the reason it is worth a gesture at
-        // all is that it costs nothing -- the whole-line summary is never
-        // thrown away, so the most zoomed-out picture is always already in hand
-        // and going to it is a draw rather than a read.
-        //
-        // A MouseArea rather than a TapHandler, for exactly the reason
-        // ObjectTree gives at length: TapHandler counts its own taps against
-        // the platform's double-click interval, and anything that takes the
-        // grab in between resets the count -- here the drag handler above, which
-        // takes a passive grab on every press. A MouseArea counts nothing. It
-        // answers the QEvent::MouseButtonDblClick the window system itself
-        // sends, which is a double click by the reader's own settings rather
-        // than by this program's arithmetic.
-        //
-        // Panning still works, and by the same arrangement a Flickable uses: the
-        // drag handler holds a passive grab through the press and takes the
-        // exclusive one the moment the pointer moves past the drag threshold.
-        MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.LeftButton
-            onDoubleClicked: surface.resetView()
-        }
-
-        // --- the region band ---------------------------------------------
-        // The right button draws a rectangle and the view goes to it. It is
-        // the gesture every plot in every field has for "look at this part",
-        // and the one this plot did not: the wheel zooms about a point and a
-        // reader who can see the region they want had to arrive at it by
-        // turning the wheel and correcting with a drag, by eye, several times.
-        //
-        // The right button rather than a modifier on the left, because the
-        // left is already the pan and the two would have to be told apart by a
-        // key held down before the press. Nothing else on this pane uses it --
-        // the legend's rows do, but those are in the panel and not here.
-        DragHandler {
-            id: band
-
-            objectName: "plotRegionDrag"
-
-            target: null
-            acceptedButtons: Qt.RightButton
-
-            /// Where the press was, and where the pointer is now. Held rather
-            /// than read off the centroid at draw time so that the rectangle
-            /// below depends on two plain points and stops existing the moment
-            /// the gesture does.
-            property point from: Qt.point(0, 0)
-            property point to: Qt.point(0, 0)
-
-            onActiveChanged: {
-                if (band.active) {
-                    band.from = centroid.pressPosition
-                    // Where the pointer is now, and not where it was pressed.
-                    // A drag handler takes the gesture once the pointer has
-                    // travelled the drag threshold, and the move that carried
-                    // it there is the same event this is answering -- the
-                    // centroid had already moved when `active` turned true, so
-                    // reading the press position here opened every band as a
-                    // rectangle of nothing that the next move corrected.
-                    // Nobody saw that while a band was only a shape; a band
-                    // that writes its own width said "0" for a frame.
-                    band.to = centroid.position
-                    return
-                }
-                // Released. A band too small to have been meant is dropped
-                // without moving anything -- see zoomToRegion.
-                surface.zoomToRegion(band.from.x, band.from.y,
-                                     band.to.x, band.to.y)
-            }
-
-            onCentroidChanged: {
-                if (band.active)
-                    band.to = centroid.position
-            }
-        }
-
-        // What the reader is about to ask for, drawn while they are deciding,
-        // with the numbers that say what it is. In this layer rather than in
-        // the frame: a band exists only during a gesture, so it is never part
-        // of the picture that leaves this application -- see copyImage, which
-        // grabs the frame.
-        PlotBand {
-            objectName: "plotBand"
-
-            target: surface
-            area: surface.plotRect
-            active: band.active
-            from: band.from
-            to: band.to
-        }
-    }
-
     /// Which line is which. Over the plot rather than beside it: it belongs to
     /// the picture, and the reader asks for it with the pointer already there.
     property alias legendOpen: legendPanel.open
@@ -2112,23 +851,11 @@ Item {
     /// pane on its own says none of it: the plot was there a moment ago and
     /// the only thing that changed was a checkbox.
     ///
-    /// Asked of what the axes were *offered* rather than of what they settled
-    /// on, which is the half that is easy to get backwards. Both of them fall
-    /// back to a nominal decade when there is nothing to draw between -- see
-    /// xBounds and `padded` -- so the bounds themselves look perfectly healthy
-    /// in exactly the case this has to catch.
-    readonly property string logReason: {
-        if (!surface.drawable)
-            return ""
-        if (surface.yLog && surface.sharedAxis && !(surface.plot.maximum > 0))
-            return qsTr("Nothing here is above zero, and a logarithmic y axis "
-                        + "has no place to draw a value that is not.")
-        if (surface.xLog && !(surface.positiveMinX > 0
-                              && surface.axisMaxX > surface.positiveMinX))
-            return qsTr("No x here is above zero, and a logarithmic x axis "
-                        + "has no place to draw a value that is not.")
-        return ""
-    }
+    /// The figure's answer, and its title is the figure's too: it asks what
+    /// the axes were *offered* rather than what they settled on, which is the
+    /// half that is easy to get backwards, since both settle on a nominal
+    /// decade when there is nothing to draw between.
+    readonly property string logReason: surface.drawable ? figure.message : ""
 
     ViewMessage {
         objectName: "plotIdleMessage"
@@ -2136,7 +863,7 @@ Item {
         anchors.fill: parent
         anchors.leftMargin: surface.contentLeft
         visible: !surface.drawable || surface.logReason !== ""
-        title: surface.logReason !== "" ? qsTr("nothing on this scale")
+        title: surface.logReason !== "" ? figure.messageTitle
                                         : qsTr("nothing to plot")
         warning: surface.active && surface.plot
                  && surface.plot.error !== ""

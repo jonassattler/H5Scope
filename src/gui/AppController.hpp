@@ -400,7 +400,7 @@ public:
     /// A number of pixels is not a size until something says how densely they
     /// sit, and a reader who asked for 300 dpi asked for a figure that lands
     /// on the page at its true physical size rather than at one dot per
-    /// point. So the image carries it (ImageClipboard::copyItem), and carries
+    /// point. So the image carries it (ImageClipboard::copyImage), and carries
     /// it only where the reader said a number: a picture taken at the
     /// display's scale is tagged with nothing, exactly as it always was,
     /// because "as many dots as this screen has" is not a claim about inches.
@@ -440,17 +440,15 @@ public:
 
     /// The narrowest and the widest a picture may be asked for, in pixels.
     ///
-    /// The ceiling is a real limit rather than a taste: a grab is rendered
-    /// into one texture and every graphics API has a maximum texture size --
-    /// 16384 on anything recent, less on older hardware. Past it the grab does
-    /// not come back small, it comes back not at all.
-    ///
-    /// Half of that, because a publication picture is drawn *twice* into one
-    /// grab -- once on white and once on black, which is how it comes back
-    /// with no ground; see ImageClipboard::copyItem. So the tallest picture
-    /// this may ask for is the tallest texture there is, halved. Eight
-    /// thousand pixels is a figure at 27 inches and 300 dpi, which is a poster
-    /// rather than a plate.
+    /// The ceiling was a real limit when it was set: the picture was a grab,
+    /// rendered into one texture, and every graphics API has a maximum
+    /// texture size -- 16384 on anything recent -- which a publication picture
+    /// drawn twice into one grab, on white and on black, halved. The figure
+    /// now paints its picture into an image in memory (FigureItem::picture),
+    /// which has no such limit, and the ceiling stays where it was because it
+    /// is still the right size: eight thousand pixels is a figure at 27 inches
+    /// and 300 dpi, which is a poster rather than a plate, and a quarter of a
+    /// gigabyte of pixels to paint and put on the clipboard.
     static constexpr int kMinExportPixels = 64;
     static constexpr int kMaxExportPixels = 8192;
 
