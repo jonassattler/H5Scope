@@ -25,6 +25,28 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.4
+
+**A line can be moved and scaled.** To move a line, drag it with Alt held or
+with the middle button. Alt+Ctrl with the wheel scales it, and Ctrl-click puts
+it back. To put every line back at once, use *put the lines back* in the
+plot's settings. A custom tab keeps each line's move in its saved views, and
+the Plot tab remembers moves per dataset.
+
+**Lines can be stacked.** With *stack the lines* in the plot's settings, each
+line is drawn in a band of its own with its own axis. The setting is saved
+with the view.
+
+**A line of a custom tab can have a time base of its own**, for example two
+loggers on two clocks. Name the time base in the new *x* box on the line's
+card. The line is then drawn at its own times, and the x axis spans every time
+base in use. This applies while the tab's x is a dataset.
+
+**The plot is drawn by [plotcore](https://github.com/jonassattler/plotcore)
+0.2.0.** The frame, crosshair, legend, band and zoom cache now all come from
+the library instead of from a second copy kept here. The picture is the same
+as in 0.7.3.
+
 ## 0.7.3
 
 **File › Open can show your desktop's own dialog.** Settings › Native File
