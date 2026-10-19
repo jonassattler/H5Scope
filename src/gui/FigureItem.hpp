@@ -159,6 +159,11 @@ class FigureItem : public QQuickItem, public LineTarget, public plotcore::LineSo
     Q_PROPERTY(double maxZoom READ maxZoom NOTIFY viewChanged FINAL)
     Q_PROPERTY(double minimumSpanX READ minimumSpanX NOTIFY viewChanged FINAL)
     Q_PROPERTY(double panKeep READ panKeep CONSTANT FINAL)
+    /// How many lines the legend on the plot names before it counts the rest,
+    /// and how much of the pane a pointer is taken to cover: plotcore's
+    /// FigureStyle, which is where the argument for each is.
+    Q_PROPERTY(int legendRowLimit READ legendRowLimit CONSTANT FINAL)
+    Q_PROPERTY(double pointerSize READ pointerSize CONSTANT FINAL)
     Q_PROPERTY(bool zoomed READ zoomed NOTIFY viewChanged FINAL)
     /// What each axis runs between at a zoom of one: x's ends, or one empty
     /// power of the base where a logarithmic x has nothing to run between,
@@ -398,6 +403,8 @@ public:
     [[nodiscard]] double maxZoom() const { return figure_.camera().maxZoom; }
     [[nodiscard]] double minimumSpanX() const { return figure_.camera().x.minimumSpan; }
     [[nodiscard]] double panKeep() const { return figure_.camera().panKeep; }
+    [[nodiscard]] int legendRowLimit() const { return figure_.style().legendRows; }
+    [[nodiscard]] double pointerSize() const { return figure_.style().pointerSize; }
     [[nodiscard]] bool zoomed() const;
     [[nodiscard]] double xBoundLow() const { return figure_.camera().x.bounds.low; }
     [[nodiscard]] double xBoundHigh() const { return figure_.camera().x.bounds.high; }

@@ -2526,7 +2526,7 @@ TestCase {
     /// it is the corner that follows the pointer, which is the reading that is
     /// changing as they drag. A band pulled downwards hid it every time.
     function verifyBandNumbersClearThePointer(figure, x, y) {
-        const pointer = { x: x, y: y, width: Theme.pointerSize, height: Theme.pointerSize }
+        const pointer = { x: x, y: y, width: figure.pointerSize, height: figure.pointerSize }
         const boxes = figure.bandLabels()
         for (let i = 0; i < boxes.length; ++i) {
             verify(PlotScene.clears(boxes[i], pointer, Theme.gapS),
@@ -2847,7 +2847,7 @@ TestCase {
         const drawn = AppController.datasetPlot.drawnSeries
         verify(drawn.length > 0, "the fixture must draw something")
         const rows = figure.legendRows()
-        compare(rows.length, Math.min(drawn.length, Theme.plotLegendRows))
+        compare(rows.length, Math.min(drawn.length, figure.legendRowLimit))
         for (let i = 0; i < rows.length; ++i) {
             compare(rows[i].series, drawn[i])
             compare(rows[i].name, AppController.datasetPlot.seriesLabel(drawn[i]))
@@ -3679,7 +3679,7 @@ TestCase {
         // cycle rather than at the head of it. Black would have to be left
         // out of any such count: it is the colour of every tick label on the
         // page, so finding it would say nothing about the strokes.
-        const paper = Theme.paperPalettes["okabe-ito"]
+        const paper = PlotColours.palette("okabe-ito", false)
         let carried = 0
         for (let i = 0; i < 6; ++i) {
             if (carries(paper[i]))
@@ -3731,7 +3731,7 @@ TestCase {
         const names = Theme.categoricalPaletteNames
         for (let p = 0; p < names.length; ++p) {
             plot.colorMode = names[p]
-            const paper = Theme.paperPalettes[names[p]]
+            const paper = PlotColours.palette(names[p], false)
             for (let i = 0; i < paper.length; ++i) {
                 // Lower-cased on both sides, for the reason
                 // test_the_published_palettes_are_the_published_values gives:
@@ -3750,7 +3750,7 @@ TestCase {
         compare(String(plot.seriesColor(0, 0, 4)).toLowerCase(), String(Theme.n11).toLowerCase(),
                 "the dark theme's accent is signal white")
         compare(String(plot.seriesColor(0, 0, 4, true)).toLowerCase(),
-                String(Theme.paperAccent).toLowerCase(),
+                String(Theme.n0).toLowerCase(),
                 "and on paper it is ink")
 
         // A colour that is nobody's token goes through untouched, which is

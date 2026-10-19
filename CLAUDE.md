@@ -805,8 +805,11 @@ and the argument for each rule is written over its function there.
    Anything that elides needs an `AppToolTip` within ~25 lines so the reader can
    still get at the data.
 
-   The line palettes are two kinds of thing and are held to two different
-   rules. `spectrum` and `safe` were *generated* against this application's two
+   The plot's own colours are not tokens here: they are plotcore's
+   (`chromeFor`, `FigureStyle`, `palette`, `ramp`), and Theme reads the cycles
+   and the maps it shows elsewhere through `gui::PlotColours` rather than
+   holding them. The line palettes are two kinds of thing and are held to two
+   different rules. `spectrum` and `safe` were *generated* against this application's two
    grounds, so every entry clears 3:1 on both and `tst_views` asserts it.
    `okabe-ito`, `tol bright` and `tol muted` are the *published* cycles, kept
    at their published values so a figure from here and one drawn in matplotlib
@@ -1093,9 +1096,9 @@ and the argument for each rule is written over its function there.
    what it was numbered on.
 
    **Publication is the light scope and not one ink.** It draws the picture
-   the light theme would draw: `Theme.paperInk` and its neighbours for the
-   chrome, and `Theme.paperPalettes` — `palettesFor(false)`, the same table
-   read against the other ground — for the strokes. It was one black stroke
+   the light theme would draw: plotcore's paper chrome (`chromeFor`) for the
+   frame, and each cycle's light-scope entries — the same table read against
+   the other ground — for the strokes. It was one black stroke
    for every line until 0.6.4, which is the one thing a colour cycle exists to
    not be: six traces went out as six identical strokes with a caption naming
    colours the picture did not contain. plotcore's `seriesColor` (asked through
@@ -1154,7 +1157,7 @@ and the argument for each rule is written over its function there.
    copied every line it drew. The figure's picture is drawn from the lines the
    pane is drawing, inside the call that asks for it, so nothing outlives the
    call and nothing is copied. A line on paper is drawn solid, whatever is
-   highlighted (Theme.paperSeriesOpacity, which is plotcore's rule now).
+   highlighted (plotcore's rule; it was Theme.paperSeriesOpacity).
 
    **Painted, not grabbed, and so it has an alpha.** Under Qt Quick's software
    renderer — what runs wherever there is no graphics API, and what the whole
