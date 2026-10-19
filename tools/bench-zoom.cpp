@@ -29,7 +29,6 @@
 #include "gui/DatasetTableModel.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotCore.hpp"
-#include "gui/PlotItem.hpp"
 
 #include <QCoreApplication>
 #include <QString>
@@ -328,7 +327,6 @@ int main(int argc, char** argv)
             Frames measured;
             double low = 0.0;
             double high = static_cast<double>(length);
-            gui::PlotItem item;
             for (int frame = 0; frame < frames; ++frame) {
                 const auto start = std::chrono::steady_clock::now();
                 push(low, high, frame);
@@ -419,7 +417,6 @@ int main(int argc, char** argv)
                 const long long crossings = gui::H5Thread::instance().crossings();
                 double low = 0.0;
                 double high = static_cast<double>(length);
-                gui::PlotItem item;
                 for (int frame = 0; frame < frames; ++frame) {
                     const auto start = std::chrono::steady_clock::now();
                     tab->setZoomFocus(static_cast<double>(at), 1.0 / shrink);

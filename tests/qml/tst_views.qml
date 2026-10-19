@@ -7,6 +7,8 @@ import QtTest
 import H5Scope
 import H5Scope.Backend
 
+import "PlotScene.js" as PlotScene
+
 /// Instantiates the real view components against the real models, so a broken
 /// delegate or a bad role name fails the build rather than shipping.
 TestCase {
@@ -2428,8 +2430,8 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
         verify(plot, "the plot surface must be reachable")
-        const gestures = findChild(win.view, "plotGestures")
-        verify(gestures, "the gesture layer must be reachable")
+        const gestures = findChild(win.view, "plotFigure")
+        verify(gestures, "the figure must be reachable")
 
         const area = plot.plotRect
         verify(area.width > 0 && area.height > 0)
@@ -2492,26 +2494,26 @@ TestCase {
     /// it too, everywhere there is room for them: what they are allowed is a
     /// band drawn into the corner of the pane, which leaves the corner nowhere
     /// outside itself to stand.
-    function verifyBandNumbersAreClear(readout, clearOfBand) {
-        const boxes = readout.labels
+    function verifyBandNumbersAreClear(figure, clearOfBand) {
+        const boxes = figure.bandLabels()
         for (let i = 0; i < boxes.length; ++i) {
-            // Every key the delegate reads, on every entry. The quarter is
-            // the one that is easy to leave off -- only two of the six are
-            // turned -- and leaving it off is not a label drawn straight, it
-            // is `rotation: undefined` and two warnings a frame for as long
-            // as the reader holds the drag.
+            // Every key a host paints by, on every entry. The quarter is the
+            // one that is easy to leave off -- only two of the six are turned
+            // -- and leaving it off was not a label drawn straight, it was
+            // `rotation: undefined` and two warnings a frame for as long as
+            // the reader held the drag.
             compare(typeof boxes[i].turn, "number",
                     boxes[i].key + " must say which quarter it is read at")
             compare(typeof boxes[i].text, "string",
                     boxes[i].key + " must carry its own text")
-            verify(readout.inside(boxes[i]),
+            verify(PlotScene.inside(boxes[i], figure.area),
                    boxes[i].key + " must be drawn inside the pane")
             if (clearOfBand || boxes[i].key !== "start" && boxes[i].key !== "end") {
-                verify(readout.clears(boxes[i], readout.bandRect),
+                verify(PlotScene.clears(boxes[i], figure.band, Theme.gapS),
                        boxes[i].key + " must stand clear of the band")
             }
             for (let j = i + 1; j < boxes.length; ++j) {
-                verify(readout.clears(boxes[i], boxes[j]),
+                verify(PlotScene.clears(boxes[i], boxes[j], Theme.gapS),
                        boxes[i].key + " must stand clear of " + boxes[j].key)
             }
         }
@@ -2523,12 +2525,11 @@ TestCase {
     /// that quadrant is one the reader is covering with their own hand -- and
     /// it is the corner that follows the pointer, which is the reading that is
     /// changing as they drag. A band pulled downwards hid it every time.
-    function verifyBandNumbersClearThePointer(readout) {
-        const pointer = { x: readout.endX, y: readout.endY,
-                          width: Theme.pointerSize, height: Theme.pointerSize }
-        const boxes = readout.labels
+    function verifyBandNumbersClearThePointer(figure, x, y) {
+        const pointer = { x: x, y: y, width: Theme.pointerSize, height: Theme.pointerSize }
+        const boxes = figure.bandLabels()
         for (let i = 0; i < boxes.length; ++i) {
-            verify(readout.clears(boxes[i], pointer),
+            verify(PlotScene.clears(boxes[i], pointer, Theme.gapS),
                    boxes[i].key + " must stand clear of the pointer")
         }
     }
@@ -2554,21 +2555,17 @@ TestCase {
 
         const plot = findChild(win.view, "plotSurface")
         verify(plot, "the plot surface must be reachable")
-        const gestures = findChild(win.view, "plotGestures")
-        verify(gestures, "the gesture layer must be reachable")
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the lines must be reachable")
-        const readout = findChild(win.view, "plotBand")
-        verify(readout, "the band must be reachable")
+        const figure = findChild(win.view, "plotFigure")
+        verify(figure, "the figure must be reachable")
+        const gestures = figure
 
         verify(!plot.selecting, "nothing is being selected yet")
-        compare(readout.labels.length, 0, "so nothing is written")
+        compare(figure.bandLabels().length, 0, "so nothing is written")
 
         // The crosshair is reading, which is what the band is about to take
         // away: two readouts of two different things over one pane is a
         // picture the reader has to take apart before they can read either.
-        mouseMove(lines, Math.round(lines.width * 0.4),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.4), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid, "the crosshair must be reading to begin with")
 
@@ -2587,9 +2584,7 @@ TestCase {
         verify(!plot.reading.valid, "the crosshair must be off under a band")
         compare(plot.readingFacts.length, 0, "and the footer must stop reading")
 
-        const labels = {}
-        for (let i = 0; i < readout.labels.length; ++i)
-            labels[readout.labels[i].key] = readout.labels[i]
+        const labels = PlotScene.bandLabelsByKey(figure)
 
         // Both corners, as the axes read them.
         verify(labels.start, "the corner the drag started at must be written")
@@ -2629,8 +2624,8 @@ TestCase {
                + labels.heightLeft.height)
         compare(labels.widthAbove.turn, 0, "a width reads along its own edge")
 
-        verifyBandNumbersAreClear(readout, true)
-        verifyBandNumbersClearThePointer(readout)
+        verifyBandNumbersAreClear(figure, true)
+        verifyBandNumbersClearThePointer(figure, toX, toY)
 
         // The digits follow the view. Over the whole of this dataset the axis
         // prints whole numbers -- x runs 0 to 99 and y over thousands -- so the
@@ -2647,17 +2642,16 @@ TestCase {
         mouseRelease(gestures, toX, toY, Qt.RightButton)
         waitForRendering(win.view)
         verify(!plot.selecting, "the band must end with the gesture")
-        compare(readout.labels.length, 0, "and take its numbers with it")
+        compare(figure.bandLabels().length, 0, "and take its numbers with it")
 
-        mouseMove(lines, Math.round(lines.width * 0.4),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.4), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid, "the crosshair must come back")
 
         // ...and the view has just become two fifths of what it was, which is
         // an axis that has started printing a decimal. The band follows it,
         // which is the whole of what "as many digits as the view has" means.
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
         const closeFrom = Math.round(area.x + area.width * 0.4)
         const closeTo = Math.round(area.x + area.width * 0.6)
         const closeY = Math.round(area.y + area.height * 0.4)
@@ -2666,7 +2660,7 @@ TestCase {
                   -1, Qt.RightButton)
         tryVerify(() => plot.selecting, 2000, "the second band must be drawn")
         waitForRendering(win.view)
-        const zoomed = readout.labels.filter((box) => box.key === "start")[0]
+        const zoomed = figure.bandLabels().filter((box) => box.key === "start")[0]
         verify(zoomed, "the corner must still be written")
         verify(zoomed.text.indexOf(".") >= 0,
                "a closer view must be given the digits it can resolve: "
@@ -2695,9 +2689,9 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const gestures = findChild(win.view, "plotGestures")
-        const readout = findChild(win.view, "plotBand")
-        verify(plot && gestures && readout, "the plot and its band must be reachable")
+        const figure = findChild(win.view, "plotFigure")
+        const gestures = figure
+        verify(plot && figure, "the plot and its figure must be reachable")
 
         const area = plot.plotRect
         const midX = Math.round(area.x + area.width * 0.5)
@@ -2712,16 +2706,14 @@ TestCase {
         tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
         waitForRendering(win.view)
 
-        let labels = {}
-        for (let i = 0; i < readout.labels.length; ++i)
-            labels[readout.labels[i].key] = readout.labels[i]
+        let labels = PlotScene.bandLabelsByKey(figure)
         verify(labels.start && labels.end, "both corners are always written")
         verify(!labels.widthAbove && !labels.widthBelow,
                "a band narrower than its own width must not be given one")
         verify(labels.heightLeft && labels.heightRight,
                "and its height must still be on both y lines")
-        verifyBandNumbersAreClear(readout, true)
-        verifyBandNumbersClearThePointer(readout)
+        verifyBandNumbersAreClear(figure, true)
+        verifyBandNumbersClearThePointer(figure, midX + 4, Math.round(area.y + area.height * 0.8))
 
         mouseRelease(gestures, midX + 4, Math.round(area.y + area.height * 0.8),
                      Qt.RightButton)
@@ -2742,16 +2734,14 @@ TestCase {
         tryVerify(() => plot.selecting, 2000, "the band must be being drawn")
         waitForRendering(win.view)
 
-        labels = {}
-        for (let i = 0; i < readout.labels.length; ++i)
-            labels[readout.labels[i].key] = readout.labels[i]
+        labels = PlotScene.bandLabelsByKey(figure)
         verify(labels.start && labels.end,
                "both corners are written even off the edge")
         compare(labels.end.text,
                 plot.xNumber(plot.viewMinX) + ", "
                 + plot.yNumber(plot.dataYAt(offY)),
                 "the corner off the pane reads as the edge it stopped at")
-        verifyBandNumbersAreClear(readout, true)
+        verifyBandNumbersAreClear(figure, true)
 
         mouseRelease(gestures, 0, offY, Qt.RightButton)
         waitForRendering(win.view)
@@ -2837,41 +2827,30 @@ TestCase {
 
         const plot = findChild(view, "plotSurface")
         verify(plot, "the plot surface must be reachable")
-        const overlay = findChild(view, "plotOverlayLegend")
-        verify(overlay, "the on-plot legend must be reachable")
+        const figure = findChild(view, "plotFigure")
+        verify(figure, "the figure must be reachable")
 
         // Off until it is asked for: on screen the panel on the left already
         // answers this, and this one stands over part of the drawing.
         compare(plot.legendOnPlot, false)
-        verify(!overlay.visible)
-
-        // ...and while it is off it asks the plot *nothing*. Not a nicety: a
-        // question put to a plot object is a reading of the file, and one of
-        // these sits on every plot in the window whether or not it is the one
-        // on screen. The first version of this file reached for `drawnSeries`
-        // whatever the setting said, and the custom tab's picture came out an
-        // empty pane with a correct axis under it -- the reads it disturbed
-        // landed after the frame that was waiting for them.
-        //
-        // Asserted on the drawn set rather than on the visible flag, because
-        // the flag would be false either way and the question would still have
-        // been asked.
         verify(AppController.datasetPlot.drawnSeries.length > 0,
                "the fixture must have lines for this to be worth asking about")
-        compare(overlay.drawn.length, 0)
-        compare(overlay.rows.length, 0)
+        figure.compose()
+        compare(figure.legendRows().length, 0)
+        compare(figure.legendRect.width, 0)
 
         plot.legendOnPlot = true
         waitForRendering(view)
-        verify(overlay.visible, "asking for it must draw it")
+        figure.compose()
+        verify(figure.legendRect.width > 0, "asking for it must draw it")
 
         const drawn = AppController.datasetPlot.drawnSeries
         verify(drawn.length > 0, "the fixture must draw something")
-        compare(overlay.rows.length, Math.min(drawn.length, Theme.plotLegendRows))
-        for (let i = 0; i < overlay.rows.length; ++i) {
-            compare(overlay.rows[i].series, drawn[i])
-            compare(overlay.rows[i].label,
-                    AppController.datasetPlot.seriesLabel(drawn[i]))
+        const rows = figure.legendRows()
+        compare(rows.length, Math.min(drawn.length, Theme.plotLegendRows))
+        for (let i = 0; i < rows.length; ++i) {
+            compare(rows[i].series, drawn[i])
+            compare(rows[i].name, AppController.datasetPlot.seriesLabel(drawn[i]))
         }
 
         // Inside the pane, in the corner asked for. Four corners and four
@@ -2880,17 +2859,20 @@ TestCase {
         const area = plot.plotRect
         plot.legendCorner = "topLeft"
         waitForRendering(view)
-        const left = overlay.x
-        const top = overlay.y
+        figure.compose()
+        const left = figure.legendRect.x
+        const top = figure.legendRect.y
         verify(left >= area.x && top >= area.y, "top left must be inside the pane")
 
         plot.legendCorner = "bottomRight"
         waitForRendering(view)
-        verify(overlay.x > left, "the right-hand corners must sit further right")
-        verify(overlay.y > top, "the bottom corners must sit further down")
-        verify(overlay.x + overlay.width <= area.x + area.width + 1,
+        figure.compose()
+        const box = figure.legendRect
+        verify(box.x > left, "the right-hand corners must sit further right")
+        verify(box.y > top, "the bottom corners must sit further down")
+        verify(box.x + box.width <= area.x + area.width + 1,
                "it must stay inside the pane")
-        verify(overlay.y + overlay.height <= area.y + area.height + 1,
+        verify(box.y + box.height <= area.y + area.height + 1,
                "it must stay inside the pane")
 
         plot.legendOnPlot = false
@@ -2921,9 +2903,15 @@ TestCase {
         // types track what they came from -- so a "before" held that way is
         // the "after" by the time it is compared against, and every assertion
         // below would pass without the feature existing.
-        const paneOf = (item) => ({ x: item.plotRect.x, y: item.plotRect.y,
-                                    width: item.plotRect.width,
-                                    height: item.plotRect.height })
+        //
+        // Laid out first: the view is parented into the TestCase and never
+        // drawn, so nothing else would lay the figure out between two of these.
+        const figure = findChild(view, "plotFigure")
+        const paneOf = (item) => {
+            figure.compose()
+            return ({ x: item.plotRect.x, y: item.plotRect.y,
+                      width: item.plotRect.width, height: item.plotRect.height })
+        }
         const bare = paneOf(plot)
         verify(bare.width > 0 && bare.height > 0)
 
@@ -3184,12 +3172,12 @@ TestCase {
         win.requestActivate()
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(plot && lines, "the plot and its lines must be reachable")
+        const figure = findChild(win.view, "plotFigure")
+        verify(plot && figure, "the plot and its figure must be reachable")
 
         // Pointer somewhere else: the shortcut is not armed, so the key goes
         // wherever it would have gone and nothing is copied.
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
         waitForRendering(win.view)
         copySpy.clear()
         copyFailedSpy.clear()
@@ -3198,8 +3186,7 @@ TestCase {
         compare(copySpy.count, 0, "a plot nobody is pointing at must not copy")
 
         // ...and over the pane it is.
-        mouseMove(lines, Math.round(lines.width / 2),
-                  Math.round(lines.height / 2))
+        mouseMove(figure, PlotScene.paneX(figure, 0.5), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         keyClick(Qt.Key_C, Qt.ControlModifier)
         tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
@@ -3207,7 +3194,7 @@ TestCase {
         compare(copyFailedSpy.count, 0,
                 copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
 
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
     }
 
     // --- what a copied plot looks like ------------------------------------
@@ -3272,12 +3259,6 @@ TestCase {
         const copied = ImageClipboard.imageOnClipboard()
         compare(copied.width, 400)
         compare(copied.height, 300)
-
-        // ...and the picture is gone once the grab has landed. It is a second
-        // copy of every drawn line, so a picture that outlived its answer
-        // would be this application holding two of everything for as long as
-        // the tab stayed open.
-        compare(plot.picture, null)
 
         restoreExportSettings()
     }
@@ -3515,8 +3496,9 @@ TestCase {
         verify(select("/series/a"))
         const win = plotWindow()
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(plot && lines && plot.drawable)
+        const figure = findChild(win.view, "plotFigure")
+        const lines = PlotScene.linesOf(figure)
+        verify(plot && figure && plot.drawable)
 
         const onScreen = String(lines.seriesColor(0))
 
@@ -3636,8 +3618,9 @@ TestCase {
         verify(select("/cube")) // six lines, each its own band of y
         const win = plotWindow()
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(plot && lines && plot.drawable)
+        const figure = findChild(win.view, "plotFigure")
+        const lines = PlotScene.linesOf(figure)
+        verify(plot && figure && plot.drawable)
 
         // The claim only means something from the dark theme: that is the
         // scope where what is on screen and what goes on the page differ.
@@ -3808,12 +3791,12 @@ TestCase {
         verify(select("/series/a"))
         const win = plotWindow()
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(plot && lines && plot.drawable)
+        const figure = findChild(win.view, "plotFigure")
+        const lines = PlotScene.linesOf(figure)
+        verify(plot && figure && plot.drawable)
 
         // Somewhere over the pane, so there is a reading to draw.
-        mouseMove(lines, Math.round(lines.width / 2),
-                  Math.round(lines.height / 2))
+        mouseMove(figure, PlotScene.paneX(figure, 0.5), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid, "there must be a reading to include")
 
@@ -3852,7 +3835,7 @@ TestCase {
         verify(including > without + 100,
                "the crosshair must add ink: " + without + " -> " + including)
 
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
         restoreExportSettings()
     }
 
@@ -3866,20 +3849,19 @@ TestCase {
     /// trusted to the token, because a ground is drawn by a Rectangle whose
     /// colour anything above it could cover.
     ///
-    /// Read through an item grab rather than through `grabImage()`, and that
-    /// is the trap this test exists to stay out of. Qt Quick Test's grabImage()
-    /// hands back an image of the item's *size* taken from the **window's**
-    /// origin, so a grab of the plot surface -- which sits 38 pixels down,
-    /// under the slice bar -- begins with 38 rows of `surfaceRaised` that
-    /// belong to the bar and not to the plot. That is why colouredPixels()
-    /// above takes a `firstRow`, and it is what makes a plot look as though it
-    /// were standing on a raised surface when it is not.
+    /// Read off a grab of the whole window, at the figure's own place in it,
+    /// and that is the trap this test exists to stay out of. Qt Quick Test's
+    /// grabImage() hands back an image of the item's *size* taken from the
+    /// **window's** origin, so a grab of the plot surface -- which sits 38
+    /// pixels down, under the slice bar -- begins with 38 rows of
+    /// `surfaceRaised` that belong to the bar and not to the plot. That is why
+    /// colouredPixels() above takes a `firstRow`, and it is what makes a plot
+    /// look as though it were standing on a raised surface when it is not.
     function test_the_plot_stands_on_black_or_on_white() {
         verify(select("/series/a"))
         const win = plotWindow()
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
-        const frame = lines.parent
+        const figure = findChild(win.view, "plotFigure")
+        verify(figure, "the figure must be reachable")
 
         const was = Theme.dark
 
@@ -3898,21 +3880,19 @@ TestCase {
         /// or on white, and a ground is what most of a picture is. That cannot
         /// be moved by where a label lands.
         const groundOf = (what) => {
-            copySpy.clear()
-            copyFailedSpy.clear()
-            verify(ImageClipboard.copyItem(frame, Qt.size(0, 0)),
-                   "the frame must accept a grab")
-            tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000)
-            compare(copyFailedSpy.count, 0,
-                    copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
-            const size = ImageClipboard.imageOnClipboard()
-            verify(size.width > 0 && size.height > 0)
+            const shot = grabImage(win.contentItem)
+            const corner = figure.mapToItem(win.contentItem, 0, 0)
+            const left = Math.ceil(corner.x)
+            const top = Math.ceil(corner.y)
+            const right = Math.min(shot.width, Math.floor(corner.x + figure.width))
+            const bottom = Math.min(shot.height, Math.floor(corner.y + figure.height))
+            verify(right > left && bottom > top, "the figure must be on the window")
 
             const tally = ({})
             let samples = 0
-            for (let x = 0; x < size.width; x += 8) {
-                for (let y = 0; y < size.height; y += 8) {
-                    const seen = String(ImageClipboard.pixelOnClipboard(x, y))
+            for (let x = left; x < right; x += 8) {
+                for (let y = top; y < bottom; y += 8) {
+                    const seen = String(shot.pixel(x, y))
                     tally[seen] = (tally[seen] || 0) + 1
                     ++samples
                 }
@@ -3952,48 +3932,10 @@ TestCase {
         waitForRendering(win.view)
     }
 
-    /// The ticks are drawn where the curve is.
-    ///
-    /// The chrome and the renderer each map a value to a place on the pane,
-    /// and they are two implementations of one rule -- three lines of it, in
-    /// QML and in C++. If they ever disagree the grid does not look wrong, it
-    /// looks authoritative and reads off by a pixel.
-    ///
-    /// So the two are asserted against each other directly, over the window on
-    /// screen and over a window twice as tall: a rule that happens to hold at
-    /// the ends of one span is not the same rule.
-    function test_the_ticks_agree_with_the_renderer_about_where_a_value_sits() {
-        verify(select("/compressed"))
-
-        const win = createTemporaryObject(viewWindowComponent, testCase)
-        waitForRendering(win.view)
-        win.view.show("plot")
-        waitForRendering(win.view)
-        const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
-
-        const agreesOver = (low, high) => {
-            for (let i = 0; i <= 10; ++i) {
-                const value = low + (high - low) * i / 10
-                const mine = lines.parent.yFraction(value)
-                const theirs = lines.yFraction(value)
-                verify(Math.abs(mine - theirs) < 1e-9,
-                       "the chrome puts " + value + " at " + mine
-                       + " and the renderer at " + theirs)
-            }
-        }
-
-        agreesOver(lines.yMin, lines.yMax)
-        // ...and outside it, which is where a stroke that leaves the pane is
-        // projected to and where an off-by-a-sign would show.
-        agreesOver(lines.yMin - (lines.yMax - lines.yMin),
-                   lines.yMax + (lines.yMax - lines.yMin))
-    }
-
     // --- logarithmic axes -------------------------------------------------
-    /// A plot of /series/decades with a logarithmic y axis, and the two items
-    /// every test below asks about.
+    /// A plot of /series/decades with a logarithmic y axis, and what every test
+    /// below asks about: the surface, the figure, its lines and its frame (see
+    /// PlotScene.js).
     ///
     /// The fixture is six decades of 10^(i/8 - 3) with a zero at element 10
     /// and a negative at element 20, so every assertion about where a decade
@@ -4002,10 +3944,11 @@ TestCase {
     function logPlot(win) {
         const plot = findChild(win.view, "plotSurface")
         verify(plot, "the plot surface must be reachable")
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
+        const figure = findChild(win.view, "plotFigure")
+        verify(figure, "the figure must be reachable")
         plot.yLog = true
         waitForRendering(win.view)
+        const frame = PlotScene.frameOf(figure)
 
         /// Every rule inside one power of `base` is the same step of *value*
         /// from the next.
@@ -4016,7 +3959,7 @@ TestCase {
         /// unit changes -- that is what a logarithmic axis is -- so the steps
         /// are compared only within each power.
         const assertEqualStepsWithinEachPower = (base) => {
-            const rules = found.frame.yGrid
+            const rules = frame.yGrid
             verify(rules.length > 4, "there must be a grid to check")
             const values = rules.map(
                 (r) => plot.valueAlong(plot.viewMinY, plot.viewMaxY, r.at,
@@ -4032,7 +3975,8 @@ TestCase {
             }
         }
 
-        const found = ({ surface: plot, lines: lines, frame: lines.parent,
+        const found = ({ surface: plot, figure: figure, lines: PlotScene.linesOf(figure),
+                         frame: frame,
                          assertEqualStepsWithinEachPower:
                              assertEqualStepsWithinEachPower })
         return found
@@ -4045,38 +3989,6 @@ TestCase {
         win.view.show("plot")
         waitForRendering(win.view)
         return win
-    }
-
-    /// The tick rule holds on the other scale too.
-    ///
-    /// Exactly the assertion above, over a logarithmic axis, and it is worth
-    /// making twice: the chrome and the renderer are two implementations of
-    /// one mapping, and adding a second scale is adding a second way for them
-    /// to disagree. If the two ever took different branches the grid would not
-    /// look wrong -- it would look authoritative and read off by a decade.
-    function test_the_ticks_agree_with_the_renderer_on_a_logarithmic_axis() {
-        const win = openLogPlot()
-        const found = logPlot(win)
-
-        compare(found.lines.yLog, true,
-                "the scale must reach the renderer, not only the chrome")
-
-        // Sampled by decade rather than by even steps, which is the point:
-        // on this axis a tenth of the window is not a tenth of the values.
-        const low = Math.log10(found.lines.yMin)
-        const high = Math.log10(found.lines.yMax)
-        for (let i = 0; i <= 10; ++i) {
-            const value = Math.pow(10, low + (high - low) * i / 10)
-            const mine = found.frame.yFraction(value)
-            const theirs = found.lines.yFraction(value)
-            verify(Math.abs(mine - theirs) < 1e-9,
-                   "the chrome puts " + value + " at " + mine
-                   + " and the renderer at " + theirs)
-            // ...and it is the logarithmic answer rather than the linear one.
-            verify(Math.abs(mine - i / 10) < 1e-9,
-                   "a decade is a decade wherever it falls: " + value
-                   + " sits at " + mine)
-        }
     }
 
     /// The axis runs from the smallest reading it can draw, not from the
@@ -4123,81 +4035,6 @@ TestCase {
         found.surface.yLog = false
         waitForRendering(win.view)
         compare(found.lines.drawnRunCount, 1)
-    }
-
-    /// The ticks and their labels are matplotlib's, window for window.
-    ///
-    /// Each row is what matplotlib 3.11 draws on a y axis with room for nine
-    /// numbers over that window: every tick it places, in order, and the label
-    /// on each ("" where it carries none). Asked of the frame's functions with
-    /// the same room, so the table is about the locator and the formatter and
-    /// not about how tall this window happens to be.
-    ///
-    /// Two rows are worth a word. 2..6 is numbered at 2, 3, 4 and 6 and not at
-    /// 5: past 0.4 of a decade matplotlib numbers the multiples spaced evenly
-    /// in ratio. And 0.001..0.01 has its multiples numbered where 1..10 does
-    /// not, because matplotlib's log(0.001) over log(10) is an ulp short of
-    /// -3 -- so it counts one power crossed there and two over 1..10. A
-    /// reader comparing the two figures sees the ulp, so it is kept.
-    /// Every number on a linear axis is written to as many figures as every
-    /// other, and the crosshair's to as many again.
-    ///
-    /// The count was asked of each value, so it stepped up wherever a tick
-    /// passed the span: an axis from 2.6 to 6.6 million read "3.00e+6" beside
-    /// "4.500e+6".
-    function test_every_number_on_an_axis_has_as_many_figures() {
-        const win = openLogPlot()
-        const frame = logPlot(win).frame
-        const figures = (text) => {
-            const mantissa = text.split("e")[0]
-            const point = mantissa.indexOf(".")
-            return point < 0 ? 0 : mantissa.length - point - 1
-        }
-        for (const [low, high] of [[2.6e6, 6.6e6], [0, 1e7], [-3e7, 4.5e7],
-                                   [1.00012, 1.00019], [0.5, 950.5]]) {
-            const found = frame.tickValues(low, high, false, 10, 1000, false)
-            const counts = found.texts.filter((t) => t.text !== "0")
-                                      .map((t) => figures(t.text))
-            verify(counts.length > 1, low + ".." + high)
-            for (const count of counts) {
-                compare(count, counts[0], low + ".." + high + ": "
-                        + found.texts.map((t) => t.text).join(" "))
-            }
-            const between = (low + high) / 2 + (high - low) / 7
-            compare(figures(frame.axisLabel(between, low, high, false)), counts[0],
-                    "the crosshair over " + low + ".." + high)
-        }
-    }
-
-    function test_the_ticks_are_matplotlibs_window_for_window() {
-        const win = openLogPlot()
-        const frame = logPlot(win).frame
-        const rows = [
-            [1, 1e6, 10, 7 + 6 * 8, "10\u2070 10\u00b9 10\u00b2 10\u00b3 10\u2074 10\u2075 10\u2076"],
-            [0.5, 50, 10, 19, "10\u2070 10\u00b9"],
-            [1, 10, 10, 10, "10\u2070 10\u00b9"],
-            [2, 5, 10, 4, "2\u00d710\u2070 3\u00d710\u2070 4\u00d710\u2070 5\u00d710\u2070"],
-            [2, 6, 10, 5, "2\u00d710\u2070 3\u00d710\u2070 4\u00d710\u2070 6\u00d710\u2070"],
-            [0.001, 0.01, 10, 10,
-             "10\u207b\u00b3 2\u00d710\u207b\u00b3 3\u00d710\u207b\u00b3 4\u00d710\u207b\u00b3 "
-             + "6\u00d710\u207b\u00b3 10\u207b\u00b2"],
-            [1, 1e30, 10, 8,
-             "10\u2070 10\u2074 10\u2078 10\u00b9\u00b2 10\u00b9\u2076 10\u00b2\u2070 "
-             + "10\u00b2\u2074 10\u00b2\u2078"],
-            [0.3, 70, 4, 12, "4\u2070 4\u00b9 4\u00b2 4\u00b3"],
-            [1, 1024, 2, 6, "2\u2070 2\u00b2 2\u2074 2\u2076 2\u2078 2\u00b9\u2070"],
-        ]
-        for (const [low, high, base, count, labels] of rows) {
-            const found = frame.tickValues(low, high, true, base, 1000, true)
-            compare(found.ticks.length, count, low + ".." + high + " base " + base)
-            compare(found.texts.map((t) => t.text).join(" "), labels,
-                    low + ".." + high + " base " + base)
-        }
-        // The multiples of 0.3..70 on base four, which is where "the power
-        // below" is visibly not the power of ten below.
-        compare(frame.tickValues(0.3, 70, true, 4, 1000, true).ticks
-                     .map((v) => Number(v.toPrecision(6))),
-                [0.5, 0.75, 1, 2, 3, 4, 8, 12, 16, 32, 48, 64])
     }
 
     /// A logarithmic axis is numbered at its powers of ten, and writes them as
@@ -4501,7 +4338,7 @@ TestCase {
         plot.yLogBaseMode = "2"
         waitForRendering(win.view)
         compare(plot.yLogBase, 2)
-        compare(found.lines.yLogBase, 2, "and it reaches the renderer")
+        compare(found.frame.yLogBase, 2, "and it reaches the figure")
 
         const ticks = found.frame.yTicks
         compare(ticks.map((t) => t.base + "^" + t.exponent).join(" "),
@@ -4512,7 +4349,6 @@ TestCase {
             fuzzyCompare(Math.log2(value), 3 * i - 9, 1e-6)
         }
 
-        compare(found.frame.logSubs(2).length, 0, "an octave holds nothing")
         compare(found.frame.yGrid.length, ticks.length)
         plot.minorNumbers = true
         waitForRendering(win.view)
@@ -4528,7 +4364,8 @@ TestCase {
     /// this axis, six and a half decades, base four crosses eleven of its
     /// powers and base e fifteen, and matplotlib 3.11 draws no minor ticks for
     /// either -- numbering four every second power and e every second, as
-    /// here.
+    /// here. The rule itself is plotcore's, and its test_plotaxes asks it
+    /// directly; this is the same rule seen on the pane.
     function test_whether_a_power_is_subdivided_is_matplotlibs_rule() {
         const win = openLogPlot()
         const found = logPlot(win)
@@ -4537,15 +4374,6 @@ TestCase {
         plot.gridMode = "dense"
         plot.minorNumbers = true
         waitForRendering(win.view)
-
-        compare(frame.logSubs(2), [])
-        compare(frame.logSubs(Math.E), [], "e is under three")
-        compare(frame.logSubs(4), [2, 3])
-        compare(frame.logSubs(10), [2, 3, 4, 5, 6, 7, 8, 9])
-
-        // Ten powers or more, never -- however generous the base.
-        compare(frame.logLocate(1, 1e10, 10, 9).minors.length, 0)
-        verify(frame.logLocate(1, 1e8, 10, 9).minors.length > 0)
 
         plot.yLogBaseCustom = 4
         plot.yLogBaseMode = "custom"
@@ -4594,10 +4422,7 @@ TestCase {
         // Well inside one octave: 1.1 to 1.9 holds no power of two.
         plot.setViewRange(plot.viewMinX, plot.viewMaxX, 1.1, 1.9)
         waitForRendering(win.view)
-        const located = found.frame.logLocate(plot.viewMinY, plot.viewMaxY, 2, 9)
-        compare(located.majors.length, 0)
-        compare(located.linear, true)
-        compare(found.frame.yLogNumbers, false)
+        compare(found.frame.yLogNumbers, false, "numbered the linear way")
 
         const ticks = found.frame.yTicks
         verify(ticks.length >= 4,
@@ -4620,44 +4445,6 @@ TestCase {
         for (let i = 1; i < values.length; ++i) {
             fuzzyCompare(values[i] - values[i - 1], step, Math.abs(step) * 1e-6)
         }
-    }
-
-    /// Only a number above one is a base.
-    ///
-    /// At exactly one the logarithm is a division by zero and every value
-    /// would land in the same place; below it the axis runs backwards, which
-    /// is a different request from the one this answers. Refused rather than
-    /// corrected, because the legal bases are open at one and there is no
-    /// nearest legal value to correct a bad one to.
-    function test_only_a_number_above_one_is_a_base() {
-        const win = openLogPlot()
-        const plot = logPlot(win).surface
-
-        verify(plot.usableBase(10))
-        verify(plot.usableBase(2))
-        verify(plot.usableBase(Math.E))
-        verify(plot.usableBase(1.0000001), "legal, however little use it is")
-        verify(!plot.usableBase(1))
-        verify(!plot.usableBase(0))
-        verify(!plot.usableBase(-2))
-        verify(!plot.usableBase(0.5))
-        verify(!plot.usableBase(NaN))
-        verify(!plot.usableBase(Infinity))
-
-        // ...and nothing downstream is ever handed one that is not. A stated
-        // base that is not a base falls back to ten rather than to a pane that
-        // has quietly stopped drawing.
-        compare(plot.baseFor("custom", 1), 10)
-        compare(plot.baseFor("custom", -3), 10)
-        compare(plot.baseFor("custom", NaN), 10)
-        compare(plot.baseFor("custom", 7), 7)
-        compare(plot.baseFor("2", 7), 2)
-        fuzzyCompare(plot.baseFor("e", 7), Math.E, 1e-12)
-        compare(plot.baseFor("10", 7), 10)
-        // A mode from some later version costs the reader that base and not
-        // the whole of their view, which is the stance every remembered
-        // setting here is read under.
-        compare(plot.baseFor("tau", 7), 10)
     }
 
     /// The panel offers the base, and refuses one that is not a base.
@@ -4774,17 +4561,10 @@ TestCase {
         compare(plot.yLogBase, 4, "a saved view puts the base back")
 
         // ...and the picture is drawn on the axis the reader is looking at.
-        copySpy.clear()
-        copyFailedSpy.clear()
-        verify(plot.copyImage())
-        verify(plot.picture)
-        const drawn = findChild(plot.picture, "pictureLines")
-        verify(drawn)
-        compare(drawn.yLogBase, 4)
-        compare(drawn.parent.yLogBase, 4)
-        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000)
-        compare(copyFailedSpy.count, 0,
-                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+        compare(copyAndWait(plot), "")
+        const drawn = found.figure.axis("picture y")
+        compare(drawn.logarithmic, true)
+        compare(drawn.base, 4)
     }
 
     // --- the edges of the scale -------------------------------------------
@@ -4802,10 +4582,11 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
+        const figure = findChild(win.view, "plotFigure")
+        const lines = PlotScene.linesOf(figure)
         const message = findChild(win.view, "plotIdleMessage")
-        const gestures = findChild(win.view, "plotGestures")
-        verify(plot && lines && message && gestures)
+        const gestures = figure
+        verify(plot && figure && message)
 
         // Nothing is wrong with the data: it draws on a linear axis.
         verify(plot.drawable)
@@ -4873,7 +4654,7 @@ TestCase {
         verify(plot.logReason !== "", "the empty pane must say why")
         const message = findChild(win.view, "plotIdleMessage")
         compare(message.visible, true)
-        const gestures = findChild(win.view, "plotGestures")
+        const gestures = findChild(win.view, "plotFigure")
         compare(gestures.enabled, false)
 
         // One empty decade rather than the bounds it cannot use, so every
@@ -4886,50 +4667,6 @@ TestCase {
         verify(isFinite(plot.viewMinX) && isFinite(plot.viewMaxX),
                "the window must stay a pair of numbers")
         verify(isFinite(plot.viewMinY) && isFinite(plot.viewMaxY))
-    }
-
-    /// The air at the ends of an axis is measured in that axis's own scale.
-    ///
-    /// A twentieth of the span either way, which on a logarithmic axis is a
-    /// twentieth of a *decade count*. A twentieth of the value instead would
-    /// be nine decades of margin over a trace running from 1e-9 to 1 and none
-    /// at all underneath it.
-    ///
-    /// matplotlib's `axes.ymargin`, which it too applies in the transformed
-    /// scale. A pure function, so the degenerate ends can be asked about
-    /// directly rather than hunted for in a file.
-    function test_a_logarithmic_axis_takes_its_air_in_decades() {
-        const win = openLogPlot()
-        const plot = logPlot(win).surface
-
-        const wide = plot.padded(1, 1000, true, 10)
-        fuzzyCompare(Math.log10(wide.low), -0.15, 1e-9)
-        fuzzyCompare(Math.log10(wide.high), 3.15, 1e-9)
-
-        // A flat line has no span to take a share of, and is widened to the
-        // powers either side of it before the air goes on -- matplotlib's
-        // `LogLocator.nonsingular`, which draws a line at 7 between 10^-0.05
-        // and 10^1.05, and one at 10 between 10^-0.1 and 10^2.1.
-        const flat = plot.padded(7, 7, true, 10)
-        fuzzyCompare(Math.log10(flat.low), -0.05, 1e-9)
-        fuzzyCompare(Math.log10(flat.high), 1.05, 1e-9)
-        const onPower = plot.padded(10, 10, true, 10)
-        fuzzyCompare(Math.log10(onPower.low), -0.1, 1e-9)
-        fuzzyCompare(Math.log10(onPower.high), 2.1, 1e-9)
-
-        // Nothing above zero is one empty decade rather than a span of none:
-        // a frame with numbers on it beats a frame with none.
-        const nothing = plot.padded(0, -5, true, 10)
-        compare(nothing.low, 1)
-        compare(nothing.high, 10)
-
-        // ...and the linear rule is untouched by any of it.
-        const linear = plot.padded(0, 100, false, 10)
-        compare(linear.low, -5)
-        compare(linear.high, 105)
-        const flatLinear = plot.padded(7, 7, false, 10)
-        compare(flatLinear.low, 6)
-        compare(flatLinear.high, 8)
     }
 
     /// A window reaching below zero is clipped, not thrown away.
@@ -4963,51 +4700,6 @@ TestCase {
         waitForRendering(win.view)
         fuzzyCompare(plot.viewMinY, plot.lowerBound, 1e-9)
         fuzzyCompare(plot.viewMaxY, plot.upperBound, 1e-9)
-    }
-
-    /// An axis crossing more decades than it has room for numbers strides them
-    /// the way matplotlib does.
-    ///
-    /// Not a rounding of the count but matplotlib's search: the largest number
-    /// of ticks no more than the room allows that the powers really divide
-    /// into. Six hundred decades with room for nine are numbered every
-    /// seventy-fifth, 10⁻³⁰⁰ to 10³⁰⁰; thirty with room for nine are numbered
-    /// every fourth, eight numbers from 10⁰ to 10²⁸ -- where rounding thirty
-    /// over eight up to a round stride gave every fifth and seven. Both are
-    /// matplotlib 3.11's answers over the same windows.
-    ///
-    /// Asked of the functions directly: a fixture spanning the whole of double
-    /// would be a fixture built for one test.
-    function test_a_very_wide_logarithmic_axis_strides_its_decades() {
-        const win = openLogPlot()
-        const frame = logPlot(win).frame
-
-        const exponents = (located) => located.majors.map((v) => Math.round(Math.log10(v)))
-        compare(exponents(frame.logLocate(1e-300, 1e300, 10, 9)),
-                [-300, -225, -150, -75, 0, 75, 150, 225, 300])
-        compare(exponents(frame.logLocate(1, 1e30, 10, 9)),
-                [0, 4, 8, 12, 16, 20, 24, 28])
-        // A strided axis has nothing between its numbers.
-        compare(frame.logLocate(1, 1e30, 10, 9).minors.length, 0)
-
-        // How much room there is follows the pane: two lines of type a number
-        // up the side and three characters along the bottom, never fewer than
-        // two numbers and never more than nine.
-        compare(frame.logTickRoom(1000, true), 9)
-        compare(frame.logTickRoom(0, true), 2)
-        verify(frame.logTickRoom(100, true) > frame.logTickRoom(100, false))
-
-        // ...and a number out there is still short. A power of ten is round at
-        // every magnitude, which is the whole difference from a linear axis's
-        // round numbers.
-        const sci = (v) => frame.logLabel(v, 10, [1], 6).text
-        compare(sci(1e-300), "10\u207b\u00b3\u2070\u2070")
-        compare(sci(1e300), "10\u00b3\u2070\u2070")
-        compare(sci(1), "10\u2070")
-        // The band's readout is a number and not a power, and stays short too.
-        compare(frame.logLabelFor(1e6), "1e+6")
-        compare(frame.logLabelFor(0.001), "0.001")
-        compare(frame.logLabelFor(100), "100")
     }
 
     /// Changing a scale puts the view back.
@@ -5249,8 +4941,8 @@ TestCase {
     function test_the_view_can_be_dragged_past_the_data_but_not_off_it() {
         const opened = openTracePlot()
         const plot = opened.plot
-        const gestures = findChild(opened.win.view, "plotGestures")
-        verify(gestures, "the gesture layer must be reachable")
+        const gestures = findChild(opened.win.view, "plotFigure")
+        verify(gestures, "the figure must be reachable")
 
         // How much of the window is over the data, as a share of the window,
         // in the positions the gestures work in.
@@ -5367,35 +5059,26 @@ TestCase {
     ///
     /// A logarithmic axis is a reading of the data rather than a way of
     /// dressing it, so a figure that came back linear would not be a picture
-    /// of what the reader was looking at. The picture is a second frame built
-    /// off screen (PlotPicture.qml) and it is alive from the call that starts
-    /// the grab until the answer lands, which is where this looks at it.
+    /// of what the reader was looking at. The picture is the same figure laid
+    /// out again at the picture's size (FigureItem::picture), and the axes it
+    /// was numbered on are kept for exactly this question.
     function test_the_exported_picture_is_drawn_on_the_same_scale() {
         const win = openLogPlot()
         const found = logPlot(win)
         const plot = found.surface
+        plot.gridMode = "dense"
         plot.minorNumbers = true
         waitForRendering(win.view)
 
-        copySpy.clear()
-        copyFailedSpy.clear()
-        verify(plot.copyImage(), "a drawn plot must accept the request")
-        verify(plot.picture, "the picture is alive while the grab is in flight")
-
-        const drawn = findChild(plot.picture, "pictureLines")
-        verify(drawn, "the picture's own lines must be reachable")
-        compare(drawn.yLog, true)
-        compare(drawn.yMin, plot.viewMinY)
-        compare(drawn.yMax, plot.viewMaxY)
-        // The frame around them too, which is what carries the numbers.
-        compare(drawn.parent.yLog, true)
-        compare(drawn.parent.minorNumbers, true)
-        verify(drawn.parent.yTicks.length > 0)
-
-        tryVerify(() => copySpy.count > 0 || copyFailedSpy.count > 0, 10000,
-                  "the grab must answer one way or the other")
-        compare(copyFailedSpy.count, 0,
-                copyFailedSpy.count > 0 ? copyFailedSpy.signalArguments[0][0] : "")
+        compare(copyAndWait(plot), "", "a drawn plot must be copied")
+        const drawn = found.figure.axis("picture y")
+        compare(drawn.logarithmic, true)
+        compare(drawn.low, plot.viewMinY)
+        compare(drawn.high, plot.viewMaxY)
+        // ...and numbered on it, digits between the powers and all.
+        verify(drawn.ticks.length > 0)
+        compare(drawn.logNumbers, true)
+        verify(drawn.minor.length > 0, "the digits must reach the picture")
     }
 
     /// A custom step on a logarithmic axis is a factor.
@@ -5677,6 +5360,9 @@ TestCase {
         view.show("plot")
         const plot = findChild(view, "plotSurface")
         const backing = AppController.datasetPlot
+        // Laid out once: the view is never drawn, and the axes are the
+        // figure's, worked out when it is laid out.
+        findChild(view, "plotFigure").compose()
 
         // A little air above and below, so a line at the extreme is a line and
         // not part of the frame -- but the band is the data's, either way.
@@ -5888,8 +5574,8 @@ TestCase {
         // and image viewer uses. It costs nothing: the whole-line summary is
         // never thrown away, so the most zoomed-out picture is always already
         // in hand and going to it is a draw.
-        const gestures = findChild(win.view, "plotGestures")
-        verify(gestures, "the gesture layer must be reachable")
+        const gestures = findChild(win.view, "plotFigure")
+        verify(gestures, "the figure must be reachable")
         doubleClickOn(gestures)
         waitForRendering(win.view)
         compare(plot.zoomX, 1)
@@ -6068,16 +5754,15 @@ TestCase {
         win.view.show("plot")
         waitForRendering(win.view)
 
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
-        const frame = lines.parent
+        const figure = findChild(win.view, "plotFigure")
+        verify(figure, "the figure must be reachable")
+        const frame = PlotScene.frameOf(figure)
 
         // Nothing until the pointer is over the pane.
         verify(!frame.reading.valid,
                "there must be no reading before anything is pointed at")
 
-        mouseMove(lines, Math.round(lines.width * 0.4),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.4), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(frame.reading.valid, "pointing at the plot must produce a reading")
 
@@ -6092,8 +5777,7 @@ TestCase {
 
         // And it follows the pointer.
         const wasAt = frame.reading.x
-        mouseMove(lines, Math.round(lines.width * 0.7),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.7), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(frame.reading.valid)
         verify(frame.reading.x > wasAt,
@@ -6113,13 +5797,13 @@ TestCase {
             }
             return found
         }
-        const withCrosshair = busy(grabImage(lines.parent))
+        const withCrosshair = busy(grabImage(figure))
 
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
         waitForRendering(win.view)
         verify(!frame.reading.valid,
                "the reading must go when the pointer leaves the pane")
-        verify(busy(grabImage(lines.parent)) < withCrosshair,
+        verify(busy(grabImage(figure)) < withCrosshair,
                "the crosshair must leave with it")
     }
 
@@ -6138,13 +5822,12 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        verify(lines, "the drawing surface must be reachable")
+        const figure = findChild(win.view, "plotFigure")
+        verify(figure, "the figure must be reachable")
 
         compare(plot.readingFacts.length, 0)
 
-        mouseMove(lines, Math.round(lines.width * 0.4),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.4), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid)
 
@@ -6179,7 +5862,7 @@ TestCase {
                "the reading must sit in the right-hand half of the bar: "
                + (trailing.x + trailing.width) + " of " + footer.width)
 
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
         waitForRendering(win.view)
         compare(plot.readingFacts.length, 0)
         verify(!trailing.visible,
@@ -6199,11 +5882,10 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
+        const figure = findChild(win.view, "plotFigure")
         compare(AppController.datasetPlot.seriesCount, 1)
 
-        mouseMove(lines, Math.round(lines.width * 0.45),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.45), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid)
 
@@ -6212,7 +5894,7 @@ TestCase {
         verify(String(facts[0]).startsWith("x "), "got " + facts[0])
         verify(String(facts[1]).startsWith("y "), "got " + facts[1])
 
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
     }
 
     /// The crosshair is a control now, and it can be turned off.
@@ -6224,11 +5906,10 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
+        const figure = findChild(win.view, "plotFigure")
         verify(plot.showCursor, "the cursor is on by default")
 
-        mouseMove(lines, Math.round(lines.width * 0.4),
-                  Math.round(lines.height * 0.5))
+        mouseMove(figure, PlotScene.paneX(figure, 0.4), PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid)
 
@@ -6259,31 +5940,30 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
-        const frame = lines.parent
-        const cursor = findChild(win.view, "plotCursor")
-        verify(cursor, "the crosshair must be reachable")
-
-        // Whatever else is true, it is clipped and it is the pane.
-        verify(cursor.clip, "the crosshair must be clipped")
-        compare(cursor.x, frame.area.x)
-        compare(cursor.y, frame.area.y)
-        compare(cursor.width, frame.area.width)
-        compare(cursor.height, frame.area.height)
+        const figure = findChild(win.view, "plotFigure")
+        const frame = PlotScene.frameOf(figure)
 
         // A narrow band around the middle of a ramp: at the left-hand end of
         // the line every sample is far below it.
         plot.zoomY = 20
         waitForRendering(win.view)
-        mouseMove(lines, 2, Math.round(lines.height * 0.5))
+        mouseMove(figure, Math.round(figure.area.x) + 2, PlotScene.paneY(figure, 0.5))
         waitForRendering(win.view)
         verify(plot.reading.valid)
-        verify(plot.reading.py > frame.area.height,
+        const area = frame.area
+        verify(plot.reading.py > area.y + area.height,
                "the nearest sample must be below the pane for this to test "
-               + "anything: py = " + plot.reading.py + " of " + frame.area.height)
+               + "anything: py = " + plot.reading.py + " below " + (area.y + area.height))
+
+        // ...and whatever else is true, every mark the crosshair is drawn with
+        // is clipped to the pane: the rules, and the ring on the sample.
+        const crosshair = figure.marks().filter((m) => !m.under && m.layer === 2 && m.kind !== 3)
+        verify(crosshair.length > 0, "the crosshair must be drawn")
+        for (let i = 0; i < crosshair.length; ++i)
+            verify(crosshair[i].clipped, "every mark of the crosshair must be clipped")
 
         plot.zoomY = 1
-        mouseMove(lines, -20, -20)
+        mouseMove(figure, -20, -20)
     }
 
     function test_a_reversed_cycle_runs_the_other_way() {
@@ -6600,7 +6280,7 @@ TestCase {
         waitForRendering(win.view)
 
         const plot = findChild(win.view, "plotSurface")
-        const lines = findChild(win.view, "plotLines")
+        const lines = PlotScene.linesOf(findChild(win.view, "plotFigure"))
         const backing = AppController.datasetPlot
         compare(plot.colorMode, "okabe-ito")
         tryVerify(() => lines.lineCount() === 6, 5000, "six lines are drawn")

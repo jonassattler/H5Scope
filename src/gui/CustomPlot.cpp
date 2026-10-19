@@ -2303,11 +2303,6 @@ PlotAxis CustomPlot::drawingAxis() const
     return axis;
 }
 
-void CustomPlot::fill(PlotItem* target)
-{
-    fill(static_cast<LineTarget*>(target));
-}
-
 void CustomPlot::fill(LineTarget* target)
 {
     if (target == nullptr) {

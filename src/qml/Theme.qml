@@ -885,8 +885,8 @@ QtObject {
     ///
     /// Two things ask for it, and neither is a number on the axis in its own
     /// right: the exponent of a power written `10³`, raised as matplotlib's
-    /// mathtext raises it (PlotFrame's TickLabel), and the subdivisions of a
-    /// logarithmic decade (PlotFrame.minorNumbers), which are marks on the way
+    /// mathtext raises it (plotcore's TickLabel), and the subdivisions of a
+    /// logarithmic decade (plotcore's minorNumbersOf), which are marks on the way
     /// between two of the axis's numbers. Eight of those per decade in the face the
     /// axis itself is set in is an axis with two kinds of number down it,
     /// arguing about which is the scale.

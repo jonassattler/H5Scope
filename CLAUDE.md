@@ -61,7 +61,7 @@ ctest --preset release
 | `src/h5core/` | The HDF5 backend. **No Qt at all** — links only `HDF5::HDF5`. Keep it that way; it is what makes the layer testable headless. `FieldDataset` is here too: one member of a compound, presented as a dataset. |
 | `src/postproc/` | The numpy-shaped pipeline (slice, transpose, reshape, the folds, the running folds, diff, the element-wise operations) and `Script`, the same pipeline written out as text. Links `Qt6::Core` for `QString` only; no `QObject`, AUTOMOC off. |
 | `plotcore/` | The plot's arithmetic, a CMake project of its own: the projection, the fold, the pyramid and the policy over held runs (`Projection`, `Levels`, `Pyramid`), the budget's tiers (`Budget`) and the pool a large fold is spread over (`Parallel`). **No Qt, no HDF5, no vcpkg.** It is a repository of its own, [jonassattler/plotcore](https://github.com/jonassattler/plotcore), pinned here as a git submodule — its CI builds it alone, which is what notices a dependency on the viewer creeping back in, and builds the libraries and demos above it. Namespace `plotcore`; `gui/PlotCore.hpp` brings it into `gui`, so the viewer's code says `PlotLine` as it always did. Its tests are `plotcore/cpp/tests` (`test_plotprojection`, `test_plotlevels`, `test_plotfigure`, and `test_capi` when built alone), and they run with the viewer's. Above the arithmetic it is a plotting library in its own right — see *plotcore, the submodule* below. |
-| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot renderer (`PlotItem`, drawing what plotcore projects, and `FigureItem`, which hosts plotcore's whole `Figure` and is taking its place) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
+| `src/gui/` | `QAbstractItemModel`s, `AppController`, the HDF5 thread, the plot's host (`FigureItem`, which hands plotcore's whole `Figure` the pane, the fonts and the pointer and paints the scene it gives back) with the cache under it (`DatasetPlot`/`CustomPlot` over plotcore's pyramid, and `PlotBudget`, which shares plotcore's tiers out between them), `Completion` — which of the three grammars on a typed line the caret is in — and `NameIndex`, every name in the file in one block of memory so the filter box answers out of RAM. QML module URI `H5Scope.Backend`. |
 | `src/qml/` | The UI. QML module URI `H5Scope`, target `appqml`. `Theme.qml` is the singleton every visual value resolves through. |
 | `src/main.cpp` | Command line (`--version/--help/--license/--notices`), fonts, icon, engine. |
 | `tools/` | `make-example-file`, `inspect-file`, `bench-tree`, `bench-data`, `bench-zoom`, `make-screenshots`, the CI scripts and the two design checks. |
@@ -72,7 +72,7 @@ QML talks to exactly one object: `AppController` (`QML_SINGLETON`). The models
 hang off it as `CONSTANT` properties; `DatasetPlot`, `DatasetImage`,
 `TableSetupModel`, `PostprocessModel`, `CustomPlotSet` and `CustomPlot` are
 `QML_UNCREATABLE` and obtained from it. `FileSystem`, `FocusRelease` and
-`PlotItem` are the other registered types — `PlotItem` is the only one QML
+`FigureItem` are the other registered types — `FigureItem` is the only one QML
 *instantiates*, because it is an item and has to be placed.
 
 The custom plot tabs are the one part of the UI that is **not** about the
@@ -120,11 +120,11 @@ plot it has.
 A line of a custom tab may also be drawn against a **y axis of its own**
 (`Entry::separateAxis`, `axisFixed`, answered by `seriesAxis`), and it is the
 colour's kind of setting: the same values under a different map, so nothing is
-re-read. The map lives on the line — `PlotLine::ownY` with its window, set by
-`PlotItem::setSeriesYRange` after every fill as the colour is — and everything
-that places a y goes through `gui::lineView`, so the curve, the crosshair's
-snap (`nearestSample`, `PlotFrame.placeReading` via `seriesYFraction`) and the
-side axis's ticks cannot disagree. Four rules hold it up:
+re-read. The map lives on the line — `PlotLine::ownY` with its window, which
+the figure sets from `LineSettings::ownAxis` on every frame, and
+`FigureItem` sets that from `seriesAxis` on every fill as it does the colour —
+and everything that places a y goes through `gui::lineView`, so the curve, the
+crosshair's snap (`nearestSample`) and the side axis's ticks cannot disagree. Four rules hold it up:
 
 - **A separate axis is the line alone, and linear.** Its whole is that line's
   own extent (counted in `recount`, which also takes it *out* of `minimum` /
@@ -160,25 +160,31 @@ a window onto x and onto y, so nothing is re-read and the zoom survives it.
 `PlotView::transposed` projects every line upright into a pane of the swapped
 size and reflects each point onto the real one (`uprightView`,
 `transposedPoint`), so the envelope still folds along x — which is now the
-pane's height, and what `pushColumns` reports. `PlotFrame` names every tick
-list after its *data* axis and lays them out through `left*`/`foot*`
-properties, which are the one place the swap is decided; the side axes become
-rows along the foot. The numbers up the side come only from lists measured up
-the pane (`xValuesUp`/`yValuesUp`): the left gutter sizes the pane's width, and
-a tick list that could depend on that width in either orientation is a cycle
-across the two that Qt reports on every flip. Gestures arrive in pixels, so
-`zoomAt`, `panBy`, `zoomToRegion` and `dataXAt`/`dataYAt` read each axis off
-the coordinate it runs along; the zoom modifiers name the pane's directions.
+pane's height, and what the figure tells the plot its columns are. plotcore's
+`Figure::layout` names every tick list after its *data* axis and lays them
+out through `left`/`foot` lists, which are the one place the swap is decided;
+the side axes become rows along the foot. The numbers up the side come only from lists measured up
+the pane: the left gutter sizes the pane's width, and a tick list that could
+depend on that width in either orientation is a cycle across the two — one
+Qt reported on every flip while the frame was QML. Gestures arrive in pixels,
+so plotcore's `Camera` (`zoomAt`, `panBy`, `zoomToRegion`, `dataXAt`/`dataYAt`)
+reads each axis off the coordinate it runs along; the zoom modifiers name the
+pane's directions.
 
-The plot is drawn by this program and not by a library. `plotcore::Projection`
+The plot is drawn by plotcore, this project's own library, and not by Qt
+Graphs. `plotcore::Projection`
 (`plotcore/cpp/include/plotcore/Projection.hpp`) is the arithmetic — where a sample lands, which samples are drawable, where a
 gap ends one stroke, how a million samples become two thousand vertices without
 losing the one that matters, which run of a line a zoomed-in reader is asking to
 have read again, and how a stroke is built out of triangles — and
 it has no renderer in it, which is what lets `plotcore/cpp/tests/test_plotprojection.cpp`
-assert all of it with no window. `gui::PlotItem` is the part that has one.
-`src/qml/PlotFrame.qml` draws the gutters, the rules, the ticks and the labels.
-Read the header of `Projection.hpp` before changing any of it: the three
+assert all of it with no window. Above it, `plotcore::Figure` decides
+everything else a pixel or a gesture is: the gutters, the rules, the ticks and
+their labels, the camera, the colours, the crosshair, the legend on the plot,
+the band and its numbers, and the picture that leaves (see "plotcore, the
+submodule"). `gui::FigureItem` is the part that has a window: it hosts the
+figure and paints the scene it hands back. Read the header of
+`Projection.hpp` before changing any of it: the three
 things listed there are why this is ours rather than Qt Graphs', and each of
 them is a defect of the thing it replaced.
 
@@ -211,9 +217,11 @@ read through, because a hundred-million-element line is not a buffer anyone
 hands over whole.
 
 Two rules hold across that boundary. **A tick is drawn where the curve was
-drawn, or it is a lie** — `PlotFrame.yFraction()` and `PlotItem::yFraction()`
-are two implementations of one rule and `tst_views` asserts they agree, over the
-window on screen and outside it.
+drawn, or it is a lie.** The frame and the strokes are one figure now, so
+there is one implementation of where a value sits, and plotcore's
+`test_plotfigure` holds the numbers painted beside the pane to the values the
+axis says it was numbered at (`SceneAxis`). While the frame was QML they were
+two implementations, and the suite held them to each other.
 
 The base is the reader's — 10, 2, e or one they type (`xLogBaseMode` plus
 `xLogBaseCustom`, resolved by `baseFor`) — and **it moves nothing that is
@@ -225,8 +233,8 @@ because the legal bases are open at one and there is no nearest legal value to
 correct a bad one to.
 
 That rule is also the whole of what a **logarithmic axis** costs. Where a value
-sits is one function per axis — `PlotFrame.fractionOn()` in QML and
-`gui::AxisMapping` in C++ — and nothing else ever subtracted two bounds for
+sits is one function per axis — plotcore's `fractionOn` for the frame and
+`AxisMapping` for the strokes — and nothing else ever subtracted two bounds for
 itself, so putting `log10` inside those two moved the curve, the ticks, the
 rules, the crosshair, the band and its readout at once. The bounds stay in the
 data's own units on either scale; only the map to a pixel changes. Three things
@@ -239,14 +247,15 @@ do not follow from that and are written out:
   is matplotlib's `nonpositive="mask"`, and it is **not** matplotlib's default:
   under `"clip"` a line through zero plunges off the bottom of the pane. The
   one deliberate difference from its log axis that is not at an edge.
-- **The gestures are arithmetic over decades.** `PlotSurface.axisPosition` is
-  the one place that knows it, and `panX`/`panY` are in decades while their axis
+- **The gestures are arithmetic over decades.** plotcore's `axisPosition`
+  (Camera) is the one place that knows it, and `panX`/`panY` are in decades while their axis
   is logarithmic — which is why changing a scale resets the view: a pan of forty
   is four decades or it is forty units and there is no reading that is both.
 - **Which ticks, and which of them are numbered, is matplotlib's answer,
   ported rather than reasoned out again** — `LogLocator` and
-  `LogFormatterSciNotation` as they stand in matplotlib 3.11, in
-  `PlotFrame.logLocate` and `logSublabels`/`logLabel`. Every time this file
+  `LogFormatterSciNotation` as they stand in matplotlib 3.11, in plotcore's
+  `logLocate` and `logSublabels`/`logLabel` (Ticks), and held to matplotlib's
+  answers window for window by its `test_plotaxes`. Every time this file
   reasoned its own way to an answer it came out a little different (a stride of
   five where matplotlib takes four; a linear axis where matplotlib keeps its
   multiples; a mark at three halves of an octave matplotlib never draws), so the
@@ -345,8 +354,9 @@ own envelope were bucketed the same way. Four pieces replace it:
   the pane and nowhere near even in position, so no start and step can place
   them; a line with `xs` is drawn point for point by the explicit branch of
   `projectLine` and never re-bucketed. It is borrowed like `values`, retired
-  with it (`DatasetPlot::fold_`, `CustomPlot::Entry::foldValues`), and copied by
-  `PlotItem::adopt`. A custom tab against a time base finds its edges by
+  with it (`DatasetPlot::fold_`, `CustomPlot::Entry::foldValues`), and a
+  picture is painted from it inside the call that takes it, so nothing copies
+  it. A custom tab against a time base finds its edges by
   bisecting the held time base (`timeEdges`) and only while it runs one way.
 - **The models are told the scale** (`xLog` on both plots, bound by
   `PlotSurface`), because it decides what a column is. The base is not passed:
@@ -376,8 +386,8 @@ invented samples, on both scales.
 And **`PlotLine::values` is borrowed** — the models hand the item a pointer into
 their own cache and copy nothing, so no path may free or prune a held line
 without saying something about it first. There are two things it can say, and
-invariant 6 below is where the difference lives: `PlotItem::clear()`, where the
-old line stops being a reading of anything, and `retire()`, where it is the same
+invariant 6 below is where the difference lives: `LineTarget::clearLines()`,
+where the old line stops being a reading of anything, and `retire()`, where it is the same
 data read again and goes on being drawn until the replacement arrives.
 `test_models` and `test_customplot` do the dangerous thing both ways and check
 what the item is reading afterwards — by dereferencing it, because a line count
@@ -398,13 +408,13 @@ each say so on every platform rather than on the one that noticed.
 
 Both plots keep that contract through one class, `gui::BorrowedLines`: which
 item is reading, the retired store, and the rule for when either is let go
-(`lend`, `retire`, `release`). What it lends to is a `LineTarget` -- the plot
-item, or the figure item -- and what the figure item asks of a plot is a
-`LineModel`, the shape both plots already had: their lines, what those lines
-span, and the news of what is being looked at. Each plot used to carry its own copy, and the
-two defects found in it -- `fill()` into a second item leaving the first
-holding pointers, and a destroyed plot leaving its item holding them -- had
-to be fixed twice.
+(`lend`, `retire`, `release`). What it lends to is a `LineTarget` — the
+figure item, or a test's `LineHolder` — and what the figure item asks of a
+plot is a `LineModel`, the shape both plots already had: their lines, what
+those lines span, and the news of what is being looked at. Each plot used to
+carry its own copy, and the two defects found in it — `fill()` into a second
+item leaving the first holding pointers, and a destroyed plot leaving its item
+holding them — had to be fixed twice.
 
 ## Compound data: `.member` indexing
 
@@ -713,9 +723,11 @@ minutes over.
 
 ## plotcore, the submodule
 
-plotcore is also what three standalone libraries are built on — C++, Python
-and Rust — with a Qt, a PyQt6 and an egui demo, and the viewer's port of its
-own frame and gestures is how they draw the plot this application draws. It
+plotcore is the plot this application draws — the frame, the gestures, the
+colours, the crosshair, the legend, the band and the picture that leaves, as
+well as the arithmetic under them — and it is also what three standalone
+libraries are built on, C++, Python and Rust, with a Qt, a PyQt6 and an egui
+demo that draw the same plot. It
 lives in [jonassattler/plotcore](https://github.com/jonassattler/plotcore),
 whose CLAUDE.md is where the library is written up; this repository pins one
 commit of it at `plotcore/`. The viewer builds it with `add_subdirectory`,
@@ -726,25 +738,34 @@ but its public headers.
 its repository and under its CI. Then one here moves the pin —
 `git -C plotcore fetch && git -C plotcore checkout <sha>`, and commit
 `plotcore` — together with whatever the viewer needs to change with it, so
-that `test_cost`, `test_customplot` and the parity suite run against both
-halves at once. A branch here may pin a library commit that has not merged
+that `test_cost`, `test_customplot` and the QML suite run against both halves
+at once. A branch here may pin a library commit that has not merged
 yet, which is how the pair is tried together, and CI warns that it is
 unmerged; on `main` and on a tag the pinned commit must be on plotcore's own
 `main`, and CI fails otherwise. The release's source bundle carries the
 submodule at the pinned commit (`tools/make-source-bundle.sh`), because it is
 compiled into the binary.
 
-One rule from that boundary is the viewer's, and is enforced here:
-**`Format`, `Ticks`, `Camera` and `Palettes` are PlotFrame.qml's and
-PlotSurface.qml's functions and Theme.qml's colours, ported** rather than
-reasoned out again, and `tests/qml/tst_plotcore_parity.qml` asks the QML and
-the port the same questions through `tests/PlotCoreProbe` and compares the
-answers exactly — values bit for bit, labels character for character, colours
-to a sixteen-bit step. That includes JavaScript's own number formatting
-(`toFixed`, `toExponential`, and Qt's V4 `toPrecision`, which is not
-ECMAScript's). **A change to how the viewer numbers, rules, zooms or colours
-an axis is a change to both, or the parity suite fails** — which is the point
-of it, and why the pin moves in the same pull request as the QML.
+**The plot is plotcore's, and the viewer hosts it.** `gui::FigureItem` gives
+plotcore's `Figure` the pane's size, Theme's faces to measure text in and the
+settings `PlotSurface.qml` keeps; it forwards the pointer and the wheel; it
+lends the figure the lines the plot lends it (a `plotcore::LineSource` over
+`LineTarget`), and tells the plot the window, the columns and where a zoom is
+heading; and it paints the `Scene` that comes back — as scene-graph nodes with
+a graphics API, as one QPainter texture under the software renderer. It decides
+nothing a reader sees. `PlotSurface.qml` keeps its public names, because the
+settings panel, the legend beside the plot, `DatasetMemory`, the saved views
+and the QML suite all read them, and is a façade over the figure. **A change to
+how the plot is numbered, ruled, zoomed, coloured or drawn is a change to
+plotcore**, in its pull request first.
+
+`Format`, `Ticks`, `Camera` and `Palettes` began as ports of `PlotFrame.qml`,
+`PlotSurface.qml` and `Theme.qml`, held to them by a parity suite that asked
+both the same questions — JavaScript's own number formatting included. The
+QML is gone, and so is the suite; every answer it was given is recorded in
+plotcore (`cpp/tests/viewer/`, asked again by `test_plotviewer`), the rules
+this repository's suite held its QML axes to are plotcore's `test_plotaxes`,
+and the argument for each rule is written over its function there.
 
 ## Invariants worth knowing before editing
 
@@ -1057,19 +1078,19 @@ of it, and why the pin moves in the same pull request as the QML.
    debounced (`kResizeMilliseconds`), so a drag of the window's edge reads once
    at the end rather than once per sixty-four pixels.
 
-   **The picture that leaves is a second frame, and it owns its values.**
-   Settings > Plot Settings asks a copied plot to differ from the pane —
-   publication colours, a size of the reader's choosing, a resolution of their
-   choosing, the crosshair in or out — and none of the first three can be had
-   by re-styling the frame on screen, because a grab renders the scene as it
-   stands and the picture would be bought with a frame of the application in
-   the wrong colours. `PlotPicture.qml` is therefore a whole `PlotFrame` built
-   off screen, laid out at the size asked for (so its ticks and its type are
-   that size's rather than the pane's, magnified), grabbed, and destroyed when
-   the answer lands. Its colours come from properties with Theme defaults —
-   `PlotFrame.ground`, `ink`, `ruleMinor`, `ruleMajor`, `axisRule`,
-   `cursorInk` — because `Theme` is a singleton and cannot be flipped for the
-   length of a grab.
+   **The picture that leaves is the same figure laid out again.** Settings >
+   Plot Settings asks a copied plot to differ from the pane — publication
+   colours, a size of the reader's choosing, a resolution of their choosing,
+   the crosshair in or out — and none of the first three can be had by
+   re-styling the pane on screen, which would buy the picture with a frame of
+   the application in the wrong colours. `FigureItem::picture` asks the figure
+   for a second scene (a `SceneRequest` with `picture` set): laid out at the
+   size asked for, so its ticks and its type are that size's rather than the
+   pane's magnified, in the page's colours when it is for publication, with
+   the crosshair pinned to the sample it is on when that was asked for. It is
+   painted with QPainter into an image inside that one call, and the pane is
+   left as it was. Its axes are kept (`axis("picture y")`) so a test can ask
+   what it was numbered on.
 
    **Publication is the light scope and not one ink.** It draws the picture
    the light theme would draw: `Theme.paperInk` and its neighbours for the
@@ -1077,11 +1098,12 @@ of it, and why the pin moves in the same pull request as the QML.
    read against the other ground — for the strokes. It was one black stroke
    for every line until 0.6.4, which is the one thing a colour cycle exists to
    not be: six traces went out as six identical strokes with a caption naming
-   colours the picture did not contain. `PlotSurface.seriesColor` takes the
-   scope as a fourth argument so that every branch answers it — a palette is a
+   colours the picture did not contain. plotcore's `seriesColor` (asked through
+   `PlotSurface.seriesColor`) takes the scope as an argument so that every
+   branch answers it — a palette is a
    second table, a ramp is the same map in both scopes, and the three colours
    that are *values* by the time they arrive (`colorSingle`, the ends of a
-   `range`, a line the reader coloured) go through `Theme.paperColor`. That
+   `range`, a line the reader coloured) go through plotcore's `paperColor`. That
    maps signal white to ink, which is not a nicety: the accent is white on the
    dark theme and a white line on a white page is no line. It is the exact
    mirror of the substitution okabe-ito already makes the other way.
@@ -1108,8 +1130,8 @@ of it, and why the pin moves in the same pull request as the QML.
    all**: a stated size exactly, else the pane at the display's scale, held
    under `kMaxExportPixels`), and `plotExportLayout` (the pixels over the
    scale, floored at `kMinExportPixels` units so a frame is never all
-   gutter). `PlotPicture` is laid out at the layout and grabbed at the
-   pixels. The chosen dpi also goes into the image (`ImageClipboard::copyItem`'s
+   gutter). The figure lays the picture out at the layout and paints it at
+   the scale. The chosen dpi also goes into the image (`ImageClipboard::copyImage`'s
    `dpi`, from `plotExportTaggedDpi`), because a count of pixels is not a size
    until something says how densely they sit; a picture taken at the display's
    scale is tagged with nothing, since "as many dots as this screen has" is
@@ -1125,29 +1147,25 @@ of it, and why the pin moves in the same pull request as the QML.
    nothing it reads, so a box that asked for the width without naming the
    density would go on showing the width the density before it gave.
 
-   What it must **not** do is ask the model to fill it. `fill()` records which
-   item it last handed the lines to (`drawing_`), so a second fill moves that
-   record and a `releaseDrawing()` arriving between the grab starting and the
-   frame it renders on would empty the wrong item and free values the other is
-   still pointing at. `PlotItem::adopt` copies instead — every `PlotLine`'s
-   values *and* both of `PlotAxis`'s borrowed arrays, the whole time base and
-   the finer run of it — into storage the item owns, so the model never learns
-   the picture exists. Cheap for a structural reason: a `PlotItem` holds a
-   pane's worth of points, not a file's worth.
+   It asks the plot for nothing. A second fill would move the plot's record of
+   which item is borrowing its lines (`drawing_`), and a `releaseDrawing()`
+   arriving before the picture was taken would empty the wrong item and free
+   values the other is still pointing at; that is why the QML picture once
+   copied every line it drew. The figure's picture is drawn from the lines the
+   pane is drawing, inside the call that asks for it, so nothing outlives the
+   call and nothing is copied. A line on paper is drawn solid, whatever is
+   highlighted (Theme.paperSeriesOpacity, which is plotcore's rule now).
 
-   **A grab carries no alpha to rely on.** Under Qt Quick's software renderer
-   — what runs wherever there is no graphics API, and what the whole suite
-   runs under — an item grab comes back `Format_RGB32` with untouched pixels
-   at opaque black, so a frame drawing no ground grabs as a black slab. A
-   publication picture is therefore drawn *twice* in one item, on white above
-   and on black below, and `ImageClipboard::copyItem(…, composited)` recovers
-   the alpha from the pair: source-over says a pixel of colour C at coverage a
-   lands at `C*a + (1-a)` on white and `C*a` on black, so their difference is
-   `1-a` and the black half is already the premultiplied colour. Exact rather
-   than a colour key, so antialiased type and the feathered edge of a stroke
-   keep the coverage they were drawn with — and the same answer on both
-   renderers. It is also why `kMaxExportPixels` is half a texture ceiling
-   rather than a whole one.
+   **Painted, not grabbed, and so it has an alpha.** Under Qt Quick's software
+   renderer — what runs wherever there is no graphics API, and what the whole
+   suite runs under — an item grab comes back `Format_RGB32` with untouched
+   pixels at opaque black, and until plotcore drew the plot a publication
+   picture was drawn *twice*, on white and on black, its alpha recovered from
+   the pair. A QPainter image carries the alpha as drawn, so there is one
+   render; `ImageClipboard::copyImage` makes it straight and its clear pixels
+   white (`straightOnPaper`) for the reader that drops the alpha, which on
+   Windows is Word. `kMaxExportPixels` was half a texture ceiling for the pair
+   and stays where it was.
 7. **The version is counted from release tags**, never typed. Major/minor live
    in `cmake/Version.cmake`; the patch is how many `vMAJOR.MINOR.*` tags exist.
 8. **Every tag carries a `CHANGELOG.md` section**, headed `## MAJOR.MINOR.PATCH`
@@ -1190,17 +1208,19 @@ of it, and why the pin moves in the same pull request as the QML.
   rows of `surfaceRaised` that belong to the bar, and the plot looks as though
   it were standing on a raised surface when it is standing on true black. That
   is why `colouredPixels()` in `tst_views` takes a `firstRow`. When what is
-  being measured is *where* something is drawn, grab through
-  `ImageClipboard.copyItem` + `pixelOnClipboard` instead: that is a real
-  `QQuickItemGrabResult` on the item and its origin is the item's own. The plot
-  ground is asserted that way in *"the plot stands on black or on white"*.
+  being measured is *where* something is drawn, grab the window's content item
+  and read the item's own rectangle out of it (`mapToItem`). The plot ground is
+  asserted that way in *"the plot stands on black or on white"*.
 - Headless anything needs `QT_QPA_PLATFORM=offscreen`. The offscreen platform
   declares no RHI capability, so Qt Quick falls back to the software renderer,
   which draws **no custom `QSGGeometryNode` at all** — it knows rectangles,
-  images, nine-patches and glyphs and silently drops the rest. `gui::PlotItem`
+  images, nine-patches and glyphs and silently drops the rest. `gui::FigureItem`
   therefore carries a QPainter fallback so the QML suite still sees a line;
   `make-screenshots` asks for the `rhi` backend explicitly so that the pictures
-  are of the geometry that ships rather than of the fallback.
+  are of the geometry that ships rather than of the fallback. The fallback
+  keeps its one texture node from frame to frame: that renderer places a node
+  added after the first frame as though it hung from the window, and a plot
+  anywhere but the window's corner was painted over the tree.
 - Windows: keep the checkout and vcpkg at short paths (`C:\src\H5Scope`,
   `C:\v`). `MAX_PATH` bites during the Qt link and reports it as
   `LNK1181: cannot open input file` naming a file that exists.

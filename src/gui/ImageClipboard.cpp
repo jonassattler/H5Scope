@@ -9,11 +9,7 @@
 #include <QtGui/QColor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QImage>
-#include <QtQuick/QQuickItem>
-#include <QtQuick/QQuickItemGrabResult>
-#include <QtQuick/QQuickWindow>
 
-#include <algorithm>
 #include <cmath>
 
 namespace gui {
@@ -22,45 +18,18 @@ ImageClipboard::ImageClipboard(QObject* parent) : QObject(parent) {}
 
 ImageClipboard::~ImageClipboard() = default;
 
-QImage composeOverNothing(const QImage& stacked)
+QImage straightOnPaper(const QImage& painted)
 {
-    const int height = stacked.height() / 2;
-    if (height <= 0 || stacked.width() <= 0) {
-        return {};
-    }
-    const QImage onWhite =
-        stacked.copy(0, 0, stacked.width(), height).convertToFormat(QImage::Format_ARGB32);
-    const QImage onBlack =
-        stacked.copy(0, height, stacked.width(), height).convertToFormat(QImage::Format_ARGB32);
-
     // Straight alpha and not premultiplied, and the empty ground white rather
     // than black -- see the header, which is about a paste into Word on
     // Windows that came back as a black slab with the numbers gone.
-    QImage out(stacked.width(), height, QImage::Format_ARGB32);
-    for (int y = 0; y < height; ++y) {
-        const auto* white = reinterpret_cast<const QRgb*>(onWhite.constScanLine(y));
-        const auto* black = reinterpret_cast<const QRgb*>(onBlack.constScanLine(y));
+    QImage out = painted.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < out.height(); ++y) {
         auto* row = reinterpret_cast<QRgb*>(out.scanLine(y));
-        for (int x = 0; x < stacked.width(); ++x) {
-            // The three channels answer the same question and should agree;
-            // the largest of them is taken, because a channel the ink happens
-            // to leave untouched says "transparent" about a pixel that is not.
-            const int clear =
-                std::max({qRed(white[x]) - qRed(black[x]), qGreen(white[x]) - qGreen(black[x]),
-                          qBlue(white[x]) - qBlue(black[x])});
-            const int alpha = std::clamp(255 - clear, 0, 255);
-            if (alpha == 0) {
+        for (int x = 0; x < out.width(); ++x) {
+            if (qAlpha(row[x]) == 0) {
                 row[x] = qRgba(255, 255, 255, 0);
-                continue;
             }
-            // The black pass is C*a by construction, so the colour is that
-            // over a -- clamped first, because rounding in two renders can
-            // leave a channel a step above its alpha, and C*a > a is no colour.
-            const auto straight = [alpha](int premultiplied) {
-                return (std::min(premultiplied, alpha) * 255 + alpha / 2) / alpha;
-            };
-            row[x] = qRgba(straight(qRed(black[x])), straight(qGreen(black[x])),
-                           straight(qBlue(black[x])), alpha);
         }
     }
     return out;
@@ -97,82 +66,33 @@ QString nativePngFormat()
 #endif
 }
 
-bool ImageClipboard::copyItem(QQuickItem* item, const QSize& target, bool composited, double dpi)
+bool ImageClipboard::copyImage(const QImage& image, double dpi)
 {
-    if (item == nullptr || item->window() == nullptr) {
-        emit failed(tr("There is no plot on screen to copy."));
+    if (image.isNull()) {
+        emit failed(tr("The plot could not be drawn into a picture."));
         return false;
     }
-
-    // Device pixels, not logical ones. An item is laid out in logical pixels
-    // and drawn into a framebuffer with devicePixelRatio of them for each, so
-    // grabbing at the item's own size on a HiDPI display throws away exactly
-    // that factor before anything reaches the clipboard -- the same arithmetic
-    // PlotSurface.pushColumns does for the same reason, and the same mistake
-    // it records having made.
+    QImage picture = straightOnPaper(image);
+    // What the pixels are worth in inches, where the caller said. QImage
+    // holds it per metre and every format that carries it at all -- PNG's
+    // pHYs among them -- is written out of these two, so this is what
+    // survives the trip through the clipboard into somebody's document.
     //
-    // A reader who asked for a size is answered with that size and not with
-    // this one; see the header for why that is not a scaling.
-    const double ratio = std::max(1.0, item->window()->devicePixelRatio());
-    const QSize wanted = target.isEmpty()
-                             ? QSize(static_cast<int>(std::lround(item->width() * ratio)),
-                                     static_cast<int>(std::lround(item->height() * ratio)))
-                             : target;
-    if (wanted.isEmpty()) {
-        emit failed(tr("The plot has no size yet."));
+    // Set after the conversion rather than before: a converted QImage is a new
+    // one, and a new QImage carries its own defaults.
+    if (dpi > 0.0) {
+        constexpr double metresPerInch = 0.0254;
+        const int perMetre = static_cast<int>(std::lround(dpi / metresPerInch));
+        picture.setDotsPerMeterX(perMetre);
+        picture.setDotsPerMeterY(perMetre);
+    }
+    QClipboard* board = QGuiApplication::clipboard();
+    if (board == nullptr) {
+        emit failed(tr("This system has no clipboard."));
         return false;
     }
-    // Twice as tall when the two halves are being grabbed together, because
-    // `wanted` is the size of the picture and not of what is grabbed.
-    const QSize size = composited ? QSize(wanted.width(), wanted.height() * 2) : wanted;
-
-    // Assigning over a grab still in flight cancels it: the previous result
-    // loses its last reference and is destroyed, which severs the connection
-    // below with it. That is what a reader pressing the button twice means.
-    pending_ = item->grabToImage(size);
-    if (pending_.isNull()) {
-        emit failed(tr("This display cannot take a picture of the plot."));
-        return false;
-    }
-
-    connect(pending_.data(), &QQuickItemGrabResult::ready, this, [this, composited, dpi]() {
-        // Taken out of the member first, so that whatever happens below --
-        // including a failure -- leaves nothing in flight behind it.
-        const QSharedPointer<QQuickItemGrabResult> result = pending_;
-        pending_.clear();
-        if (result.isNull()) {
-            return;
-        }
-
-        QImage image = composited ? composeOverNothing(result->image()) : result->image();
-        if (image.isNull()) {
-            emit failed(tr("The plot could not be drawn into a picture."));
-            return;
-        }
-        // What the pixels are worth in inches, where the caller said. QImage
-        // holds it per metre and every format that carries it at all -- PNG's
-        // pHYs among them -- is written out of these two, so this is what
-        // survives the trip through the clipboard into somebody's document.
-        //
-        // Set after the composition rather than before: composeOverNothing
-        // builds a new image out of the pair, and a new QImage carries its own
-        // defaults, so tagging the grab would tag the half that was discarded.
-        if (dpi > 0.0) {
-            constexpr double metresPerInch = 0.0254;
-            const int perMetre = static_cast<int>(std::lround(dpi / metresPerInch));
-            image.setDotsPerMeterX(perMetre);
-            image.setDotsPerMeterY(perMetre);
-        }
-
-        QClipboard* board = QGuiApplication::clipboard();
-        if (board == nullptr) {
-            emit failed(tr("This system has no clipboard."));
-            return;
-        }
-        board->setMimeData(pictureMimeData(image, nativePngFormat()));
-        emit copied();
-    });
-
+    board->setMimeData(pictureMimeData(picture, nativePngFormat()));
+    emit copied();
     return true;
 }
 
@@ -195,8 +115,8 @@ QColor ImageClipboard::pixelOnClipboard(int x, int y) const
     if (!image.valid(x, y)) {
         return {};
     }
-    // pixelColor() un-premultiplies for us, which matters here: a grab comes
-    // back as ARGB32_Premultiplied, and the one thing this is asked about is a
+    // pixelColor() un-premultiplies for us, which matters here: a picture can
+    // come back as ARGB32_Premultiplied, and the one thing this is asked about is a
     // ground whose alpha is zero. Read raw, every colour under a zero alpha is
     // black and the question cannot be told from its answer.
     return image.pixelColor(x, y);

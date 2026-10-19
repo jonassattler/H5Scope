@@ -8,7 +8,6 @@
 #include "H5Thread.hpp"
 #include "LineModel.hpp"
 #include "PlotBudget.hpp"
-#include "PlotItem.hpp"
 #include "gui/PlotCore.hpp"
 
 #include <QAbstractListModel>
@@ -388,7 +387,6 @@ public:
 
     /// Hand every drawn entry to `target` at once. See DatasetPlot::fill: one
     /// crossing, no points built on the way, and the values are **borrowed**.
-    Q_INVOKABLE void fill(gui::PlotItem* target);
     void fill(LineTarget* target) override;
 
     /// Entry `series` as a renderer would be given it, drawn or not, and the
@@ -565,9 +563,9 @@ private:
     // and the only thing that ever said so was a SIGSEGV on Windows CI. Stated
     // here so that the next member to arrive says it at the compiler instead.
     static_assert(std::is_nothrow_move_constructible_v<Level>,
-                  "a Level must relocate by moving: a copy frees the values PlotItem borrows");
+                  "a Level must relocate by moving: a copy frees the values the figure borrows");
     static_assert(std::is_nothrow_move_constructible_v<Entry>,
-                  "an Entry must relocate by moving: a copy frees the values PlotItem borrows");
+                  "an Entry must relocate by moving: a copy frees the values the figure borrows");
 
     /// One line as the job hands it back.
     struct LineData

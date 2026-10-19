@@ -6,6 +6,8 @@ import QtTest
 import H5Scope
 import H5Scope.Backend
 
+import "PlotScene.js" as PlotScene
+
 /// The custom plot tabs, as chrome.
 ///
 /// What a tab *holds* is asserted headless in tests/test_customplot.cpp, which
@@ -1147,7 +1149,7 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
+        const lines = PlotScene.linesOf(findAllOf(view, "plotFigure")[0])
         verify(lines, "the drawn lines must be reachable")
         compare(surface.colorMode, "okabe-ito")
         tryVerify(() => lines.lineCount() === 3, 5000, "three lines are drawn")
@@ -1193,7 +1195,7 @@ TestCase {
         waitForRendering(win.contentItem)
 
         const view = shownView(win)
-        const lines = findAllOf(view, "plotLines")[0]
+        const lines = PlotScene.linesOf(findAllOf(view, "plotFigure")[0])
         verify(lines, "the drawn lines must be reachable")
         tryVerify(() => lines.lineCount() === 1, 5000, "one line is drawn")
         const alone = lines.seriesOpacity(0)
@@ -1232,7 +1234,7 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
+        const lines = PlotScene.linesOf(findAllOf(view, "plotFigure")[0])
         verify(surface && lines, "the surface and its lines must be reachable")
         tryVerify(() => lines.lineCount() === 3, 5000, "three lines are drawn")
 
@@ -1635,7 +1637,7 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
+        const lines = PlotScene.linesOf(findAllOf(view, "plotFigure")[0])
         verify(surface && lines, "the surface and its lines must be reachable")
 
         // The same two values the Data tab's plot has no place for, in a tab
@@ -1687,7 +1689,7 @@ TestCase {
         compare(surface.viewMaxX, 31.5)
         // The first sample is drawn nowhere, so the line is one run short of
         // its length rather than a stroke reaching down to an invented x.
-        const lines = findAllOf(view, "plotLines")[0]
+        const lines = PlotScene.linesOf(findAllOf(view, "plotFigure")[0])
         compare(lines.drawnRunCount, 1)
         verify(lines.drawnPointCount < 64)
     }
@@ -1798,9 +1800,12 @@ TestCase {
 
     // --- a line on a y axis of its own -------------------------------------
 
-    /// The side axes the frame on screen is drawing, left to right.
+    /// The axes of the lines' own the figure on screen is drawing, left to
+    /// right -- or top to bottom, as rows, when the plot is flipped.
     function sideAxes(view) {
-        return findAllOf(view, "plotSideAxis").sort((a, b) => a.x - b.x)
+        const figure = findAllOf(view, "plotFigure")[0]
+        figure.compose()
+        return figure.sideAxes()
     }
 
     function test_a_line_can_be_given_a_y_axis_of_its_own() {
@@ -1829,8 +1834,9 @@ TestCase {
         tryVerify(() => boxes[1].enabled, 2000, "a second line is something to separate from")
 
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
-        const frame = lines.parent
+        const figure = findAllOf(view, "plotFigure")[0]
+        const lines = PlotScene.linesOf(figure)
+        const frame = PlotScene.frameOf(figure)
         const before = frame.gutterLeft
         compare(sideAxes(view).length, 0)
         verify(!findAllOf(view, "entryAxisFixed")[1].visible,
@@ -1848,23 +1854,23 @@ TestCase {
         // To the left of the common axis, and the pane moved over to make room
         // for it rather than the two being drawn over one another.
         verify(frame.gutterLeft > before, "the gutter must grow by the axis")
-        verify(axis.x + axis.width < frame.area.x - frame.commonWidth + 1,
+        const widest = Math.max(...frame.yTicks.map((tick) => tick.width))
+        verify(axis.x + axis.width <= frame.area.x - Theme.gapS - widest + 1,
                "the side axis is left of the common one")
         // In the colour of the line it is the axis of.
         compare(String(axis.colour), String(lines.seriesColor(1)))
-        verify(lines.seriesHasOwnY(1), "the line is drawn against its own axis")
-        verify(!lines.seriesHasOwnY(0), "and the other one is not")
+        verify(figure.drawnLines()[1].own, "the line is drawn against its own axis")
+        verify(!figure.drawnLines()[0].own, "and the other one is not")
 
-        // A tick is drawn where the curve is: the side axis's ticks and the
-        // item's own map of that line agree.
-        const tick = axis.ticks[1]
-        const value = Number(tick.text)
-        fuzzyCompare(tick.at, lines.seriesYFraction(1, value), 1e-9)
+        // A tick is drawn where the curve is: the line is drawn in exactly the
+        // window its axis is numbered over.
+        compare(figure.drawnLines()[1].yLow, axis.low)
+        compare(figure.drawnLines()[1].yHigh, axis.high)
 
         // The common axis spans the line left on it, and the separate one is
         // the axis series_b would have if it were the only line: 37..100.
         compare(plot.maximum, 63)
-        const own = surface.separateAxes[0]
+        const own = axis
         verify(own.low < 37 && own.high > 100, "the own axis spans its whole line")
         verify(own.low > 30 && own.high < 110, "...with a lone line's air and no more")
 
@@ -1873,7 +1879,7 @@ TestCase {
         settleReads()
         waitForRendering(win.contentItem)
         compare(sideAxes(view).length, 0)
-        verify(!lines.seriesHasOwnY(1))
+        verify(!figure.drawnLines()[1].own)
         compare(frame.gutterLeft, before)
     }
 
@@ -1895,9 +1901,10 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        tryVerify(() => surface.separateAxes.length === 2, 2000)
-        const zooming = surface.separateAxes[0]
-        const fixed = surface.separateAxes[1]
+        const figure = findAllOf(view, "plotFigure")[0]
+        tryVerify(() => sideAxes(view).length === 2, 2000)
+        const zooming = sideAxes(view)[0]
+        const fixed = sideAxes(view)[1]
         compare(zooming.series, 1)
         compare(fixed.series, 2)
 
@@ -1908,7 +1915,7 @@ TestCase {
         surface.panY = (surface.upperBound - surface.lowerBound) / 4
         waitForRendering(win.contentItem)
 
-        const after = surface.separateAxes
+        const after = sideAxes(view)
         // The zooming axis shows the top half of itself -- the same share of
         // its whole as the common axis is showing of its own.
         fuzzyCompare(after[0].high, zooming.high, 1e-9)
@@ -1917,10 +1924,10 @@ TestCase {
         compare(after[1].low, fixed.low)
         compare(after[1].high, fixed.high)
 
-        // The renderer was told both.
-        const lines = findAllOf(view, "plotLines")[0]
-        fuzzyCompare(lines.seriesYFraction(1, after[0].low), 0, 1e-9)
-        fuzzyCompare(lines.seriesYFraction(2, fixed.low), 0, 1e-9)
+        // ...and each line is drawn in its axis's window.
+        const drawn = figure.drawnLines()
+        fuzzyCompare(drawn[1].yLow, after[0].low, 1e-9)
+        fuzzyCompare(drawn[2].yLow, fixed.low, 1e-9)
     }
 
     function test_with_every_line_on_its_own_axis_there_is_no_common_one() {
@@ -1939,8 +1946,9 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
-        const frame = lines.parent
+        const figure = findAllOf(view, "plotFigure")[0]
+        const lines = PlotScene.linesOf(figure)
+        const frame = PlotScene.frameOf(figure)
 
         compare(plot.sharedSeriesCount, 0)
         verify(!surface.sharedAxis)
@@ -1948,7 +1956,10 @@ TestCase {
         // Nothing numbered, named or ruled in the common axis's place.
         compare(frame.yTicks.length, 0)
         compare(frame.yGrid.length, 0)
-        compare(frame.commonWidth, Theme.gapS)
+        compare(PlotScene.tickTexts(figure, "left").filter(
+                    (text) => sideAxes(view).every(
+                        (axis) => axis.ticks.every((tick) => tick.text !== text))).length,
+                0, "every number up the side is a side axis's")
         // ...and still something to draw, and nothing to complain about.
         verify(surface.drawable)
         compare(surface.logReason, "")
@@ -1978,19 +1989,17 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        tryVerify(() => surface.separateAxes.length === 1, 2000)
+        const figure = findAllOf(view, "plotFigure")[0]
+        tryVerify(() => sideAxes(view).length === 1, 2000)
+        const onScreen = sideAxes(view)[0]
 
-        verify(surface.copyImage(), "a drawn plot must accept the request")
-        verify(surface.picture, "the picture is alive while the grab is in flight")
-        const drawn = findChild(surface.picture, "pictureLines")
-        verify(drawn, "the picture's own lines must be reachable")
-        verify(drawn.seriesHasOwnY(1), "the line keeps its own axis in the picture")
-        verify(!drawn.seriesHasOwnY(0))
-        compare(drawn.parent.sideColumns.length, 1)
-        compare(drawn.parent.commonAxis, true)
-        fuzzyCompare(drawn.seriesYFraction(1, surface.separateAxes[0].low), 0, 1e-9)
-
-        tryVerify(() => surface.picture === null, 10000, "the grab must answer")
+        verify(surface.copyImage(), "a drawn plot must be copied")
+        const drawn = figure.sideAxes(true)
+        compare(drawn.length, 1, "the line keeps its own axis in the picture")
+        compare(drawn[0].line, 1, "and only that line")
+        verify(figure.axis("picture y").ticks.length > 0, "the common axis is still numbered")
+        fuzzyCompare(drawn[0].low, onScreen.low, 1e-9)
+        fuzzyCompare(drawn[0].high, onScreen.high, 1e-9)
     }
 
     // --- a name for each axis of its own ------------------------------------
@@ -2010,6 +2019,7 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
+        const figure = findAllOf(view, "plotFigure")[0]
         mouseClick(findAllOf(view, "customPlotButton")[0])
         waitForRendering(win.contentItem)
         compare(findAllOf(view, "plotAxisLabelField").length, 0,
@@ -2031,14 +2041,16 @@ TestCase {
         waitForRendering(win.contentItem)
         compare(plot.seriesAxis(1).label, "pressure", "the name is the line's")
 
-        tryVerify(() => {
-            const names = findAllOf(sideAxes(view)[0], "plotSideAxisName")
-            return names.length === 1 && names[0].visible
-        }, 2000, "the name is drawn beside its axis")
+        tryVerify(() => sideAxes(view)[0].label === "pressure", 2000,
+                  "the axis carries its name")
         const axis = sideAxes(view)[0]
-        const name = findAllOf(axis, "plotSideAxisName")[0]
-        compare(name.text, "pressure")
-        compare(String(name.color), String(axis.colour), "in the colour of its line")
+        // TextRole.AxisName, and in the axis's own column.
+        const names = figure.marks().filter((m) => m.kind === 3 && m.role === 3
+                                                   && m.text === "pressure")
+        compare(names.length, 1, "the name is drawn beside its axis")
+        verify(names[0].x0 >= axis.x && names[0].x0 <= axis.x + axis.width,
+               "in the axis's own column")
+        compare(String(names[0].colour), String(axis.colour), "in the colour of its line")
         verify(axis.width > widthBefore, "and the column made room for it")
 
         // A second axis of its own is a second box, and the name stays with
@@ -2082,8 +2094,8 @@ TestCase {
 
         const view = shownView(win)
         const surface = findAllOf(view, "customPlotSurface")[0]
-        const lines = findAllOf(view, "plotLines")[0]
-        const frame = lines.parent
+        const figure = findAllOf(view, "plotFigure")[0]
+        const frame = PlotScene.frameOf(figure)
         const points = plot.pointCount
 
         mouseClick(findAllOf(view, "customPlotButton")[0])
@@ -2094,18 +2106,21 @@ TestCase {
         settleReads()
         waitForRendering(win.contentItem)
         verify(surface.flipped)
-        verify(frame.transposed)
-        verify(lines.transposed)
+        verify(figure.flipped, "the figure is drawn flipped")
         compare(plot.pointCount, points, "the same lines")
 
         // x's numbers down the left and y's along the foot.
-        compare(JSON.stringify(frame.leftTicks), JSON.stringify(frame.xTicks))
-        compare(JSON.stringify(frame.footTicks), JSON.stringify(frame.yTicks))
+        compare(JSON.stringify(PlotScene.tickTexts(figure, "left")),
+                JSON.stringify(PlotScene.shownTicks(frame.xTicks)))
+        compare(JSON.stringify(PlotScene.tickTexts(figure, "foot")),
+                JSON.stringify(PlotScene.shownTicks(frame.yTicks)))
 
         // The first sample -- x 0, the line at its highest -- is at the
         // bottom and to the right; the last is at the top and to the left.
-        const first = lines.nearestSample(lines.width, lines.height)
-        const last = lines.nearestSample(0, 0)
+        const pane = frame.area
+        const first = figure.readingAt(pane.x + pane.width, pane.y + pane.height)
+        const last = figure.readingAt(pane.x, pane.y)
+        figure.readingAt(-20, -20)
         compare(first.x, 0)
         compare(last.x, 63)
         verify(first.py > last.py, "x runs up the pane")
@@ -2139,21 +2154,19 @@ TestCase {
         plot.setSeparateAxis(1, true)
         settleReads()
         waitForRendering(win.contentItem)
-        tryVerify(() => findAllOf(view, "plotSideAxisRow").length === 1, 2000)
-        compare(sideAxes(view).length, 0)
-        const row = findAllOf(view, "plotSideAxisRow")[0]
+        tryVerify(() => sideAxes(view).length === 1, 2000)
+        const row = sideAxes(view)[0]
+        verify(row.width > row.height, "a row, not a column")
         verify(row.y > frame.area.y + frame.area.height, "under the pane")
-        const tick = row.ticks[1]
-        fuzzyCompare(tick.at, lines.seriesYFraction(1, Number(tick.text)), 1e-9)
+        // ...numbered over the window its line is drawn in.
+        compare(figure.drawnLines()[1].yLow, row.low)
+        compare(figure.drawnLines()[1].yHigh, row.high)
 
-        // The picture that leaves is a second frame, and is flipped as well.
-        verify(surface.copyImage(), "a drawn plot must accept the request")
-        const drawn = findChild(surface.picture, "pictureLines")
-        verify(drawn, "the picture's own lines must be reachable")
-        verify(drawn.transposed, "the picture is drawn the way the pane is")
-        verify(drawn.parent.transposed)
-        compare(drawn.parent.sideRows.length, 1)
-        tryVerify(() => surface.picture === null, 10000, "the grab must answer")
+        // The picture that leaves is the same figure, and is flipped as well.
+        verify(surface.copyImage(), "a drawn plot must be copied")
+        const drawn = figure.sideAxes(true)
+        compare(drawn.length, 1)
+        verify(drawn[0].width > drawn[0].height, "the picture is drawn the way the pane is")
 
         // It is kept with the view.
         const settings = surface.drawingSettings()

@@ -501,7 +501,7 @@ int main(int argc, char* argv[])
     // Quick picks its software renderer for every window opened on it. That
     // renderer draws most of this application correctly and silently drops what
     // it cannot do -- which here is every custom QSGGeometryNode, and the plot's
-    // strokes are nothing else. gui::PlotItem carries a QPainter fallback so
+    // strokes are nothing else. gui::FigureItem carries a QPainter fallback so
     // that the headless test suite still sees a line, but the fallback is a
     // blitted image and not the geometry that ships. A picture of it would be a
     // picture of the second renderer.

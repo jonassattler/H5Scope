@@ -332,23 +332,75 @@ PlotAxis FigureItem::drawAxis(int line) const
 void FigureItem::refill()
 {
     LineModel* plot = model();
-    if (plot == nullptr || !active_ || !plot->hasData()) {
+    if (plot == nullptr || !active_) {
         clearLines();
         return;
     }
+    // Filled whether or not the plot has anything yet, and that is not a
+    // shortcut skipped: the fill is what makes this item the one the plot
+    // lends to, and a read that lands later is handed to whoever that is. Asked
+    // only once the plot had data, a line still being read was never drawn --
+    // its read landed, and found nobody to give itself to.
     plot->fill(this);
 }
 
 void FigureItem::resetView()
 {
     figure_.resetView();
-    moved();
+    movedNow();
 }
 
 void FigureItem::setViewRange(double x0, double x1, double y0, double y1)
 {
     figure_.setViewRange(x0, x1, y0, y1);
-    moved();
+    movedNow();
+}
+
+void FigureItem::zoomAt(double px, double py, double factor, const QString& axes)
+{
+    if (!(factor > 0.0) || !std::isfinite(factor)) {
+        return;
+    }
+    // A wheel turned by as many eighths of a degree as make `factor`: one
+    // notch, 120 of them, is 1.25. Shift alone is the pane's x and Control
+    // alone its y, as the wheel's modifiers say.
+    const double turned = 120.0 * std::log(factor) / std::log(1.25);
+    plotcore::Modifiers modifiers;
+    modifiers.shift = axes == QStringLiteral("x");
+    modifiers.control = axes == QStringLiteral("y");
+    figure_.wheel(px, py, turned, modifiers);
+    movedNow();
+}
+
+void FigureItem::panBy(double dx, double dy)
+{
+    const QRectF pane = area();
+    const QPointF from = pane.center();
+    figure_.press(from.x(), from.y(), plotcore::Button::Left, {});
+    figure_.move(from.x() + dx, from.y() + dy, {});
+    figure_.release(from.x() + dx, from.y() + dy, plotcore::Button::Left, {});
+    movedNow();
+}
+
+bool FigureItem::zoomToRegion(double px0, double py0, double px1, double py1)
+{
+    const plotcore::AxisZoom x = figure_.camera().x.view;
+    const plotcore::AxisZoom y = figure_.camera().y.view;
+    figure_.press(px0, py0, plotcore::Button::Right, {});
+    figure_.move(px1, py1, {});
+    figure_.release(px1, py1, plotcore::Button::Right, {});
+    movedNow();
+    return !(figure_.camera().x.view == x && figure_.camera().y.view == y);
+}
+
+QString FigureItem::xNumber(double value)
+{
+    return QString::fromStdString(figure_.xNumber(value));
+}
+
+QString FigureItem::yNumber(double value)
+{
+    return QString::fromStdString(figure_.yNumber(value));
 }
 
 double FigureItem::dataXAt(double px, double py) const
@@ -400,22 +452,28 @@ QVariantList FigureItem::marks() const
 {
     QVariantList out;
     const auto add = [&](const Mark& mark, bool under) {
-        out.append(QVariantMap{{QStringLiteral("kind"), static_cast<int>(mark.kind)},
-                               {QStringLiteral("layer"), static_cast<int>(mark.layer)},
-                               {QStringLiteral("under"), under},
-                               {QStringLiteral("clipped"), mark.clipped},
-                               {QStringLiteral("x0"), mark.from.x()},
-                               {QStringLiteral("y0"), mark.from.y()},
-                               {QStringLiteral("x1"), mark.to.x()},
-                               {QStringLiteral("y1"), mark.to.y()},
-                               {QStringLiteral("fill"), colourOf(mark.fill)},
-                               {QStringLiteral("stroke"), colourOf(mark.stroke)},
-                               {QStringLiteral("width"), mark.width},
-                               {QStringLiteral("radius"), mark.radius},
-                               {QStringLiteral("text"), QString::fromStdString(mark.text.text)},
-                               {QStringLiteral("role"), static_cast<int>(mark.text.role)},
-                               {QStringLiteral("colour"), colourOf(mark.text.colour)},
-                               {QStringLiteral("turn"), mark.text.turn}});
+        out.append(
+            QVariantMap{{QStringLiteral("kind"), static_cast<int>(mark.kind)},
+                        {QStringLiteral("layer"), static_cast<int>(mark.layer)},
+                        {QStringLiteral("under"), under},
+                        {QStringLiteral("clipped"), mark.clipped},
+                        {QStringLiteral("x0"), mark.from.x()},
+                        {QStringLiteral("y0"), mark.from.y()},
+                        {QStringLiteral("x1"), mark.to.x()},
+                        {QStringLiteral("y1"), mark.to.y()},
+                        {QStringLiteral("fill"), colourOf(mark.fill)},
+                        {QStringLiteral("stroke"), colourOf(mark.stroke)},
+                        {QStringLiteral("width"), mark.width},
+                        {QStringLiteral("radius"), mark.radius},
+                        {QStringLiteral("dashed"), mark.dashed},
+                        {QStringLiteral("text"), QString::fromStdString(mark.text.text)},
+                        {QStringLiteral("base"), QString::fromStdString(mark.text.base)},
+                        {QStringLiteral("exponent"), QString::fromStdString(mark.text.exponent)},
+                        {QStringLiteral("role"), static_cast<int>(mark.text.role)},
+                        {QStringLiteral("across"), static_cast<int>(mark.text.across)},
+                        {QStringLiteral("down"), static_cast<int>(mark.text.down)},
+                        {QStringLiteral("colour"), colourOf(mark.text.colour)},
+                        {QStringLiteral("turn"), mark.text.turn}});
     };
     for (const Mark& mark : scene_.under) {
         add(mark, true);
@@ -424,6 +482,153 @@ QVariantList FigureItem::marks() const
         add(mark, false);
     }
     return out;
+}
+
+QVariantList FigureItem::drawnLines() const
+{
+    QVariantList out;
+    for (const plotcore::DrawnLine& line : scene_.lines) {
+        int points = 0;
+        for (const std::vector<plotcore::Point>& run : line.runs) {
+            points += static_cast<int>(run.size());
+        }
+        out.append(QVariantMap{{QStringLiteral("line"), line.line},
+                               {QStringLiteral("series"), series(line.line)},
+                               {QStringLiteral("colour"), colourOf(line.colour)},
+                               {QStringLiteral("width"), line.width},
+                               {QStringLiteral("runs"), static_cast<int>(line.runs.size())},
+                               {QStringLiteral("points"), points},
+                               {QStringLiteral("markers"), static_cast<int>(line.markers.size())},
+                               {QStringLiteral("own"), line.own},
+                               {QStringLiteral("yLow"), line.y.low},
+                               {QStringLiteral("yHigh"), line.y.high}});
+    }
+    return out;
+}
+
+QVariantList FigureItem::legendRows() const
+{
+    QVariantList out;
+    for (const plotcore::LegendEntry& entry : scene_.legend) {
+        out.append(QVariantMap{{QStringLiteral("line"), entry.line},
+                               {QStringLiteral("series"), series(entry.line)},
+                               {QStringLiteral("name"), QString::fromStdString(entry.name)},
+                               {QStringLiteral("colour"), colourOf(entry.colour)},
+                               {QStringLiteral("x0"), entry.from.x()},
+                               {QStringLiteral("y0"), entry.from.y()},
+                               {QStringLiteral("x1"), entry.to.x()},
+                               {QStringLiteral("y1"), entry.to.y()}});
+    }
+    return out;
+}
+
+namespace {
+
+QVariantMap axisMap(const plotcore::SceneAxis& axis, const SceneFonts& fonts)
+{
+    const QFontMetricsF face(fonts.of(plotcore::TextRole::Tick));
+    const QFontMetricsF raised(fonts.of(plotcore::TextRole::TickMinor));
+    QVariantList ticks;
+    for (std::size_t i = 0; i < axis.ticks.values.size(); ++i) {
+        const double value = axis.ticks.values[i];
+        const plotcore::TickLabel label =
+            i < axis.ticks.texts.size() ? axis.ticks.texts[i] : plotcore::TickLabel{};
+        const QString base = QString::fromStdString(label.base);
+        const QString exponent = QString::fromStdString(label.exponent);
+        ticks.append(QVariantMap{
+            {QStringLiteral("value"), value},
+            {QStringLiteral("at"), plotcore::fractionOn(value, axis.window.low, axis.window.high,
+                                                        axis.logarithmic, axis.base)},
+            {QStringLiteral("text"), QString::fromStdString(label.text)},
+            {QStringLiteral("base"), base},
+            {QStringLiteral("exponent"), exponent},
+            {QStringLiteral("width"),
+             face.horizontalAdvance(base) +
+                 (exponent.isEmpty() ? 0.0 : raised.horizontalAdvance(exponent))}});
+    }
+    QVariantList grid;
+    for (const plotcore::Rule& rule : axis.grid) {
+        grid.append(
+            QVariantMap{{QStringLiteral("at"), rule.at}, {QStringLiteral("major"), rule.major}});
+    }
+    QVariantList minor;
+    for (const plotcore::MinorNumber& number : axis.minor) {
+        minor.append(QVariantMap{{QStringLiteral("at"), number.at},
+                                 {QStringLiteral("text"), QString::fromStdString(number.text)}});
+    }
+    return {{QStringLiteral("line"), axis.line},
+            {QStringLiteral("low"), axis.window.low},
+            {QStringLiteral("high"), axis.window.high},
+            {QStringLiteral("logarithmic"), axis.logarithmic},
+            {QStringLiteral("base"), axis.base},
+            {QStringLiteral("logNumbers"), axis.ticks.logarithmic},
+            {QStringLiteral("ticks"), ticks},
+            {QStringLiteral("grid"), grid},
+            {QStringLiteral("minor"), minor},
+            {QStringLiteral("colour"), colourOf(axis.colour)},
+            {QStringLiteral("label"), QString::fromStdString(axis.label)},
+            {QStringLiteral("x"), axis.box.x},
+            {QStringLiteral("y"), axis.box.y},
+            {QStringLiteral("width"), axis.box.width},
+            {QStringLiteral("height"), axis.box.height}};
+}
+
+} // namespace
+
+QVariantMap FigureItem::axis(const QVariant& which) const
+{
+    const QString name = which.toString();
+    if (name == QStringLiteral("x")) {
+        return axisMap(scene_.xAxis, fonts_);
+    }
+    if (name == QStringLiteral("y")) {
+        return axisMap(scene_.yAxis, fonts_);
+    }
+    if (name == QStringLiteral("picture x")) {
+        return axisMap(pictureAxes_.x, fonts_);
+    }
+    if (name == QStringLiteral("picture y")) {
+        return axisMap(pictureAxes_.y, fonts_);
+    }
+    bool isLine = false;
+    const int line = which.toInt(&isLine);
+    for (const plotcore::SceneAxis& own : scene_.sideAxes) {
+        if (isLine && own.line == line) {
+            return axisMap(own, fonts_);
+        }
+    }
+    return {};
+}
+
+QVariantList FigureItem::sideAxes(bool picture) const
+{
+    QVariantList out;
+    for (const plotcore::SceneAxis& own : picture ? pictureAxes_.sides : scene_.sideAxes) {
+        QVariantMap axis = axisMap(own, fonts_);
+        axis.insert(QStringLiteral("series"), series(own.line));
+        out.append(axis);
+    }
+    return out;
+}
+
+bool FigureItem::usableBase(double base)
+{
+    return plotcore::usableBase(base);
+}
+
+double FigureItem::baseFor(const QString& mode, double custom)
+{
+    return plotcore::baseFor(mode.toStdString().c_str(), custom);
+}
+
+double FigureItem::valueAlong(double low, double high, double at, bool logarithmic, double base)
+{
+    return plotcore::valueAlong(low, high, at, logarithmic, base);
+}
+
+double FigureItem::axisPosition(double value, bool logarithmic, double base)
+{
+    return plotcore::axisPosition(value, logarithmic, base);
 }
 
 QImage FigureItem::picture(double width, double height, double scale, bool publication, bool cursor)
@@ -444,6 +649,7 @@ QImage FigureItem::picture(double width, double height, double scale, bool publi
             plotcore::PinnedSample{scene_.reading.line, scene_.reading.x, scene_.reading.y};
     }
     const plotcore::Scene picture = figure_.scene(request);
+    pictureAxes_ = {picture.xAxis, picture.yAxis, picture.sideAxes};
     QImage image(std::max(1, static_cast<int>(std::lround(width * scale))),
                  std::max(1, static_cast<int>(std::lround(height * scale))),
                  QImage::Format_ARGB32_Premultiplied);
@@ -463,6 +669,7 @@ void FigureItem::setPlot(QObject* plot)
     }
     if (plotObject_ != nullptr) {
         disconnect(plotObject_, nullptr, this, nullptr);
+        disconnect(plotObject_, nullptr, &refillSoon_, nullptr);
     }
     plotObject_ = plot;
     toldView_.reset();
@@ -476,7 +683,12 @@ void FigureItem::setPlot(QObject* plot)
         connect(plotObject_, SIGNAL(xAxisChanged()), &refillSoon_, SLOT(start()));
     }
     emit plotChanged();
-    refillSoon_.start();
+    // At once, unlike a plot's own `changed`: a new plot, or the same one
+    // switched on or off, is the host's doing and never arrives in the middle
+    // of a frame -- and deferred, it waited on a turn of the event loop that a
+    // window drawing its first frame does not always take, so a tab opened on
+    // a plot showed an empty pane until something else moved.
+    refill();
 }
 
 void FigureItem::setActive(bool active)
@@ -489,7 +701,8 @@ void FigureItem::setActive(bool active)
     toldLog_.reset();
     toldColumns_ = -1;
     emit activeChanged();
-    refillSoon_.start();
+    // At once, for setPlot's reason.
+    refill();
 }
 
 void FigureItem::setXMinimum(double value)
@@ -896,6 +1109,23 @@ QRectF FigureItem::area() const
     return {scene_.area.x, scene_.area.y, scene_.area.width, scene_.area.height};
 }
 
+QRectF FigureItem::band() const
+{
+    if (!scene_.band.has_value()) {
+        return {};
+    }
+    return {scene_.band->x, scene_.band->y, scene_.band->width, scene_.band->height};
+}
+
+QRectF FigureItem::legendRect() const
+{
+    if (!settings_.legend || scene_.legend.empty()) {
+        return {};
+    }
+    return {scene_.legendRect.x, scene_.legendRect.y, scene_.legendRect.width,
+            scene_.legendRect.height};
+}
+
 QVariantMap FigureItem::reading() const
 {
     const plotcore::Reading& reading = scene_.reading;
@@ -925,6 +1155,7 @@ void FigureItem::setHovered(bool on)
 
 void FigureItem::dirty()
 {
+    stale_ = true;
     polish();
     update();
 }
@@ -933,6 +1164,21 @@ void FigureItem::moved()
 {
     emit viewChanged();
     dirty();
+}
+
+void FigureItem::movedNow()
+{
+    moved();
+    // Laid out at once rather than at the next frame. A gesture named by the
+    // surface -- a zoom, a pan, a band, a window typed into the four boxes --
+    // is followed by questions about the pane it left: plotRect, the value
+    // under a pixel, the pixel to zoom about next. The QML frame answered
+    // those from bindings, current the moment the window moved; a zoom
+    // changes the y numbers and with them the left gutter, so read before the
+    // next frame the pane is the one before the zoom, and a zoom back out
+    // about the same fraction of it lands a gutter's width away. The pointer
+    // is not made to wait for this: an event a frame is laid out once.
+    compose();
 }
 
 void FigureItem::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry)
@@ -945,6 +1191,8 @@ void FigureItem::geometryChange(const QRectF& newGeometry, const QRectF& oldGeom
 
 void FigureItem::compose()
 {
+    stale_ = false;
+    composedIn_ = window();
     const double ratio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
     figure_.setSize(std::max(width(), 1.0), std::max(height(), 1.0), ratio);
     const bool software =
@@ -980,21 +1228,43 @@ void FigureItem::compose()
 
 void FigureItem::updatePolish()
 {
-    compose();
+    // Unless a gesture laid the frame out since anything changed, and for the
+    // window it is being drawn in.
+    if (stale_ || composedIn_ != window()) {
+        compose();
+    }
 }
 
 QSGNode* FigureItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 {
     QSGNode* root = old != nullptr ? old : new QSGNode;
-    // Built again every frame. A frame is a few hundred nodes, and a node that
-    // is reused has to be emptied and refilled, which Qt's batch renderer has
-    // been known to forget to draw again (PlotItem::buildGeometry says how);
-    // a node that is new is always drawn.
-    dropChildren(root);
+    // With a graphics API, built again every frame (the software renderer is
+    // the other way about; see buildPainted). A frame is a few hundred nodes,
+    // and a node that is reused has to be emptied and refilled, which Qt's
+    // batch renderer has been known to forget to draw again; a node that is
+    // new is always drawn.
+    //
+    // How it forgets: the batch renderer leaves an element with no vertices
+    // out of every batch it builds, and when that element's geometry is later
+    // marked dirty it only re-uploads the batch the element is in. An element
+    // in no batch asks for no rebuild, so a node emptied for one frame and
+    // then refilled was never drawn again until something else in the window
+    // happened to force one. That is exactly what re-reading a line does: the
+    // model releases the item while the read is out (see
+    // DatasetPlot::releaseDrawing) and hands it the same values when it lands.
+    // Ticking a custom line's postprocessing off and on rewrites it into the
+    // other grammar and reads it again, and both lines of a two-line plot went
+    // blank and stayed blank -- a resize brought them back. The software
+    // renderer draws every frame from scratch and never had this problem,
+    // which is also why the QML suite could not see it.
     const bool software =
         window() != nullptr && window()->rendererInterface() != nullptr &&
         window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
-    return software ? buildPainted(root) : buildNodes(root);
+    if (software) {
+        return buildPainted(root);
+    }
+    dropChildren(root);
+    return buildNodes(root);
 }
 
 QSGNode* FigureItem::buildPainted(QSGNode* root)
@@ -1013,15 +1283,27 @@ QSGNode* FigureItem::buildPainted(QSGNode* root)
     if (target == nullptr) {
         return root;
     }
-    auto* node = new QSGSimpleTextureNode;
-    node->setOwnsTexture(true);
-    node->setFiltering(QSGTexture::Linear);
+    // The one node, kept from frame to frame and given a new texture, which is
+    // the other renderer's rule turned round. The software renderer places a
+    // node added after the first frame as though it hung from the window
+    // rather than from this item -- a node replaced every frame was painted
+    // at the window's corner, over whatever stood there, wherever the plot
+    // was -- and a node it already knows it places where it is.
+    auto* node =
+        root->childCount() == 1 ? dynamic_cast<QSGSimpleTextureNode*>(root->firstChild()) : nullptr;
+    if (node == nullptr) {
+        dropChildren(root);
+        node = new QSGSimpleTextureNode;
+        node->setOwnsTexture(true);
+        node->setFiltering(QSGTexture::Linear);
+        root->appendChildNode(node);
+    }
     // A texture a frame, which would be indefensible on the path that draws
     // for a reader and is nothing on this one: the software renderer is what
     // a headless run gets, and a headless run draws each frame once.
     node->setTexture(target->createTextureFromImage(image, QQuickWindow::TextureHasAlphaChannel));
     node->setRect(0.0, 0.0, width(), height());
-    root->appendChildNode(node);
+    node->markDirty(QSGNode::DirtyMaterial);
     return root;
 }
 

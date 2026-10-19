@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "support/LineHolder.hpp"
 #include "support/TestFile.hpp"
 
 #include "gui/AppController.hpp"
@@ -16,7 +17,6 @@
 #include "gui/NameIndex.hpp"
 #include "gui/ObjectInfoModel.hpp"
 #include "gui/PlotCore.hpp"
-#include "gui/PlotItem.hpp"
 #include "gui/PostprocessModel.hpp"
 #include "gui/TableLayout.hpp"
 #include "gui/TableSetupModel.hpp"
@@ -82,15 +82,10 @@ QVariantList typeTree(const gui::AppController& controller)
 }
 
 /// Give `item` a pane and a window, so that it will answer questions about
-/// what it is drawing.
-void frameOver(gui::PlotItem& item, double xMin, double xMax, double yMin, double yMax)
+/// what it is holding.
+void frameOver(h5test::LineHolder& item, double xMin, double xMax, double yMin, double yMax)
 {
-    item.setWidth(400.0);
-    item.setHeight(300.0);
-    item.setXMin(xMin);
-    item.setXMax(xMax);
-    item.setYMin(yMin);
-    item.setYMax(yMax);
+    item.frameOver(xMin, xMax, yMin, yMax);
 }
 
 /// What the item is actually reading, through the pointers it was handed, or
@@ -101,7 +96,7 @@ void frameOver(gui::PlotItem& item, double xMin, double xMax, double yMin, doubl
 /// prevent -- so the cases that assert the values survived a change dereference
 /// them here rather than counting lines. Under a sanitiser this is where a
 /// use-after-free is caught instead of guessed at.
-double readsBack(const gui::PlotItem& item, double px, double py)
+double readsBack(const h5test::LineHolder& item, double px, double py)
 {
     const QVariantMap found = item.nearestSample(px, py);
     return found.value(QStringLiteral("valid")).toBool()
@@ -2279,8 +2274,7 @@ TEST_CASE_METHOD(ControllerFixture, "the plot reads the table as lines", "[plot]
     }
 }
 
-TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
-                 "[plot]")
+TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to whatever draws them", "[plot]")
 {
     // fill() gives the item pointers straight into the plot's own cache and
     // copies nothing: a QList<QPointF> per line was sixteen bytes a point,
@@ -2291,7 +2285,7 @@ TEST_CASE_METHOD(ControllerFixture, "the plot hands its lines to a renderer",
     REQUIRE(plot != nullptr);
     REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2x3x4 -> 6 rows of 4
 
-    gui::PlotItem item;
+    h5test::LineHolder item;
     plot->fill(&item);
     CHECK(item.lineCount() == 6);
 
@@ -2345,8 +2339,8 @@ TEST_CASE_METHOD(ControllerFixture, "the plot filled into a second item empties 
     REQUIRE(plot != nullptr);
     REQUIRE(h5test::selectAndSettle(controller, "/cube"));
 
-    gui::PlotItem first;
-    gui::PlotItem second;
+    h5test::LineHolder first;
+    h5test::LineHolder second;
     plot->fill(&first);
     REQUIRE(first.lineCount() == 6);
 
@@ -2358,18 +2352,16 @@ TEST_CASE_METHOD(ControllerFixture, "the plot filled into a second item empties 
     CHECK(second.lineCount() == 6);
 }
 
-TEST_CASE_METHOD(ControllerFixture,
-                 "a figure item draws the lines a plot lends it, as the plot item did",
+TEST_CASE_METHOD(ControllerFixture, "a figure item draws the lines a plot lends it",
                  "[plot][figure]")
 {
-    // The plot item is being replaced by plotcore's figure, hosted by
-    // FigureItem; the plot lends the same lines on the same terms to either,
-    // and only one of them ever holds them.
+    // The figure is lent the plot's lines on the same terms as any holder,
+    // and only one holder ever has them.
     auto* plot = controller.datasetPlot();
     REQUIRE(plot != nullptr);
     REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2x3x4 -> 6 rows of 4
 
-    gui::PlotItem item;
+    h5test::LineHolder item;
     plot->fill(&item);
     REQUIRE(item.lineCount() == 6);
 
@@ -2415,7 +2407,7 @@ TEST_CASE_METHOD(ControllerFixture,
         CHECK(figure.figure().lineSettings(0).colour == std::nullopt);
     }
 
-    SECTION("filling the plot item again empties the figure")
+    SECTION("filling another holder empties the figure")
     {
         plot->fill(&item);
         CHECK(item.lineCount() == 6);
@@ -2454,7 +2446,7 @@ TEST_CASE_METHOD(ControllerFixture, "a plot that is destroyed empties the item i
     auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
     REQUIRE(table != nullptr);
 
-    gui::PlotItem item;
+    h5test::LineHolder item;
     {
         gui::DatasetPlot plot(table);
         // Built after the selection, so it has no reset to seed its lines
@@ -2479,7 +2471,7 @@ TEST_CASE_METHOD(ControllerFixture, "what the plot filled is emptied before it i
     // the difference between the two is the whole design: a coarser reading of
     // the same data is not a reason to blank the pane.
     auto* plot = controller.datasetPlot();
-    gui::PlotItem item;
+    h5test::LineHolder item;
 
     SECTION("selecting another dataset")
     {
@@ -2533,7 +2525,7 @@ TEST_CASE_METHOD(ControllerFixture,
     // still has its lines, and the values behind them still read what they read.
     // A count alone would pass just as happily over freed memory.
     auto* plot = controller.datasetPlot();
-    gui::PlotItem item;
+    h5test::LineHolder item;
     REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 6 rows of 0..23
     frameOver(item, 0.0, 3.0, 0.0, 23.0);
     plot->fill(&item);
@@ -2585,7 +2577,7 @@ TEST_CASE_METHOD(ControllerFixture,
     // retired with their values -- or the crosshair bisects freed memory to
     // find the spike. Dereferenced, for the reason the case above gives.
     auto* plot = controller.datasetPlot();
-    gui::PlotItem item;
+    h5test::LineHolder item;
     REQUIRE(h5test::selectAndSettle(controller, "/trace")); // 20000, a spike of 9 at 12345
     const gui::PlotLine whole = plot->lineOf(0);
     REQUIRE(whole.summarised);
@@ -2833,9 +2825,9 @@ TEST_CASE_METHOD(ControllerFixture, "a wheel spun a notch at a time keeps the pa
     constexpr double kPaneWidth = 844.0;
     constexpr int kColumns = 832; // the pane, quantised, as the surface pushes it
 
-    gui::PlotItem item;
-    item.setWidth(kPaneWidth);
-    item.setHeight(300.0);
+    h5test::LineHolder item;
+    item.view.width = kPaneWidth;
+    item.view.height = 300.0;
 
     bool dirty = true;
     QObject::connect(plot, &gui::DatasetPlot::changed, plot, [&dirty] { dirty = true; });
@@ -2866,18 +2858,15 @@ TEST_CASE_METHOD(ControllerFixture, "a wheel spun a notch at a time keeps the pa
         dirty = false;
         plot->setPaneColumns(kColumns);
         plot->setVisibleRange(low(), high());
-        item.setXMin(low());
-        item.setXMax(high());
-        item.setYMin(plot->minimum() - 1.0);
-        item.setYMax(plot->maximum() + 1.0);
+        item.frameOver(low(), high(), plot->minimum() - 1.0, plot->maximum() + 1.0);
         plot->fill(&item);
     };
 
     // The view moves; the picture follows only if it was told to.
     const auto push = [&] {
         plot->setVisibleRange(low(), high());
-        item.setXMin(low());
-        item.setXMax(high());
+        item.view.xMin = low();
+        item.view.xMax = high();
         refill();
     };
 
@@ -2885,8 +2874,8 @@ TEST_CASE_METHOD(ControllerFixture, "a wheel spun a notch at a time keeps the pa
     // pointers it was actually handed. A line that stops inside the frame
     // answers with its own end rather than with something at the edge.
     const auto covers = [&](const char* when) {
-        const QVariantMap left = item.nearestSample(0.0, item.height() / 2.0);
-        const QVariantMap right = item.nearestSample(item.width(), item.height() / 2.0);
+        const QVariantMap left = item.nearestSample(0.0, item.view.height / 2.0);
+        const QVariantMap right = item.nearestSample(item.view.width, item.view.height / 2.0);
         INFO(when << ": view " << low() << ".." << high() << " zoom " << zoom);
         REQUIRE(left.value(QStringLiteral("valid")).toBool());
         REQUIRE(right.value(QStringLiteral("valid")).toBool());
@@ -2994,7 +2983,7 @@ TEST_CASE_METHOD(ControllerFixture, "a closer look is held to the same contract"
     // one is retired and goes on being drawn, and a run whose data has gone
     // takes the item with it.
     auto* plot = controller.datasetPlot();
-    gui::PlotItem item;
+    h5test::LineHolder item;
     REQUIRE(h5test::selectAndSettle(controller, "/trace"));
     frameOver(item, 0.0, 20000.0, -10.0, 10.0);
     plot->setVisibleRange(0.0, 4000.0);
@@ -4565,18 +4554,15 @@ TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot]
     // not the arithmetic one, and a reading taken the other way would name a
     // sample the reader is nowhere near.
     //
-    // No window and no file: the item is handed four values directly, which is
-    // the whole of what it needs to answer.
+    // No window and no file: the holder is handed four values directly, which
+    // is the whole of what the crosshair needs to answer.
     const std::vector<double> values{1.0, 10.0, 100.0, 1000.0};
 
-    gui::PlotItem item;
-    item.setWidth(400.0);
-    item.setHeight(400.0);
-    item.setXMin(0.0);
-    item.setXMax(3.0);
-    item.setYMin(1.0);
-    item.setYMax(1000.0);
-    item.setYLog(true);
+    h5test::LineHolder item;
+    item.view.width = 400.0;
+    item.view.height = 400.0;
+    item.frameOver(0.0, 3.0, 1.0, 1000.0);
+    item.view.yLog = true;
 
     gui::PlotLine line;
     line.values = values.data();
@@ -4592,9 +4578,8 @@ TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot]
         CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(10.0));
         CHECK(found.value(QStringLiteral("py")).toDouble() ==
               Catch::Approx(400.0 * 2.0 / 3.0).margin(1.0));
-        // ...and the item agrees with itself about where that is.
-        CHECK(item.yFraction(10.0) == Catch::Approx(1.0 / 3.0));
-        CHECK(item.valueAt(1.0 / 3.0) == Catch::Approx(10.0));
+        // ...and the projection agrees with itself about where that is.
+        CHECK(gui::yFractionOf(10.0, item.view) == Catch::Approx(1.0 / 3.0));
     }
 
     SECTION("and the same sample is read somewhere else on a linear one")
@@ -4605,13 +4590,13 @@ TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot]
         // that sample is*, which is the number the crosshair is drawn at and
         // the readout is placed by. On a linear pane of 1 to 1000, a ten is a
         // hundredth of the way up and sits almost on the axis.
-        item.setYLog(false);
+        item.view.yLog = false;
         const QVariantMap found = item.nearestSample(400.0 / 3.0, 400.0 * 2.0 / 3.0);
         REQUIRE(found.value(QStringLiteral("valid")).toBool());
         CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(10.0));
         CHECK(found.value(QStringLiteral("py")).toDouble() ==
               Catch::Approx(400.0 - 9.0 / 999.0 * 400.0).margin(1.0));
-        CHECK(item.yFraction(10.0) == Catch::Approx(9.0 / 999.0));
+        CHECK(gui::yFractionOf(10.0, item.view) == Catch::Approx(9.0 / 999.0));
     }
 }
 
@@ -4624,13 +4609,10 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     const std::vector<double> large{0.0, 500.0, 1000.0};
     const std::vector<double> small{0.0, 5.0, 10.0};
 
-    gui::PlotItem item;
-    item.setWidth(200.0);
-    item.setHeight(400.0);
-    item.setXMin(0.0);
-    item.setXMax(2.0);
-    item.setYMin(0.0);
-    item.setYMax(1000.0);
+    h5test::LineHolder item;
+    item.view.width = 200.0;
+    item.view.height = 400.0;
+    item.frameOver(0.0, 2.0, 0.0, 1000.0);
 
     gui::PlotLine first;
     first.values = large.data();
@@ -4646,13 +4628,14 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     REQUIRE(found.value(QStringLiteral("valid")).toBool());
     CHECK(found.value(QStringLiteral("line")).toInt() == 0);
 
-    item.setSeriesYRange(1, 0.0, 20.0);
-    CHECK(item.seriesHasOwnY(1));
-    CHECK_FALSE(item.seriesHasOwnY(0));
+    gui::PlotLine& own = item.lines()[1];
+    own.ownY = true;
+    own.yMin = 0.0;
+    own.yMax = 20.0;
     // Five is a quarter of the way up its own axis, and that is where the
-    // item says it is -- through the same map the side axis's ticks use.
-    CHECK(item.seriesYFraction(1, 5.0) == Catch::Approx(0.25));
-    CHECK(item.seriesYFraction(0, 500.0) == Catch::Approx(0.5));
+    // projection says it is -- through the same map the side axis's ticks use.
+    CHECK(gui::yFractionOf(5.0, gui::lineView(own, item.view)) == Catch::Approx(0.25));
+    CHECK(gui::yFractionOf(500.0, gui::lineView(item.lines()[0], item.view)) == Catch::Approx(0.5));
 
     found = item.nearestSample(100.0, 300.0);
     REQUIRE(found.value(QStringLiteral("valid")).toBool());
@@ -4660,72 +4643,11 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(5.0));
     CHECK(found.value(QStringLiteral("py")).toDouble() == Catch::Approx(300.0));
 
-    SECTION("a picture of it keeps the axis")
-    {
-        // adopt() copies the lines, and which axis a line is on is part of
-        // the line -- so the picture that leaves draws it where the pane did.
-        gui::PlotItem copy;
-        copy.setWidth(200.0);
-        copy.setHeight(400.0);
-        copy.setYMin(0.0);
-        copy.setYMax(1000.0);
-        copy.adopt(&item);
-        CHECK(copy.seriesHasOwnY(1));
-        CHECK(copy.seriesYFraction(1, 5.0) == Catch::Approx(0.25));
-    }
-
     SECTION("and puts it back on the common one")
     {
-        item.clearSeriesYRange(1);
-        CHECK_FALSE(item.seriesHasOwnY(1));
-        CHECK(item.seriesYFraction(1, 5.0) == Catch::Approx(0.005));
+        own.ownY = false;
+        CHECK(gui::yFractionOf(5.0, gui::lineView(own, item.view)) == Catch::Approx(0.005));
     }
-}
-
-TEST_CASE("a picture of a logarithmic plot owns where its points are", "[plot][log]")
-{
-    // A line folded onto a logarithmic axis's columns carries its x rather
-    // than leaving them to the axis -- see PlotLine::xs -- and that array is
-    // borrowed exactly as the values are. The picture a copy takes lives on
-    // past the next fold, so adopt() has to take both: a picture holding the
-    // values and still pointing at the model's x would be drawn, a moment
-    // later, against whatever that memory had become.
-    gui::PlotItem copy;
-    copy.setWidth(300.0);
-    copy.setHeight(100.0);
-    copy.setXLog(true);
-    copy.setXMin(1.0);
-    copy.setXMax(1000.0);
-    copy.setYMin(0.0);
-    copy.setYMax(10.0);
-
-    {
-        const std::vector<double> values{2.0, 4.0, 6.0, 8.0};
-        auto xs =
-            std::make_unique<std::vector<double>>(std::vector<double>{1.0, 10.0, 100.0, 1000.0});
-
-        gui::PlotItem item;
-        item.setWidth(300.0);
-        item.setHeight(100.0);
-        gui::PlotLine line;
-        line.values = values.data();
-        line.xs = xs->data();
-        line.count = 4;
-        item.setLines({line}, gui::PlotAxis{});
-        copy.adopt(&item);
-
-        // The dangerous thing, done on purpose: the model folds again and its
-        // old x go -- overwritten first, so a copy still reading them would
-        // read nonsense rather than luckily reading the same numbers.
-        std::fill(xs->begin(), xs->end(), -1.0);
-        xs.reset();
-    }
-
-    // A decade a third of the pane, so 100 sits two thirds across it.
-    const QVariantMap found = copy.nearestSample(200.0, 40.0);
-    REQUIRE(found.value(QStringLiteral("valid")).toBool());
-    CHECK(found.value(QStringLiteral("x")).toDouble() == Catch::Approx(100.0));
-    CHECK(found.value(QStringLiteral("y")).toDouble() == Catch::Approx(6.0));
 }
 
 TEST_CASE_METHOD(ControllerFixture, "the plot tab draws every line on the common axis",
@@ -4753,14 +4675,11 @@ TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[pl
     // The pointer is put exactly on element 1, whose value is negative.
     const std::vector<double> values{1.0, -5.0, 100.0, 1000.0};
 
-    gui::PlotItem item;
-    item.setWidth(400.0);
-    item.setHeight(400.0);
-    item.setXMin(0.0);
-    item.setXMax(3.0);
-    item.setYMin(1.0);
-    item.setYMax(1000.0);
-    item.setYLog(true);
+    h5test::LineHolder item;
+    item.view.width = 400.0;
+    item.view.height = 400.0;
+    item.frameOver(0.0, 3.0, 1.0, 1000.0);
+    item.view.yLog = true;
 
     gui::PlotLine line;
     line.values = values.data();
@@ -4787,24 +4706,17 @@ TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[pl
 
 namespace {
 
-/// A picture drawn twice, as PlotPicture draws a publication one: white
-/// ground above, black ground below, and the same ink on both. Four pixels
-/// across: nothing, black type, half-covered black type, and an orange stroke.
-QImage publicationPair()
+/// A publication picture as the figure paints one, on no ground and with its
+/// alpha premultiplied as QPainter leaves it. Four pixels across: nothing,
+/// black type, half-covered black type, and an orange stroke.
+QImage publicationPicture()
 {
-    QImage pair(4, 2, QImage::Format_RGB32);
-    const QRgb orange = qRgb(230, 159, 0);
-    // On white.
-    pair.setPixel(0, 0, qRgb(255, 255, 255));
-    pair.setPixel(1, 0, qRgb(0, 0, 0));
-    pair.setPixel(2, 0, qRgb(128, 128, 128));
-    pair.setPixel(3, 0, orange);
-    // On black.
-    pair.setPixel(0, 1, qRgb(0, 0, 0));
-    pair.setPixel(1, 1, qRgb(0, 0, 0));
-    pair.setPixel(2, 1, qRgb(0, 0, 0));
-    pair.setPixel(3, 1, orange);
-    return pair;
+    QImage picture(4, 1, QImage::Format_ARGB32_Premultiplied);
+    picture.setPixel(0, 0, qRgba(0, 0, 0, 0));
+    picture.setPixel(1, 0, qRgba(0, 0, 0, 255));
+    picture.setPixel(2, 0, qRgba(0, 0, 0, 127));
+    picture.setPixel(3, 0, qRgba(230, 159, 0, 255));
+    return picture;
 }
 
 /// A pixel as Qt's Windows clipboard writes it into CF_DIB, which is what
@@ -4828,7 +4740,7 @@ QRgb asWordReadsIt(QImage image, int x, int y)
 TEST_CASE("a picture on no ground is still a page to a reader that drops the alpha",
           "[export]")
 {
-    const QImage out = gui::composeOverNothing(publicationPair());
+    const QImage out = gui::straightOnPaper(publicationPicture());
     REQUIRE(out.size() == QSize(4, 1));
 
     SECTION("to a reader that honours it, nothing has changed")
@@ -4851,11 +4763,10 @@ TEST_CASE("a picture on no ground is still a page to a reader that drops the alp
 
 TEST_CASE("a partly covered colour comes back as that colour and not darker", "[export]")
 {
-    // Orange at half coverage: C*a + (1-a) on white, C*a on black.
-    QImage pair(1, 2, QImage::Format_RGB32);
-    pair.setPixel(0, 0, qRgb(243, 207, 128));
-    pair.setPixel(0, 1, qRgb(115, 80, 0));
-    const QImage out = gui::composeOverNothing(pair);
+    // Orange at half coverage, premultiplied: C*a.
+    QImage painted(1, 1, QImage::Format_ARGB32_Premultiplied);
+    painted.setPixel(0, 0, qRgba(115, 80, 0, 128));
+    const QImage out = gui::straightOnPaper(painted);
     const QRgb pixel = out.pixel(0, 0);
     CHECK(std::abs(qAlpha(pixel) - 128) <= 1);
     CHECK(std::abs(qRed(pixel) - 230) <= 2);
@@ -4865,7 +4776,7 @@ TEST_CASE("a partly covered colour comes back as that colour and not darker", "[
 
 TEST_CASE("a copied picture carries a PNG with its alpha and its density", "[export]")
 {
-    QImage picture = gui::composeOverNothing(publicationPair());
+    QImage picture = gui::straightOnPaper(publicationPicture());
     const int perMetre = 11811; // 300 dpi
     picture.setDotsPerMeterX(perMetre);
     picture.setDotsPerMeterY(perMetre);

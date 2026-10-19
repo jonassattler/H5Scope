@@ -26,10 +26,10 @@
 #include "gui/H5Session.hpp"
 #include "gui/H5Thread.hpp"
 #include "gui/PlotCore.hpp"
-#include "gui/PlotItem.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
 #include "support/H5Reader.hpp"
+#include "support/LineHolder.hpp"
 #include "support/TestFile.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -968,9 +968,9 @@ TEST_CASE_METHOD(PlotFixture, "a tab zoomed a notch at a time keeps the pane cov
     constexpr double kLength = 20000.0;
     constexpr double kPaneWidth = 844.0;
 
-    gui::PlotItem item;
-    item.setWidth(kPaneWidth);
-    item.setHeight(300.0);
+    h5test::LineHolder item;
+    item.view.width = kPaneWidth;
+    item.view.height = 300.0;
 
     bool dirty = true;
     QObject::connect(plot, &gui::CustomPlot::changed, plot, [&dirty] { dirty = true; });
@@ -997,25 +997,22 @@ TEST_CASE_METHOD(PlotFixture, "a tab zoomed a notch at a time keeps the pane cov
         }
         dirty = false;
         plot->setVisibleRange(low(), high());
-        item.setXMin(low());
-        item.setXMax(high());
-        item.setYMin(plot->minimum() - 1.0);
-        item.setYMax(plot->maximum() + 1.0);
+        item.frameOver(low(), high(), plot->minimum() - 1.0, plot->maximum() + 1.0);
         plot->fill(&item);
     };
 
     const auto push = [&] {
         plot->setVisibleRange(low(), high());
-        item.setXMin(low());
-        item.setXMax(high());
+        item.view.xMin = low();
+        item.view.xMax = high();
         refill();
     };
 
     /// Where what the item is holding begins and ends, read back through the
     /// pointers it was actually handed.
     const auto covers = [&](const char* when) {
-        const QVariantMap left = item.nearestSample(0.0, item.height() / 2.0);
-        const QVariantMap right = item.nearestSample(item.width(), item.height() / 2.0);
+        const QVariantMap left = item.nearestSample(0.0, item.view.height / 2.0);
+        const QVariantMap right = item.nearestSample(item.view.width, item.view.height / 2.0);
         INFO(when << ": view " << low() << ".." << high() << " zoom " << zoom);
         REQUIRE(left.value(QStringLiteral("valid")).toBool());
         REQUIRE(right.value(QStringLiteral("valid")).toBool());
@@ -1343,16 +1340,14 @@ TEST_CASE_METHOD(PlotFixture, "an entry's positions outlive a zoom, as its value
     add(plot, QStringLiteral("/trace[:]"));
     settleAll();
 
-    gui::PlotItem item;
-    item.setWidth(400.0);
-    item.setHeight(300.0);
-    item.setYMin(-10.0);
-    item.setYMax(10.0);
+    h5test::LineHolder item;
+    item.view.yMin = -10.0;
+    item.view.yMax = 10.0;
     // The spike: 12345 along, and a value of 9 is 95% of the way up.
     const double py = 300.0 * (1.0 - 19.0 / 20.0);
     const auto readsSpike = [&](double low, double high) {
-        item.setXMin(low);
-        item.setXMax(high);
+        item.view.xMin = low;
+        item.view.xMax = high;
         const QVariantMap found = item.nearestSample((12345.0 - low) / (high - low) * 400.0, py);
         REQUIRE(found.value(QStringLiteral("valid")).toBool());
         CHECK(found.value(QStringLiteral("y")).toDouble() == Approx(9.0));
@@ -2727,9 +2722,9 @@ TEST_CASE("a dataset the session holds outlives being evicted while a job reads 
 
 // --- the hand-over to a renderer ------------------------------------------
 //
-// fill() gives a PlotItem pointers straight into the entries' own vectors and
-// copies nothing, which is the whole reason a ten-thousand-line selection does
-// not cost a second hundred and sixty megabytes. The price is a contract the
+// fill() gives whatever draws pointers straight into the entries' own vectors
+// and copies nothing, which is the whole reason a ten-thousand-line selection
+// does not cost a second hundred and sixty megabytes. The price is a contract the
 // compiler cannot check: whatever was filled must be emptied before those
 // vectors are freed. These cases are that contract, asserted rather than
 // commented.
@@ -2741,7 +2736,7 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot hands every drawn entry over at onc
     add(plot, QStringLiteral("/series/a[:]"));
     add(plot, QStringLiteral("/series/b[:]"));
 
-    gui::PlotItem item;
+    h5test::LineHolder item;
     plot->fill(&item);
     CHECK(item.lineCount() == 2);
 
@@ -2815,7 +2810,7 @@ TEST_CASE_METHOD(PlotFixture, "what a custom plot filled is emptied before it is
     // bucket, a line ticked in the legend -- are in the case below, and the
     // difference between the two is the whole design: a coarser reading of the
     // same data is not a reason to blank the pane.
-    gui::PlotItem item;
+    h5test::LineHolder item;
 
     SECTION("removing the row it was drawing")
     {
@@ -2859,8 +2854,8 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot filled into a second item empties t
     gui::CustomPlot* plot = tab();
     add(plot, QStringLiteral("/series/a[:]"));
 
-    gui::PlotItem tabbed;
-    gui::PlotItem windowed;
+    h5test::LineHolder tabbed;
+    h5test::LineHolder windowed;
     plot->fill(&tabbed);
     REQUIRE(tabbed.lineCount() == 1);
 
@@ -2889,7 +2884,7 @@ TEST_CASE_METHOD(PlotFixture, "a closed custom tab empties the item it filled", 
     REQUIRE(plot != nullptr);
     add(plot, QStringLiteral("/series/a[:]"));
 
-    gui::PlotItem item;
+    h5test::LineHolder item;
     plot->fill(&item);
     REQUIRE(item.lineCount() == 1);
 
@@ -2914,13 +2909,8 @@ TEST_CASE_METHOD(PlotFixture,
     add(plot, QStringLiteral("/series/a[:]"));
     add(plot, QStringLiteral("/series/b[:]"));
 
-    gui::PlotItem item;
-    item.setWidth(400.0);
-    item.setHeight(300.0);
-    item.setXMin(0.0);
-    item.setXMax(64.0);
-    item.setYMin(0.0);
-    item.setYMax(100.0);
+    h5test::LineHolder item;
+    item.frameOver(0.0, 64.0, 0.0, 100.0);
     plot->fill(&item);
     REQUIRE(item.lineCount() == 2);
 
@@ -3018,9 +3008,13 @@ TEST_CASE_METHOD(PlotFixture, "the axis handed over is the one the tab is drawn 
         REQUIRE_FALSE(plot->xReady());
         CHECK(plot->lineOf(0).count == 0);
 
-        gui::PlotItem item;
-        plot->fill(&item);
-        CHECK(item.drawnPointCount() == 0);
+        gui::FigureItem figure;
+        figure.setWidth(640.0);
+        figure.setHeight(400.0);
+        figure.setPlot(plot);
+        figure.refill();
+        figure.compose();
+        CHECK(figure.drawnPointCount() == 0);
     }
 }
 

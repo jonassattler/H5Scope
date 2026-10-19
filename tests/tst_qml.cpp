@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Jonas Sattler
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "PlotCoreProbe.hpp"
 #include "gui/DatasetImageProvider.hpp"
 #include "gui/EmbeddedFonts.hpp"
 #include "gui/EmbeddedIcon.hpp"
@@ -121,7 +120,6 @@ public slots:
         // Same reason as the fonts: a QPixmap needs the QGuiApplication that
         // does not exist when Setup is constructed.
         icon_ = std::make_unique<IconProbe>();
-        plotCore_ = std::make_unique<PlotCoreProbe>();
 
         // The image view resolves its source through the provider, exactly
         // as it does under main.cpp; without it the suite would exercise a
@@ -132,11 +130,7 @@ public slots:
                                                   fixture_.get());
         engine->rootContext()->setContextProperty(QStringLiteral("EmbeddedFonts"),
                                                   fonts_.get());
-        engine->rootContext()->setContextProperty(QStringLiteral("EmbeddedIcon"),
-                                                  icon_.get());
-        // plotcore's answers beside PlotFrame's and PlotSurface's own, for
-        // tst_plotcore_parity.qml to hold the two to one another.
-        engine->rootContext()->setContextProperty(QStringLiteral("PlotCore"), plotCore_.get());
+        engine->rootContext()->setContextProperty(QStringLiteral("EmbeddedIcon"), icon_.get());
     }
 
 private:
@@ -145,7 +139,6 @@ private:
     std::unique_ptr<TestFixture> fixture_;
     std::unique_ptr<FontProbe> fonts_;
     std::unique_ptr<IconProbe> icon_;
-    std::unique_ptr<PlotCoreProbe> plotCore_;
 };
 
 QUICK_TEST_MAIN_WITH_SETUP(qml, Setup)

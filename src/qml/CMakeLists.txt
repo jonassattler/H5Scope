@@ -25,9 +25,6 @@ qt_add_qml_module(appqml
     DataView.qml
     TableSurface.qml
     PlotSurface.qml
-    PlotFrame.qml
-    PlotOverlayLegend.qml
-    PlotBand.qml
     PlotRangeSetting.qml
     RangeAxis.qml
     RangeAxisSetting.qml
@@ -47,7 +44,6 @@ qt_add_qml_module(appqml
     SettingsPanel.qml
     SettingRow.qml
     TableSettingsPanel.qml
-    PlotPicture.qml
     PlotSettingsDialog.qml
     PlotSettingsPanel.qml
     ImageSettingsPanel.qml
