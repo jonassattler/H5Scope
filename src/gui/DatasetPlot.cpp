@@ -13,18 +13,20 @@
 namespace gui {
 namespace {
 
-/// The positions held for `series`, or nothing when they do not describe the
-/// `count` values being drawn -- a line drawn sample for sample has none, and
-/// a stale set must never be read against a run of another length.
+/// The positions `held`, or nothing when they do not describe the `count`
+/// values being drawn -- a line drawn sample for sample has none, and a stale
+/// set must never be read against a run of another length.
+const double* positionsOf(const std::vector<double>& held, qsizetype count)
+{
+    return held.empty() || static_cast<qsizetype>(held.size()) != count ? nullptr : held.data();
+}
+
+/// The same, for line `series` of a cache keyed by line.
 const double* positionsOf(const std::map<int, std::vector<double>>& held, int series,
                           qsizetype count)
 {
     const auto found = held.find(series);
-    if (found == held.end() || found->second.empty() ||
-        static_cast<qsizetype>(found->second.size()) != count) {
-        return nullptr;
-    }
-    return found->second.data();
+    return found == held.end() ? nullptr : positionsOf(found->second, count);
 }
 
 } // namespace
@@ -41,6 +43,9 @@ DatasetPlot::DatasetPlot(DatasetTableModel* table, QObject* parent) : QObject(pa
     // the sum of them.
     PlotBudget::instance().join();
     connect(&PlotBudget::instance(), &PlotBudget::changed, this, &DatasetPlot::applyBudget);
+
+    // What the ladder gives up goes where the renderer's borrowing is kept.
+    runs_.setRetire([this](std::vector<double>& values) { retire(values); });
 
     settle_.setSingleShot(true);
     settle_.setInterval(kSettleMilliseconds);
@@ -145,7 +150,7 @@ void DatasetPlot::retire(std::map<int, std::vector<double>>& cache) const
     // whole of what a retired line is: a buffer nothing must free yet. Keeping
     // the maps meant growing a std::vector of std::map, which takes the copy on
     // a library whose map move is not noexcept and frees what this exists to
-    // protect. See the note on Detail, and BorrowedLines for the rest.
+    // protect. See RunLadder::Run, and BorrowedLines for the rest.
     for (auto& held : cache) {
         lent_.retire(held.second);
     }
@@ -381,6 +386,7 @@ void DatasetPlot::selectFirst(int count)
     for (int series = 0; series < total; ++series) {
         drawn_.push_back(series);
     }
+    runs_.setLines(drawn_);
 
     // How many points a line gets depends on how many lines there are, so a
     // bulk change of the drawn set can change it -- and a line already held was
@@ -400,6 +406,7 @@ void DatasetPlot::selectFirst(int count)
 void DatasetPlot::selectNone()
 {
     drawn_.clear();
+    runs_.setLines(drawn_);
     sampled_ = false;
     emit changed();
     refreshDetail();
@@ -434,6 +441,9 @@ void DatasetPlot::setSeriesVisible(int series, bool visible)
     else {
         drawn_.erase(at);
     }
+    // What a line unticked held at each run goes now, retired; a line ticked
+    // makes every run in hand one that cannot draw it until it is read there.
+    runs_.setLines(drawn_);
     sampled_ = false;
     emit changed();
     // A line ticked while the reader is looking closely has no closer look of
@@ -445,7 +455,7 @@ void DatasetPlot::setSeriesVisible(int series, bool visible)
 long long DatasetPlot::pyramidBudget() const
 {
     // The share this plot may hold, split between the lines it is drawing.
-    // Twice, because what is held has to leave room for the runs in `levels_`
+    // Twice, because what is held has to leave room for the runs in `runs_`
     // that a bucket below the base still reads -- and because a budget spent to
     // the last double is a budget with nothing left for the frame that finds it
     // was a little short.
@@ -586,13 +596,10 @@ void DatasetPlot::ensure() const
     prune(positions_);
     prune(fold_.values);
     prune(fold_.xs);
-    for (Detail& level : levels_) {
-        prune(level.lines);
-        prune(level.positions);
-    }
-    // The pyramids go the blunt way, because nothing borrows them: what the
-    // renderer holds a pointer into is always a vector in `lines_` or in a
-    // Detail, both of which have just been retired rather than freed.
+    // The runs were pruned when the drawn set changed (RunLadder::setLines),
+    // the same way. The pyramids go the blunt way, because nothing borrows
+    // them: what the renderer holds a pointer into is always a vector in
+    // `lines_` or in a run, both of which have been retired rather than freed.
     for (auto it = pyramids_.begin(); it != pyramids_.end();) {
         it = seriesVisible(it->first) ? std::next(it) : pyramids_.erase(it);
     }
@@ -674,10 +681,16 @@ int DatasetPlot::pointCount() const
             return static_cast<int>(folded.count);
         }
     }
-    const int at = drawnLevel();
-    return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
-               ? levels_[static_cast<std::size_t>(at)].points
-               : points_;
+    if (const RunLadder::Run* run = runs().drawn(); run != nullptr) {
+        // Every line covers the same run, so any that read is as good as
+        // another; a drawn run has at least one.
+        for (const auto& [series, held] : run->lines) {
+            if (!held.values.empty()) {
+                return static_cast<int>(held.values.size());
+            }
+        }
+    }
+    return points_;
 }
 
 int DatasetPlot::sourceSeriesCount() const
@@ -693,10 +706,8 @@ bool DatasetPlot::thinned() const
             return folded.summarised;
         }
     }
-    const int at = drawnLevel();
-    return at >= 0 && levels_[static_cast<std::size_t>(at)].points > 0
-               ? levels_[static_cast<std::size_t>(at)].step > 1.0
-               : step_ > 1.0;
+    const RunLadder::Run* run = runs().drawn();
+    return run != nullptr ? run->step > 1.0 : step_ > 1.0;
 }
 
 double DatasetPlot::minimum() const
@@ -868,23 +879,23 @@ PlotLine DatasetPlot::lineOf(int series) const
     // is what is drawn. That one covers everything by construction, so a zoom
     // out is a correct picture in the same frame instead of half a line until a
     // read lands.
-    const int at = drawnLevel();
-    if (at >= 0) {
-        const Detail& level = levels_[static_cast<std::size_t>(at)];
-        const auto closer = level.lines.find(series);
-        if (closer != level.lines.end() && !closer->second.empty()) {
+    if (const RunLadder::Run* run = runs().drawn(); run != nullptr) {
+        // A line that came back with nothing at this run is drawn from the
+        // whole-line summary below, which is what a line that will not read
+        // closely should draw.
+        if (const RunLadder::LineRun* closer = run->of(series); closer != nullptr) {
             // Where the run starts, in the same table positions the whole-line
             // summary counts in -- which is the whole of what PlotLine needs to
             // draw a piece of a line in the right place.
-            line.positionStart = static_cast<double>(level.window.first);
+            line.positionStart = static_cast<double>(run->window.first);
 
-            line.values = closer->second.data();
-            line.count = static_cast<qsizetype>(closer->second.size());
-            line.positionStep = level.step;
-            line.positions = positionsOf(level.positions, series, line.count);
+            line.values = closer->values.data();
+            line.count = static_cast<qsizetype>(closer->values.size());
+            line.positionStep = run->step;
+            line.positions = positionsOf(closer->positions, line.count);
             // A run at bucket one is the elements of that run, read again and
             // drawn one for one; anything coarser is an envelope of them.
-            line.summarised = level.window.bucket > 1;
+            line.summarised = run->window.bucket > 1;
             return line;
         }
     }
@@ -1022,23 +1033,6 @@ bool DatasetPlot::visiblePositions(double& first, double& last) const
     return true;
 }
 
-std::optional<PlotWindow> DatasetPlot::detailFor(int buckets) const
-{
-    if (drawn_.empty() || static_cast<int>(drawn_.size()) > kWindowedSeries) {
-        // Past a few hundred strokes over one another the picture is a
-        // distribution rather than a line, and re-reading every one of them
-        // each time the reader zooms would spend the whole cost of the
-        // selection again to sharpen something nobody can follow.
-        return {};
-    }
-    double low = 0.0;
-    double high = 0.0;
-    if (!visiblePositions(low, high)) {
-        return {};
-    }
-    return windowFor(low, high, static_cast<long long>(sourcePointCount()), buckets);
-}
-
 int DatasetPlot::paneBuckets() const
 {
     // Half as many buckets as points, because an envelope answers with two
@@ -1073,7 +1067,6 @@ int DatasetPlot::detailBuckets() const
     return share / lines >= 2LL * cap_ ? 2 * paneBuckets() : paneBuckets();
 }
 
-
 long long DatasetPlot::retiredDoubles() const
 {
     return lent_.retiredDoubles();
@@ -1102,11 +1095,11 @@ int DatasetPlot::heldLevels() const
     // shape of the problem it was written about: the number existed and nothing
     // consulted it, so the halving in pyramidBudget() was the only thing
     // standing between the two claims on one share.
-    const long long spare =
-        std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
+    const long long spare = std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
     //
     // Twice over, because an envelope run holds a position beside every value
-    // (Detail::positions): a run is `2 * cap_` values and as many positions.
+    // (RunLadder::LineRun::positions): a run is `2 * cap_` values and as many
+    // positions.
     const int lines = std::max(static_cast<int>(drawn_.size()), 1);
     const long long affordable = spare / std::max<long long>(lines * 4LL * cap_, 1);
     return static_cast<int>(std::clamp<long long>(affordable, 1, kHeldLevels));
@@ -1146,50 +1139,24 @@ LevelView DatasetPlot::levelView() const
     return view;
 }
 
-std::span<const HeldLevel> DatasetPlot::ladder() const
+RunLadder& DatasetPlot::runs() const
 {
-    // Refilled rather than rebuilt: clear() keeps the capacity, so this
-    // allocates once for the life of the object. The completeness test is the
-    // one the policy cannot make for itself -- a run read before a line was
-    // ticked back on is a run this object cannot draw from, however well its
-    // window covers the pane.
-    ladder_.clear();
-    ladder_.reserve(levels_.size());
-    for (const Detail& level : levels_) {
-        const bool whole =
-            !level.lines.empty() && std::all_of(drawn_.begin(), drawn_.end(), [&level](int series) {
-                return level.lines.find(series) != level.lines.end();
-            });
-        ladder_.push_back(HeldLevel{level.window, whole});
-    }
-    return ladder_;
+    runs_.setView(levelView(), focusFor());
+    return runs_;
 }
 
-int DatasetPlot::drawnLevel() const
+RunLadder::PyramidOf DatasetPlot::pyramidOf() const
 {
-    return gui::drawnLevel(ladder(), levelView());
+    return [this](int series) -> const LinePyramid* {
+        const auto held = pyramids_.find(series);
+        return held != pyramids_.end() ? &held->second : nullptr;
+    };
 }
 
 std::optional<PlotWindow> DatasetPlot::drawnWindow() const
 {
-    const int at = drawnLevel();
-    return at < 0 ? std::optional<PlotWindow>{}
-                  : levels_[static_cast<std::size_t>(at)].window;
-}
-
-int DatasetPlot::levelAt(const PlotWindow& window) const
-{
-    for (std::size_t i = 0; i < levels_.size(); ++i) {
-        if (levels_[i].window == window) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-std::optional<PlotWindow> DatasetPlot::detailWanted() const
-{
-    return gui::wantedLevel(ladder(), levelView(), focusFor());
+    const RunLadder::Run* run = runs().drawn();
+    return run == nullptr ? std::optional<PlotWindow>{} : run->window;
 }
 
 void DatasetPlot::refreshDetail()
@@ -1201,92 +1168,28 @@ void DatasetPlot::refreshDetail()
         settle_.stop();
         return;
     }
-    if (!detailFor(paneBuckets()).has_value()) {
+    RunLadder& ladder = runs();
+    if (ladder.zoomedOut()) {
         dropDetail();
         return;
     }
 
-    // Everything the pyramids can answer, now, in this call.
-    //
-    // A run at or above a line's base bucket is a fold of a buffer already in
-    // hand, so there is nothing to wait for and nothing to arm the next step
-    // with -- which is why this loops where the read path returns. The whole
-    // ladder the policy wants is usually memory: the run on screen, the four
-    // octaves in towards the pointer and the two out, all of them folded before
-    // the frame that asked is drawn. That is the difference between a zoom that
-    // resolves as the reader turns the wheel and one that answers a tenth of a
-    // second after they stop.
-    //
-    // Bounded by heldLevels() rather than trusted to terminate on its own. It
-    // does terminate -- wantedLevel() never names a run that served() already
-    // answers, and trimLevels() keeps the ladder at heldLevels() -- but a loop
-    // whose exit is a policy in another file is a loop worth bounding here.
-    bool filled = false;
-
-    // The pane's own preferred run first, whether or not something coarser in
-    // hand would already have covered it.
-    //
-    // wantedLevel() stops asking once *some* held run covers the view at a
-    // bucket no coarser than the pane strictly needs, and that was the right
-    // rule while every run cost a round trip: a run read on the way in is
-    // usually a little finer than the next view out needs, and re-reading the
-    // file to gain a fraction of an octave would have been a round trip spent
-    // on almost nothing. The cost of settling for it is that the pane can be
-    // drawn at up to an octave coarser than it asked -- about one drawn station
-    // per column where it asked for two, which is what kSamplesPerColumn's
-    // slack absorbs.
-    //
-    // Out of a held line that trade has no second side. The finer run is a fold
-    // of a buffer already in hand, so there is nothing to weigh against it, and
-    // the pane gets the resolution it asked for on every frame rather than on
-    // the frames where the ladder happens to line up.
-    if (const std::optional<PlotWindow> own = detailFor(detailBuckets());
-        own.has_value() && fillDetail(*own)) {
-        filled = true;
-        trimLevels();
-    }
-
-    int step = 0;
-    for (; step <= heldLevels(); ++step) {
-        wanted_ = detailWanted();
-        if (!wanted_.has_value() || !fillDetail(*wanted_)) {
-            break;
-        }
-        filled = true;
-        trimLevels();
-        if (levelAt(*wanted_) < 0) {
-            // The trim gave up what was just folded: a ladder shorter than the
-            // runs the policy wants, which a small budget gives. Asking again
-            // would fold it again and give it up again.
-            break;
-        }
-    }
-    // A loop that ran to its bound stopped because it ran out of turns rather
-    // than because the ladder was full, which means wantedLevel() and
-    // fillDetail() have stopped agreeing about what is held. The bound above
-    // keeps that from hanging; this is what keeps it from being invisible,
-    // because the symptom in a release build would not look like a bug -- it
-    // would look like the plot had become slow again, which is the failure this
-    // whole path exists to remove.
-    Q_ASSERT(step <= heldLevels());
-    if (filled) {
+    // Everything the pyramids can answer, now, in this call -- the run on
+    // screen at the bucket the pane prefers, then every rung the policy wants.
+    // See RunLadder::refresh, which carries the argument for both.
+    ladder.setHeld(heldLevels());
+    if (ladder.refresh(pyramidOf())) {
         emit changed();
     }
 
-    wanted_ = detailWanted();
+    // What is left is what the file has to answer: a run below the pyramids'
+    // base, wanted and not held. A wanted run the pyramids can answer is never
+    // read -- see RunLadder::read.
+    const std::optional<RunRead> read = ladder.read(pyramidOf());
+    wanted_ = read.has_value() ? std::optional<PlotWindow>{read->window} : std::nullopt;
     if (!wanted_.has_value()) {
         // Everything worth holding is held. Not a read, not a signal, not even
         // a timer -- which is what makes panning inside a run free.
-        settle_.stop();
-        return;
-    }
-    if (folds(*wanted_)) {
-        // Wanted and not held, and the pyramid answers it -- so the ladder had
-        // no room for it, and the file would answer it no differently: the
-        // reply would be trimmed away as the fold was. This used to go to the
-        // file, which is how a zoom into 7777777 of a ten-million-element line
-        // read once where a zoom into the middle of it read nothing.
-        wanted_.reset();
         settle_.stop();
         return;
     }
@@ -1309,74 +1212,11 @@ void DatasetPlot::refreshDetail()
     settle_.start();
 }
 
-void DatasetPlot::trimLevels()
+void DatasetPlot::trimLevels() const
 {
-    const int allowed = heldLevels();
-    while (static_cast<int>(levels_.size()) > allowed) {
-        // Rebuilt each time round, because erasing one changes which of the
-        // rest is coldest.
-        const std::size_t worst = gui::coldestLevel(ladder(), levelView(), focusFor());
-        retire(levels_[worst].lines);
-        retire(levels_[worst].positions);
-        levels_.erase(levels_.begin() + static_cast<long>(worst));
-    }
-}
-
-bool DatasetPlot::folds(const PlotWindow& detail) const
-{
-    if (drawn_.empty()) {
-        return false;
-    }
-    // Every drawn line, or none of them. A run half folded out of memory and
-    // half read from the file would be two pictures of one moment, and the half
-    // that had not arrived yet would be the one the reader noticed.
-    return std::all_of(drawn_.begin(), drawn_.end(), [&](int series) {
-        const auto pyramid = pyramids_.find(series);
-        return pyramid != pyramids_.end() && !pyramid->second.empty() &&
-               detail.bucket >= pyramid->second.baseBucket();
-    });
-}
-
-bool DatasetPlot::fillDetail(const PlotWindow& detail)
-{
-    if (!folds(detail)) {
-        return false;
-    }
-
-    int at = levelAt(detail);
-    if (at < 0) {
-        // The same hazard takeDetail() names: this push_back may reallocate
-        // `levels_` while the renderer is reading a run already in it, so a
-        // Detail is move-only and the relocation cannot be a copy.
-        levels_.emplace_back(detail);
-        at = static_cast<int>(levels_.size()) - 1;
-    }
-    Detail& level = levels_[static_cast<std::size_t>(at)];
-
-    bool any = false;
-    std::vector<double> folded;
-    for (const int series : drawn_) {
-        if (level.lines.find(series) != level.lines.end()) {
-            continue; // already held at this run
-        }
-        std::vector<double> positions;
-        if (!fillWindow(pyramids_[series], detail, folded, &positions)) {
-            continue;
-        }
-        // Every line covers the same run, so these are the same for all of them
-        // and the last word is as good as the first. They are what a read of
-        // this run would have reported: a pair per bucket, each at the element
-        // it is, or the elements themselves when the bucket is one.
-        level.points = static_cast<int>(folded.size());
-        level.step = detail.bucket == 1 ? 1.0 : static_cast<double>(detail.bucket) / 2.0;
-        level.lines[series] = std::move(folded);
-        if (!positions.empty()) {
-            level.positions[series] = std::move(positions);
-        }
-        folded.clear();
-        any = true;
-    }
-    return any;
+    RunLadder& ladder = runs();
+    ladder.setHeld(heldLevels());
+    ladder.trim();
 }
 
 void DatasetPlot::askForDetail()
@@ -1393,23 +1233,16 @@ void DatasetPlot::askForDetail()
         // before the one they stopped on is even started.
         return;
     }
-    const PlotWindow want = *wanted_;
-
-    // Every drawn line that has not been read at this run. Usually all of them
-    // -- the run is one this object has never held -- and sometimes one, which
-    // is a line ticked in the legend while the reader was already looking
-    // closely.
-    const int at = levelAt(want);
-    std::vector<int> series;
-    for (const int line : drawn_) {
-        if (at < 0 || levels_[static_cast<std::size_t>(at)].lines.find(line) ==
-                          levels_[static_cast<std::size_t>(at)].lines.end()) {
-            series.push_back(line);
-        }
-    }
-    if (series.empty()) {
+    // Every drawn line that has not been read at this run: the whole drawn set
+    // for a run never held, one line for a line ticked in the legend while the
+    // reader was already looking closely.
+    const std::optional<RunRead> read = runs().read(pyramidOf());
+    if (!read.has_value()) {
         return;
     }
+    const PlotWindow want = read->window;
+    wanted_ = want;
+    const std::vector<int>& series = read->lines;
 
     std::vector<DatasetTableModel::SampleRequest> requests;
     requests.reserve(series.size());
@@ -1426,7 +1259,6 @@ void DatasetPlot::askForDetail()
     // window to replace it with a sharper one would be spending the reader's
     // attention to save them nothing. Anything asked for and no longer wanted
     // is disowned by its ticket rather than painted.
-    asked_ = want;
     inFlight_ = true;
     H5Thread::instance().submit(
         requests_,
@@ -1444,7 +1276,6 @@ void DatasetPlot::askForDetail()
 void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& series,
                              std::vector<DatasetTableModel::NumericGrid> grids)
 {
-    asked_.reset();
     if (wanted_ != detail) {
         // The reader moved on while this was out. Dropping it is not a loss --
         // but arming the next read is not optional, because only one read is
@@ -1455,45 +1286,19 @@ void DatasetPlot::takeDetail(const PlotWindow& detail, const std::vector<int>& s
         return;
     }
 
-    int at = levelAt(detail);
-    if (at < 0) {
-        // A resolution this object has not held before. Nothing is retired --
-        // the runs it already has are the ones the reader zoomed through and
-        // are exactly what makes going back free. Which is what this push_back
-        // has to keep true: it may reallocate `levels_` while the renderer is
-        // reading one of the runs already in it, so a Detail is move-only and
-        // the relocation cannot be a copy. See the declaration.
-        levels_.emplace_back(detail);
-        at = static_cast<int>(levels_.size()) - 1;
-    }
-    Detail& level = levels_[static_cast<std::size_t>(at)];
-
+    // A resolution this object has not held before goes in beside the rest.
+    // Nothing is retired for it -- the runs it already has are the ones the
+    // reader zoomed through and are exactly what makes going back free.
     const std::size_t count = std::min(series.size(), grids.size());
     for (std::size_t i = 0; i < count; ++i) {
         DatasetTableModel::NumericGrid& grid = grids[i];
-        if (!grid.values.empty()) {
-            // Every line covers the same run, so these are the same for all of
-            // them and the last word is as good as the first.
-            level.points = seriesFromRows_ ? grid.columns : grid.rows;
-            level.step = seriesFromRows_ ? grid.columnStep : grid.rowStep;
-        }
         // Even when it read nothing. An entry that is there and empty is what
         // stops this line from being asked for over and over; lineOf() falls
-        // back to a coarser run, or to the whole-line summary, which is what a
-        // line that will not read closely should draw.
-        auto held = level.lines.find(series[i]);
-        if (held != level.lines.end()) {
-            retire(held->second);
-        }
-        level.lines[series[i]] = std::move(grid.values);
-        auto heldAt = level.positions.find(series[i]);
-        if (heldAt != level.positions.end()) {
-            retire(heldAt->second);
-            level.positions.erase(heldAt);
-        }
-        if (!grid.positions.empty()) {
-            level.positions[series[i]] = std::move(grid.positions);
-        }
+        // back to the whole-line summary, which is what a line that will not
+        // read closely should draw. Every line covers the same run, so the
+        // step is the same for all of them.
+        runs_.land(detail, series[i], seriesFromRows_ ? grid.columnStep : grid.rowStep,
+                   std::move(grid.values), std::move(grid.positions));
     }
 
     trimLevels();
@@ -1513,18 +1318,13 @@ void DatasetPlot::clearDetail()
     // believing a read it will never hear about is still out.
     requests_.reset();
     inFlight_ = false;
-    asked_.reset();
     wanted_.reset();
-    for (Detail& level : levels_) {
-        retire(level.lines);
-        retire(level.positions);
-    }
-    levels_.clear();
+    runs_.clear();
 }
 
 void DatasetPlot::dropDetail()
 {
-    const bool anything = !levels_.empty();
+    const bool anything = !runs_.runs().empty();
     clearDetail();
     if (anything) {
         emit changed();

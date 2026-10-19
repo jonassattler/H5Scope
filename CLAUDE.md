@@ -418,10 +418,11 @@ constructor to fall back on.** `std::vector` reallocates with
 *deep-copied* into the new storage and the original freed — with the renderer
 still pointing at it. Whether that happens is down to the standard library:
 `std::map`'s move is `noexcept` on libstdc++ and libc++ and is not on MSVC's, so
-a `push_back` that grew `DatasetPlot::levels_` passed everywhere but segfaulted
-on Windows. `DatasetPlot::Detail` therefore has its copy **deleted**, the
-retired store holds bare `std::vector<double>`, and `static_assert`s next to
-each say so on every platform rather than on the one that noticed.
+a `push_back` that grew the Plot tab's runs passed everywhere but segfaulted
+on Windows. A run (`plotcore::RunLadder::Run`, `DatasetPlot::Detail` before
+it) therefore has its copy **deleted**, the retired store holds bare
+`std::vector<double>`, and `static_assert`s next to each say so on every
+platform rather than on the one that noticed.
 
 Both plots keep that contract through one class, `gui::BorrowedLines`: which
 item is reading, the retired store, and the rule for when either is let go
@@ -915,12 +916,22 @@ and the argument for each rule is written over its function there.
 
    Until 0.5.2 that run came back from the file, a round trip and a settle
    later, one at a time. It now comes out of `gui::LinePyramid`: the line is
-   held whole from the one pass that read it, so `DatasetPlot::fillDetail` and
-   `CustomPlot::fillCloser` answer **in the same call that asked**, and the
-   whole ladder the policy wants — the run on screen, the octaves in towards
-   the pointer, the octaves out — is folded before the frame that asked for it
-   is drawn. `refreshDetail` loops rather than returning, because there is no
-   reply to arm the next step with.
+   held whole from the one pass that read it, so a fold answers **in the same
+   call that asked**, and the whole ladder the policy wants — the run on
+   screen, the octaves in towards the pointer, the octaves out — is folded
+   before the frame that asked for it is drawn. `RunLadder::refresh` loops
+   rather than returning, because there is no reply to arm the next step with.
+
+   **The runs are plotcore's.** Both plots hold their closer looks in a
+   `plotcore::RunLadder`: the Plot tab one for every drawn line, a group read
+   together because a table's rows are one hyperslab; a custom tab one per
+   entry and per time base. Which runs are held, which is drawn, which is
+   read next and which goes is decided there, once — the loop was written
+   twice here, a table's and a custom tab's, and the two drifted. What stays
+   in the plots is what a ladder cannot know: the pyramids and the budget they
+   were fitted to (lent to it per call), the read itself on `H5Thread`, the
+   settle, one read out at a time, and the borrow contract, which the ladder
+   keeps by giving up every run through `BorrowedLines::retire`.
 
    **A time base is a line, and is held like one.** A custom tab drawn against
    another dataset used to be the one axis of the three that could not be
@@ -975,9 +986,9 @@ and the argument for each rule is written over its function there.
    `H5Thread::submit` is still the path below the pyramid's base bucket, which
    is the only zoom a line too large to hold at bucket one still reads for —
    and **only** that path: a run the pyramid can fold is never asked of the
-   file, even when the ladder has no room to keep it (`DatasetPlot::folds`,
-   `CustomPlot::folds`), because the file would answer it no differently and
-   the reply would be trimmed away as the fold was. Both halves of the policy
+   file, even when the ladder has no room to keep it (`RunLadder::read`),
+   because the file would answer it no differently and the reply would be
+   trimmed away as the fold was. Both halves of the policy
    read one list of what is wanted (`pathOf` in `plotcore/cpp/src/Levels.cpp`):
    until 0.7.2 `coldestLevel` ranked by distance alone, so a full ladder gave
    up the fourth octave in towards the pointer the moment it was folded, was
