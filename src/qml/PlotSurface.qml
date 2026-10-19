@@ -117,6 +117,22 @@ Item {
     /// crosshair on the plot and a line of numbers in the bar below it.
     property bool showCursor: true
 
+    /// Whether every drawn line is drawn in a band of the pane of its own,
+    /// the first at the top, each numbered beside the pane on its own axis:
+    /// lines that would sit over one another on one axis laid out one under
+    /// the next, as a strip chart lays them out (jonassattler/H5Scope#30).
+    property bool stacked: false
+
+    /// Whether a drawn line has been moved or scaled on its axis, and the way
+    /// to put every line back where it was read. A line is moved by a drag
+    /// with the middle button or with Alt, scaled by the wheel with Alt and
+    /// Control, and put back alone by Control and a click on it; the plot
+    /// keeps what was done to each line (LineModel::seriesMove).
+    readonly property bool linesMoved: figure.linesMoved
+    function putLinesBack() {
+        figure.putLinesBack()
+    }
+
     /// A title over the pane, and a name for each axis. Empty draws nothing
     /// and costs no room -- see plotcore's Figure::layout, whose gutters grow
     /// for these only when there is something in them.
@@ -585,6 +601,7 @@ Item {
         coloursCustom: surface.colorsCustom
         highlighted: surface.highlighted
         bundle: surface.bundle
+        stacked: surface.stacked
         dark: Theme.dark
 
         tickFont: Theme.readout
@@ -723,7 +740,7 @@ Item {
         "showMarkers", "showCursor",
         "plotTitle", "xLabel", "yLabel",
         "legendOnPlot", "legendCorner",
-        "flipped"
+        "flipped", "stacked"
     ]
 
     /// Those properties as plain data, for something to write down.
@@ -799,7 +816,7 @@ Item {
                 "xLogBaseCustom", "yLogBaseCustom",
                 "showMarkers", "showCursor", "highlighted",
                 "plotTitle", "xLabel", "yLabel",
-                "legendOnPlot", "legendCorner",
+                "legendOnPlot", "legendCorner", "stacked",
                 "zoomX", "panX", "zoomY", "panY"]
     }
 
@@ -812,6 +829,16 @@ Item {
         group: surface.plotMemoryGroup
         restoresDefaults: false
         names: ["seriesFromRows"]
+    }
+
+    // What the reader's gestures did to the lines, filed with the dataset they
+    // were done on -- and, unlike the way round, put back to none for a dataset
+    // with nothing filed. After the memory above, whose restoring the way
+    // round forgets every move: these are moves of the places that way gives.
+    DatasetMemory {
+        subject: surface.plot
+        group: surface.plotMemoryGroup === "" ? "" : surface.plotMemoryGroup + "Lines"
+        names: ["lineMoves"]
     }
 
     /// Which line is which. Over the plot rather than beside it: it belongs to

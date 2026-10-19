@@ -53,6 +53,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Catch::Approx;
@@ -2372,6 +2373,115 @@ TEST_CASE_METHOD(PlotFixture, "a line keeps the colour the reader gave it", "[cu
         REQUIRE(plots->plotAt(into)->sourceSeriesCount() == 1);
         CHECK_FALSE(plots->plotAt(into)->seriesOverride(0).isValid());
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a line moved on its axis keeps the move on its entry", "[custom]")
+{
+    // A gesture's result is the reader's choice about a line, of the colour's
+    // kind: the figure decides what a drag does, and the entry keeps it, so it
+    // outlives a refill, goes into a saved view, and stays with its line when
+    // an entry before it is removed.
+    gui::CustomPlotSet* plots = set();
+    const int index = plots->addPlot();
+    gui::CustomPlot* plot = plots->plotAt(index);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/a[:]")) == 0);
+    REQUIRE(plot->addExpression(QStringLiteral("/series/b[:]")) == 1);
+    settleAll();
+
+    const auto moveOf = [plot](int series) {
+        const QVariantMap move = plot->seriesMove(series);
+        return std::pair{move.value(QStringLiteral("scale")).toDouble(),
+                         move.value(QStringLiteral("shift")).toDouble()};
+    };
+    // Where it was read, for every line and for a line that does not exist.
+    CHECK(moveOf(0) == std::pair{1.0, 0.0});
+    CHECK(moveOf(7) == std::pair{1.0, 0.0});
+
+    QSignalSpy changed(plot, &gui::CustomPlot::changed);
+    plot->setSeriesMove(1, 2.0, 0.5);
+    CHECK(moveOf(1) == std::pair{2.0, 0.5});
+    CHECK(moveOf(0) == std::pair{1.0, 0.0});
+    // Announced, because the figure draws it by asking again; said twice is
+    // said once; and a scale that is no scale is refused.
+    CHECK(changed.count() == 1);
+    plot->setSeriesMove(1, 2.0, 0.5);
+    plot->setSeriesMove(1, 0.0, 0.5);
+    plot->setSeriesMove(1, std::numeric_limits<double>::quiet_NaN(), 0.5);
+    CHECK(changed.count() == 1);
+    CHECK(moveOf(1) == std::pair{2.0, 0.5});
+
+    SECTION("it travels through the plot's own state, written only where there is one")
+    {
+        const QVariantMap state = plot->state();
+        const QVariantList rows = state.value(QStringLiteral("entries")).toList();
+        REQUIRE(rows.size() == 2);
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("scale")));
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("shift")));
+        CHECK(rows.at(1).toMap().value(QStringLiteral("scale")).toDouble() == 2.0);
+        CHECK(rows.at(1).toMap().value(QStringLiteral("shift")).toDouble() == 0.5);
+
+        const int into = plots->addPlot();
+        gui::CustomPlot* copy = plots->plotAt(into);
+        copy->setState(state);
+        CHECK(copy->seriesMove(0).value(QStringLiteral("scale")).toDouble() == 1.0);
+        CHECK(copy->seriesMove(1).value(QStringLiteral("scale")).toDouble() == 2.0);
+        CHECK(copy->seriesMove(1).value(QStringLiteral("shift")).toDouble() == 0.5);
+    }
+
+    SECTION("it stays with its line when one before it goes")
+    {
+        plot->removeEntry(0);
+        settleAll();
+        CHECK(moveOf(0) == std::pair{2.0, 0.5});
+    }
+
+    SECTION("and every line goes back at once")
+    {
+        plot->setSeriesMove(0, 1.0, -3.0);
+        changed.clear();
+        plot->clearSeriesMoves();
+        CHECK(moveOf(0) == std::pair{1.0, 0.0});
+        CHECK(moveOf(1) == std::pair{1.0, 0.0});
+        CHECK(changed.count() == 1);
+        plot->clearSeriesMoves();
+        CHECK(changed.count() == 1);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a line the figure moves is handed back to the plot",
+                 "[custom][figure]")
+{
+    // The figure item takes each line's move from the plot when it is lent the
+    // lines, and hands back what a gesture did to one. Asked the way the
+    // figure asks, through its lines' settings.
+    gui::CustomPlot* plot = tab();
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+    plot->setSeriesMove(1, 0.5, 2.0);
+
+    gui::FigureItem figure;
+    figure.setWidth(640.0);
+    figure.setHeight(400.0);
+    figure.setXMinimum(0.0);
+    figure.setXMaximum(63.0);
+    figure.setDataLength(64.0);
+    figure.setPlot(plot);
+    figure.refill();
+    figure.compose();
+    REQUIRE(figure.lineCount() == 2);
+    CHECK(figure.figure().lineSettings(1).scale == 0.5);
+    CHECK(figure.figure().lineSettings(1).shift == 2.0);
+    CHECK(figure.figure().lineSettings(0).scale == 1.0);
+    CHECK(figure.linesMoved());
+
+    figure.putLinesBack();
+    settleAll();
+    figure.refill();
+    figure.compose();
+    CHECK(plot->seriesMove(1).value(QStringLiteral("scale")).toDouble() == 1.0);
+    CHECK(figure.figure().lineSettings(1).scale == 1.0);
+    CHECK(figure.figure().lineSettings(1).shift == 0.0);
+    CHECK_FALSE(figure.linesMoved());
 }
 
 TEST_CASE_METHOD(PlotFixture, "a line can be read against a y axis of its own", "[custom][axes]")

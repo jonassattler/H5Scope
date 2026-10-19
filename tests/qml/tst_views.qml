@@ -6263,6 +6263,29 @@ TestCase {
         plot.colorMode = "spectrum"
     }
 
+    /// A line moved on the Plot tab is remembered with the dataset it was
+    /// moved on, as every other setting is, and a dataset with nothing
+    /// remembered draws every line where it was read.
+    function test_a_moved_line_is_remembered_with_its_dataset() {
+        verify(select("/cube"))
+        const win = plotWindow()
+        const plot = AppController.datasetPlot
+        compare(Object.keys(plot.lineMoves).length, 0)
+
+        plot.setSeriesMove(2, 2, 0.5)
+        compare(plot.lineMoves["2"][0], 2)
+        compare(plot.lineMoves["2"][1], 0.5)
+
+        verify(select("/compressed"))
+        compare(Object.keys(plot.lineMoves).length, 0,
+                "another dataset starts where its lines were read")
+
+        verify(select("/cube"))
+        compare(plot.seriesMove(2).scale, 2, "and coming back puts the move back")
+        compare(plot.seriesMove(2).shift, 0.5)
+        plot.clearSeriesMoves()
+    }
+
     /// ...and it holds it still in the picture, not only in the arithmetic.
     ///
     /// The case above asks the rule a question. This one unticks a line and

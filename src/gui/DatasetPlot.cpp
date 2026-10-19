@@ -202,12 +202,95 @@ void DatasetPlot::reseed()
     selectFirst(kMaxInitialSeries);
 }
 
+QVariantMap DatasetPlot::seriesMove(int series) const
+{
+    const auto found = moves_.find(series);
+    if (found == moves_.end()) {
+        return {{QStringLiteral("scale"), 1.0}, {QStringLiteral("shift"), 0.0}};
+    }
+    return {{QStringLiteral("scale"), found->second.first},
+            {QStringLiteral("shift"), found->second.second}};
+}
+
+void DatasetPlot::setSeriesMove(int series, double scale, double shift)
+{
+    if (series < 0 || !std::isfinite(scale) || !(scale > 0.0) || !std::isfinite(shift)) {
+        return;
+    }
+    const auto found = moves_.find(series);
+    if (scale == 1.0 && shift == 0.0) {
+        if (found == moves_.end()) {
+            return;
+        }
+        moves_.erase(found);
+    }
+    else if (found != moves_.end() && found->second == std::pair{scale, shift}) {
+        return;
+    }
+    else {
+        moves_[series] = {scale, shift};
+    }
+    // Nothing is re-read and no extent changes: the line is drawn under
+    // another window of its axis. `changed` is what the figure refills on.
+    emit changed();
+}
+
+void DatasetPlot::clearSeriesMoves()
+{
+    if (moves_.empty()) {
+        return;
+    }
+    moves_.clear();
+    emit changed();
+}
+
+QVariantMap DatasetPlot::lineMoves() const
+{
+    QVariantMap out;
+    for (const auto& [series, move] : moves_) {
+        out.insert(QString::number(series), QVariantList{move.first, move.second});
+    }
+    return out;
+}
+
+void DatasetPlot::setLineMoves(const QVariantMap& moves)
+{
+    // Read the way every remembered setting is: what does not parse is passed
+    // over rather than refused, so a stored value from some other version
+    // costs the reader that line's move and nothing else.
+    std::map<int, std::pair<double, double>> read;
+    for (auto it = moves.cbegin(); it != moves.cend(); ++it) {
+        bool isSeries = false;
+        const int series = it.key().toInt(&isSeries);
+        const QVariantList pair = it.value().toList();
+        if (!isSeries || series < 0 || pair.size() != 2) {
+            continue;
+        }
+        const double scale = pair[0].toDouble();
+        const double shift = pair[1].toDouble();
+        if (std::isfinite(scale) && scale > 0.0 && std::isfinite(shift) &&
+            (scale != 1.0 || shift != 0.0)) {
+            read[series] = {scale, shift};
+        }
+    }
+    if (read == moves_) {
+        return;
+    }
+    moves_ = std::move(read);
+    emit changed();
+}
+
 void DatasetPlot::setSeriesFromRows(bool fromRows)
 {
     if (seriesFromRows_ == fromRows) {
         return;
     }
     seriesFromRows_ = fromRows;
+    // A move names a line by its place, and the places have just become the
+    // other axis's. Not in reseed(), which a new dataset also runs: that runs
+    // after DatasetMemory has put the new dataset's own moves back, and would
+    // throw them away again.
+    moves_.clear();
     reseed(); // the axes swapped; the old selection names nothing now
     invalidate();
 }

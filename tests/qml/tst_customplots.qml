@@ -1208,6 +1208,131 @@ TestCase {
         compare(lines.seriesOpacity(1), alone, "and the second takes the same")
     }
 
+    // --- a line moved, scaled and stacked (jonassattler/H5Scope#30) ---------
+
+    /// A line is moved with Alt and a drag, scaled with Alt, Control and the
+    /// wheel, and put back with Control and a click -- and what was done to it
+    /// is the tab's, so it outlives the refill that draws it and goes into the
+    /// tab's state.
+    function test_a_line_is_moved_scaled_and_put_back_with_the_pointer() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const figure = findAllOf(view, "plotFigure")[0]
+        verify(surface && figure, "the surface and its figure must be reachable")
+        tryVerify(() => figure.lineCount() === 2, 5000, "two lines are drawn")
+        verify(!surface.linesMoved)
+
+        // A sample of one of them, where the pointer can take hold of it.
+        const area = figure.area
+        const grip = figure.readingAt(area.x + area.width * 0.3, area.y + area.height * 0.5)
+        figure.readingAt(-20, -20)
+        verify(grip.valid, "there must be a line to take hold of")
+        const line = grip.line
+        const series = grip.series
+        const x = Math.round(grip.px)
+        const y = Math.round(grip.py)
+        figure.compose()
+        const before = figure.drawnLines()
+        const shiftOf = (s) => plot.seriesMove(s).shift
+        const scaleOf = (s) => plot.seriesMove(s).scale
+
+        // Alt and a drag moves that line, and only that line: the view stays
+        // where it was, and so does the other line.
+        mouseDrag(figure, x, y, 0, 40, Qt.LeftButton, Qt.AltModifier)
+        waitForRendering(win.contentItem)
+        verify(shiftOf(series) !== 0, "the drag must move the line")
+        compare(shiftOf(1 - series), 0, "and not the other one")
+        compare(surface.panX, 0, "nor pan the plot")
+        compare(surface.panY, 0, "nor pan the plot")
+        figure.compose()
+        verify(figure.drawnLines()[line].yLow !== before[line].yLow,
+               "the line must be drawn where it was put, refill and all")
+        compare(figure.drawnLines()[1 - line].yLow, before[1 - line].yLow)
+        verify(surface.linesMoved)
+
+        // Control and a click on it puts it back, where the drag left it.
+        mouseClick(figure, x, y + 40, Qt.LeftButton, Qt.ControlModifier)
+        waitForRendering(win.contentItem)
+        compare(shiftOf(series), 0, "Control and a click puts the line back")
+        compare(scaleOf(series), 1)
+        verify(!surface.linesMoved)
+
+        // Alt, Control and the wheel scales it, and zooms nothing.
+        mouseWheel(figure, x, y, 0, 120, Qt.NoButton, Qt.AltModifier | Qt.ControlModifier)
+        waitForRendering(win.contentItem)
+        verify(scaleOf(series) !== 1, "the wheel must scale the line")
+        compare(scaleOf(1 - series), 1)
+        compare(surface.zoomX, 1, "and not zoom the plot")
+        compare(surface.zoomY, 1, "and not zoom the plot")
+
+        // The panel's button puts every line back.
+        mouseClick(findAllOf(view, "customPlotButton")[0])
+        waitForRendering(win.contentItem)
+        const button = findAllOf(view, "putLinesBackButton")[0]
+        verify(button && button.enabled, "a moved line must be offered back")
+        mouseClick(button)
+        waitForRendering(win.contentItem)
+        compare(scaleOf(series), 1)
+        verify(!surface.linesMoved)
+        verify(!button.enabled)
+    }
+
+    /// Stacked, every line is drawn in a band of its own and numbered on an
+    /// axis of its own; the box says so and a saved view keeps it.
+    function test_the_lines_can_be_stacked_in_bands_of_their_own() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        const figure = findAllOf(view, "plotFigure")[0]
+        tryVerify(() => figure.lineCount() === 2, 5000, "two lines are drawn")
+        compare(surface.stacked, false, "one axis until it is asked for")
+        figure.compose()
+        compare(figure.sideAxes().length, 0)
+
+        mouseClick(findAllOf(view, "customPlotButton")[0])
+        waitForRendering(win.contentItem)
+        const box = findAllOf(view, "stackedBox")[0]
+        verify(box && box.visible, "the panel offers the stack")
+        mouseClick(box)
+        waitForRendering(win.contentItem)
+        verify(surface.stacked)
+        figure.compose()
+        compare(figure.sideAxes().length, 2, "each line on an axis of its own")
+        // Bands one under the next: the two lines' axes stand at different
+        // heights of the pane rather than over one another.
+        const bands = figure.drawnLines()
+        verify(bands[0].yLow !== bands[1].yLow || bands[0].yHigh !== bands[1].yHigh)
+
+        const settings = surface.drawingSettings()
+        verify(settings.stacked, "a saved view keeps it")
+        mouseClick(box)
+        waitForRendering(win.contentItem)
+        verify(!surface.stacked)
+        surface.applyDrawingSettings(settings)
+        verify(surface.stacked)
+        verify(box.checked, "and the box follows the plot")
+        surface.stacked = false
+    }
+
     // --- a line the reader colours -----------------------------------------
 
     /// A colour the reader gives one line beats the cycle, and only for that

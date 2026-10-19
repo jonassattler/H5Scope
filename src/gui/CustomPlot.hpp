@@ -322,6 +322,14 @@ public:
     /// for every line.
     Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const override;
 
+    /// How a gesture has moved and scaled line `series` on its axis. See
+    /// LineModel. Kept on the entry, beside its colour, so it goes where the
+    /// line goes -- into a saved view, and with the entry when one before it
+    /// is removed.
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesMove(int series) const override;
+    Q_INVOKABLE void setSeriesMove(int series, double scale, double shift) override;
+    Q_INVOKABLE void clearSeriesMoves() override;
+
     // --- what the surface and the legend ask -------------------------------
     [[nodiscard]] QVariantList drawnSeries() const override;
     [[nodiscard]] int seriesCount() const;
@@ -477,6 +485,9 @@ private:
         bool axisFixed = false;
         /// What that axis is called. See setAxisLabel.
         QString axisLabel;
+        /// Where a gesture has put the line on its axis. See seriesMove.
+        double scale = 1.0;
+        double shift = 0.0;
         /// Whether `expression` is a pipeline rather than a slice. See
         /// setPostprocess, and readLine, which is the one place it changes
         /// how anything is read.

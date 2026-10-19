@@ -2415,6 +2415,52 @@ TEST_CASE_METHOD(ControllerFixture, "a figure item draws the lines a plot lends 
     }
 }
 
+TEST_CASE_METHOD(ControllerFixture,
+                 "a line moved on the Plot tab is forgotten when the rows and columns swap",
+                 "[plot][figure]")
+{
+    // The Plot tab names a line by its place in the table, so a move belongs
+    // to one way round of one dataset: DatasetMemory files it with the
+    // dataset, and swapping the rows and the columns starts every line where
+    // it was read.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 6 rows of 4
+    CHECK(plot->lineMoves().isEmpty());
+
+    QSignalSpy changed(plot, &gui::DatasetPlot::changed);
+    plot->setSeriesMove(2, 3.0, -0.25);
+    CHECK(changed.count() == 1);
+    CHECK(plot->seriesMove(2).value(QStringLiteral("scale")).toDouble() == 3.0);
+    CHECK(plot->seriesMove(0).value(QStringLiteral("scale")).toDouble() == 1.0);
+    const QVariantMap moves = plot->lineMoves();
+    REQUIRE(moves.size() == 1);
+    CHECK(moves.value(QStringLiteral("2")).toList() == QVariantList{3.0, -0.25});
+
+    // Put back is no move at all, so nothing is kept for it.
+    plot->setSeriesMove(2, 1.0, 0.0);
+    CHECK(plot->lineMoves().isEmpty());
+
+    SECTION("what is filed reads back, and what does not parse is passed over")
+    {
+        plot->setLineMoves({{QStringLiteral("1"), QVariantList{0.5, 1.0}},
+                            {QStringLiteral("x"), QVariantList{2.0, 0.0}},
+                            {QStringLiteral("3"), QVariantList{-1.0, 0.0}},
+                            {QStringLiteral("4"), QVariantList{2.0}}});
+        CHECK(plot->lineMoves().keys() == QStringList{QStringLiteral("1")});
+        CHECK(plot->seriesMove(1).value(QStringLiteral("shift")).toDouble() == 1.0);
+    }
+
+    SECTION("the rows and the columns swapped forget it")
+    {
+        plot->setSeriesMove(1, 2.0, 0.0);
+        plot->setSeriesFromRows(false);
+        CHECK(plot->lineMoves().isEmpty());
+    }
+
+    // Another dataset is DatasetMemory's to file them under: see
+    // tst_views' "a moved line is remembered with its dataset".
+}
+
 TEST_CASE_METHOD(ControllerFixture, "a plot that is destroyed empties the figure item it filled",
                  "[plot][figure]")
 {

@@ -171,6 +171,23 @@ so plotcore's `Camera` (`zoomAt`, `panBy`, `zoomToRegion`, `dataXAt`/`dataYAt`)
 reads each axis off the coordinate it runs along; the zoom modifiers name the
 pane's directions.
 
+Any line, on either tab, can also be **moved and scaled** on its axis with the
+pointer — a drag with Alt or the middle button, the wheel with Alt and
+Control, Control and a click to put it back — and the lines can be
+**stacked**, each in a band of the pane with an axis of its own
+(`PlotSurface.stacked`, saved with the view). Both are plotcore's
+(jonassattler/H5Scope#30): the figure decides what a gesture does to a line,
+and the rule that holds the moves up is **the plot keeps them, as it keeps a
+line's colour** (`LineModel::seriesMove`). `FigureItem` gives the figure each
+line's move when it is lent the lines and hands back what a gesture changed,
+once the gesture ends. A custom tab keeps a move on the entry, so it goes into
+a saved view and stays with its line when one before it is removed; the Plot
+tab keeps moves by a line's place in the table, filed per dataset by a
+`DatasetMemory` of their own (`lineMoves`) that gives a dataset with nothing
+filed none, and forgets them when the rows and the columns swap. Not on the
+table's reset: that runs after `DatasetMemory` has put the new dataset's moves
+back, and would throw them away again.
+
 The plot is drawn by plotcore, this project's own library, and not by Qt
 Graphs. `plotcore::Projection`
 (`plotcore/cpp/include/plotcore/Projection.hpp`) is the arithmetic — where a sample lands, which samples are drawable, where a

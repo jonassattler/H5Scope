@@ -195,6 +195,8 @@ class FigureItem : public QQuickItem, public LineTarget, public plotcore::LineSo
     /// cost tests hold a zoom to.
     Q_PROPERTY(int drawnPointCount READ drawnPointCount NOTIFY drew FINAL)
     Q_PROPERTY(int drawnRunCount READ drawnRunCount NOTIFY drew FINAL)
+    /// Whether a drawn line has been moved or scaled off where it was read.
+    Q_PROPERTY(bool linesMoved READ linesMoved NOTIFY drew FINAL)
 
 public:
     explicit FigureItem(QQuickItem* parent = nullptr);
@@ -238,6 +240,8 @@ public:
     /// A value written as its axis writes its ticks.
     Q_INVOKABLE [[nodiscard]] QString xNumber(double value);
     Q_INVOKABLE [[nodiscard]] QString yNumber(double value);
+    /// Every line back where it was read: what Control and a click do to one.
+    Q_INVOKABLE void putLinesBack();
     /// The value under a pixel of this item, as the band reads it.
     Q_INVOKABLE [[nodiscard]] double dataXAt(double px, double py) const;
     Q_INVOKABLE [[nodiscard]] double dataYAt(double py, double px) const;
@@ -423,6 +427,7 @@ public:
     [[nodiscard]] bool hovered() const { return hovered_; }
     [[nodiscard]] int drawnPointCount() const { return drawnPoints_; }
     [[nodiscard]] int drawnRunCount() const { return drawnRuns_; }
+    [[nodiscard]] bool linesMoved() const;
 
     /// The figure, for a test that asks it what it holds.
     [[nodiscard]] const plotcore::Figure& figure() const { return figure_; }
@@ -475,6 +480,8 @@ private:
     void moved();
     /// moved(), and the frame laid out at once: see the .cpp.
     void movedNow();
+    /// Hand what a gesture did to a line back to the plot, which keeps it.
+    void keepMoves();
 
     [[nodiscard]] QSGNode* buildNodes(QSGNode* root);
     [[nodiscard]] QSGNode* buildPainted(QSGNode* root);
@@ -514,12 +521,14 @@ private:
         std::string name;
         bool separate = false;
         plotcore::LineExtent own;
+        /// Where the plot says a gesture has put it (LineModel::seriesMove):
+        /// what the figure is given, and what a gesture's result is compared
+        /// against before it is written back.
+        double scale = 1.0;
+        double shift = 0.0;
     };
     std::vector<Line> about_;
     plotcore::LineExtent common_;
-    /// A line's scale and shift belong to its series, not to its place among
-    /// the drawn lines, which moves when a line before it is hidden.
-    std::map<int, std::pair<double, double>> moved_;
 
     // The last news handed on to the plot, so it is handed on once.
     std::optional<std::pair<double, double>> toldView_;

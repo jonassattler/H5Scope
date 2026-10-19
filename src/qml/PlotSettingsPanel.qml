@@ -612,6 +612,52 @@ SettingsPanel {
         }
     }
 
+    // --- the lines one at a time -----------------------------------------
+    // A plot of lines that measure different things in similar ranges is a
+    // tangle on one axis. Two answers to it are here: stacking every line in a
+    // band of its own, and moving or scaling one line on its axis with the
+    // pointer (jonassattler/H5Scope#30). The gestures need no control, only
+    // saying -- a drag with Alt is a pan to anyone who has not been told -- and
+    // the way to undo all of them at once.
+    SettingRow {
+        label: qsTr("lines")
+
+        AppCheckBox {
+            objectName: "stackedBox"
+
+            text: qsTr("stack the lines")
+            enabled: !!panel.target
+            checked: !!panel.target && !!panel.target.stacked
+            onToggled: { if (panel.target) panel.target.stacked = checked }
+
+            AppToolTip {
+                shown: parent.hovered
+                text: qsTr("Draw each line in a band of the plot of its own, one "
+                           + "under the next, each with its own axis.")
+            }
+        }
+
+        Text {
+            width: parent.width
+            text: qsTr("Drag a line with Alt or the middle button to move it, turn "
+                       + "the wheel over it with Alt and Ctrl to scale it, and "
+                       + "Ctrl-click it to put it back.")
+            font: Theme.caption
+            color: Theme.textDisabled
+            wrapMode: Text.WordWrap
+        }
+
+        AppToolButton {
+            objectName: "putLinesBackButton"
+
+            width: parent.width
+            text: qsTr("put the lines back")
+            size: "sm"
+            enabled: !!panel.target && !!panel.target.linesMoved
+            onClicked: { if (panel.target) panel.target.putLinesBack() }
+        }
+    }
+
     // --- which scale each axis is on --------------------------------------
     // A row of its own rather than two more boxes under "drawing", because it
     // is not about the drawing: a logarithmic axis does not restyle the

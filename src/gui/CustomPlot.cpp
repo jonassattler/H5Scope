@@ -1062,6 +1062,45 @@ QVariantMap CustomPlot::seriesAxis(int series) const
             {QStringLiteral("label"), entry.axisLabel}};
 }
 
+QVariantMap CustomPlot::seriesMove(int series) const
+{
+    const Entry* const at = entryAt(series);
+    if (at == nullptr) {
+        return {{QStringLiteral("scale"), 1.0}, {QStringLiteral("shift"), 0.0}};
+    }
+    return {{QStringLiteral("scale"), at->scale}, {QStringLiteral("shift"), at->shift}};
+}
+
+void CustomPlot::setSeriesMove(int series, double scale, double shift)
+{
+    Entry* const at = entryAt(series);
+    if (at == nullptr || !std::isfinite(scale) || !(scale > 0.0) || !std::isfinite(shift)) {
+        return;
+    }
+    Entry& entry = *at;
+    if (entry.scale == scale && entry.shift == shift) {
+        return;
+    }
+    entry.scale = scale;
+    entry.shift = shift;
+    // The colour's kind of change: nothing is re-read and no extent moves,
+    // the same line is drawn under another window of its axis.
+    announce();
+}
+
+void CustomPlot::clearSeriesMoves()
+{
+    bool any = false;
+    for (Entry& entry : entries_) {
+        any = any || entry.scale != 1.0 || entry.shift != 0.0;
+        entry.scale = 1.0;
+        entry.shift = 0.0;
+    }
+    if (any) {
+        announce();
+    }
+}
+
 void CustomPlot::setScaling(int row, Scaling scaling)
 {
     Entry* const at = entryAt(row);
@@ -2655,6 +2694,11 @@ QVariantMap CustomPlot::state() const
         if (!entry.axisLabel.isEmpty()) {
             fields.insert(QStringLiteral("axisLabel"), entry.axisLabel);
         }
+        // Where a gesture put the line, written only where it moved it.
+        if (entry.scale != 1.0 || entry.shift != 0.0) {
+            fields.insert(QStringLiteral("scale"), entry.scale);
+            fields.insert(QStringLiteral("shift"), entry.shift);
+        }
         // Again only where it says something, so every view saved before a
         // line could be a pipeline is a view of slices, which it is.
         if (entry.postprocess) {
@@ -2712,6 +2756,13 @@ void CustomPlot::setState(const QVariantMap& state)
         entry.separateAxis = fields.value(QStringLiteral("separateAxis"), false).toBool();
         entry.axisFixed = fields.value(QStringLiteral("axisFixed"), false).toBool();
         entry.axisLabel = fields.value(QStringLiteral("axisLabel")).toString().trimmed();
+        // Absent, or not a move, is where the line was read: 1 and 0.
+        const double scale = fields.value(QStringLiteral("scale"), 1.0).toDouble();
+        const double shift = fields.value(QStringLiteral("shift"), 0.0).toDouble();
+        if (std::isfinite(scale) && scale > 0.0 && std::isfinite(shift)) {
+            entry.scale = scale;
+            entry.shift = shift;
+        }
         entry.postprocess = fields.value(QStringLiteral("postprocess"), false).toBool();
         entries_.push_back(std::move(entry));
     }
