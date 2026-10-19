@@ -24,7 +24,6 @@
 #include <cstddef>
 #include <map>
 #include <optional>
-#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -413,69 +412,20 @@ private:
     void retire(std::vector<double>& values) const;
 
     // --- the closer look ---------------------------------------------------
-    /// One resolution of it: an aligned run of the line summarised at one
-    /// bucket size, for every line drawn.
-    ///
-    /// Several of these are held at once, one per octave, which is what makes
-    /// zooming a draw rather than a wait in *both* directions. See
-    /// kPrefetchOctaves for why the two directions need different things.
-    struct Detail
-    {
-        explicit Detail(const PlotWindow& at) : window(at) {}
+    // Runs of every drawn line at a finer bucket than the whole-line summary,
+    // one per octave, held at once -- which is what makes zooming a draw rather
+    // than a wait in *both* directions. See kPrefetchOctaves for why the two
+    // directions need different things. Which runs are held, drawn, read and
+    // given up is plotcore's RunLadder, for one group: every drawn line, read
+    // together because a table's rows are one hyperslab of the file.
 
-        // Relocated by moving, never by copying -- and the copy is *deleted*
-        // rather than merely never written, because deleting it is the only
-        // thing that makes that true.
-        //
-        // `levels_` is a std::vector of these, and a std::vector reallocates
-        // with std::move_if_noexcept: it takes the copy constructor whenever
-        // the element's move constructor is not `noexcept` and a copy exists,
-        // so that a throw half way through leaves the old storage intact. A
-        // copy here is the use-after-free. It deep-copies every mapped vector
-        // into the new storage and then destroys the originals -- freeing the
-        // exact buffers the figure is holding a `PlotLine::values` pointer into,
-        // while it is drawing them.
-        //
-        // Whether that happened was down to the standard library. std::map's
-        // move constructor is noexcept on libstdc++ and libc++, and is not on
-        // MSVC's, whose tree keeps a sentinel node that the move allocates. So
-        // Linux moved and passed, Windows copied, and the second closer look to
-        // land -- the push_back that grows levels_ from one to two -- segfaulted
-        // in the test that dereferences the held line to prove it is still
-        // there. With no copy to fall back on the relocation is a move on every
-        // library, and a std::map move relinks nodes in constant time: every
-        // mapped vector stays at the address the renderer was given.
-        Detail(Detail&&) = default;
-        Detail& operator=(Detail&&) = default;
-        Detail(const Detail&) = delete;
-        Detail& operator=(const Detail&) = delete;
-
-        PlotWindow window;
-        /// Table positions between one drawn point of this run and the next,
-        /// and how many of them there are. Half a bucket, for the reason
-        /// PlotLine::positionStep gives.
-        double step = 1.0;
-        int points = 0;
-        /// One entry per drawn line, keyed as `lines_` is. Borrowed by the
-        /// renderer on exactly the same terms.
-        std::map<int, std::vector<double>> lines;
-        /// The element each value in `lines` is, keyed the same way and
-        /// borrowed, retired and pruned with them. No entry for a run drawn
-        /// sample for sample. See PlotLine::positions.
-        std::map<int, std::vector<double>> positions;
-    };
-
-    // Asserted rather than left to the one platform that noticed. A member
-    // added later that made a Detail copyable again would put the copy back on
-    // MSVC's library and nowhere else, which is a segfault on Windows CI and a
-    // green run everywhere a reader would be looking.
-    static_assert(!std::is_copy_constructible_v<Detail>,
-                  "a Detail must relocate by moving: a copy frees the values the figure borrows");
-
-    /// The window the view asks for, or nothing when the whole-line summary is
-    /// already as good: zoomed out, too many lines drawn to be worth
-    /// re-reading, or an axis with no step to divide a position out of.
-    [[nodiscard]] std::optional<PlotWindow> detailFor(int buckets) const;
+    /// The ladder, told first what is being looked at: the view and where a
+    /// zoom is heading. Its lines are told where the drawn set changes, and
+    /// how many runs it may hold where it folds or gives runs up -- both cost
+    /// a walk over the lines, and this is asked once per line per fill.
+    RunLadder& runs() const;
+    /// The pyramids, lent to the ladder for the call they are passed to.
+    [[nodiscard]] RunLadder::PyramidOf pyramidOf() const;
     /// Buckets the pane itself needs, which is a bucket per column.
     [[nodiscard]] int paneBuckets() const;
     /// ...and buckets the run the reader is *on* is read into: an octave finer
@@ -492,52 +442,30 @@ private:
     /// The visible range clamped to the data, which is what a run has to cover:
     /// a pane showing the end of a line shows some empty axis past it.
     [[nodiscard]] bool drawnPositions(double& first, double& last) const;
-    /// The finest run in hand that covers what is on screen and holds every
-    /// drawn line, or -1. See gui::drawnLevel.
-    [[nodiscard]] int drawnLevel() const;
-    [[nodiscard]] bool detailCovers() const { return drawnLevel() >= 0; }
-    /// The window drawnLevel() names, for the one caller that has to notice it
+    /// The window of the run drawn, for the one caller that has to notice it
     /// changing.
     [[nodiscard]] std::optional<PlotWindow> drawnWindow() const;
-    /// Where `window` is held, or -1.
-    [[nodiscard]] int levelAt(const PlotWindow& window) const;
-    /// What the reader is looking at, as gui::wantedLevel and the rest of the
-    /// policy want it. An unusable view -- no axis, nothing drawn, or more
-    /// lines drawn than kWindowedSeries -- is how "read no closer look at all"
-    /// is said.
+    /// What the reader is looking at, as the ladder and the rest of the policy
+    /// want it. An unusable view -- no axis, nothing drawn, or more lines drawn
+    /// than kWindowedSeries -- is how "read no closer look at all" is said.
     [[nodiscard]] LevelView levelView() const;
-    /// The runs in hand as the policy sees them, in `levels_` order.
-    ///
-    /// Into a scratch vector this object keeps, so asking costs no allocation:
-    /// lineOf() asks once per line per fill. The span is good until the next
-    /// call.
-    [[nodiscard]] std::span<const HeldLevel> ladder() const;
     /// The focus as the policy wants it: in the line's own positions.
     [[nodiscard]] PlotFocus focusFor() const;
-    /// The run to read next. See gui::wantedLevel.
-    [[nodiscard]] std::optional<PlotWindow> detailWanted() const;
-    /// Work out what to read next and arm it, or drop what is held when the
-    /// view wants nothing. Every path that can change the answer ends here: a
-    /// new range, a new selection, a moved axis, an answer landing.
+    /// Fold everything the pyramids can answer, then work out what to read
+    /// next and arm it, or drop what is held when the view wants nothing.
+    /// Every path that can change the answer ends here: a new range, a new
+    /// selection, a moved axis, an answer landing.
+    ///
+    /// A run at or above a line's base bucket is a fold of a buffer already in
+    /// hand -- a few thousand doubles, microseconds -- so it is installed in
+    /// the same call rather than a round trip later, which is the whole of why
+    /// twenty frames of a zoom can be twenty frames rather than twenty reads.
+    /// Only what every drawn line's pyramid can answer is folded: a run half in
+    /// memory and half on disk would be two pictures.
     void refreshDetail();
     /// Ask for it. What the settle timer calls, and the one place a read is
     /// submitted rather than waited for.
     void askForDetail();
-    /// Fill `detail` for every drawn line out of the pyramids, if they can.
-    ///
-    /// What askForDetail() tries before it submits anything. A run at or above
-    /// a line's base bucket is a fold of a buffer already in hand -- a few
-    /// thousand doubles, microseconds -- so it is installed in the same call
-    /// rather than a round trip later, which is the whole of why twenty frames
-    /// of a zoom can be twenty frames rather than twenty reads.
-    ///
-    /// False when any drawn line cannot answer, which leaves the whole run to
-    /// the file: a run half in memory and half on disk would be two pictures.
-    [[nodiscard]] bool fillDetail(const PlotWindow& detail);
-    /// Whether every drawn line's pyramid can fold `detail`: held, and at a
-    /// base no finer than its bucket. What fillDetail() needs, and what keeps
-    /// such a run from ever being asked of the file.
-    [[nodiscard]] bool folds(const PlotWindow& detail) const;
 
     // --- a logarithmic x axis ----------------------------------------------
     /// The columns the view is folded at, or nothing when the view is drawn
@@ -580,7 +508,7 @@ private:
     void takeDetail(const PlotWindow& detail, const std::vector<int>& series,
                     std::vector<DatasetTableModel::NumericGrid> grids);
     /// Drop runs down to heldLevels(), coldest first. See gui::coldestLevel.
-    void trimLevels();
+    void trimLevels() const;
     /// Forget every run without saying so. dropDetail() is the same thing plus
     /// the signal, which invalidate() does not want because it emits its own.
     void clearDetail();
@@ -637,18 +565,18 @@ private:
     /// The cache the closer look is served out of, and the reason a zoom stopped
     /// costing a read. `lines_` above is derived from these -- it is the top of
     /// each pyramid, folded to the pane's width -- and so is every run in
-    /// `levels_` whose bucket the pyramid can answer. See plotcore/Pyramid.hpp.
+    /// `runs_` whose bucket the pyramid can answer. See plotcore/Pyramid.hpp.
     ///
     /// Keyed as `lines_` is and pruned with it. Not borrowed by the renderer:
-    /// what reaches PlotLine is always a vector in `lines_` or in a Detail, so
+    /// what reaches PlotLine is always a vector in `lines_` or in a run, so
     /// these can be replaced without the retire dance -- and must be, because a
     /// pyramid is the one thing here large enough that keeping two would matter.
     mutable std::map<int, LinePyramid> pyramids_;
 
-    // The borrow rule for these is prose above, and prose is what Detail had
-    // before MSVC's std::map move took the copy path and segfaulted Windows
-    // CI. The compiler cannot be told "nothing hands a pointer into this to
-    // PlotLine", but it can be told the half that would bite if something one
+    // The borrow rule for these is prose above, and prose is what a run of
+    // the closer look had before MSVC's std::map move took the copy path and
+    // segfaulted Windows CI (see RunLadder::Run). The compiler cannot be told "nothing hands a
+    // pointer into this to PlotLine", but it can be told the half that would bite if something one
     // day did: a LinePyramid must relocate by moving wherever it is kept, and a
     // copyable element whose move can throw is deep-copied by std::vector on
     // reallocation and the original freed. CustomPlot::Entry already holds one
@@ -701,13 +629,11 @@ private:
     /// has to work out the window again from the same view.
     double viewMin_ = 0.0;
     double viewMax_ = 0.0;
-    /// The runs in hand, one per resolution, in no particular order. Mutable
-    /// because ensure() is const by Qt's contract and prunes every cache down
-    /// to the drawn set.
-    mutable std::vector<Detail> levels_;
-    /// `levels_` as the policy sees it. See ladder(); kept so that asking
-    /// costs no allocation.
-    mutable std::vector<HeldLevel> ladder_;
+    /// The runs in hand, one per resolution, for every drawn line. Mutable
+    /// because they are asked in lineOf(), in the frame that draws, and told
+    /// the view there first. Declared after `lent_`, and so destroyed before
+    /// it: what the ladder gives up on the way out goes to the retire store.
+    mutable RunLadder runs_;
     /// Where the reader is zooming, when they are. See setZoomFocus.
     ///
     /// Kept in the x the axis prints rather than as a position, because
@@ -720,11 +646,9 @@ private:
     /// through six octaves would queue six reads of runs the reader has already
     /// left behind on a thread that can only run them one after another.
     bool inFlight_ = false;
-    /// What is to be read next, and what is in flight. Two rather than one: a
-    /// reply that is no longer wanted is dropped by its ticket, and a run
-    /// already being read is not asked for twice.
+    /// What is to be read next, as refreshDetail() last decided. A reply for
+    /// any other window is no longer wanted, and is dropped.
     std::optional<PlotWindow> wanted_;
-    std::optional<PlotWindow> asked_;
     /// Fires once the view has stopped moving. A wheel spin or a drag restarts
     /// it, so a gesture in flight reads nothing at all.
     QTimer settle_;
