@@ -19,6 +19,8 @@
 #include <QQuickStyle>
 #include <QTextStream>
 
+#include <cstring>
+
 #if defined(Q_OS_WIN)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -136,6 +138,50 @@ int printLicenseOptions(int argc, char* argv[])
     return -1;
 }
 
+#if defined(Q_OS_LINUX)
+/// Ask for the xdg-desktop-portal platform theme, which is how a native file
+/// dialog reaches this binary on Linux.
+///
+/// A dynamic Qt finds the desktop's own dialog through a theme plugin --
+/// KDE's, GTK's -- that it loads from the host. A static one carries the
+/// plugins it was linked with and no others, and the portal theme is the one
+/// linked here (see vcpkg.json): it hands the dialog to the desktop over D-Bus
+/// and wraps whichever theme the desktop would otherwise have had for
+/// everything else, so naming it changes the file dialog and nothing a reader
+/// can see in this window. Whether the dialog is actually *used* is the
+/// reader's choice under Settings; this only makes it possible, and has to
+/// happen before QGuiApplication because that is when Qt picks its theme.
+///
+/// An explicit QT_QPA_PLATFORMTHEME is replaced rather than respected, and
+/// that is deliberate. Whatever it names is a plugin of the desktop's own Qt
+/// -- qt5ct, qt6ct, gtk3 -- which no static binary has; Qt passes over a name
+/// it cannot load in silence, and the reader would get the generic theme,
+/// which has no native dialog at all. What those names ask for is the
+/// desktop's integration, and the portal is the form of it this binary can
+/// have. `-platformtheme` on the command line still wins over the environment,
+/// which is the way round a portal that misbehaves.
+///
+/// Only for the desktop platforms. Offscreen and minimal have no desktop to
+/// ask, and the portal theme makes a D-Bus call while Qt is starting -- which
+/// on a CI runner with no session bus is a warning on every `--version`.
+void askForDesktopPortal(int argc, char* argv[])
+{
+    // The platform as Qt will settle it: the environment, then the argument,
+    // the last of which wins. Unset means Qt's own default, which on Linux is
+    // xcb or wayland.
+    QByteArray platform = qgetenv("QT_QPA_PLATFORM");
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "-platform") == 0 || std::strcmp(argv[i], "--platform") == 0) {
+            platform = argv[i + 1];
+        }
+    }
+    if (!platform.isEmpty() && !platform.startsWith("xcb") && !platform.startsWith("wayland")) {
+        return;
+    }
+    qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -149,6 +195,10 @@ int main(int argc, char* argv[])
     if (const int status = printLicenseOptions(argc, argv); status >= 0) {
         return status;
     }
+
+#if defined(Q_OS_LINUX)
+    askForDesktopPortal(argc, argv);
+#endif
 
     QGuiApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("H5Scope"));

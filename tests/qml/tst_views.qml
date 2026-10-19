@@ -7725,6 +7725,44 @@ TestCase {
         compare(picker.selectedPath, "")
     }
 
+    /// ...unless the reader asked for the platform's under Settings, and then
+    /// File > Open is that one instead -- the other never opening alongside.
+    ///
+    /// Offscreen there is no platform dialog to be had, so what opens is Qt
+    /// Quick's stand-in for one; which of the window's two dialogs was asked
+    /// is the application's half of it, and that is what is held here.
+    function test_file_open_shows_the_dialog_the_reader_chose() {
+        const win = createTemporaryObject(windowComponent, testCase)
+        verify(win, "the window must instantiate")
+        waitForRendering(win.contentItem)
+        const own = win.ownFilePicker
+        const native = win.nativeFilePicker
+        const wasNative = AppController.nativeFileDialog
+
+        AppController.nativeFileDialog = false
+        win.chooseFile()
+        tryVerify(() => own.visible, 1000, "the application's picker must open")
+        verify(!native.visible)
+        own.close()
+        tryVerify(() => !own.visible)
+
+        AppController.nativeFileDialog = true
+        win.chooseFile()
+        tryVerify(() => native.visible, 1000, "the native dialog must open")
+        verify(!own.visible)
+        // It opens where the last file came from, as the picker does, and it
+        // filters on the picker's own list of what this program can open.
+        compare(String(native.currentFolder),
+                String(FileSystem.folderOf(AppController.filePath)))
+        compare(native.nameFilters.length, 2)
+        verify(native.nameFilters[0].indexOf(own.hdf5Filters.join(" ")) !== -1,
+               "the native filter must be the picker's: " + native.nameFilters[0])
+        native.reject()
+        tryVerify(() => !native.visible)
+
+        AppController.nativeFileDialog = wasNative
+    }
+
     function test_attributes_surface_as_an_info_panel() {
         // The Metadata tab is gone; its rows are the Information tab's last
         // panel now, spliced in by AppController.
@@ -7814,7 +7852,7 @@ TestCase {
         // what they have read, and the bullet follows the controller's
         // property rather than the row's own `checked`.
         const settings = bar.menus.menuAt(2)
-        compare(settings.count, 2)
+        compare(settings.count, 3)
         const budget = settings.menuAt(0)
         verify(budget, "RAM Budget must be a real submenu")
         compare(budget.title, "RAM Budget")
@@ -7828,6 +7866,22 @@ TestCase {
         // nowhere to type into. The ellipsis is the design system's promise
         // that pressing it opens something.
         compare(settings.itemAt(1).text, "Plot Settings\u2026")
+
+        // ...and the third is a yes or a no, so it is a bullet, and the
+        // bullet is the controller's rather than the row's: triggering the
+        // row flips the setting and the mark follows it there and back.
+        const native = settings.itemAt(2)
+        compare(native.text, "Native File Dialog")
+        const wasNative = AppController.nativeFileDialog
+        AppController.nativeFileDialog = false
+        verify(!native.marked)
+        native.action.trigger()
+        verify(AppController.nativeFileDialog)
+        verify(native.marked)
+        native.action.trigger()
+        verify(!AppController.nativeFileDialog)
+        verify(!native.marked)
+        AppController.nativeFileDialog = wasNative
 
         // Open, Open Recent, Reload, Close, a rule, Quit.
         const file = bar.menus.menuAt(0)

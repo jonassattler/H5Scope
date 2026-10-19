@@ -56,18 +56,18 @@ Linked Qt modules: Core, Gui, Qml, QmlMeta, QmlModels, QmlWorkerScript, Quick,
 QuickControls2 (with the Basic, Fusion, Imagine, Material, Universal and
 FluentWinUI3 styles and their implementation modules), QuickTemplates2,
 QuickLayouts, QuickShapes, QuickEffects, QuickDialogs2, QuickDialogs2QuickImpl,
-QuickDialogs2Utils, Svg, Network, Concurrent, OpenGL, ShaderTools,
+QuickDialogs2Utils, Svg, Network, DBus, Concurrent, OpenGL, ShaderTools,
 PacketProtocol,
 LabsFolderListModel, XcbQpa, WaylandClient, WlShellIntegration,
 DeviceDiscoverySupport, EglFSDeviceIntegration, FbSupport, InputSupport, and
-the platform, image-format, QML debug and Wayland decoration plugins that
-accompany them.
+the platform, platform-theme (xdg-desktop-portal), image-format, QML debug and
+Wayland decoration plugins that accompany them.
 
 That list is the Linux build's. On Windows the platform modules differ rather
 than the licensing: XcbQpa, WaylandClient, WlShellIntegration, the Wayland
-decoration plugins and the EGL and device-discovery support modules are absent,
-and the Windows platform plugin is linked in their place. Every module named is
-under the same terms on both.
+decoration plugins, the EGL and device-discovery support modules, and DBus with
+the portal theme it serves are absent, and the Windows platform plugin is
+linked in their place. Every module named is under the same terms on both.
 
 Qt source: <https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/>
 
@@ -79,6 +79,7 @@ Qt source: <https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/>
 | glslang | BSD-3-Clause AND Apache-2.0 AND MIT |
 | SPIRV-Cross | Apache-2.0 |
 | Wayland protocol definitions (`xdg-shell`, `wl-shell`, `fullscreen-shell-v1`) | MIT |
+| libdbus-1 header fragments (`dbus_minimal_p.h`, Linux only), the constants and typedefs Qt D-Bus is compiled against in place of linking libdbus | AFL-2.1 OR GPL-2.0-or-later |
 
 ## Libraries built separately by vcpkg
 
@@ -189,6 +190,11 @@ summary of it:
 - **Graphics** — `libGLX`, `libEGL`, `libOpenGL`, `libGLdispatch`, and the GPU
   drivers behind them.
 - **Pulled in transitively by the above** — `libffi`, `libuuid`.
+- **D-Bus** — `libdbus-1`, the one entry here that `ldd` does not report. Qt
+  D-Bus opens it with `dlopen` when the native file dialog's portal theme first
+  asks for a connection, rather than linking it, so the binary starts without
+  it and simply has no D-Bus where there is none. It is the host's when it is
+  used at all.
 
 `librt` is *not* in this list, and was wrongly named here before. glibc's
 `librt.a` is linked statically into the binary, not dynamically: on a modern
@@ -213,6 +219,11 @@ not listed above and carry no entry in THIRD-PARTY-LICENSES.txt. They are the
 Khronos registry headers — `khrplatform.h` and the GL headers — which supply
 type declarations and preprocessor constants to the compiler and contribute no
 code to the executable. Nothing from them is on the link line.
+
+The vcpkg `dbus` port is installed on Linux for the same kind of reason and is
+not linked either: qtbase's D-Bus feature depends on it, but this build has Qt
+open the host's `libdbus-1` at run time instead (see `docs/BUILDING.md`), so
+neither the port's library nor its headers reach the executable.
 
 ## Why GPLv3
 

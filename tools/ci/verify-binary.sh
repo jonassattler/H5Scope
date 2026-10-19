@@ -76,6 +76,25 @@ fi
 echo "OK: libxcb-cursor is inside the binary, not asked of the host"
 echo
 
+# --- nor libdbus, which is opened rather than linked ------------------------
+# Qt's D-Bus is what carries the native file dialog on Linux, through the
+# xdg-desktop-portal theme. Linked, it would be a NEEDED entry for
+# libdbus-1.so.3 and the binary would not start without it -- including for
+# `--license` on a box with no desktop at all. cmake/triplets builds qtbase
+# with -DINPUT_dbus=runtime so that Qt opens it with dlopen when it is there;
+# this is what proves the triplet's line reached the build. objdump, for the
+# reason given above.
+echo "== no libdbus runtime dependency"
+if objdump -p "$binary" | grep -q 'NEEDED.*libdbus'; then
+    echo "::error::binary needs libdbus-1.so.3. qtbase must be built with"\
+         "-DINPUT_dbus=runtime, which cmake/triplets passes it; the root"\
+         "CMakeLists asserts that at configure time, so reaching here means"\
+         "something bypassed it."
+    exit 1
+fi
+echo "OK: libdbus is opened when there is one, not asked of the host"
+echo
+
 # --- it will start on RHEL 8 -----------------------------------------------
 echo "== the RHEL 8 glibc floor"
 bash "$repo_root/tools/check-glibc-floor.sh" 2.28 "$binary"

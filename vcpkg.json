@@ -11,13 +11,35 @@
     "features below do not exist for a Windows triplet, and asking for them",
     "there does not degrade -- it fails to resolve the manifest at all.",
     "",
-    "The Windows list is the Linux one minus exactly those. freetype is kept",
+    "The Windows list is the Linux one minus exactly those, and minus dbus,",
+    "which is there for the Linux desktop's file dialog alone: see",
+    "$comment-dbus below. Windows draws its own native dialog out of the",
+    "platform plugin already on the link line. freetype is kept",
     "although Qt on Windows draws its glyphs through DirectWrite by default,",
     "because dropping it would also drop brotli and bzip2, which reach the",
     "link line only as freetype's dependencies. Keeping it makes the Windows",
     "dependency set a strict subset of the Linux one, and that is what lets",
     "cmake/ThirdPartyLicenses.cmake, THIRD-PARTY-NOTICES.md and the source",
     "bundle describe two platforms without describing them separately."
+  ],
+  "$comment-dbus": [
+    "qtbase's dbus feature is what builds the xdg-desktop-portal platform",
+    "theme, which is the only native file dialog a static Qt can carry on",
+    "Linux: GTK's would make libgtk-3 a dependency of the binary, and a",
+    "dynamic Qt finds the desktop's own through plugins this one cannot load.",
+    "",
+    "The feature on its own would link libdbus-1. vcpkg's dbus port builds",
+    "only a shared library, so that would put libdbus-1.so.3 in the binary's",
+    "NEEDED list -- a library the loader then refuses to start without, which",
+    "is the failure ports/xcb-util-cursor exists to avoid. The triplets in",
+    "cmake/triplets therefore build qtbase with -DINPUT_dbus=runtime, so Qt",
+    "opens libdbus with dlopen when there is one and goes without D-Bus when",
+    "there is not. tools/ci/verify-binary.sh asserts the NEEDED entry stays",
+    "absent.",
+    "",
+    "So the dbus port is built but never linked, and is listed below without",
+    "its default features only to keep its systemd feature -- and with it",
+    "libsystemd -- out of a build that would not use it either."
   ],
   "dependencies": [
     {
@@ -47,8 +69,14 @@
         "xkbcommon-x11",
         "xrender",
         "xlib",
-        "wayland"
+        "wayland",
+        "dbus"
       ]
+    },
+    {
+      "name": "dbus",
+      "platform": "linux",
+      "default-features": false
     },
     {
       "name": "qtbase",

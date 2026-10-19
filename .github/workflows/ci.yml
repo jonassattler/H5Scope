@@ -211,8 +211,9 @@ jobs:
       #
       # The overlay triplet builds Qt release-only. vcpkg builds both
       # configurations of every port by default, so this job would otherwise
-      # pay for a full debug Qt it never links. The presets still name plain
-      # x64-linux, so a local tree is unaffected and the debug preset works.
+      # pay for a full debug Qt it never links. The presets still name
+      # x64-linux -- the overlay of that name beside it, which builds both --
+      # so a local tree keeps its debug Qt and the debug preset works.
       #
       # It has to be set for the *host* triplet too, and that was missed the
       # first time round. Qt's ports declare host dependencies -- moc, rcc,

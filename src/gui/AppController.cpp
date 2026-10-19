@@ -178,6 +178,9 @@ AppController::AppController(QObject* parent)
         plotExportDpi_ =
             std::clamp(settings.value(QStringLiteral("plotExportDpi"), plotExportDpi_).toInt(),
                        kMinExportDpi, kMaxExportDpi);
+        // ...and whose file dialog File > Open shows. A bool has nothing to
+        // clamp: anything QSettings cannot read as true is the default.
+        nativeFileDialog_ = settings.value(QStringLiteral("nativeFileDialog"), false).toBool();
     }
     PlotBudget::instance().setAppetite(appetiteOf(ramBudget_));
     // Three readings of one table. Both of these follow datasetModel_'s resets
@@ -1243,6 +1246,16 @@ void AppController::setPlotExportDpi(int dpi)
     plotExportDpi_ = wanted;
     store(QStringLiteral("plotExportDpi"), wanted);
     emit plotExportDpiChanged();
+}
+
+void AppController::setNativeFileDialog(bool on)
+{
+    if (nativeFileDialog_ == on) {
+        return;
+    }
+    nativeFileDialog_ = on;
+    store(QStringLiteral("nativeFileDialog"), on);
+    emit nativeFileDialogChanged();
 }
 
 double AppController::plotExportScale(double displayRatio) const
