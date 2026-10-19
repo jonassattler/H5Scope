@@ -53,7 +53,7 @@ public:
     /// first. And since `target` has just been handed something else, nothing
     /// is reading what was retired any more: this is the one place the retired
     /// store is let go.
-    void lend(LineTarget* target, std::vector<PlotLine> lines, const PlotAxis& axis);
+    void lend(LineTarget* target, std::vector<PlotLine> lines, std::vector<PlotAxis> axes);
 
     /// Empty whatever item is reading, and let go of everything retired.
     ///

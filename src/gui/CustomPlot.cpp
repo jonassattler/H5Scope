@@ -514,6 +514,10 @@ void CustomPlot::applyBudget()
         trimLevels(entry);
     }
     trimLevels(axis_);
+    for (auto& [expression, time] : times_) {
+        resize(time);
+        trimLevels(time);
+    }
     if (refine) {
         refresh();
         return;
@@ -608,6 +612,13 @@ QVariant CustomPlot::data(const QModelIndex& index, int role) const
         return entry.axisLabel;
     case PostprocessRole:
         return entry.postprocess;
+    case XExpressionRole:
+        return entry.xExpression;
+    case XErrorRole: {
+        // Only while it is the one the line is drawn against.
+        const Entry* time = ownsTime(entry) ? timeOf(entry) : nullptr;
+        return time != nullptr ? time->problem : QString();
+    }
     default:
         return {};
     }
@@ -627,7 +638,9 @@ QHash<int, QByteArray> CustomPlot::roleNames() const
             {SeparateAxisRole, "separateAxis"},
             {AxisFixedRole, "axisFixed"},
             {AxisLabelRole, "axisLabel"},
-            {PostprocessRole, "postprocess"}};
+            {PostprocessRole, "postprocess"},
+            {XExpressionRole, "xExpression"},
+            {XErrorRole, "xError"}};
 }
 
 void CustomPlot::setName(QString name)
@@ -1047,6 +1060,30 @@ void CustomPlot::setAxisLabel(int row, const QString& text)
     announce();
 }
 
+void CustomPlot::setEntryX(int row, const QString& expression)
+{
+    Entry* const at = entryAt(row);
+    if (at == nullptr) {
+        return;
+    }
+    Entry& entry = *at;
+    const QString trimmed = expression.trimmed();
+    if (entry.xExpression == trimmed) {
+        return;
+    }
+    entry.xExpression = trimmed;
+    touch(row, {XExpressionRole, XErrorRole});
+    // The same values at other times. What the line was folded against is the
+    // old time base's, so the fold goes; its runs are runs of its own elements
+    // and stay. A time base not held yet is a read, coalesced with whatever
+    // else this turn asks for -- and until it lands the line draws nothing,
+    // rather than its values at the old times under a new label.
+    dropFold();
+    recount();
+    announce();
+    invalidate();
+}
+
 QVariantMap CustomPlot::seriesAxis(int series) const
 {
     const Entry* const at = entryAt(series);
@@ -1170,7 +1207,15 @@ double CustomPlot::positiveMinimum() const
 int CustomPlot::sourcePointCount() const
 {
     if (xMode_ == Dataset) {
-        return std::max(axis_.sourceLength, 1);
+        // The tab's time base, which is what a stretched line is spread over;
+        // and where the tab has none, the longest a line names of its own.
+        int longest = axis_.sourceLength;
+        if (longest <= 0) {
+            for (const auto& [expression, time] : times_) {
+                longest = std::max(longest, time.sourceLength);
+            }
+        }
+        return std::max(longest, 1);
     }
     int longest = 0;
     for (const Entry& entry : entries_) {
@@ -1223,10 +1268,18 @@ std::optional<LogColumns> CustomPlot::foldWanted() const
     if (xMode_ == Dataset) {
         // Folded against only while it runs one way, which is the rule every
         // closer look at a time base keeps: one that doubles back puts an x in
-        // two places and there is no column to put it in.
-        bool ascending = true;
-        if (axis_.pyramid.empty() || !timeSorted(ascending)) {
-            return {};
+        // two places and there is no column to put it in. Every time base a
+        // drawn line is drawn against, which is the tab's and whichever its
+        // lines name of their own.
+        for (const Entry& entry : entries_) {
+            if (!entry.drawn) {
+                continue;
+            }
+            const Entry* time = timeOf(entry);
+            bool ascending = true;
+            if (time == nullptr || time->pyramid.empty() || !timeSorted(*time, ascending)) {
+                return {};
+            }
         }
     }
     else if (!std::isfinite(xStart_) || !std::isfinite(xStep_) || !(std::abs(xStep_) > 0.0)) {
@@ -1252,9 +1305,9 @@ void CustomPlot::dropFold() const
     ++foldGeneration_;
 }
 
-double CustomPlot::timeAt(long long at) const
+double CustomPlot::timeAt(const Entry& base, long long at) const
 {
-    const LinePyramid& time = axis_.pyramid;
+    const LinePyramid& time = base.pyramid;
     if (time.empty() || at < 0 || at >= time.length) {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -1265,9 +1318,9 @@ double CustomPlot::timeAt(long long at) const
     return bottom.values[static_cast<std::size_t>(at / bottom.bucket) * 2];
 }
 
-bool CustomPlot::timeSorted(bool& ascending) const
+bool CustomPlot::timeSorted(const Entry& base, bool& ascending) const
 {
-    const LinePyramid& time = axis_.pyramid;
+    const LinePyramid& time = base.pyramid;
     if (time.empty()) {
         return false;
     }
@@ -1287,14 +1340,15 @@ bool CustomPlot::timeSorted(bool& ascending) const
     return sortedAnswer_ != 0;
 }
 
-void CustomPlot::timeEdges(const LogColumns& columns, double scale, std::vector<double>& out) const
+void CustomPlot::timeEdges(const Entry& base, const LogColumns& columns, double scale,
+                           std::vector<double>& out) const
 {
     out.clear();
     bool ascending = true;
-    if (!timeSorted(ascending) || !(scale > 0.0)) {
+    if (!timeSorted(base, ascending) || !(scale > 0.0)) {
         return;
     }
-    const long long length = axis_.pyramid.length;
+    const long long length = base.pyramid.length;
     // How many elements lie before `x` in the order the time base runs:
     // those below it when it ascends, those above it when it descends. A
     // column's elements are then a run between two of these, which is what an
@@ -1304,7 +1358,7 @@ void CustomPlot::timeEdges(const LogColumns& columns, double scale, std::vector<
         long long high = length;
         while (low < high) {
             const long long mid = low + (high - low) / 2;
-            const double t = timeAt(mid);
+            const double t = timeAt(base, mid);
             if (ascending ? t < x : t >= x) {
                 low = mid + 1;
             }
@@ -1345,9 +1399,13 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
         // An element of this entry sits at `scale` axis positions per
         // element: one under Align, the axis over the line under Stretch.
         const double scale = stretchScale(entry);
+        const Entry* time = timeOf(entry);
+        if (xMode_ == Dataset && time == nullptr) {
+            return false;
+        }
         std::vector<double> edges;
         if (xMode_ == Dataset) {
-            timeEdges(*foldGrid_.columns, scale, edges);
+            timeEdges(*time, *foldGrid_.columns, scale, edges);
         }
         else {
             edgesAlong(*foldGrid_.columns, xStart_, xStep_ * scale, edges);
@@ -1357,7 +1415,7 @@ bool CustomPlot::foldedLine(const Entry& entry, PlotLine& line) const
         std::vector<double> xs(folded.positions.size());
         for (std::size_t i = 0; i < xs.size(); ++i) {
             const double at = folded.positions[i] * scale;
-            xs[i] = xMode_ == Dataset ? timeAt(std::llround(at)) : xStart_ + at * xStep_;
+            xs[i] = xMode_ == Dataset ? timeAt(*time, std::llround(at)) : xStart_ + at * xStep_;
         }
         entry.foldValues = std::move(folded.values);
         entry.foldXs = std::move(xs);
@@ -1583,7 +1641,10 @@ void CustomPlot::setVisibleRange(double xMin, double xMax)
 
 double CustomPlot::stretchScale(const Entry& entry) const
 {
-    if (entry.scaling != Stretch || entry.sourceLength <= 1) {
+    // A line drawn against a time base of its own has an x for every element
+    // it was sampled at, and spreading it over another length would put each
+    // at some other element's time.
+    if (entry.scaling != Stretch || entry.sourceLength <= 1 || ownsTime(entry)) {
         return 1.0;
     }
     // The line spread over the whole axis: its first element at the start and
@@ -1594,14 +1655,15 @@ double CustomPlot::stretchScale(const Entry& entry) const
            static_cast<double>(entry.sourceLength - 1);
 }
 
-bool CustomPlot::axisPositionOf(double x, double& position, double& resolution) const
+bool CustomPlot::axisPositionOf(const Entry& time, double x, double& position,
+                                double& resolution) const
 {
     // The whole of the time base first: it is the one reading that answers for
     // every position, so it is where the bracket starts.
-    if (!positionOfX(axis_.values, 0.0, axis_.step, x, position)) {
+    if (!positionOfX(time.values, 0.0, time.step, x, position)) {
         return false;
     }
-    resolution = axis_.step;
+    resolution = time.step;
     // ...and then again in whatever finer run of it covers that answer. Each
     // pass is a strictly finer reading than the last, so this ends -- and it
     // ends at the pyramid's base, which on any time base a reader has is the
@@ -1609,9 +1671,9 @@ bool CustomPlot::axisPositionOf(double x, double& position, double& resolution) 
     // point of the summary, which on a ten-million-element log is five thousand
     // elements, and the run that comes back is three octaves coarser than the
     // pane asked for however far the reader zooms.
-    for (std::size_t pass = 0; pass < axis_.levels.size(); ++pass) {
+    for (std::size_t pass = 0; pass < time.levels.size(); ++pass) {
         const Level* finer = nullptr;
-        for (const Level& level : axis_.levels) {
+        for (const Level& level : time.levels) {
             if (level.values.empty() || !(level.step > 0.0) || !(level.step < resolution)) {
                 continue;
             }
@@ -1638,8 +1700,10 @@ bool CustomPlot::axisPositionOf(double x, double& position, double& resolution) 
 
 void CustomPlot::recomputeView()
 {
-    viewUsable_ = false;
-    focusUsable_ = false;
+    view_ = {};
+    for (auto& [expression, time] : times_) {
+        time.view = {};
+    }
     // A range of no width is what "nothing has been pushed" looks like: the two
     // are zero until a surface says otherwise. Refused here rather than left to
     // fall out of the arithmetic, because under Dataset the bracket is opened
@@ -1651,31 +1715,11 @@ void CustomPlot::recomputeView()
     }
 
     if (xMode_ == Dataset) {
-        double low = 0.0;
-        double high = 0.0;
-        double lowResolution = 1.0;
-        double highResolution = 1.0;
-        if (!axisPositionOf(viewMin_, low, lowResolution) ||
-            !axisPositionOf(viewMax_, high, highResolution)) {
-            return;
-        }
-        if (low > high) {
-            std::swap(low, high);
-            std::swap(lowResolution, highResolution);
-        }
-        // Opened by the resolution each end was settled at. The inversion is
-        // only as sharp as the reading it was made against, and a run that
-        // stops short of what is drawn is a line clipped in the middle of the
-        // pane -- so the bracket errs outwards, which costs at most one bucket
-        // of span and cannot cost a stroke.
-        viewLow_ = low - lowResolution;
-        viewHigh_ = high + highResolution;
-        viewUsable_ = std::isfinite(viewLow_) && std::isfinite(viewHigh_) && viewHigh_ > viewLow_;
-        if (zoom_.active) {
-            double at = 0.0;
-            double ignored = 1.0;
-            focusUsable_ = axisPositionOf(zoom_.x, at, ignored);
-            focusPosition_ = at;
+        // Once for each time base: the tab's, and each a line names of its
+        // own. The same view is a different run of positions in each.
+        view_ = viewAlong(axis_);
+        for (auto& [expression, time] : times_) {
+            time.view = viewAlong(time);
         }
         return;
     }
@@ -1691,27 +1735,130 @@ void CustomPlot::recomputeView()
     if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
         return;
     }
-    viewLow_ = low;
-    viewHigh_ = high;
-    viewUsable_ = true;
+    view_.low = low;
+    view_.high = high;
+    view_.usable = true;
     if (zoom_.active) {
         const double at = (zoom_.x - xStart_) / xStep_;
-        focusUsable_ = std::isfinite(at);
-        focusPosition_ = at;
+        view_.focusUsable = std::isfinite(at);
+        view_.focus = at;
     }
+}
+
+CustomPlot::View CustomPlot::viewAlong(const Entry& time) const
+{
+    View view;
+    double low = 0.0;
+    double high = 0.0;
+    double lowResolution = 1.0;
+    double highResolution = 1.0;
+    if (!axisPositionOf(time, viewMin_, low, lowResolution) ||
+        !axisPositionOf(time, viewMax_, high, highResolution)) {
+        return view;
+    }
+    if (low > high) {
+        std::swap(low, high);
+        std::swap(lowResolution, highResolution);
+    }
+    // Opened by the resolution each end was settled at. The inversion is
+    // only as sharp as the reading it was made against, and a run that
+    // stops short of what is drawn is a line clipped in the middle of the
+    // pane -- so the bracket errs outwards, which costs at most one bucket
+    // of span and cannot cost a stroke.
+    view.low = low - lowResolution;
+    view.high = high + highResolution;
+    view.usable = std::isfinite(view.low) && std::isfinite(view.high) && view.high > view.low;
+    if (zoom_.active) {
+        double at = 0.0;
+        double ignored = 1.0;
+        view.focusUsable = axisPositionOf(time, zoom_.x, at, ignored);
+        view.focus = at;
+    }
+    return view;
+}
+
+bool CustomPlot::ownsTime(const Entry& entry) const
+{
+    if (xMode_ != Dataset) {
+        return false;
+    }
+    const QString own = entry.xExpression.trimmed();
+    return !own.isEmpty() && own != xExpression_.trimmed();
+}
+
+const CustomPlot::Entry* CustomPlot::timeOf(const Entry& entry) const
+{
+    if (xMode_ != Dataset) {
+        return nullptr;
+    }
+    if (!ownsTime(entry)) {
+        return &axis_;
+    }
+    const auto found = times_.find(entry.xExpression.trimmed());
+    return found != times_.end() ? &found->second : nullptr;
+}
+
+QStringList CustomPlot::ownTimes() const
+{
+    QStringList named;
+    for (const Entry& entry : entries_) {
+        if (ownsTime(entry) && !named.contains(entry.xExpression.trimmed())) {
+            named.append(entry.xExpression.trimmed());
+        }
+    }
+    return named;
+}
+
+void CustomPlot::keepTimes(const QStringList& named)
+{
+    // A time base no line names any more goes -- retired first, because the
+    // renderer may still be drawing a line against it until fill() hands over
+    // the line drawn against what replaced it.
+    for (auto it = times_.begin(); it != times_.end();) {
+        if (named.contains(it->first)) {
+            ++it;
+            continue;
+        }
+        retire(it->second.values);
+        for (Level& level : it->second.levels) {
+            retire(level);
+        }
+        it = times_.erase(it);
+    }
+}
+
+const CustomPlot::View& CustomPlot::viewFor(const Entry& entry) const
+{
+    static const View none;
+    // A time base is measured against its own positions...
+    if (&entry == &axis_) {
+        return view_;
+    }
+    for (const auto& [expression, time] : times_) {
+        if (&time == &entry) {
+            return time.view;
+        }
+    }
+    // ...and a line against those of the time base it is drawn against.
+    if (ownsTime(entry)) {
+        const Entry* time = timeOf(entry);
+        return time != nullptr ? time->view : none;
+    }
+    return view_;
 }
 
 bool CustomPlot::lineRange(const Entry& entry, double& first, double& last) const
 {
-    if (!viewUsable_) {
+    const View& view = viewFor(entry);
+    if (!view.usable) {
         return false;
     }
     const double scale = stretchScale(entry);
     if (!(std::abs(scale) > 0.0)) {
         return false;
     }
-    const double low = viewLow_ / scale;
-    const double high = viewHigh_ / scale;
+    const double low = view.low / scale;
+    const double high = view.high / scale;
     if (!std::isfinite(low) || !std::isfinite(high) || !(high > low)) {
         return false;
     }
@@ -1733,14 +1880,15 @@ void CustomPlot::clearZoomFocus()
 PlotFocus CustomPlot::focusFor(const Entry& entry) const
 {
     PlotFocus focus;
-    if (!zoom_.active || !focusUsable_) {
+    const View& view = viewFor(entry);
+    if (!zoom_.active || !view.focusUsable) {
         return focus;
     }
     const double scale = stretchScale(entry);
     if (!(std::abs(scale) > 0.0)) {
         return focus;
     }
-    const double position = focusPosition_ / scale;
+    const double position = view.focus / scale;
     if (!std::isfinite(position)) {
         return focus;
     }
@@ -1932,33 +2080,36 @@ void CustomPlot::refreshCloser()
     // asks for a sharper one still, and it settles at the pyramid's base. Out
     // of a held line every one of those folds is arithmetic over a buffer
     // already in hand, so the loop costs the pane and not the file.
-    if (xMode_ == Dataset) {
+    //
+    // Every time base in use, the same way: the tab's, and each a line names
+    // of its own, whose runs the lines drawn against it are measured by.
+    const auto sharpen = [&](Entry& time) {
         std::optional<PlotWindow> own;
         for (int step = 0; step <= kHeldLevels; ++step) {
-            own = closerFor(axis_, closerBuckets());
-            if (!own.has_value() || !fillCloser(axis_, *own)) {
+            own = closerFor(time, closerBuckets());
+            if (!own.has_value() || !fillCloser(time, *own)) {
                 break;
             }
             filled = true;
-            trimLevels(axis_);
+            trimLevels(time);
             recomputeView(); // finer, now that a finer reading is in hand
         }
-        if (!closerFor(axis_, bucketBudget()).has_value()) {
-            if (!axis_.levels.empty()) {
+        if (!closerFor(time, bucketBudget()).has_value()) {
+            if (!time.levels.empty()) {
                 // Zoomed back out past every run of the axis. Retired rather
                 // than freed: the renderer may be drawing against one of them,
                 // and the whole-line summary covers every position by
                 // construction, so the frame after this is a correct picture
                 // either way.
-                for (Level& level : axis_.levels) {
+                for (Level& level : time.levels) {
                     retire(level);
                 }
-                axis_.levels.clear();
+                time.levels.clear();
                 dropped = true;
                 recomputeView();
             }
         }
-        else if (own.has_value() && !closerCovers(axis_)) {
+        else if (own.has_value() && !closerCovers(time)) {
             // The one run of the axis the pyramid could not answer, which is a
             // zoom below its base bucket. Asked of the file, as row -1.
             //
@@ -1967,6 +2118,12 @@ void CustomPlot::refreshCloser()
             // nothing, so an axis run held against a zoom the reader has not
             // made yet is memory spent on arithmetic that is already free.
             wanted = true;
+        }
+    };
+    if (xMode_ == Dataset) {
+        sharpen(axis_);
+        for (auto& [expression, time] : times_) {
+            sharpen(time);
         }
     }
 
@@ -2079,6 +2236,19 @@ void CustomPlot::askForCloser()
             asks.push_back(Ask{xExpression_, want, closerBuckets(), 0});
         }
     }
+    // ...and so is each time base a line names of its own, by what it is.
+    if (xMode_ == Dataset) {
+        for (const auto& [expression, time] : times_) {
+            if (closerCovers(time)) {
+                continue;
+            }
+            if (const std::optional<PlotWindow> want = closerFor(time, closerBuckets());
+                want.has_value()) {
+                rows.push_back(-1);
+                asks.push_back(Ask{expression, want, closerBuckets(), 0});
+            }
+        }
+    }
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const Entry& entry = entries_[i];
         const std::optional<PlotWindow> want = closerWanted(entry);
@@ -2118,10 +2288,14 @@ void CustomPlot::askForCloser()
             for (std::size_t i = 0; i < count; ++i) {
                 Entry* into = nullptr;
                 if (rows[i] < 0) {
-                    // The time base. Still the one being drawn against, or the
-                    // next settle asks about whatever replaced it.
+                    // A time base. Still one being drawn against, or the next
+                    // settle asks about whatever replaced it.
                     if (xMode_ == Dataset && xExpression_ == asks[i].expression) {
                         into = &axis_;
+                    }
+                    else if (const auto own = times_.find(asks[i].expression);
+                             xMode_ == Dataset && own != times_.end()) {
+                        into = &own->second;
                     }
                 }
                 else if (const auto row = static_cast<std::size_t>(rows[i]);
@@ -2190,6 +2364,12 @@ void CustomPlot::clearCloser()
         retire(level);
     }
     axis_.levels.clear();
+    for (auto& [expression, time] : times_) {
+        for (Level& level : time.levels) {
+            retire(level);
+        }
+        time.levels.clear();
+    }
     // And every fold, for the same reason: it is a fold of the lines, and of
     // the time base, as they were.
     dropFold();
@@ -2257,9 +2437,12 @@ PlotLine CustomPlot::lineOf(int series) const
     // A tab drawn against a time base that has not read draws nothing at all,
     // rather than falling back to positions: the reader asked for these values
     // against *those* x, and an axis of indices with the same line on it is a
-    // different plot wearing the same label.
-    if (xMode_ == Dataset && axis_.values.empty()) {
-        return line;
+    // different plot wearing the same label. The same for a line's own.
+    if (xMode_ == Dataset) {
+        const Entry* time = timeOf(entry);
+        if (time == nullptr || time->values.empty()) {
+            return line;
+        }
     }
 
     // On a logarithmic axis spanning an octave or more, the line folded onto
@@ -2319,20 +2502,38 @@ PlotLine CustomPlot::lineOf(int series) const
 
 PlotAxis CustomPlot::drawingAxis() const
 {
+    return axisAlong(xMode_ == Dataset ? &axis_ : nullptr);
+}
+
+PlotAxis CustomPlot::axisOf(int series) const
+{
+    const Entry* const at = entryAt(series);
+    if (at == nullptr || !ownsTime(*at)) {
+        return drawingAxis();
+    }
+    // Its own time base, or -- not read yet -- an axis with no time base at
+    // all, against which lineOf() has drawn nothing.
+    const Entry* time = timeOf(*at);
+    return time != nullptr ? axisAlong(time) : PlotAxis{};
+}
+
+PlotAxis CustomPlot::axisAlong(const Entry* time) const
+{
     PlotAxis axis;
     axis.start = xStart_;
     axis.step = xStep_;
-    if (xMode_ == Dataset) {
-        axis.values = axis_.values.data();
-        axis.count = static_cast<qsizetype>(axis_.values.size());
-        axis.valueStep = axis_.step;
+    if (time != nullptr) {
+        const Entry& held = *time;
+        axis.values = held.values.data();
+        axis.count = static_cast<qsizetype>(held.values.size());
+        axis.valueStep = held.step;
         // ...and the run of it the reader is looking at, which is the same
         // time base folded finer over what is on screen. Handed over *beside*
         // the whole rather than instead of it, for the reason PlotAxis says: a
         // line whose own closer look has not landed yet is still drawn against
         // the positions the whole answers for.
-        if (const int at = drawnLevel(axis_); at >= 0) {
-            const Level& level = axis_.levels[static_cast<std::size_t>(at)];
+        if (const int at = drawnLevel(held); at >= 0) {
+            const Level& level = held.levels[static_cast<std::size_t>(at)];
             axis.closerValues = level.values.data();
             axis.closerCount = static_cast<qsizetype>(level.values.size());
             axis.closerStart = static_cast<double>(level.window.first);
@@ -2348,15 +2549,24 @@ void CustomPlot::fill(LineTarget* target)
         return;
     }
     std::vector<PlotLine> lines;
+    std::vector<PlotAxis> axes;
     lines.reserve(entries_.size());
+    bool own = false;
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         if (entries_[i].drawn) {
             lines.push_back(lineOf(static_cast<int>(i)));
+            axes.push_back(axisOf(static_cast<int>(i)));
+            own = own || ownsTime(entries_[i]);
         }
+    }
+    // One axis for every line unless a line has a time base of its own, so a
+    // tab of ordinary lines hands over what it always did.
+    if (!own) {
+        axes.assign(1, drawingAxis());
     }
     // The one place the retired store is let go, because it is the one place a
     // renderer that was borrowing it has just been given something else.
-    lent_.lend(target, std::move(lines), drawingAxis());
+    lent_.lend(target, std::move(lines), std::move(axes));
 }
 
 QStringList CustomPlot::paths() const
@@ -2370,6 +2580,12 @@ QStringList CustomPlot::paths() const
     }
     if (xMode_ == Dataset && !xExpression_.trimmed().isEmpty()) {
         const Expression parts = splitExpression(xExpression_);
+        if (parts.valid() && !named.contains(parts.path)) {
+            named.append(parts.path);
+        }
+    }
+    for (const QString& expression : ownTimes()) {
+        const Expression parts = splitExpression(expression);
         if (parts.valid() && !named.contains(parts.path)) {
             named.append(parts.path);
         }
@@ -2484,9 +2700,15 @@ void CustomPlot::recount()
         }
     }
     // In Dataset mode a line with no time base to draw against is not drawable
-    // however many finite values it holds.
-    if (xMode_ == Dataset && axis_.values.empty()) {
-        hasFinite_ = false;
+    // however many finite values it holds -- the tab's, or one of its own.
+    if (xMode_ == Dataset) {
+        bool drawable = false;
+        for (const Entry& entry : entries_) {
+            const Entry* time = timeOf(entry);
+            drawable = drawable ||
+                       (entry.drawn && entry.finite && time != nullptr && !time->values.empty());
+        }
+        hasFinite_ = hasFinite_ && drawable;
     }
 
     // The time base's own extent, which is what the axis is drawn between. Its
@@ -2497,36 +2719,61 @@ void CustomPlot::recount()
     xMinimum_ = 0.0;
     xMaximum_ = 1.0;
     xPositiveMinimum_ = 0.0;
-    bool seen = false;
-    bool seenPositive = false;
-    for (const double value : axis_.values) {
-        if (!std::isfinite(value)) {
-            continue;
-        }
-        if (!seen) {
-            xMinimum_ = value;
-            xMaximum_ = value;
-            seen = true;
-        }
-        else {
-            xMinimum_ = std::min(xMinimum_, value);
-            xMaximum_ = std::max(xMaximum_, value);
-        }
-        // Where a logarithmic x axis starts. The ends of the time base are the
-        // whole of the axis on a linear one; on a logarithmic one the end below
-        // zero is not an end it has.
-        if (value > 0.0) {
-            xPositiveMinimum_ = seenPositive ? std::min(xPositiveMinimum_, value) : value;
-            seenPositive = true;
+    // Every time base a drawn line is drawn against: the tab's, and those its
+    // lines name of their own, so the one x axis spans every line's times.
+    std::vector<const Entry*> bases;
+    if (xMode_ == Dataset) {
+        for (const Entry& entry : entries_) {
+            const Entry* time = entry.drawn ? timeOf(entry) : nullptr;
+            if (time != nullptr && std::find(bases.begin(), bases.end(), time) == bases.end()) {
+                bases.push_back(time);
+            }
         }
     }
-    // Out of the time base itself where it is held, for the reason the lines
-    // above take theirs from their pyramids -- and it matters more here. The
-    // summary is pairs of extremes, and the first pair of a time base from
-    // zero is the zero and the end of the first bucket, so a logarithmic axis
-    // began a bucket along and every element before that was off the pane.
-    if (double smallest = 0.0; smallestPositive(axis_.pyramid, smallest)) {
-        xPositiveMinimum_ = smallest;
+    if (bases.empty()) {
+        bases.push_back(&axis_);
+    }
+    bool seen = false;
+    bool seenPositive = false;
+    for (const Entry* time : bases) {
+        double ownPositive = 0.0;
+        bool ownSeenPositive = false;
+        for (const double value : time->values) {
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            if (!seen) {
+                xMinimum_ = value;
+                xMaximum_ = value;
+                seen = true;
+            }
+            else {
+                xMinimum_ = std::min(xMinimum_, value);
+                xMaximum_ = std::max(xMaximum_, value);
+            }
+            // Where a logarithmic x axis starts. The ends of the time base are
+            // the whole of the axis on a linear one; on a logarithmic one the
+            // end below zero is not an end it has.
+            if (value > 0.0) {
+                ownPositive = ownSeenPositive ? std::min(ownPositive, value) : value;
+                ownSeenPositive = true;
+            }
+        }
+        // Out of the time base itself where it is held, for the reason the
+        // lines above take theirs from their pyramids -- and it matters more
+        // here. The summary is pairs of extremes, and the first pair of a time
+        // base from zero is the zero and the end of the first bucket, so a
+        // logarithmic axis began a bucket along and every element before that
+        // was off the pane.
+        if (double smallest = 0.0; smallestPositive(time->pyramid, smallest)) {
+            ownPositive = smallest;
+            ownSeenPositive = true;
+        }
+        if (ownSeenPositive) {
+            xPositiveMinimum_ =
+                seenPositive ? std::min(xPositiveMinimum_, ownPositive) : ownPositive;
+            seenPositive = true;
+        }
     }
     if (seen && xMaximum_ <= xMinimum_) {
         // A flat time base has no extent to draw against; give it a unit of
@@ -2554,10 +2801,17 @@ void CustomPlot::refresh()
     // has to resolve with the lines it carries, so it is read like one.
     const long long budget = pyramidBudget();
 
+    // Then the time bases lines name of their own, each once, read on the
+    // same terms; then the lines.
+    const QStringList owned = ownTimes();
+
     std::vector<Ask> asks;
-    asks.reserve(entries_.size() + 1);
+    asks.reserve(entries_.size() + static_cast<std::size_t>(owned.size()) + 1);
     if (wantsX) {
         asks.push_back(Ask{xExpression_, {}, bucketBudget(), budget});
+    }
+    for (const QString& expression : owned) {
+        asks.push_back(Ask{expression, {}, bucketBudget(), budget});
     }
     for (const Entry& entry : entries_) {
         asks.push_back(Ask{entry.expression, {}, bucketBudget(), budget, entry.postprocess});
@@ -2569,6 +2823,7 @@ void CustomPlot::refresh()
         axis_.step = 1.0;
         axis_.sourceLength = 0;
         axis_.pyramid = {};
+        keepTimes({});
         clearCloser();
         recount();
         announce();
@@ -2598,7 +2853,7 @@ void CustomPlot::refresh()
             }
             return reply;
         },
-        [this, wantsX](Reply reply) {
+        [this, wantsX, owned](Reply reply) {
             // Every entry's values are about to be replaced. Retired rather
             // than freed, so the renderer goes on drawing what it has until
             // fill() hands it the answer -- see retire().
@@ -2631,6 +2886,24 @@ void CustomPlot::refresh()
                 axis_.pyramid = {};
             }
 
+            // The time bases lines name of their own, in the order asked, as
+            // the tab's is taken above.
+            for (const QString& expression : owned) {
+                if (at >= reply.lines.size()) {
+                    break;
+                }
+                Answer& answer = reply.lines[at];
+                Entry& time = times_[expression];
+                time.problem = answer.problem;
+                retire(time.values);
+                time.values = std::move(answer.values);
+                time.step = answer.step;
+                time.sourceLength = answer.sourceLength;
+                time.pyramid = std::move(answer.pyramid);
+                ++at;
+            }
+            keepTimes(owned);
+
             for (std::size_t i = 0; i < entries_.size(); ++i, ++at) {
                 if (at >= reply.lines.size()) {
                     break;
@@ -2657,7 +2930,7 @@ void CustomPlot::refresh()
             clearCloser();
 
             recount();
-            touch(-1, {ErrorRole, PointsRole, SourcePointsRole, ScalableRole});
+            touch(-1, {ErrorRole, PointsRole, SourcePointsRole, ScalableRole, XErrorRole});
             announce();
             refreshCloser();
         });
@@ -2693,6 +2966,10 @@ QVariantMap CustomPlot::state() const
         }
         if (!entry.axisLabel.isEmpty()) {
             fields.insert(QStringLiteral("axisLabel"), entry.axisLabel);
+        }
+        // A time base of its own, written only where it names one.
+        if (!entry.xExpression.isEmpty()) {
+            fields.insert(QStringLiteral("x"), entry.xExpression);
         }
         // Where a gesture put the line, written only where it moved it.
         if (entry.scale != 1.0 || entry.shift != 0.0) {
@@ -2756,6 +3033,7 @@ void CustomPlot::setState(const QVariantMap& state)
         entry.separateAxis = fields.value(QStringLiteral("separateAxis"), false).toBool();
         entry.axisFixed = fields.value(QStringLiteral("axisFixed"), false).toBool();
         entry.axisLabel = fields.value(QStringLiteral("axisLabel")).toString().trimmed();
+        entry.xExpression = fields.value(QStringLiteral("x")).toString().trimmed();
         // Absent, or not a move, is where the line was read: 1 and 0.
         const double scale = fields.value(QStringLiteral("scale"), 1.0).toDouble();
         const double shift = fields.value(QStringLiteral("shift"), 0.0).toDouble();

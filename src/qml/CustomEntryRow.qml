@@ -78,6 +78,14 @@ Rectangle {
     /// Whether the line is a pipeline rather than a slice. See
     /// CustomPlot::setPostprocess.
     property bool postprocess: false
+    /// The time base this line names of its own, or empty for the tab's, and
+    /// why it will not read. See CustomPlot::setEntryX.
+    property string xExpression: ""
+    property string xError: ""
+    /// Whether the tab's x is a dataset, which is when a line may name a time
+    /// base of its own.
+    readonly property bool againstDataset: row.plot ? row.plot.xMode === CustomPlot.Dataset
+                                                    : false
     /// Whether there is a second line for this one to be separate from. A
     /// plot of one line has one axis, whatever this card's box says.
     readonly property bool separable: row.plot ? row.plot.seriesCount > 1 : false
@@ -117,6 +125,7 @@ Rectangle {
     readonly property bool pending: row.written.trim() !== row.expression
                                     && row.problem === ""
     readonly property bool troubled: row.problem !== "" || row.error !== ""
+                                     || (row.againstDataset && row.xError !== "")
 
     implicitHeight: layout.implicitHeight + Theme.gapS * 2
     radius: Theme.radiusS
@@ -240,6 +249,13 @@ Rectangle {
             return
         row.plot.setAlias(row.rowIndex, aliasBox.text)
         aliasBox.text = row.alias
+    }
+
+    function commitX() {
+        if (!row.plot || row.rowIndex < 0)
+            return
+        row.plot.setEntryX(row.rowIndex, xBox.text)
+        xBox.text = row.xExpression
     }
 
     ColumnLayout {
@@ -539,6 +555,48 @@ Rectangle {
             }
         }
 
+        // --- the times it was sampled at ----------------------------------
+        // A line not sampled with the others names its own time base here,
+        // and is drawn at its own times on the tab's one x axis. Only while
+        // the tab's x is a dataset, which is the only x a time base belongs
+        // to; under the other two the box is absent and what was named is
+        // kept for when x is a dataset again.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.rightMargin: Theme.smallControlHeight + Theme.gapS
+            spacing: Theme.gapS
+            visible: row.againstDataset
+
+            Item { Layout.preferredWidth: Theme.indicatorSize }
+
+            Text {
+                Layout.preferredWidth: labels.width
+                text: qsTr("x")
+                font: Theme.microLabel
+                color: Theme.textDisabled
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            FilterInput {
+                id: xBox
+
+                objectName: "entryX"
+
+                Layout.fillWidth: true
+                implicitHeight: Theme.smallControlHeight
+                font: Theme.body
+                text: row.xExpression
+                placeholderText: qsTr("the tab's time base")
+
+                onAccepted: row.commitX()
+                onActiveFocusChanged: if (!xBox.activeFocus) row.commitX()
+                Keys.onEscapePressed: {
+                    xBox.text = row.xExpression
+                    xBox.focus = false
+                }
+            }
+        }
+
         // --- the colour it is drawn in ------------------------------------
         // Beside the alias, because it is the same kind of thing: something
         // the reader says about this one line that costs no read and changes
@@ -732,6 +790,7 @@ Rectangle {
             visible: text !== ""
             text: row.problem !== "" ? row.problem
                 : row.error !== "" ? row.error
+                : row.againstDataset && row.xError !== "" ? qsTr("x: %1").arg(row.xError)
                 : row.pending ? qsTr("not applied yet — press Return") : ""
             font: Theme.caption
             color: row.troubled ? Theme.warning : Theme.accent
@@ -767,5 +826,9 @@ Rectangle {
     onAliasChanged: {
         if (!aliasBox.activeFocus)
             aliasBox.text = row.alias
+    }
+    onXExpressionChanged: {
+        if (!xBox.activeFocus)
+            xBox.text = row.xExpression
     }
 }

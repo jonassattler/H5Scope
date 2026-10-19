@@ -1333,6 +1333,62 @@ TestCase {
         surface.stacked = false
     }
 
+    /// A line names a time base of its own on its card, and is drawn at its
+    /// own times on the tab's one x axis -- which then spans both.
+    function test_a_line_names_a_time_base_of_its_own_on_its_card() {
+        const win = openWindow()
+        win.addCustomTab()
+        waitForRendering(win.contentItem)
+
+        const plot = AppController.customPlots.plotAt(0)
+        plot.xMode = CustomPlot.Dataset
+        plot.xExpression = "/series/time[:]"
+        plot.addExpression("/series/a[:]")
+        plot.addExpression("/series/b[:]")
+        settleReads()
+        waitForRendering(win.contentItem)
+
+        const view = shownView(win)
+        const surface = findAllOf(view, "customPlotSurface")[0]
+        compare(surface.axisHighX, 31.5, "the tab's time base, i / 2")
+
+        mouseClick(findAllOf(view, "customDataButton")[0])
+        waitForRendering(win.contentItem)
+        const boxes = findAllOf(view, "entryX")
+        compare(boxes.length, 2)
+        verify(boxes[1].visible, "a line may name its own while x is a dataset")
+
+        boxes[1].forceActiveFocus()
+        boxes[1].text = "/series/a[:]"
+        keyClick(Qt.Key_Return)
+        settleReads()
+        waitForRendering(win.contentItem)
+        tryVerify(() => surface.axisHighX === 63, 5000,
+                  "the one x axis spans the line's own times, i")
+        const notes = findAllOf(view, "entryNote")
+        compare(notes[1].text, "", "a time base that reads says nothing")
+
+        // One that will not read says so under its line.
+        boxes[1].forceActiveFocus()
+        boxes[1].text = "/nothing/here[:]"
+        keyClick(Qt.Key_Return)
+        settleReads()
+        waitForRendering(win.contentItem)
+        tryVerify(() => notes[1].text.startsWith("x: "), 5000,
+                  "the line must say why it draws nothing")
+
+        // Under the element's own index the box is absent, and what was named
+        // is kept for when x is a dataset again.
+        plot.xMode = CustomPlot.Index
+        settleReads()
+        waitForRendering(win.contentItem)
+        verify(!boxes[1].visible)
+        compare(notes[1].text, "")
+        plot.xMode = CustomPlot.Dataset
+        settleReads()
+        compare(boxes[1].text, "/nothing/here[:]")
+    }
+
     // --- a line the reader colours -----------------------------------------
 
     /// A colour the reader gives one line beats the cycle, and only for that

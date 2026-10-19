@@ -4613,7 +4613,7 @@ TEST_CASE("the crosshair reads a logarithmic axis through the same map", "[plot]
     gui::PlotLine line;
     line.values = values.data();
     line.count = static_cast<qsizetype>(values.size());
-    item.setLines({line}, gui::PlotAxis{});
+    item.setLines({line}, {gui::PlotAxis{}});
 
     SECTION("a sample is read where it was drawn")
     {
@@ -4666,7 +4666,7 @@ TEST_CASE("the crosshair reads a line on its own axis where that axis drew it", 
     gui::PlotLine second;
     second.values = small.data();
     second.count = static_cast<qsizetype>(small.size());
-    item.setLines({first, second}, gui::PlotAxis{});
+    item.setLines({first, second}, {gui::PlotAxis{}});
 
     // On the common axis the small line is a stroke along the bottom, and a
     // pointer halfway up the pane is nearest the large line.
@@ -4730,7 +4730,7 @@ TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[pl
     gui::PlotLine line;
     line.values = values.data();
     line.count = static_cast<qsizetype>(values.size());
-    item.setLines({line}, gui::PlotAxis{});
+    item.setLines({line}, {gui::PlotAxis{}});
 
     const QVariantMap found = item.nearestSample(400.0 / 3.0, 200.0);
     REQUIRE(found.value(QStringLiteral("valid")).toBool());
@@ -4744,7 +4744,7 @@ TEST_CASE("the crosshair will not snap to a sample the scale cannot place", "[pl
         gui::PlotLine dark;
         dark.values = none.data();
         dark.count = static_cast<qsizetype>(none.size());
-        item.setLines({dark}, gui::PlotAxis{});
+        item.setLines({dark}, {gui::PlotAxis{}});
         const QVariantMap nothing = item.nearestSample(200.0, 200.0);
         CHECK(!nothing.value(QStringLiteral("valid")).toBool());
     }
