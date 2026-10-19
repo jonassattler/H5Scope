@@ -10,6 +10,7 @@
 #include "gui/DatasetPlot.hpp"
 #include "gui/DatasetStringListModel.hpp"
 #include "gui/DatasetTableModel.hpp"
+#include "gui/FigureItem.hpp"
 #include "gui/H5TreeModel.hpp"
 #include "gui/ImageClipboard.hpp"
 #include "gui/NameIndex.hpp"
@@ -2355,6 +2356,93 @@ TEST_CASE_METHOD(ControllerFixture, "the plot filled into a second item empties 
 
     plot->fill(&second);
     CHECK(second.lineCount() == 6);
+}
+
+TEST_CASE_METHOD(ControllerFixture,
+                 "a figure item draws the lines a plot lends it, as the plot item did",
+                 "[plot][figure]")
+{
+    // The plot item is being replaced by plotcore's figure, hosted by
+    // FigureItem; the plot lends the same lines on the same terms to either,
+    // and only one of them ever holds them.
+    auto* plot = controller.datasetPlot();
+    REQUIRE(plot != nullptr);
+    REQUIRE(h5test::selectAndSettle(controller, "/cube")); // 2x3x4 -> 6 rows of 4
+
+    gui::PlotItem item;
+    plot->fill(&item);
+    REQUIRE(item.lineCount() == 6);
+
+    gui::FigureItem figure;
+    figure.setWidth(640.0);
+    figure.setHeight(400.0);
+    figure.setXMinimum(0.0);
+    figure.setXMaximum(3.0);
+    figure.setDataLength(4.0);
+    figure.setPlot(plot);
+    figure.refill();
+    CHECK(figure.lineCount() == 6);
+    CHECK(item.lineCount() == 0);
+
+    figure.compose();
+    const plotcore::Scene& scene = figure.lastScene();
+    REQUIRE(scene.lines.size() == 6);
+    CHECK(figure.drawnRunCount() == 6);
+    CHECK(figure.drawnPointCount() == 24);
+    // The y axis is the plot's whole extent, with air either side of it.
+    CHECK(figure.viewMinY() < plot->minimum());
+    CHECK(figure.viewMaxY() > plot->maximum());
+
+    SECTION("a hovered sample reads the element the plot read")
+    {
+        // Dereferenced through the borrowed pointers, for readsBack's reason:
+        // a count is just as right over freed memory.
+        const plotcore::Point at = scene.lines[0].runs[0][2];
+        const QVariantMap reading = figure.readingAt(at.x(), at.y());
+        REQUIRE(reading.value(QStringLiteral("valid")).toBool());
+        CHECK(reading.value(QStringLiteral("line")).toInt() == 0);
+        CHECK(reading.value(QStringLiteral("x")).toDouble() == 2.0);
+        CHECK(reading.value(QStringLiteral("y")).toDouble() == plot->lineOf(0).values[2]);
+    }
+
+    SECTION("a line keeps its series when one before it is hidden")
+    {
+        plot->setSeriesVisible(0, false);
+        figure.refill();
+        figure.compose();
+        REQUIRE(figure.lineCount() == 5);
+        CHECK(figure.series(0) == 1);
+        CHECK(figure.figure().lineSettings(0).colour == std::nullopt);
+    }
+
+    SECTION("filling the plot item again empties the figure")
+    {
+        plot->fill(&item);
+        CHECK(item.lineCount() == 6);
+        CHECK(figure.lineCount() == 0);
+    }
+}
+
+TEST_CASE_METHOD(ControllerFixture, "a plot that is destroyed empties the figure item it filled",
+                 "[plot][figure]")
+{
+    REQUIRE(h5test::selectAndSettle(controller, "/cube"));
+    auto* table = qobject_cast<gui::DatasetTableModel*>(controller.datasetModel());
+    REQUIRE(table != nullptr);
+
+    gui::FigureItem figure;
+    {
+        gui::DatasetPlot plot(table);
+        plot.selectFirst(6);
+        h5test::settle();
+        figure.setPlot(&plot);
+        figure.refill();
+        REQUIRE(figure.lineCount() == 6);
+    }
+    CHECK(figure.lineCount() == 0);
+    CHECK(figure.plot() == nullptr);
+    figure.compose();
+    CHECK(figure.lastScene().lines.empty());
 }
 
 TEST_CASE_METHOD(ControllerFixture, "a plot that is destroyed empties the item it filled", "[plot]")

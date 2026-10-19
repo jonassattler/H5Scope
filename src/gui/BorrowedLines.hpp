@@ -21,6 +21,7 @@
 // the same few lines in DatasetPlot and in CustomPlot. They are here now, and
 // the plots decide only *when* to lend, retire or release.
 
+#include "gui/LineTarget.hpp"
 #include "gui/PlotCore.hpp"
 
 #include <QPointer>
@@ -29,8 +30,6 @@
 #include <vector>
 
 namespace gui {
-
-class PlotItem;
 
 /// Which item is drawing a plot's values, and the values it may still be
 /// drawing although the plot has replaced them.
@@ -54,7 +53,7 @@ public:
     /// first. And since `target` has just been handed something else, nothing
     /// is reading what was retired any more: this is the one place the retired
     /// store is let go.
-    void lend(PlotItem* target, std::vector<PlotLine> lines, const PlotAxis& axis);
+    void lend(LineTarget* target, std::vector<PlotLine> lines, const PlotAxis& axis);
 
     /// Empty whatever item is reading, and let go of everything retired.
     ///
@@ -75,15 +74,18 @@ public:
     void retire(std::vector<double>& values);
 
     /// Whether an item is reading.
-    [[nodiscard]] bool lent() const { return drawing_ != nullptr; }
+    [[nodiscard]] bool lent() const { return held() != nullptr; }
 
     /// Doubles waiting in the retired store, for tests.
     [[nodiscard]] long long retiredDoubles() const;
 
 private:
-    /// A QPointer because the item belongs to a QML scene that is torn down
-    /// and rebuilt without telling the plot.
-    QPointer<PlotItem> drawing_;
+    /// The item reading, while it lives: a QPointer to it as an object
+    /// because it belongs to a QML scene that is torn down and rebuilt without
+    /// telling the plot, and the target that object is.
+    [[nodiscard]] LineTarget* held() const;
+    QPointer<QObject> drawingObject_;
+    LineTarget* drawing_ = nullptr;
 
     /// The bare vectors, and never whatever they came out of. This store held
     /// `std::map`s once, and growing a std::vector of those took the copy that

@@ -6,6 +6,7 @@
 #include "BorrowedLines.hpp"
 #include "DatasetTableModel.hpp"
 #include "H5Thread.hpp"
+#include "LineModel.hpp"
 #include "PlotItem.hpp"
 
 #include "PlotBudget.hpp"
@@ -71,7 +72,7 @@ namespace gui {
 /// reader as detail arrives; zooming back out draws immediately from the
 /// summary already in hand; and there is always something correct on screen
 /// while a read is in flight, so no gesture ever waits and no frame is blank.
-class DatasetPlot : public QObject
+class DatasetPlot : public QObject, public LineModel
 {
     Q_OBJECT
     QML_ELEMENT
@@ -154,32 +155,32 @@ public:
     [[nodiscard]] bool seriesFromRows() const { return seriesFromRows_; }
     void setSeriesFromRows(bool fromRows);
 
-    [[nodiscard]] QVariantList drawnSeries() const;
+    [[nodiscard]] QVariantList drawnSeries() const override;
     [[nodiscard]] int seriesCount() const;
     [[nodiscard]] static int initialSeriesLimit() { return kMaxInitialSeries; }
     [[nodiscard]] int pointCount() const;
     [[nodiscard]] int sourceSeriesCount() const;
     [[nodiscard]] bool thinned() const;
-    [[nodiscard]] double minimum() const;
-    [[nodiscard]] double maximum() const;
-    [[nodiscard]] double positiveMinimum() const;
-    [[nodiscard]] int sourcePointCount() const;
+    [[nodiscard]] double minimum() const override;
+    [[nodiscard]] double maximum() const override;
+    [[nodiscard]] double positiveMinimum() const override;
+    [[nodiscard]] int sourcePointCount() const override;
     [[nodiscard]] double xStart() const { return xStart_; }
     void setXStart(double value);
     [[nodiscard]] double xStep() const { return xStep_; }
     void setXStep(double value);
-    [[nodiscard]] bool xLog() const { return xLog_; }
-    void setXLog(bool logarithmic);
+    [[nodiscard]] bool xLog() const override { return xLog_; }
+    void setXLog(bool logarithmic) override;
     [[nodiscard]] bool numeric() const;
-    [[nodiscard]] bool hasData() const;
-    [[nodiscard]] QString error() const;
+    [[nodiscard]] bool hasData() const override;
+    [[nodiscard]] QString error() const override;
 
     /// What line `index` of the table is, written the way the grid writes it:
     /// the index tuple of its row, or of its column when the plot is
     /// transposed. This is the name the legend lists it under, and it names the
     /// slice rather than the drawing order -- hiding a line must not renumber
     /// the ones around it.
-    Q_INVOKABLE [[nodiscard]] QString seriesLabel(int series) const;
+    Q_INVOKABLE [[nodiscard]] QString seriesLabel(int series) const override;
 
     /// The same line written as a slice of the file: `/cube[1, 2, :]`.
     ///
@@ -201,7 +202,7 @@ public:
     /// without knowing which it has -- see the note at the top of CustomPlot,
     /// about seventeen hundred lines of drawing that must not be forked to
     /// serve a second plot.
-    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const
+    Q_INVOKABLE [[nodiscard]] QVariant seriesOverride(int series) const override
     {
         Q_UNUSED(series);
         return {};
@@ -214,7 +215,7 @@ public:
     /// lines that measure different things, and the rows of one dataset
     /// measure the same thing in the same units. The question is here so that
     /// PlotSurface can ask it of either plot; see CustomPlot::seriesAxis.
-    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesAxis(int series) const override
     {
         Q_UNUSED(series);
         return {{QStringLiteral("separate"), false}};
@@ -246,7 +247,7 @@ public:
     /// When it does resolve to something else, the read waits
     /// kSettleMilliseconds for the gesture to stop and then goes out
     /// asynchronously. A drag never reads; a drag that ends does, once.
-    Q_INVOKABLE void setVisibleRange(double xMin, double xMax);
+    Q_INVOKABLE void setVisibleRange(double xMin, double xMax) override;
 
     /// Where the reader is zooming, and which way.
     ///
@@ -265,11 +266,11 @@ public:
     /// of the one above it, so the whole inward ladder is cheaper than the
     /// single octave outward that was already being read speculatively. See
     /// gui::kFocusOctavesIn.
-    Q_INVOKABLE void setZoomFocus(double x, double factor);
+    Q_INVOKABLE void setZoomFocus(double x, double factor) override;
 
     /// Forget it: the reader is panning, or has reset the view. What is read
     /// ahead goes back to being centred on what is on screen.
-    Q_INVOKABLE void clearZoomFocus();
+    Q_INVOKABLE void clearZoomFocus() override;
 
     /// How wide the pane the lines are drawn in is, in device-independent
     /// pixels.
@@ -291,7 +292,7 @@ public:
     /// holding the mouse down. Nothing happens here but a note of what was
     /// asked for and a timer -- see kResizeMilliseconds -- so a drag costs one
     /// read at the end of it rather than one per sixty-four pixels.
-    Q_INVOKABLE void setPaneColumns(int columns);
+    Q_INVOKABLE void setPaneColumns(int columns) override;
 
     /// Hand every drawn line to `target` at once.
     ///
@@ -307,6 +308,7 @@ public:
     /// is why there are exactly two places in the .cpp that destroy a line and
     /// both of them release first.
     Q_INVOKABLE void fill(gui::PlotItem* target);
+    void fill(LineTarget* target) override;
 
     /// Line `series` of the table as a renderer would be given it, drawn or
     /// not, and the axis it is drawn against.

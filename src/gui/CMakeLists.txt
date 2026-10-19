@@ -15,6 +15,8 @@ qt_add_library(gui STATIC
   DatasetStringListModel.cpp
   DatasetPlot.cpp
   PlotItem.cpp
+  FigureItem.cpp
+  ScenePainter.cpp
   PlotBudget.cpp
   Rendering.cpp
   DatasetImage.cpp

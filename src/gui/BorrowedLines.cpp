@@ -3,7 +3,7 @@
 
 #include "BorrowedLines.hpp"
 
-#include "PlotItem.hpp"
+#include <QObject>
 
 #include <utility>
 
@@ -14,33 +14,40 @@ BorrowedLines::~BorrowedLines()
     release();
 }
 
-void BorrowedLines::lend(PlotItem* target, std::vector<PlotLine> lines, const PlotAxis& axis)
+LineTarget* BorrowedLines::held() const
+{
+    return drawingObject_ != nullptr ? drawing_ : nullptr;
+}
+
+void BorrowedLines::lend(LineTarget* target, std::vector<PlotLine> lines, const PlotAxis& axis)
 {
     if (target == nullptr) {
         return;
     }
     // A detached custom tab is drawn by a second surface, and the one it left
     // behind in the tab bar still held what it had last been handed.
-    if (drawing_ != nullptr && drawing_ != target) {
-        drawing_->clear();
+    if (LineTarget* holding = held(); holding != nullptr && holding != target) {
+        holding->clearLines();
     }
     target->setLines(std::move(lines), axis);
     drawing_ = target;
+    drawingObject_ = target->lineObject();
     retired_.clear();
 }
 
 void BorrowedLines::release()
 {
-    if (drawing_ != nullptr) {
-        drawing_->clear();
-        drawing_ = nullptr;
+    if (LineTarget* holding = held(); holding != nullptr) {
+        holding->clearLines();
     }
+    drawing_ = nullptr;
+    drawingObject_ = nullptr;
     retired_.clear();
 }
 
 void BorrowedLines::retire(std::vector<double>& values)
 {
-    if (values.empty() || drawing_ == nullptr) {
+    if (values.empty() || held() == nullptr) {
         values.clear();
         return;
     }

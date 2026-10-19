@@ -30,6 +30,7 @@
 // Nothing else in this application needs a fallback, because nothing else in
 // it draws anything a rectangle cannot.
 
+#include "gui/LineTarget.hpp"
 #include "gui/PlotCore.hpp"
 
 #include <QtGui/QColor>
@@ -40,7 +41,7 @@
 
 namespace gui {
 
-class PlotItem : public QQuickItem
+class PlotItem : public QQuickItem, public LineTarget
 {
     Q_OBJECT
     QML_ELEMENT
@@ -107,7 +108,9 @@ public:
     ///
     /// See PlotLine: the values are borrowed and never copied, so the owner
     /// must call clear() before it touches them again.
-    void setLines(std::vector<PlotLine> lines, const PlotAxis& axis);
+    void setLines(std::vector<PlotLine> lines, const PlotAxis& axis) override;
+    void clearLines() override { clear(); }
+    [[nodiscard]] QObject* lineObject() override { return this; }
 
     /// Draw nothing, and stop reading whatever was handed over. Must be called
     /// before the owner of those vectors modifies or frees them.
