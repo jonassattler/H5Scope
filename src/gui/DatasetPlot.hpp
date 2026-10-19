@@ -26,6 +26,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace gui {
@@ -81,6 +82,14 @@ class DatasetPlot : public QObject, public LineModel
     /// transpose. See the note on setSeriesFromRows for why this is a setting
     /// rather than a constant.
     Q_PROPERTY(bool seriesFromRows READ seriesFromRows WRITE setSeriesFromRows NOTIFY changed)
+
+    /// What the reader's gestures have done to the lines (seriesMove), as one
+    /// value: `{ "series": [scale, shift] }` for each line that has been moved
+    /// or scaled. It is a property so that DatasetMemory can file it with the
+    /// dataset it was made on and give a dataset with nothing filed none.
+    /// Here a line's place in the table is what identifies it, so swapping
+    /// the rows and the columns forgets every move.
+    Q_PROPERTY(QVariantMap lineMoves READ lineMoves WRITE setLineMoves NOTIFY changed)
     /// The lines actually drawn, by their index in the table, ascending. This
     /// is what the surface iterates and what fill() is indexed by.
     Q_PROPERTY(QVariantList drawnSeries READ drawnSeries NOTIFY changed)
@@ -219,6 +228,13 @@ public:
         Q_UNUSED(series);
         return {{QStringLiteral("separate"), false}};
     }
+
+    /// How a gesture has moved and scaled line `series`. See LineModel.
+    Q_INVOKABLE [[nodiscard]] QVariantMap seriesMove(int series) const override;
+    Q_INVOKABLE void setSeriesMove(int series, double scale, double shift) override;
+    Q_INVOKABLE void clearSeriesMoves() override;
+    [[nodiscard]] QVariantMap lineMoves() const;
+    void setLineMoves(const QVariantMap& moves);
 
     /// Whether line `series` of the table is drawn.
     Q_INVOKABLE [[nodiscard]] bool seriesVisible(int series) const;
@@ -575,6 +591,9 @@ private:
 
     DatasetTableModel* table_ = nullptr;
     bool seriesFromRows_ = true;
+    /// Scale and shift by series, for the lines a gesture has moved; a line
+    /// absent here is drawn as it was read.
+    std::map<int, std::pair<double, double>> moves_;
 
     /// The lines to draw, ascending. The table's first kMaxInitialSeries until
     /// the reader says otherwise in the legend.

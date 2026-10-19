@@ -208,10 +208,11 @@ void FigureItem::learnLines()
         if (own.isValid() && !own.isNull()) {
             chosen.colour = rgbaOf(own.value<QColor>());
         }
-        if (const auto found = moved_.find(line.series); found != moved_.end()) {
-            chosen.scale = found->second.first;
-            chosen.shift = found->second.second;
-        }
+        const QVariantMap move = plot->seriesMove(line.series);
+        line.scale = move.value(QStringLiteral("scale"), 1.0).toDouble();
+        line.shift = move.value(QStringLiteral("shift"), 0.0).toDouble();
+        chosen.scale = line.scale;
+        chosen.shift = line.shift;
         figure_.setLineSettings(static_cast<int>(i), chosen);
         about_.push_back(std::move(line));
     }
@@ -675,7 +676,6 @@ void FigureItem::setPlot(QObject* plot)
     toldView_.reset();
     toldLog_.reset();
     toldColumns_ = -1;
-    moved_.clear();
     if (plotObject_ != nullptr) {
         // Both plots announce a change of lines as `changed` and a change of
         // where their points sit along x as `xAxisChanged`; either is a refill.
@@ -1600,18 +1600,51 @@ void FigureItem::mouseReleaseEvent(QMouseEvent* event)
     const QPointF at = event->position();
     figure_.release(at.x(), at.y(), *button, modifiersOf(event->modifiers()));
     QQuickItem::setCursor(Qt::OpenHandCursor);
-    // What a gesture did to a line is kept by its series.
-    for (std::size_t i = 0; i < about_.size(); ++i) {
-        const plotcore::LineSettings held = figure_.lineSettings(static_cast<int>(i));
-        if (held.scale != 1.0 || held.shift != 0.0) {
-            moved_[about_[i].series] = {held.scale, held.shift};
-        }
-        else {
-            moved_.erase(about_[i].series);
-        }
-    }
+    keepMoves();
     event->accept();
     moved();
+}
+
+bool FigureItem::linesMoved() const
+{
+    for (const Line& line : about_) {
+        if (line.scale != 1.0 || line.shift != 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void FigureItem::putLinesBack()
+{
+    // Through the plot, which keeps the moves; the refill hands the figure
+    // every line where it was read. At once rather than on the plot's word,
+    // for setPlot's reason: this is the host's doing, never mid-frame.
+    if (LineModel* plot = model(); plot != nullptr) {
+        plot->clearSeriesMoves();
+        refill();
+    }
+}
+
+void FigureItem::keepMoves()
+{
+    // After the gesture rather than during it, so a drag is one change to the
+    // plot and not one a pixel: the plot answers a change by saying so, and
+    // this item answers that by asking for its lines again.
+    LineModel* plot = model();
+    if (plot == nullptr) {
+        return;
+    }
+    for (std::size_t i = 0; i < about_.size(); ++i) {
+        Line& line = about_[i];
+        const plotcore::LineSettings held = figure_.lineSettings(static_cast<int>(i));
+        if (held.scale == line.scale && held.shift == line.shift) {
+            continue;
+        }
+        line.scale = held.scale;
+        line.shift = held.shift;
+        plot->setSeriesMove(line.series, held.scale, held.shift);
+    }
 }
 
 void FigureItem::mouseDoubleClickEvent(QMouseEvent* event)
@@ -1640,6 +1673,9 @@ void FigureItem::wheelEvent(QWheelEvent* event)
     const double turned = delta.y() != 0 ? delta.y() : delta.x();
     const QPointF at = event->position();
     figure_.wheel(at.x(), at.y(), turned, modifiersOf(event->modifiers()));
+    // A wheel with Alt and Control scales the line under the pointer, and a
+    // wheel has no release to keep it at.
+    keepMoves();
     event->accept();
     moved();
 }

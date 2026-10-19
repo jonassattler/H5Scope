@@ -41,6 +41,19 @@ public:
     /// Lend the drawn lines to `target`.
     virtual void fill(LineTarget* target) = 0;
 
+    // --- what a gesture did to a line (jonassattler/H5Scope#30) --------------------
+    /// How line `series` has been moved and scaled on its axis: `{ scale,
+    /// shift }`, 1 and 0 where it is drawn as it was read. The figure decides
+    /// what a gesture does (plotcore's LineSettings::scale and shift); the
+    /// plot keeps the result, for the reason it keeps a line's colour: it is
+    /// a choice the reader made about that line, and it has to outlive
+    /// whatever is drawing it -- a refill, a tab torn off into a window of
+    /// its own, a dataset left and come back to, a saved view.
+    [[nodiscard]] virtual QVariantMap seriesMove(int series) const = 0;
+    virtual void setSeriesMove(int series, double scale, double shift) = 0;
+    /// Every line back where it was drawn.
+    virtual void clearSeriesMoves() = 0;
+
     // --- what they span ----------------------------------------------------------
     [[nodiscard]] virtual bool hasData() const = 0;
     [[nodiscard]] virtual double minimum() const = 0;
