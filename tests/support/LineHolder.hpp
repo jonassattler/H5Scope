@@ -34,15 +34,15 @@ namespace h5test {
 class LineHolder : public QObject, public gui::LineTarget
 {
 public:
-    void setLines(std::vector<gui::PlotLine> lines, const gui::PlotAxis& axis) override
+    void setLines(std::vector<gui::PlotLine> lines, std::vector<gui::PlotAxis> axes) override
     {
         lines_ = std::move(lines);
-        axis_ = axis;
+        axes_ = std::move(axes);
     }
     void clearLines() override
     {
         lines_.clear();
-        axis_ = {};
+        axes_.clear();
     }
     [[nodiscard]] QObject* lineObject() override { return this; }
 
@@ -66,7 +66,7 @@ public:
         QVariantMap answer;
         answer.insert(QStringLiteral("valid"), false);
         const std::optional<gui::NearestSample> found =
-            gui::nearestSample(lines_, std::span<const gui::PlotAxis>(&axis_, 1), view, px, py);
+            gui::nearestSample(lines_, std::span<const gui::PlotAxis>(axes_), view, px, py);
         if (!found.has_value()) {
             return answer;
         }
@@ -88,7 +88,7 @@ public:
 
 private:
     std::vector<gui::PlotLine> lines_;
-    gui::PlotAxis axis_;
+    std::vector<gui::PlotAxis> axes_;
 };
 
 } // namespace h5test

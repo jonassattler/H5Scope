@@ -1558,7 +1558,7 @@ void DatasetPlot::fill(LineTarget* target)
     }
     // The one place the retired store is let go, because it is the one place a
     // renderer that was borrowing it has just been given something else.
-    lent_.lend(target, std::move(lines), drawingAxis());
+    lent_.lend(target, std::move(lines), {drawingAxis()});
 }
 
 } // namespace gui

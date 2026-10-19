@@ -140,10 +140,10 @@ FigureItem::~FigureItem()
 
 // --- LineTarget -------------------------------------------------------------------
 
-void FigureItem::setLines(std::vector<PlotLine> lines, const PlotAxis& axis)
+void FigureItem::setLines(std::vector<PlotLine> lines, std::vector<PlotAxis> axes)
 {
     lines_ = std::move(lines);
-    axis_ = axis;
+    axes_ = std::move(axes);
     learnLines();
     dirty();
 }
@@ -152,7 +152,7 @@ void FigureItem::clearLines()
 {
     lines_.clear();
     about_.clear();
-    axis_ = {};
+    axes_.clear();
     dirty();
 }
 
@@ -324,8 +324,12 @@ PlotLine FigureItem::drawLine(int line) const
 
 PlotAxis FigureItem::drawAxis(int line) const
 {
-    (void)line;
-    return axis_;
+    if (axes_.size() == 1) {
+        return axes_.front();
+    }
+    return line >= 0 && static_cast<std::size_t>(line) < axes_.size()
+               ? axes_[static_cast<std::size_t>(line)]
+               : PlotAxis{};
 }
 
 // --- asked of it ------------------------------------------------------------------------

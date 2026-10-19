@@ -19,7 +19,8 @@ LineTarget* BorrowedLines::held() const
     return drawingObject_ != nullptr ? drawing_ : nullptr;
 }
 
-void BorrowedLines::lend(LineTarget* target, std::vector<PlotLine> lines, const PlotAxis& axis)
+void BorrowedLines::lend(LineTarget* target, std::vector<PlotLine> lines,
+                         std::vector<PlotAxis> axes)
 {
     if (target == nullptr) {
         return;
@@ -29,7 +30,7 @@ void BorrowedLines::lend(LineTarget* target, std::vector<PlotLine> lines, const 
     if (LineTarget* holding = held(); holding != nullptr && holding != target) {
         holding->clearLines();
     }
-    target->setLines(std::move(lines), axis);
+    target->setLines(std::move(lines), std::move(axes));
     drawing_ = target;
     drawingObject_ = target->lineObject();
     retired_.clear();

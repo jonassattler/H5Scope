@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <map>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -184,6 +185,11 @@ public:
         /// -- rather than a slice. What turns the card's SLICE box into a DATA
         /// box that takes several lines.
         PostprocessRole,
+        /// The time base this line names of its own, or empty for the tab's.
+        /// See setEntryX.
+        XExpressionRole,
+        /// Why that time base will not read, or empty.
+        XErrorRole,
     };
     Q_ENUM(Roles)
 
@@ -308,6 +314,20 @@ public:
     /// ticked off and on, or saved in a view -- and a line put back on the
     /// common axis keeps it, for the reason the request is kept.
     Q_INVOKABLE void setAxisLabel(int row, const QString& text);
+    /// Draw line `row` against a time base of its own, written the way the
+    /// tab's is (`/run/time[:]`), or against the tab's again with an empty
+    /// one (jonassattler/H5Scope#30).
+    ///
+    /// For lines that were not sampled together: two loggers on two clocks,
+    /// a reference trace taken at other times than the run beside it. Each
+    /// line is then drawn at its own times on the one x axis the tab draws,
+    /// which spans every time base in use. It is a time base like the tab's
+    /// -- read once however many lines name it, held at every resolution,
+    /// folded per column on a logarithmic x -- and it applies while the
+    /// tab's x is a dataset; under Index and Range the line takes the tab's
+    /// x like every other, and keeps what it named for when x is a dataset
+    /// again.
+    Q_INVOKABLE void setEntryX(int row, const QString& expression);
 
     /// The y axis line `series` is drawn against, as
     /// `{ separate, fixed, finite, low, high, label }` -- `low` and `high`
@@ -406,6 +426,9 @@ public:
     /// suite reads the points with no engine and no graph.
     [[nodiscard]] PlotLine lineOf(int series) const;
     [[nodiscard]] PlotAxis drawingAxis() const;
+    /// ...and the axis entry `series` itself is drawn against: its own time
+    /// base where it names one (setEntryX), the tab's otherwise.
+    [[nodiscard]] PlotAxis axisOf(int series) const;
 
     // --- saved views -------------------------------------------------------
     /// Everything about this tab that is not the drawing: the entries, their
@@ -463,6 +486,18 @@ private:
         std::vector<double> positions;
     };
 
+    /// Where the view falls in the positions of one time base -- or of the
+    /// tab's start and step -- and whether that could be said; and the focus,
+    /// in the same positions. See recomputeView().
+    struct View
+    {
+        bool usable = false;
+        double low = 0.0;
+        double high = 0.0;
+        bool focusUsable = false;
+        double focus = 0.0;
+    };
+
     struct Entry
     {
         QString expression;
@@ -488,6 +523,12 @@ private:
         /// Where a gesture has put the line on its axis. See seriesMove.
         double scale = 1.0;
         double shift = 0.0;
+        /// The time base this line is drawn against instead of the tab's, as
+        /// the reader wrote it; empty for the tab's. See setEntryX.
+        QString xExpression;
+        /// For a time base -- the tab's, or one a line names -- where the view
+        /// falls in its positions. Unused on a line.
+        View view;
         /// Whether `expression` is a pipeline rather than a slice. See
         /// setPostprocess, and readLine, which is the one place it changes
         /// how anything is read.
@@ -625,7 +666,27 @@ private:
     ///
     /// False when there is no time base, or when the reading is not sorted --
     /// see positionOfX, which is where the monotonicity rule is stated.
-    [[nodiscard]] bool axisPositionOf(double x, double& position, double& resolution) const;
+    [[nodiscard]] bool axisPositionOf(const Entry& time, double x, double& position,
+                                      double& resolution) const;
+    /// Whether `entry` is drawn against a time base of its own: it names one
+    /// that is not the tab's, and the tab's x is a dataset.
+    [[nodiscard]] bool ownsTime(const Entry& entry) const;
+    /// The time base `entry` is drawn against under Dataset -- its own or the
+    /// tab's -- or nothing: not under Dataset, or its own not read yet.
+    [[nodiscard]] const Entry* timeOf(const Entry& entry) const;
+    /// The time bases lines name of their own, each once, while x is a
+    /// dataset.
+    [[nodiscard]] QStringList ownTimes() const;
+    /// Let go of every held time base not in `named`.
+    void keepTimes(const QStringList& named);
+    /// The view as `entry` is measured against it: a time base's own, a
+    /// line's time base's, or the tab's.
+    [[nodiscard]] const View& viewFor(const Entry& entry) const;
+    /// The view inverted into the positions of `time`. See recomputeView().
+    [[nodiscard]] View viewAlong(const Entry& time) const;
+    /// The axis a renderer draws a line against: `time` under Dataset, the
+    /// tab's start and step without one.
+    [[nodiscard]] PlotAxis axisAlong(const Entry* time) const;
 
     // --- a logarithmic x axis ----------------------------------------------
     /// The columns the view is folded at, or nothing when it is drawn the
@@ -641,12 +702,13 @@ private:
     /// Element `at` of the time base, as the pyramid holds it: the element
     /// itself at a base of one, and its bucket's first element above that --
     /// which on a time base that runs one way is the first of the pair.
-    [[nodiscard]] double timeAt(long long at) const;
+    [[nodiscard]] double timeAt(const Entry& time, long long at) const;
     /// Whether the time base, as held, runs one way; and which.
-    [[nodiscard]] bool timeSorted(bool& ascending) const;
+    [[nodiscard]] bool timeSorted(const Entry& time, bool& ascending) const;
     /// The edges of `columns` as positions of an entry scaled by `scale`
     /// against the time base, ascending.
-    void timeEdges(const LogColumns& columns, double scale, std::vector<double>& out) const;
+    void timeEdges(const Entry& time, const LogColumns& columns, double scale,
+                   std::vector<double>& out) const;
     /// Work out where the view and the focus fall in axis positions, once, for
     /// every entry to divide by its own scaling.
     ///
@@ -824,14 +886,14 @@ private:
     /// reader typed is `xExpression_`, which outlives a switch away from
     /// Dataset mode and this does not.
     Entry axis_;
-    /// Where the view falls in axis positions, and whether that could be said.
-    /// See recomputeView().
-    double viewLow_ = 0.0;
-    double viewHigh_ = 0.0;
-    bool viewUsable_ = false;
-    /// ...and the focus, in the same positions.
-    double focusPosition_ = 0.0;
-    bool focusUsable_ = false;
+    /// The time bases lines name of their own, by what was written, held as
+    /// the tab's is: read once however many lines name one, and let go when
+    /// none does. A map, so that what the renderer borrows from one does not
+    /// move when another arrives.
+    std::map<QString, Entry> times_;
+    /// Where the view falls in the tab's own positions: its time base's
+    /// under Dataset, its start and step otherwise. See recomputeView().
+    View view_;
 
     double xMinimum_ = 0.0;
     double xMaximum_ = 1.0;

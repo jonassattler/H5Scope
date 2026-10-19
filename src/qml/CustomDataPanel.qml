@@ -357,6 +357,8 @@ SettingsPanel {
                     required property bool separateAxis
                     required property bool axisFixed
                     required property bool postprocess
+                    required property string xExpression
+                    required property string xError
 
                     width: parent ? parent.width : 0
                     implicitHeight: entry.implicitHeight
@@ -378,6 +380,8 @@ SettingsPanel {
                         separateAxis: holder.separateAxis
                         postprocess: holder.postprocess
                         axisFixed: holder.axisFixed
+                        xExpression: holder.xExpression
+                        xError: holder.xError
                     }
                 }
             }

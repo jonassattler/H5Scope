@@ -951,6 +951,21 @@ and the argument for each rule is written over its function there.
    rather than asking the time base as a whole, because a summary can ascend
    while the elements under one of its buckets do not.
 
+   A line may also name **a time base of its own** (`Entry::xExpression`,
+   `setEntryX`, jonassattler/H5Scope#30) — two loggers on two clocks — and is
+   then drawn at its own times on the tab's one x axis, which spans every time
+   base in use. It applies while the tab's x is a dataset, and is kept under
+   the other two for when it is again. Nothing above changes for it, which is
+   the argument for holding a time base as an `Entry`: each one a line names is
+   held in `times_`, by what was written, exactly as `axis_` is — read in the
+   same job and once however many lines name it, folded finer while zooming,
+   folded per column on a logarithmic x — and `recomputeView()` inverts the
+   view into each time base's own positions, which `lineRange` and `focusFor`
+   then measure that time base's lines against (`viewFor`). A renderer is lent
+   one `PlotAxis` per line when any line has a time base of its own
+   (`LineTarget::setLines`), and one for every line otherwise. A line on its
+   own time base is never stretched: it has a time for every element.
+
    The pane gets its *own* preferred bucket on every frame, even when a coarser
    run in hand would have covered it. Settling for that run was right while the
    alternative was a round trip and it cost up to an octave — about one drawn

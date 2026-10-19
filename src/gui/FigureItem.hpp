@@ -203,7 +203,7 @@ public:
     ~FigureItem() override;
 
     // --- LineTarget: what the plot lends --------------------------------------------
-    void setLines(std::vector<PlotLine> lines, const PlotAxis& axis) override;
+    void setLines(std::vector<PlotLine> lines, std::vector<PlotAxis> axes) override;
     void clearLines() override;
     [[nodiscard]] QObject* lineObject() override { return this; }
 
@@ -514,7 +514,8 @@ private:
 
     // What the plot lent, and what its series answer about themselves.
     std::vector<PlotLine> lines_;
-    PlotAxis axis_;
+    /// One for every line, or one each. See LineTarget::setLines.
+    std::vector<PlotAxis> axes_;
     struct Line
     {
         int series = -1;

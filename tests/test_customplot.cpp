@@ -108,7 +108,7 @@ struct PlotFixture
     [[nodiscard]] static QList<QPointF> drawn(gui::CustomPlot* plot, int series)
     {
         const std::vector<gui::Point> points =
-            gui::samplesOf(plot->lineOf(series), plot->drawingAxis());
+            gui::samplesOf(plot->lineOf(series), plot->axisOf(series));
         QList<QPointF> out;
         out.reserve(static_cast<qsizetype>(points.size()));
         for (const gui::Point& point : points) {
@@ -2373,6 +2373,197 @@ TEST_CASE_METHOD(PlotFixture, "a line keeps the colour the reader gave it", "[cu
         REQUIRE(plots->plotAt(into)->sourceSeriesCount() == 1);
         CHECK_FALSE(plots->plotAt(into)->seriesOverride(0).isValid());
     }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a line with a time base of its own is drawn at its own times",
+                 "[custom][x]")
+{
+    // Two lines not sampled together: one at the tab's times, /series/time,
+    // which is i / 2; and one at the times another dataset holds, /series/a,
+    // which is i. Each is drawn at its own, on the one x axis the tab draws.
+    gui::CustomPlot* plot = tab();
+    plot->setXMode(gui::CustomPlot::Dataset);
+    plot->setXExpression(QStringLiteral("/series/time[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+    REQUIRE(plot->xReady());
+    CHECK(plot->xMaximum() == 31.5);
+    CHECK(drawn(plot, 1).at(10) == QPointF(5.0, 90.0));
+
+    plot->setEntryX(1, QStringLiteral("/series/a[:]"));
+    settleAll();
+    const QList<QPointF> own = drawn(plot, 1);
+    REQUIRE(own.size() == 64);
+    for (int i = 0; i < 64; ++i) {
+        CHECK(own.at(i) == QPointF(i, 100.0 - i));
+    }
+    // The other line is where it was, and the one axis spans both.
+    CHECK(drawn(plot, 0).at(10) == QPointF(5.0, 10.0));
+    CHECK(plot->xMinimum() == 0.0);
+    CHECK(plot->xMaximum() == 63.0);
+    const QModelIndex row = plot->index(1, 0);
+    CHECK(plot->data(row, gui::CustomPlot::XExpressionRole).toString() ==
+          QStringLiteral("/series/a[:]"));
+    CHECK(plot->data(row, gui::CustomPlot::XErrorRole).toString().isEmpty());
+    CHECK(plot->paths().contains(QStringLiteral("/series/a")));
+
+    SECTION("it travels in the tab's state, written only where there is one")
+    {
+        const QVariantMap state = plot->state();
+        const QVariantList rows = state.value(QStringLiteral("entries")).toList();
+        REQUIRE(rows.size() == 2);
+        CHECK_FALSE(rows.at(0).toMap().contains(QStringLiteral("x")));
+        CHECK(rows.at(1).toMap().value(QStringLiteral("x")).toString() ==
+              QStringLiteral("/series/a[:]"));
+        gui::CustomPlot* copy = tab();
+        copy->setState(state);
+        settleAll();
+        CHECK(drawn(copy, 1).at(7) == QPointF(7.0, 93.0));
+        CHECK(drawn(copy, 0).at(7) == QPointF(3.5, 7.0));
+    }
+
+    SECTION("one that will not read says so on its line, which draws nothing")
+    {
+        plot->setEntryX(1, QStringLiteral("/nothing/here[:]"));
+        settleAll();
+        CHECK_FALSE(plot->data(row, gui::CustomPlot::XErrorRole).toString().isEmpty());
+        CHECK(plot->lineOf(1).count == 0);
+        CHECK(drawn(plot, 0).size() == 64);
+    }
+
+    SECTION("under Index the line takes the tab's x, and keeps what it named")
+    {
+        plot->setXMode(gui::CustomPlot::Index);
+        settleAll();
+        CHECK(drawn(plot, 1).at(3) == QPointF(3.0, 97.0));
+        CHECK(plot->data(row, gui::CustomPlot::XExpressionRole).toString() ==
+              QStringLiteral("/series/a[:]"));
+        plot->setXMode(gui::CustomPlot::Dataset);
+        settleAll();
+        CHECK(drawn(plot, 1).at(3) == QPointF(3.0, 97.0));
+        CHECK(drawn(plot, 0).at(3) == QPointF(1.5, 3.0));
+    }
+
+    SECTION("a time base two lines name is read once")
+    {
+        // A refresh reads the tab's time base, each time base lines name of
+        // their own, and the lines. Counted in hyperslabs: the second line
+        // naming the same one costs nothing more, and one fewer named is one
+        // fewer read.
+        const auto refreshCost = [plot] {
+            const long long before = gui::CustomPlot::hyperslabs();
+            plot->invalidate();
+            settleAll();
+            return gui::CustomPlot::hyperslabs() - before;
+        };
+        const long long one = refreshCost();
+        plot->setEntryX(0, QStringLiteral("/series/a[:]"));
+        settleAll();
+        CHECK(drawn(plot, 0).at(10) == QPointF(10.0, 10.0));
+        CHECK(refreshCost() == one);
+        plot->setEntryX(0, QString());
+        plot->setEntryX(1, QString());
+        settleAll();
+        CHECK(refreshCost() == one - 1);
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "a long line on a time base of its own resolves and folds by it",
+                 "[custom][x]")
+{
+    // The time base's closer looks and its fold, for a time base a line names
+    // of its own: /trace at /trace_time, which is i / 1000, beside a short
+    // line at the tab's /series/time. A zoom resolves the line and its time
+    // base together and reads nothing; a logarithmic x folds the line at its
+    // own times.
+    gui::CustomPlot* plot = tab();
+    plot->setXMode(gui::CustomPlot::Dataset);
+    plot->setXExpression(QStringLiteral("/series/time[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/trace[:]"));
+    plot->setEntryX(1, QStringLiteral("/trace_time[:]"));
+    settleAll();
+    REQUIRE(plot->lineOf(1).count > 0);
+    CHECK(plot->xMaximum() == Approx(31.5));
+
+    SECTION("a zoom resolves it at its own times, and reads nothing")
+    {
+        const long long before = gui::CustomPlot::hyperslabs();
+        // The spike is element 12345, which is 12.345 seconds in.
+        plot->setVisibleRange(12.3, 12.4);
+        h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+        settleAll();
+        CHECK(gui::CustomPlot::hyperslabs() - before == 0);
+
+        const gui::PlotLine closest = plot->lineOf(1);
+        CHECK(closest.positionStep == Approx(1.0));
+        const gui::PlotAxis axis = plot->axisOf(1);
+        CHECK(axis.hasCloser());
+        CHECK(axis.closerStep == Approx(1.0));
+        // Each drawn point at the time its own element is recorded at, and no
+        // two at one.
+        const QList<QPointF> points = drawn(plot, 1);
+        REQUIRE(points.size() > 100);
+        for (qsizetype i = 0; i < points.size(); ++i) {
+            const auto element = static_cast<long long>(
+                std::llround(closest.positionStart + static_cast<double>(i)));
+            CHECK(points.at(i).x() == Approx(static_cast<double>(element) / 1000.0));
+        }
+        // ...while the line at the tab's times is measured by the tab's.
+        CHECK_FALSE(plot->drawingAxis().hasCloser());
+    }
+
+    SECTION("a logarithmic x folds it at its own times")
+    {
+        plot->setPaneColumns(800);
+        h5test::settleFor(300);
+        settleAll();
+        plot->setXLog(true);
+        settleAll();
+        plot->setVisibleRange(0.001, 31.5);
+        const gui::PlotLine line = plot->lineOf(1);
+        REQUIRE(line.xs != nullptr);
+        REQUIRE(line.count > 0);
+        // Every folded point at a time /trace_time records, and the first at
+        // its first time above zero.
+        CHECK(line.xs[0] == Approx(0.001));
+        for (qsizetype i = 0; i < line.count; ++i) {
+            INFO("point " << i << " at " << line.xs[i]);
+            REQUIRE(std::abs(line.xs[i] * 1000.0 - std::round(line.xs[i] * 1000.0)) < 1e-6);
+            REQUIRE(line.xs[i] <= 19.999 + 1e-9);
+        }
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture, "the figure draws each line against its own time base",
+                 "[custom][x][figure]")
+{
+    gui::CustomPlot* plot = tab();
+    plot->setXMode(gui::CustomPlot::Dataset);
+    plot->setXExpression(QStringLiteral("/series/time[:]"));
+    add(plot, QStringLiteral("/series/a[:]"));
+    add(plot, QStringLiteral("/series/b[:]"));
+    plot->setEntryX(1, QStringLiteral("/series/a[:]"));
+    settleAll();
+
+    gui::FigureItem figure;
+    figure.setWidth(640.0);
+    figure.setHeight(400.0);
+    figure.setXMinimum(plot->xMinimum());
+    figure.setXMaximum(plot->xMaximum());
+    figure.setDataLength(64.0);
+    figure.setPlot(plot);
+    figure.refill();
+    figure.compose();
+    REQUIRE(figure.lineCount() == 2);
+    // Lent one axis each, and each line read back at its own times.
+    const std::vector<gui::Point> tabs = gui::samplesOf(figure.drawLine(0), figure.drawAxis(0));
+    const std::vector<gui::Point> owns = gui::samplesOf(figure.drawLine(1), figure.drawAxis(1));
+    REQUIRE(tabs.size() == 64);
+    REQUIRE(owns.size() == 64);
+    CHECK(tabs.at(20).x() == 10.0);
+    CHECK(owns.at(20).x() == 20.0);
+    CHECK(figure.lastScene().lines.size() == 2);
 }
 
 TEST_CASE_METHOD(PlotFixture, "a line moved on its axis keeps the move on its entry", "[custom]")

@@ -28,9 +28,11 @@ public:
     LineTarget& operator=(LineTarget&&) = delete;
     virtual ~LineTarget() = default;
 
-    /// Hand over the lines to draw and the axis they are drawn against. They
-    /// are borrowed: the owner calls clearLines() before it touches them again.
-    virtual void setLines(std::vector<PlotLine> lines, const PlotAxis& axis) = 0;
+    /// Hand over the lines to draw and the x axes they are drawn against: one
+    /// for every line, or one each -- a custom tab's line may name a time base
+    /// of its own. Both are borrowed: the owner calls clearLines() before it
+    /// touches them again.
+    virtual void setLines(std::vector<PlotLine> lines, std::vector<PlotAxis> axes) = 0;
     /// Draw nothing, and stop reading whatever was handed over.
     virtual void clearLines() = 0;
     /// The item itself, which BorrowedLines watches: a QML scene tears its
