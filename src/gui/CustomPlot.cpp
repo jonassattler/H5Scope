@@ -73,8 +73,8 @@ const double* positionsOf(const std::vector<double>& held, qsizetype count)
     }
     std::size_t at = 0;
     if (std::is_sorted(values.begin(), values.end())) {
-        at = static_cast<std::size_t>(
-            std::lower_bound(values.begin(), values.end(), x) - values.begin());
+        at = static_cast<std::size_t>(std::lower_bound(values.begin(), values.end(), x) -
+                                      values.begin());
     }
     else if (std::is_sorted(values.rbegin(), values.rend())) {
         // A descending time base is a time base. It is drawn right to left and
@@ -198,15 +198,13 @@ struct Reply
     // because this is where a reader who typed a path and pressed Return finds
     // out -- and "name one of its members" is a more useful answer than the
     // read's own "which has no numeric value".
-    answer.problem = undrawableReason(chain.selection.type, known->second.type,
-                                      !chain.empty());
+    answer.problem = undrawableReason(chain.selection.type, known->second.type, !chain.empty());
     if (!answer.problem.isEmpty()) {
         return answer;
     }
 
     std::vector<hsize_t> shape = known->second.shape;
-    shape.insert(shape.end(), chain.selection.dims.begin(),
-                 chain.selection.dims.end());
+    shape.insert(shape.end(), chain.selection.dims.begin(), chain.selection.dims.end());
     const std::size_t originRank = known->second.shape.size();
 
     // Shared, not borrowed: the session keeps a bounded number of these and
@@ -471,6 +469,22 @@ CustomPlot::~CustomPlot()
     // Emptied here, so an item that outlives this -- by one frame, or for good
     // in a window nobody closed -- has nothing left to read.
     releaseDrawing();
+    forgetRuns();
+}
+
+void CustomPlot::forgetRuns()
+{
+    const auto forget = [](Entry& entry) {
+        entry.runs.setRetire({});
+        entry.runs.clear();
+    };
+    for (Entry& entry : entries_) {
+        forget(entry);
+    }
+    forget(axis_);
+    for (auto& [expression, time] : times_) {
+        forget(time);
+    }
 }
 
 CustomPlot::Entry* CustomPlot::entryAt(int row)
@@ -733,9 +747,8 @@ void CustomPlot::setPostprocess(int row, bool on)
         // The script put aside when the box was last unticked, if the slice
         // is still the one it was put aside as -- otherwise the slice, written
         // as a script.
-        const bool untouched =
-            !entry.unticked.isEmpty() && lookup_ != nullptr
-            && expressionFromScript(entry.unticked, *lookup_) == entry.expression;
+        const bool untouched = !entry.unticked.isEmpty() && lookup_ != nullptr &&
+                               expressionFromScript(entry.unticked, *lookup_) == entry.expression;
         rewritten = untouched ? entry.unticked : scriptFromExpression(entry.expression);
         entry.unticked.clear();
     }
@@ -1564,7 +1577,6 @@ int CustomPlot::closerBuckets() const
     return seriesCount() <= kCrowdedLines ? std::min(2 * pane, kMaxPoints) : pane;
 }
 
-
 void CustomPlot::setPaneColumns(int columns)
 {
     // Rounded down to the quantum, taken at once the first time and at the end
@@ -1671,25 +1683,28 @@ bool CustomPlot::axisPositionOf(const Entry& time, double x, double& position,
     // point of the summary, which on a ten-million-element log is five thousand
     // elements, and the run that comes back is three octaves coarser than the
     // pane asked for however far the reader zooms.
-    for (std::size_t pass = 0; pass < time.levels.size(); ++pass) {
-        const Level* finer = nullptr;
-        for (const Level& level : time.levels) {
-            if (level.values.empty() || !(level.step > 0.0) || !(level.step < resolution)) {
+    const std::vector<RunLadder::Run>& runs = time.runs.runs();
+    for (std::size_t pass = 0; pass < runs.size(); ++pass) {
+        const RunLadder::Run* finer = nullptr;
+        for (const RunLadder::Run& run : runs) {
+            const auto held = run.lines.find(0);
+            if (held == run.lines.end() || held->second.values.empty() || !(run.step > 0.0) ||
+                !(run.step < resolution)) {
                 continue;
             }
-            if (!level.window.covers(position, position)) {
+            if (!run.window.covers(position, position)) {
                 continue;
             }
-            if (finer == nullptr || level.step < finer->step) {
-                finer = &level;
+            if (finer == nullptr || run.step < finer->step) {
+                finer = &run;
             }
         }
         if (finer == nullptr) {
             break;
         }
         double closer = 0.0;
-        if (!positionOfX(finer->values, static_cast<double>(finer->window.first), finer->step, x,
-                         closer)) {
+        if (!positionOfX(finer->lines.at(0).values, static_cast<double>(finer->window.first),
+                         finer->step, x, closer)) {
             break;
         }
         position = closer;
@@ -1820,9 +1835,7 @@ void CustomPlot::keepTimes(const QStringList& named)
             continue;
         }
         retire(it->second.values);
-        for (Level& level : it->second.levels) {
-            retire(level);
-        }
+        it->second.runs.clear();
         it = times_.erase(it);
     }
 }
@@ -1921,31 +1934,34 @@ LevelView CustomPlot::levelView(const Entry& entry) const
     return view;
 }
 
-std::span<const HeldLevel> CustomPlot::ladder(const Entry& entry) const
+RunLadder& CustomPlot::runsOf(const Entry& entry) const
 {
-    // One run per entry rather than one for the whole drawn set, so the only
-    // question about a run is whether it came back -- see HeldLevel::complete,
-    // where the plot tab has the harder half of the same question.
-    ladder_.clear();
-    ladder_.reserve(entry.levels.size());
-    for (const Level& level : entry.levels) {
-        ladder_.push_back(HeldLevel{level.window, !level.values.empty()});
+    RunLadder& runs = entry.runs;
+    if (runs.lines().empty()) {
+        // A group of one: an entry, or a time base, is read on its own. What
+        // it gives up goes to the store the renderer's borrowing is kept by.
+        runs.setLines({0});
+        runs.setRetire([this](std::vector<double>& values) { retire(values); });
     }
-    return ladder_;
+    runs.setView(levelView(entry), focusFor(entry));
+    return runs;
+}
+
+RunLadder::PyramidOf CustomPlot::pyramidOf(const Entry& entry)
+{
+    return [&entry](int) -> const LinePyramid* {
+        return entry.pyramid.empty() ? nullptr : &entry.pyramid;
+    };
 }
 
 std::optional<PlotWindow> CustomPlot::closerFor(const Entry& entry, int buckets) const
 {
-    const LevelView view = levelView(entry);
-    if (!view.usable()) {
-        return {};
-    }
-    return windowFor(view.low, view.high, view.length, buckets);
+    return runsOf(entry).window(buckets);
 }
 
-int CustomPlot::drawnLevel(const Entry& entry) const
+const RunLadder::Run* CustomPlot::drawnRun(const Entry& entry) const
 {
-    return gui::drawnLevel(ladder(entry), levelView(entry));
+    return runsOf(entry).drawn();
 }
 
 long long CustomPlot::pyramidBudget() const
@@ -1957,36 +1973,6 @@ long long CustomPlot::pyramidBudget() const
     // runs a bucket below the base still reads.
     const int lines = std::max(seriesCount(), 1) + (xMode_ == Dataset ? 1 : 0);
     return PlotBudget::instance().share() / (2LL * lines);
-}
-
-bool CustomPlot::folds(const Entry& entry, const PlotWindow& window)
-{
-    return !entry.pyramid.empty() && window.bucket >= entry.pyramid.baseBucket();
-}
-
-bool CustomPlot::fillCloser(Entry& entry, const PlotWindow& window)
-{
-    if (!folds(entry, window)) {
-        return false;
-    }
-    const auto at = std::find_if(entry.levels.begin(), entry.levels.end(),
-                                 [&window](const Level& level) { return level.window == window; });
-    if (at != entry.levels.end()) {
-        return false; // already held at this run
-    }
-    std::vector<double> folded;
-    std::vector<double> positions;
-    if (!fillWindow(entry.pyramid, window, folded, &positions)) {
-        return false;
-    }
-    // What a read of this run would have reported: a pair per bucket, each at
-    // the element it is, or the elements themselves when the bucket is one.
-    const double step = window.bucket == 1 ? 1.0 : static_cast<double>(window.bucket) / 2.0;
-    // The same hazard DatasetPlot::takeDetail names: this push_back may
-    // reallocate `levels` while the renderer is reading a run already in it, so
-    // a Level is move-only-by-noexcept and the relocation cannot be a copy.
-    entry.levels.push_back(Level{window, step, std::move(folded), std::move(positions)});
-    return true;
 }
 
 long long CustomPlot::retiredDoubles() const
@@ -2013,8 +1999,7 @@ int CustomPlot::heldLevels() const
     // Out of what is *left* of the share once the pyramids have been paid for,
     // rather than out of the whole of it -- see DatasetPlot::heldLevels, which
     // carries the argument.
-    const long long spare =
-        std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
+    const long long spare = std::max<long long>(PlotBudget::instance().share() - heldDoubles(), 0);
     //
     // Twice over, because an envelope run holds a position beside every value
     // (Level::positions).
@@ -2025,14 +2010,9 @@ int CustomPlot::heldLevels() const
 
 void CustomPlot::trimLevels(Entry& entry)
 {
-    const int allowed = heldLevels();
-    while (static_cast<int>(entry.levels.size()) > allowed) {
-        // Rebuilt each time round, because erasing one changes which of the
-        // rest is coldest.
-        const std::size_t worst = gui::coldestLevel(ladder(entry), levelView(entry), focusFor(entry));
-        retire(entry.levels[worst]);
-        entry.levels.erase(entry.levels.begin() + static_cast<long>(worst));
-    }
+    RunLadder& runs = runsOf(entry);
+    runs.setHeld(heldLevels());
+    runs.trim();
 }
 
 std::vector<std::optional<PlotWindow>> CustomPlot::closerDrawing() const
@@ -2043,17 +2023,15 @@ std::vector<std::optional<PlotWindow>> CustomPlot::closerDrawing() const
         if (!entry.drawn) {
             continue;
         }
-        const int at = drawnLevel(entry);
-        drawing.push_back(at < 0
-                              ? std::optional<PlotWindow>{}
-                              : entry.levels[static_cast<std::size_t>(at)].window);
+        const RunLadder::Run* run = drawnRun(entry);
+        drawing.push_back(run == nullptr ? std::optional<PlotWindow>{} : run->window);
     }
     return drawing;
 }
 
 std::optional<PlotWindow> CustomPlot::closerWanted(const Entry& entry) const
 {
-    return gui::wantedLevel(ladder(entry), levelView(entry), focusFor(entry));
+    return runsOf(entry).wanted();
 }
 
 void CustomPlot::refreshCloser()
@@ -2087,24 +2065,21 @@ void CustomPlot::refreshCloser()
         std::optional<PlotWindow> own;
         for (int step = 0; step <= kHeldLevels; ++step) {
             own = closerFor(time, closerBuckets());
-            if (!own.has_value() || !fillCloser(time, *own)) {
+            if (!own.has_value() || !runsOf(time).fold(*own, pyramidOf(time))) {
                 break;
             }
             filled = true;
             trimLevels(time);
             recomputeView(); // finer, now that a finer reading is in hand
         }
-        if (!closerFor(time, bucketBudget()).has_value()) {
-            if (!time.levels.empty()) {
+        if (runsOf(time).zoomedOut()) {
+            if (!time.runs.runs().empty()) {
                 // Zoomed back out past every run of the axis. Retired rather
                 // than freed: the renderer may be drawing against one of them,
                 // and the whole-line summary covers every position by
                 // construction, so the frame after this is a correct picture
                 // either way.
-                for (Level& level : time.levels) {
-                    retire(level);
-                }
-                time.levels.clear();
+                time.runs.clear();
                 dropped = true;
                 recomputeView();
             }
@@ -2129,67 +2104,38 @@ void CustomPlot::refreshCloser()
 
     // Everything the pyramids can answer, now, in this call.
     //
-    // The same loop DatasetPlot::refreshDetail runs and for the same reason: a
-    // run at or above an entry's base bucket is a fold of a buffer in hand, so
-    // there is nothing to wait for and no reply to arm the next step with. The
-    // pane's own preferred run goes in first whether or not a coarser one in
-    // hand would have covered it -- see the note there; out of a held line the
-    // finer fold has nothing to weigh against it.
+    // The same as the Plot tab and for the same reason: a run at or above an
+    // entry's base bucket is a fold of a buffer in hand, so there is nothing to
+    // wait for and no reply to arm the next step with. The pane's own preferred
+    // run goes in first whether or not a coarser one in hand would have covered
+    // it. See RunLadder::refresh, which argues both.
+    const int held = heldLevels();
     for (Entry& entry : entries_) {
-        if (const std::optional<PlotWindow> own = closerFor(entry, closerBuckets());
-            own.has_value() && fillCloser(entry, *own)) {
+        RunLadder& runs = runsOf(entry);
+        runs.setHeld(held);
+        if (runs.refresh(pyramidOf(entry))) {
             filled = true;
         }
-        int step = 0;
-        for (; step <= heldLevels(); ++step) {
-            const std::optional<PlotWindow> next = closerWanted(entry);
-            if (!next.has_value() || !fillCloser(entry, *next)) {
-                break;
-            }
-            filled = true;
-            trimLevels(entry);
-            const bool kept =
-                std::any_of(entry.levels.begin(), entry.levels.end(),
-                            [&](const Level& level) { return level.window == *next; });
-            if (!kept) {
-                // The trim gave up what was just folded -- see
-                // DatasetPlot::refreshDetail.
-                break;
-            }
-        }
-        trimLevels(entry);
-        // A loop that ran to its bound stopped because it ran out of turns
-        // rather than because the ladder was full: closerWanted() and
-        // fillCloser() have stopped agreeing about what is held. The bound
-        // keeps that from hanging; this is what keeps it from being invisible,
-        // because in a release build the symptom would not look like a bug, it
-        // would look like the plot had become slow again.
-        Q_ASSERT(step <= heldLevels());
     }
     if (filled) {
         announce();
     }
 
     for (Entry& entry : entries_) {
-        if (!closerFor(entry, bucketBudget()).has_value()) {
-            if (!entry.levels.empty()) {
-                // The borrow contract: these values outlive the change rather
-                // than being freed under a renderer that is reading them. The
-                // whole-line summary covers everything by construction, so the
-                // frame after this one is a correct picture either way.
-                for (Level& level : entry.levels) {
-                    retire(level);
-                }
-                entry.levels.clear();
+        if (runsOf(entry).zoomedOut()) {
+            if (!entry.runs.runs().empty()) {
+                // Zoomed back out past every run. Given up through the retire
+                // store, because the renderer may be drawing one of them, and
+                // the whole-line summary covers every position by construction.
+                entry.runs.clear();
                 dropped = true;
             }
             continue;
         }
         // Only what the pyramid cannot fold goes to the file. A wanted run it
         // can fold is one the ladder had no room for, and a read of it would be
-        // trimmed away as the fold was -- see DatasetPlot::refreshDetail.
-        if (const std::optional<PlotWindow> want = closerWanted(entry);
-            want.has_value() && !folds(entry, *want)) {
+        // trimmed away as the fold was -- see RunLadder::read.
+        if (runsOf(entry).read(pyramidOf(entry)).has_value()) {
             wanted = true;
         }
     }
@@ -2251,12 +2197,12 @@ void CustomPlot::askForCloser()
     }
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const Entry& entry = entries_[i];
-        const std::optional<PlotWindow> want = closerWanted(entry);
-        if (!want.has_value() || folds(entry, *want)) {
+        const std::optional<RunRead> read = runsOf(entry).read(pyramidOf(entry));
+        if (!read.has_value()) {
             continue;
         }
         rows.push_back(static_cast<int>(i));
-        asks.push_back(Ask{entry.expression, want, closerBuckets(), 0, entry.postprocess});
+        asks.push_back(Ask{entry.expression, read->window, closerBuckets(), 0, entry.postprocess});
     }
     if (asks.empty()) {
         return;
@@ -2299,8 +2245,7 @@ void CustomPlot::askForCloser()
                     }
                 }
                 else if (const auto row = static_cast<std::size_t>(rows[i]);
-                         row < entries_.size() &&
-                         entries_[row].expression == asks[i].expression &&
+                         row < entries_.size() && entries_[row].expression == asks[i].expression &&
                          entries_[row].postprocess == asks[i].postprocess) {
                     into = &entries_[row];
                 }
@@ -2314,25 +2259,10 @@ void CustomPlot::askForCloser()
                 // read closely is not asked for over and over. lineOf() falls
                 // back to a coarser run, or to the whole-line summary, which is
                 // what such a line should draw.
-                const auto at = std::find_if(
-                    entry.levels.begin(), entry.levels.end(),
-                    [&window](const Level& level) { return level.window == window; });
                 const bool read = answer.problem.isEmpty();
-                if (at == entry.levels.end()) {
-                    entry.levels.push_back(
-                        Level{window, answer.step,
-                              read ? std::move(answer.values) : std::vector<double>{},
-                              read ? std::move(answer.positions) : std::vector<double>{}});
-                }
-                else {
-                    at->step = answer.step;
-                    // Retired, not overwritten: a renderer may be holding a
-                    // pointer into what is there now, and it goes on drawing it
-                    // until fill() hands over what replaces it.
-                    retire(*at);
-                    at->values = read ? std::move(answer.values) : std::vector<double>{};
-                    at->positions = read ? std::move(answer.positions) : std::vector<double>{};
-                }
+                entry.runs.land(window, 0, answer.step,
+                                read ? std::move(answer.values) : std::vector<double>{},
+                                read ? std::move(answer.positions) : std::vector<double>{});
                 trimLevels(entry);
             }
             announce();
@@ -2352,23 +2282,14 @@ void CustomPlot::clearCloser()
     closerRequests_.reset();
     closerInFlight_ = false;
     for (Entry& entry : entries_) {
-        for (Level& level : entry.levels) {
-            retire(level);
-        }
-        entry.levels.clear();
+        entry.runs.clear();
     }
     // The axis's own runs go with them. They are runs of the time base as it
     // was before whatever is clearing this, which is exactly what a stale run
     // is.
-    for (Level& level : axis_.levels) {
-        retire(level);
-    }
-    axis_.levels.clear();
+    axis_.runs.clear();
     for (auto& [expression, time] : times_) {
-        for (Level& level : time.levels) {
-            retire(level);
-        }
-        time.levels.clear();
+        time.runs.clear();
     }
     // And every fold, for the same reason: it is a fold of the lines, and of
     // the time base, as they were.
@@ -2412,12 +2333,6 @@ void CustomPlot::retire(std::vector<double>& values) const
     lent_.retire(values);
 }
 
-void CustomPlot::retire(Level& level) const
-{
-    lent_.retire(level.values);
-    lent_.retire(level.positions);
-}
-
 void CustomPlot::announce()
 {
     emit changed();
@@ -2455,18 +2370,18 @@ PlotLine CustomPlot::lineOf(int series) const
     // the same entry rather than a replacement for the first: zoom out past the
     // run in hand and the whole-line summary below is what is drawn, in the
     // same frame, because it covers everything by construction.
-    if (closerCovers(entry)) {
-        const Level& level = entry.levels[static_cast<std::size_t>(drawnLevel(entry))];
+    if (const RunLadder::Run* run = drawnRun(entry); run != nullptr) {
+        const RunLadder::LineRun& level = *run->of(0);
         // The run's own start and step, put back on the axis by the same map
         // the whole line is drawn with. Under Align an element is a position;
         // under Stretch the line is spread over the axis, so both the offset
         // and the step are scaled by the same factor.
         const double scale = stretchScale(entry);
-        line.positionStart = static_cast<double>(level.window.first) * scale;
+        line.positionStart = static_cast<double>(run->window.first) * scale;
 
         line.values = level.values.data();
         line.count = static_cast<qsizetype>(level.values.size());
-        line.positionStep = level.step * scale;
+        line.positionStep = run->step * scale;
         // ...and each extreme at the element it is, by the same factor. A
         // factor rather than an array of scaled positions, so that what the
         // renderer borrows is only ever what the retire contract can see.
@@ -2474,7 +2389,7 @@ PlotLine CustomPlot::lineOf(int series) const
         line.positionScale = scale;
         // A run at bucket one is that run's own elements; anything coarser is
         // an envelope of them, whatever the stretch does to the step.
-        line.summarised = level.window.bucket > 1;
+        line.summarised = run->window.bucket > 1;
         return line;
     }
 
@@ -2532,12 +2447,12 @@ PlotAxis CustomPlot::axisAlong(const Entry* time) const
         // the whole rather than instead of it, for the reason PlotAxis says: a
         // line whose own closer look has not landed yet is still drawn against
         // the positions the whole answers for.
-        if (const int at = drawnLevel(held); at >= 0) {
-            const Level& level = held.levels[static_cast<std::size_t>(at)];
-            axis.closerValues = level.values.data();
-            axis.closerCount = static_cast<qsizetype>(level.values.size());
-            axis.closerStart = static_cast<double>(level.window.first);
-            axis.closerStep = level.step;
+        if (const RunLadder::Run* run = drawnRun(held); run != nullptr) {
+            const std::vector<double>& values = run->of(0)->values;
+            axis.closerValues = values.data();
+            axis.closerCount = static_cast<qsizetype>(values.size());
+            axis.closerStart = static_cast<double>(run->window.first);
+            axis.closerStep = run->step;
         }
     }
     return axis;

@@ -467,25 +467,6 @@ signals:
     void crowding(const QString& path, int lines);
 
 private:
-    /// One resolution of an entry's closer look: an aligned run of that
-    /// entry's own elements, summarised at one bucket size.
-    ///
-    /// The plot tab's DatasetPlot::Detail holds one of these for every drawn
-    /// line at once, because every line of a table is the same length and takes
-    /// the same run. Here they are per entry, because these lines come from all
-    /// over the file and need not be the same length as one another.
-    struct Level
-    {
-        PlotWindow window;
-        /// Elements of this line between one of its drawn points and the next.
-        /// Half a bucket, as `Entry::step` is.
-        double step = 1.0;
-        std::vector<double> values;
-        /// The element each of `values` is, borrowed and retired with them.
-        /// Empty when the run is the samples. See PlotLine::positions.
-        std::vector<double> positions;
-    };
-
     /// Where the view falls in the positions of one time base -- or of the
     /// tab's start and step -- and whether that could be said; and the focus,
     /// in the same positions. See recomputeView().
@@ -546,7 +527,7 @@ private:
         /// at these times PlotLine::positionScale, so nothing is rebuilt each
         /// time the line is handed over.
         std::vector<double> positions;
-        double step = 1.0;    ///< axis positions between drawn points
+        double step = 1.0; ///< axis positions between drawn points
         /// Whether those values are an envelope rather than the elements. See
         /// PlotLine::summarised, which is what this is read into: a dot on a
         /// bucket marks a reading nobody took.
@@ -566,12 +547,17 @@ private:
         /// at a finer bucket because the reader has zoomed into that run.
         ///
         /// Held *beside* the whole-line summary rather than instead of it, and
-        /// several at once, for the reasons DatasetPlot::Detail gives: the
+        /// several at once, for the reasons plotcore/RunLadder.hpp gives: the
         /// extent stays the line's own so the y axis does not rescale as detail
         /// arrives, zooming in either direction draws from what is already in
         /// hand, and there is always something correct on screen while a read
         /// is in flight. Empty when there is none, which is the usual case.
-        std::vector<Level> levels;
+        ///
+        /// plotcore's RunLadder, for a group of one: this line alone, which
+        /// is read on its own because it comes from anywhere in the file. The
+        /// ladder decides; runsOf() tells it what is being looked at first.
+        /// Mutable because it is asked in lineOf(), in the frame that draws.
+        mutable RunLadder runs;
 
         /// The line itself, held at every resolution it will be drawn at.
         ///
@@ -583,7 +569,7 @@ private:
         /// is the one copy of it.
         ///
         /// Not borrowed by the renderer: what reaches PlotLine is always
-        /// `values` above, a Level's, or the fold below, so this needs no
+        /// `values` above, a run's, or the fold below, so this needs no
         /// retiring.
         LinePyramid pyramid;
 
@@ -603,19 +589,21 @@ private:
     };
 
     // Both of these live in a std::vector that is pushed to while the renderer
-    // is reading the values in it -- `entries_`, and each entry's own `levels`
-    // -- so both have to relocate by moving. A std::vector reallocates with
+    // is reading the values in it -- `entries_`, and each entry's own runs --
+    // so both have to relocate by moving. A std::vector reallocates with
     // std::move_if_noexcept and takes the *copy* whenever the element's move is
     // not noexcept and a copy exists, which deep-copies every held vector into
     // the new storage and then frees the originals the item is drawing from.
     //
     // These two are noexcept today because everything in them is: QString,
-    // std::vector and the scalars. That was true of DatasetPlot::Detail as well
-    // until it grew a std::map, whose move is not noexcept on MSVC's library --
-    // and the only thing that ever said so was a SIGSEGV on Windows CI. Stated
-    // here so that the next member to arrive says it at the compiler instead.
-    static_assert(std::is_nothrow_move_constructible_v<Level>,
-                  "a Level must relocate by moving: a copy frees the values the figure borrows");
+    // std::vector and the scalars. That was true of the Plot tab's runs as well
+    // until they grew a std::map, whose move is not noexcept on MSVC's library
+    // -- and the only thing that ever said so was a SIGSEGV on Windows CI. A
+    // RunLadder::Run says so at the compiler now; this is the same, here, so
+    // that the next member to arrive says it too.
+    static_assert(
+        std::is_nothrow_move_constructible_v<RunLadder>,
+        "a RunLadder must relocate by moving: a copy frees the values the figure borrows");
     static_assert(std::is_nothrow_move_constructible_v<Entry>,
                   "an Entry must relocate by moving: a copy frees the values the figure borrows");
 
@@ -721,17 +709,19 @@ private:
     /// that would not read, or one already drawn sample for sample -- is how
     /// "read no closer look at all" is said.
     [[nodiscard]] LevelView levelView(const Entry& entry) const;
-    /// The runs `entry` holds as the policy sees them, in its own order.
-    ///
-    /// Into a scratch vector this object keeps, so asking costs no allocation.
-    /// The span is good until the next call, for any entry.
-    [[nodiscard]] std::span<const HeldLevel> ladder(const Entry& entry) const;
+    /// `entry`'s ladder of runs, told first what is being looked at of it --
+    /// its view and the focus -- so that what it answers is about now. How
+    /// many runs it may hold is told where it folds or gives runs up: that is
+    /// a walk over every entry, and this is asked once per entry per fill.
+    RunLadder& runsOf(const Entry& entry) const;
+    /// `entry`'s pyramid, lent to its ladder for the call it is passed to.
+    [[nodiscard]] static RunLadder::PyramidOf pyramidOf(const Entry& entry);
     /// The focus as the policy wants it, in `entry`'s own element positions.
     [[nodiscard]] PlotFocus focusFor(const Entry& entry) const;
-    /// The finest run of `entry` that covers what is on screen, or -1. See
+    /// The finest run of `entry` that covers what is on screen, or null. See
     /// gui::drawnLevel.
-    [[nodiscard]] int drawnLevel(const Entry& entry) const;
-    [[nodiscard]] bool closerCovers(const Entry& entry) const { return drawnLevel(entry) >= 0; }
+    [[nodiscard]] const RunLadder::Run* drawnRun(const Entry& entry) const;
+    [[nodiscard]] bool closerCovers(const Entry& entry) const { return drawnRun(entry) != nullptr; }
     /// The run to read next for `entry`: the one the pane is waiting for, or --
     /// when the pane is already answered -- the nearest octave out that nothing
     /// in hand covers. Nothing when there is nothing left worth reading.
@@ -750,16 +740,6 @@ public:
     [[nodiscard]] long long retiredDoubles() const;
 
 private:
-    /// Fill `window` for `entry` out of its pyramid, if it can.
-    ///
-    /// What refreshCloser() tries before anything is submitted. False when the
-    /// entry has no pyramid, when the run is finer than its base bucket -- the
-    /// only zooms that still cost a read -- or when it is already held.
-    [[nodiscard]] bool fillCloser(Entry& entry, const PlotWindow& window);
-    /// Whether `entry`'s pyramid can fold `window`: held, at a base no finer
-    /// than its bucket. What fillCloser() needs, and what keeps such a run
-    /// from ever being asked of the file.
-    [[nodiscard]] static bool folds(const Entry& entry, const PlotWindow& window);
     /// Drop the runs of `entry` furthest from the one the pane is on, down to
     /// heldLevels().
     void trimLevels(Entry& entry);
@@ -834,8 +814,11 @@ private:
     /// std::vector move takes the buffer with it, so the pointer the item holds
     /// goes on naming the same doubles.
     void retire(std::vector<double>& values) const;
-    /// Both of a run's buffers, which are always lent together.
-    void retire(Level& level) const;
+    /// Give up every entry's runs, and the time bases', freeing them rather
+    /// than retiring them: what the destructor does once nothing is drawing,
+    /// before the retire store goes -- it is a member declared after them, and
+    /// so destroyed before them.
+    void forgetRuns();
     /// Say that the lines changed. It does not touch the renderer: whatever it
     /// is drawing stays on the pane until the surface fills it again, which is
     /// a frame later and is a frame of the old picture rather than of none.
@@ -858,8 +841,6 @@ private:
     DatasetLookup* lookup_ = nullptr;
 
     std::vector<Entry> entries_;
-    /// An entry's runs as the policy sees them. See ladder().
-    mutable std::vector<HeldLevel> ladder_;
     /// Where the reader is zooming, when they are. In the x the axis prints,
     /// for the reason DatasetPlot keeps it that way -- and mapped onto each
     /// entry's own elements by focusFor(), because a tab's entries need not be
