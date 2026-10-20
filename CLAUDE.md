@@ -860,7 +860,9 @@ and the argument for each rule is written over its function there.
    and `all` on a ten-thousand-line table was 1.28 million reads of eight
    values each: two seconds of a frozen window to move twenty megabytes.
    `tests/test_cost.cpp` holds both halves — the elements exactly once, the
-   reads bounded by `kReadRun`. **Both** plots reduce a line that way, by the
+   reads bounded by `kReadRun`. (A closer look read below the pyramid reads one
+   element more, the one after its window: its last bucket's seam, below.)
+   **Both** plots reduce a line that way, by the
    same arithmetic and out of one implementation of it (`gui::reduceBuckets`),
    because a reader who puts a dataset on the Plot tab and the same slice in a
    custom tab is looking at one dataset: `test_customplot` compares the two
@@ -893,6 +895,29 @@ and the argument for each rule is written over its function there.
    coincidence. The renderer still thins a line that names positions when the
    pane is narrower than it is, and draws each extreme it keeps at its own
    position.
+
+   **A bucket is its elements and the stroke out of it.** Its two extremes were
+   joined to the next bucket's by a straight stroke from the later of one to
+   the earlier of the other — a segment between two extremes the line never
+   joined, with the column the line really crossed drawn short of it. Andreas
+   Martin's rule on #30: the exit and the entry of two consecutive buckets
+   change the span of the *left* one, and only that one.
+   A bucket's edge sits on the next bucket's first element, so the stroke from
+   its last element to that one is all in its own column. So every fold of the
+   elements takes in each bucket's **seam** — that next element, at its own
+   position, when both it and the bucket's last are finite (no chord through a
+   NaN) — and `plotcore::joinSeam` is where the rule is written. It is still an
+   element, so the rule above holds; a pair's second position may now be the
+   next pair's first. Coarsening stays exact because it adds no seam of its
+   own (`plotcore/Levels.hpp` has the argument). The pyramid seams as it is
+   built, joining each read's last seam when the next read lands, and both
+   plots' closer reads below it do the same across their `kReadRun` reads and
+   take the element after the window for the last one — so no element is read
+   twice for it. On a logarithmic x the columns fall between elements and the
+   left one takes the whole chord rather than splitting it at the edge.
+   `test_cost`'s counting line holds every seam (the second of a pair is the
+   next bucket's first element), and a closer read below a coarse pyramid is
+   checked against plotcore's own fold of the same elements in both tabs.
 
    **A bucket is a column, and a column is a device pixel.** What a line is
    thinned to follows the pane — `setPaneColumns`, quantised — rather than

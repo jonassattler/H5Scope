@@ -25,6 +25,20 @@ rather than generated. The releases before it are on GitHub with the notes they
 were published under, and backfilling them here would be inventing a record
 rather than keeping one.
 
+## 0.7.5
+
+**A summarised line follows the data from one pixel column into the next.**
+Where a plot shows more samples than the pane has columns, each column is drawn
+from the extremes of its samples. The stroke into the next column used to run
+from one column's last extreme to the next one's first, a line the data never
+drew, and the column the line crossed in was drawn short of where it went.
+Each column now reaches the first sample of the next. This applies on the Plot
+tab and in custom tabs, at every zoom. Thanks to Andreas Martin for the report
+(#30).
+
+**The plot is drawn by [plotcore](https://github.com/jonassattler/plotcore)
+0.2.1.**
+
 ## 0.7.4
 
 **A line can be moved and scaled.** To move a line, drag it with Alt held or

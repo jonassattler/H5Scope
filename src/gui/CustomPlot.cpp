@@ -290,8 +290,17 @@ struct Reply
     // pipeline again. That is only ever below the pyramid's base, which for a
     // line under the pipeline's cap means a budget too small to hold it at
     // bucket one -- rare, bounded by kMaxElements, and correct.
+    //
+    // The run is read with the element after it, where the line goes on: that
+    // element is the seam of the run's last bucket (plotcore/Levels.hpp), which
+    // the same run folded out of the pyramid has, so a read without it would
+    // draw its last column short. A run drawn sample for sample has no buckets
+    // and needs none.
+    bool seamed = false;
     if (ask.window.has_value()) {
-        windowLine(indices, drop, ask.window->first, ask.window->span);
+        const auto whole = static_cast<long long>(indices[lineDimension(indices, drop)].size());
+        seamed = ask.window->bucket > 1 && ask.window->first + ask.window->span < whole;
+        windowLine(indices, drop, ask.window->first, ask.window->span + (seamed ? 1 : 0));
         answer.start = static_cast<double>(ask.window->first);
     }
 
@@ -414,21 +423,32 @@ struct Reply
     //
     // A bucket wider than a whole read is the one case that cannot be cut back;
     // it is read whole, which is what every bucket used to get.
+    //
+    // Each bucket is folded with its seam, the first element of the bucket
+    // after it. Inside a read that is in the buffer; a read ends on a bucket
+    // boundary, so its last bucket's seam is the first element of the next
+    // read, joined when that read lands -- and the window's last bucket's is
+    // the element read past the window. No element is read twice for it.
     const std::vector<hsize_t> line = std::move(indices[along]);
-    const long long taken = (length + bucket - 1) / bucket;
+    const long long folded = length - (seamed ? 1 : 0); // the run, without its seam
+    const long long taken = (folded + bucket - 1) / bucket;
     answer.step = static_cast<double>(bucket) / 2.0;
     answer.summarised = true;
     answer.values.reserve(static_cast<std::size_t>(taken) * 2);
 
+    // The last element the previous read folded: the stroke out of its last
+    // bucket starts there.
+    double exit = std::numeric_limits<double>::quiet_NaN();
     long long done = 0;
-    while (done < length) {
-        const long long remaining = length - done;
+    while (done < folded) {
+        const long long remaining = folded - done;
         long long run = wholeBuckets(std::min<long long>(kReadRun, remaining), bucket);
         if (run < bucket) {
             run = std::min(bucket, remaining);
         }
+        const long long reach = done + run == folded && seamed ? run + 1 : run;
         indices[along].assign(line.begin() + static_cast<std::ptrdiff_t>(done),
-                              line.begin() + static_cast<std::ptrdiff_t>(done + run));
+                              line.begin() + static_cast<std::ptrdiff_t>(done + reach));
 
         if (fromFile) {
             gHyperslabs.fetch_add(1, std::memory_order_relaxed);
@@ -443,9 +463,19 @@ struct Reply
         // Contiguous, because the fold walks it with a pointer. A read of a run
         // of a line is already contiguous, so this is the buffer itself.
         const std::vector<double> buffer = read.array.values();
-        reduceBucketsLocated(buffer.data(), static_cast<long long>(buffer.size()), bucket,
-                             static_cast<long long>(answer.start) + done, answer.values,
-                             answer.positions);
+        const auto got = static_cast<long long>(buffer.size());
+        const long long origin = static_cast<long long>(answer.start) + done;
+        if (got > 0 && answer.values.size() >= 2) {
+            joinSeam(answer.values.data() + answer.values.size() - 2,
+                     answer.positions.data() + answer.positions.size() - 2, exit, buffer.front(),
+                     static_cast<double>(origin));
+        }
+        const long long fold = std::min(got, run);
+        reduceBucketsLocated(buffer.data(), fold, bucket, origin, answer.values, answer.positions,
+                             got > run ? buffer[static_cast<std::size_t>(run)]
+                                       : std::numeric_limits<double>::quiet_NaN());
+        exit = fold > 0 ? buffer[static_cast<std::size_t>(fold - 1)]
+                        : std::numeric_limits<double>::quiet_NaN();
         done += run;
     }
     return answer;
