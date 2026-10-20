@@ -44,6 +44,9 @@ private:
 ///   /series/trace_pairs      1-D compound {v, other} [20000] -- /trace again,
 ///                            as one table of structs, so a member and a
 ///                            dataset of its own are one line read two ways
+///   /series/long             1-D int16 [200000], value i % 20000 -- a line
+///                            longer than three reads, for a closer look
+///                            read below the pyramid
 ///   /str_fixed               1-D fixed string [3]
 ///   /str_vlen                1-D variable string [3]
 ///   /str_scalar              scalar variable string, multi-line and long
@@ -75,5 +78,11 @@ void writeFixture(const std::string& path);
 /// Exposed so a test can say which element a drawn value is without writing
 /// the line out a second time.
 std::vector<double> traceValues();
+
+/// `/series/long`, element for element: a line longer than three reads of
+/// gui::kReadRun, held as 16-bit integers so that it costs the fixture 400 kB
+/// rather than 1.6 MB. What a closer look read below the pyramid is folded
+/// out of, a read at a time, and what a test folds again to check it.
+std::vector<double> longValues();
 
 } // namespace h5test

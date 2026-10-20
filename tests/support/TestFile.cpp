@@ -27,6 +27,19 @@ std::vector<double> traceValues()
     return data;
 }
 
+std::vector<double> longValues()
+{
+    // A sawtooth, rising by one an element and falling back every twenty
+    // thousand. Every bucket's next element is past its extremes -- above them
+    // on a tooth, below them where one falls -- so every seam is in the fold,
+    // and a fold that drops one is wrong at that bucket rather than by luck.
+    std::vector<double> data(200000);
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<double>(i % 20000);
+    }
+    return data;
+}
+
 namespace {
 
 std::filesystem::path makeUniqueDirectory(const std::string& stem)
@@ -281,6 +294,21 @@ void writeFixture(const std::string& path)
              "sample other");
         writeDataset(series, "trace_pairs", sampleType, {trace.size()}, samples.data());
         H5Tclose(sampleType);
+
+        // A line longer than a read: two hundred thousand elements, three
+        // reads of kReadRun and some. The one line here whose closer look,
+        // read below a coarse pyramid, is folded out of more than one read --
+        // and so the one that can say whether a bucket at the end of a read is
+        // folded with the first element of the next. In /series for the reason
+        // trace_pairs is.
+        {
+            const std::vector<double> values = longValues();
+            std::vector<std::int16_t> data(values.size());
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                data[i] = static_cast<std::int16_t>(values[i]);
+            }
+            writeDataset(series, "long", H5T_NATIVE_INT16, {data.size()}, data.data());
+        }
 
         H5Gclose(series);
     }

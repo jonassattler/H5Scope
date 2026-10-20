@@ -25,6 +25,7 @@
 #include "gui/FigureItem.hpp"
 #include "gui/H5Session.hpp"
 #include "gui/H5Thread.hpp"
+#include "gui/PlotBudget.hpp"
 #include "gui/PlotCore.hpp"
 #include "gui/TableSetupModel.hpp"
 #include "support/AsyncModels.hpp"
@@ -900,6 +901,65 @@ TEST_CASE_METHOD(PlotFixture, "a custom plot reads a line by the hyperslab, not 
             highest = std::max(highest, near.values[i]);
         }
         CHECK(highest == Approx(9.0));
+    }
+}
+
+TEST_CASE_METHOD(PlotFixture,
+                 "a closer look read below the pyramid folds each bucket with its seam, across its "
+                 "reads and past its end",
+                 "[custom][plot][seam]")
+{
+    // The custom tab's own walk of a run under the pyramid's base: reads of up
+    // to kReadRun, each folded as it lands. A bucket that ends a read takes in
+    // the first element of the next read, and the run's last bucket the element
+    // after the window (plotcore/Levels.hpp) -- so the run is the fold of its
+    // elements in one piece, value for value and element for element, and that
+    // fold is asked of plotcore here, out of the same numbers.
+    auto& budget = gui::PlotBudget::instance();
+    const long long was = budget.pinnedTotal();
+    const auto restore = qScopeGuard([&] {
+        budget.setPinnedTotal(was);
+        settleAll();
+    });
+    budget.setPinnedTotal(64LL * 1024LL); // the line held hundreds of elements to a bucket
+
+    gui::CustomPlot* plot = tab();
+    plot->setPaneColumns(2048);
+    h5test::settleFor(gui::CustomPlot::kResizeMilliseconds + 200);
+    settleAll();
+    add(plot, QStringLiteral("/series/long[:]"));
+    REQUIRE(plot->sourcePointCount() == 200000);
+
+    // Sixty thousand elements across two thousand columns: buckets of a few
+    // dozen and a run of over a hundred thousand, which is two reads.
+    const long long before = gui::CustomPlot::hyperslabs();
+    plot->setVisibleRange(40000.0, 100000.0);
+    settleAll();
+    h5test::settleFor(gui::CustomPlot::kSettleMilliseconds + 200);
+    settleAll();
+    const long long reads = gui::CustomPlot::hyperslabs() - before;
+
+    const gui::PlotLine near = plot->lineOf(0);
+    REQUIRE(near.summarised);
+    REQUIRE(near.positions != nullptr);
+    const auto bucket = static_cast<long long>(2.0 * near.positionStep);
+    const auto first = static_cast<long long>(near.positionStart);
+    const long long span = bucket * (near.count / 2);
+    INFO("run " << first << " + " << span << " at a bucket of " << bucket);
+    CHECK(reads >= 2);
+    REQUIRE(span > gui::kReadRun);
+
+    const std::vector<double> line = h5test::longValues();
+    REQUIRE(first + span < static_cast<long long>(line.size())); // so it has a seam past its end
+    std::vector<double> want;
+    std::vector<double> wantAt;
+    gui::reduceBucketsLocated(line.data() + first, span, bucket, first, want, wantAt,
+                              line[static_cast<std::size_t>(first + span)]);
+    REQUIRE(near.count == static_cast<long long>(want.size()));
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        INFO("value " << i);
+        REQUIRE(near.values[i] == want[i]);
+        REQUIRE(near.positions[i] * near.positionScale == wantAt[i]);
     }
 }
 

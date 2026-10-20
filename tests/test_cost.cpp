@@ -931,16 +931,16 @@ constexpr int kZoomColumns = 2048;
 /// `{1, N}` is `f(i) = i` -- which makes every drawn value predictable to the
 /// last digit rather than approximately right. Two rules pin the whole run:
 ///
-///   - an envelope bucket holds `[p, p + bucket)` and answers with its two
-///     extremes in occurrence order, so on a rising line those are `p` and
-///     `p + bucket - 1`;
+///   - an envelope bucket holds `[p, p + bucket)` and its seam, the element
+///     `p + bucket` that the line goes on to (plotcore/Levels.hpp), and
+///     answers with its two extremes in occurrence order -- so on a rising
+///     line those are `p` and `p + bucket`, clipped by the end of the line;
 ///   - the step is half a bucket, so the *even* sample of each pair counts the
 ///     bucket's own start -- and its value is therefore exactly that position.
 ///
-/// Both hold unchanged for a run drawn sample for sample, where the step is one
-/// and each element is its own bucket. So one rule covers every resolution, and
-/// an off-by-one in the alignment, the bucket, the offset or the order of the
-/// pair fails it immediately.
+/// A run drawn sample for sample is each element at its own place. So one rule
+/// covers every resolution, and an off-by-one in the alignment, the bucket, the
+/// offset, the seam or the order of the pair fails it immediately.
 ///
 /// An envelope also names the element each value is (PlotLine::positions), and
 /// on this line that element's value is its index -- so the position has to be
@@ -954,10 +954,13 @@ void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
     const double step = line.positionStep;
     for (qsizetype i = 0; i < line.count; ++i) {
         const double at = line.positionStart + static_cast<double>(i) * step;
-        // The far end of the bucket, clipped by the end of the line -- the last
-        // bucket of a run that reaches it is summarised from what there is.
-        const double want =
-            (i % 2 == 0) ? at : std::min(at + step - 1.0, static_cast<double>(length - 1));
+        // The bucket's seam, clipped by the end of the line -- the last bucket
+        // of a run that reaches it is summarised from what there is. Told from
+        // the samples by `summarised` and not by the step, which is one for a
+        // bucket of two as well.
+        const double want = (i % 2 == 0 || !line.summarised)
+                                ? at
+                                : std::min(at + step, static_cast<double>(length - 1));
         INFO("sample " << i << " of " << line.count << " at " << at << " step " << step);
         REQUIRE(line.values[i] == want);
         if (line.positions != nullptr) {
@@ -966,7 +969,8 @@ void drawnMatchesTheFile(const gui::PlotLine& line, long long length)
             INFO("named " << named);
             REQUIRE(named == std::floor(named));
             REQUIRE(named >= bucketStart);
-            REQUIRE(named < bucketStart + 2.0 * step);
+            REQUIRE(named <= bucketStart + 2.0 * step); // the seam is the next bucket's first
+            REQUIRE(named < static_cast<double>(length));
             REQUIRE(named == line.values[i]);
         }
     }
@@ -994,7 +998,8 @@ void drawnIsTheElement(const gui::PlotLine& line)
         INFO("named " << named << " in the bucket from " << bucketStart);
         REQUIRE(named == std::floor(named));
         REQUIRE(named >= bucketStart);
-        REQUIRE(named < bucketStart + 2.0 * line.positionStep);
+        // The seam is the next bucket's first element.
+        REQUIRE(named <= bucketStart + 2.0 * line.positionStep);
         REQUIRE(line.values[i] == CountingSource::scramble(static_cast<hsize_t>(named)));
     }
 }
@@ -1274,6 +1279,44 @@ TEST_CASE("a ladder too short for the runs it wants still reads nothing", "[cost
         CHECK(cost.reads == 0);
     }
     budget.setPinnedTotal(was);
+}
+
+TEST_CASE("a closer look read below the pyramid's base folds each bucket with its seam",
+          "[cost][plot][zoom][seam]")
+{
+    // A budget that holds the line only coarsely, so a closer look is a read --
+    // a run of the file in reads of up to kReadRun, each folded on the HDF5
+    // thread -- where every other test here is answered out of the pyramid.
+    // Its buckets take in their seams as every fold's do (plotcore/Levels.hpp):
+    // across the reads, where a bucket's next element is the first of the next
+    // read, and past the run's end, where it is the element after the window.
+    // drawnMatchesTheFile pins each one on the counting line: the second of a
+    // pair is the first element of the bucket after it, and one short of that
+    // is a seam that was dropped.
+    auto& budget = gui::PlotBudget::instance();
+    const long long was = budget.pinnedTotal();
+    budget.setPinnedTotal(256LL * 1024LL);
+
+    Counted big({1, static_cast<hsize_t>(kZoomLine)});
+    big.plot.setPaneColumns(kZoomColumns);
+    (void)big.plot.pointCount();
+    Counted::settleAll();
+
+    // Half a million elements: buckets of a few hundred, under a base the
+    // budget holds thousands wide, and a run of a million -- sixteen reads.
+    const auto cost = big.measure([&] {
+        big.plot.setVisibleRange(4000000.0, 4500000.0);
+        h5test::settleFor(DatasetPlot::kSettleMilliseconds + 200);
+    });
+    const gui::PlotLine line = big.plot.lineOf(0);
+    REQUIRE(line.summarised);
+    CHECK(cost.reads >= 2);
+    CHECK(2.0 * line.positionStep * static_cast<double>(line.count / 2) >
+          2.0 * static_cast<double>(gui::kReadRun));
+    drawnMatchesTheFile(line, kZoomLine);
+
+    budget.setPinnedTotal(was);
+    Counted::settleAll();
 }
 
 namespace {

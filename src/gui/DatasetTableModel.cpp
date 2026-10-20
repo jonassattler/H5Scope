@@ -390,6 +390,24 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
     // used to be a struct and two lambdas here, and CustomPlot::readLine had a
     // second copy of the same arithmetic that agreed with this one only because
     // a test compared the two element for element.
+    //
+    // So is the seam: each bucket's extremes take in the first element of the
+    // bucket after it (gui::joinSeam), because the stroke from one bucket into
+    // the next lies in the left bucket's column, and folded without it that
+    // column is drawn short. Inside a read the seam is in the buffer. A read
+    // ends on a bucket boundary, so the bucket it ends on is held until the
+    // next read lands with that element first -- and the read that reaches the
+    // end of the window reaches one element past it, where the line goes on,
+    // for the window's last bucket. No element is read twice for any of it.
+    struct Waiting
+    {
+        bool held = false;
+        int bucket = 0;
+        Extremes found;
+        double exit = 0.0;
+        long long entryAt = 0;
+        double base = 0.0;
+    };
 
     if (envelopeColumns) {
         // Every element of the row, in reads of up to kReadRun -- and then as
@@ -419,15 +437,29 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
         try {
             for (int r = 0; r < grid.rows; ++r) {
                 const auto row = static_cast<int>(firstRow + qint64{r} * grid.rowStride);
+                // A bucket's pair, at the elements its read counted from `base`.
+                const auto write = [&](int b, const Extremes& found, double base) {
+                    const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
+                    grid.values[out] = found.first();
+                    grid.values[out + 1] = found.second();
+                    if (!grid.positions.empty()) {
+                        grid.positions[out] = base + static_cast<double>(found.firstAt());
+                        grid.positions[out + 1] = base + static_cast<double>(found.secondAt());
+                    }
+                };
+                Waiting waiting;
                 int b = 0;
                 while (b < buckets) {
                     const qint64 wanted = qint64{b} * grid.columnStride;
                     const auto column = static_cast<int>(firstColumn + wanted);
                     // Scattered Custom indices break the run, and the buckets
                     // past the break are then left for the read after this one.
-                    const auto limit = static_cast<int>(
-                        wholeBuckets(std::min<qint64>(kReadRun, columnExtent - wanted),
-                                     grid.columnStride));
+                    auto limit = static_cast<int>(wholeBuckets(
+                        std::min<qint64>(kReadRun, columnExtent - wanted), grid.columnStride));
+                    if (wanted + limit == columnExtent &&
+                        firstColumn + columnExtent < axes.columns()) {
+                        ++limit; // and the element after the window, for its seam
+                    }
                     const int run = axes.runLength(column, std::max(limit, 1));
 
                     std::vector<hsize_t> offset = axes.coordinates(row, column);
@@ -435,6 +467,14 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                     count[lastX] = static_cast<hsize_t>(std::max(run, 1));
                     const h5core::NumericWindow window = source.readNumericWindow(offset, count);
                     const auto seen = static_cast<qsizetype>(window.values.size());
+                    if (waiting.held) {
+                        if (seen > 0) {
+                            joinSeam(waiting.found, waiting.exit, window.values.front(),
+                                     waiting.entryAt);
+                        }
+                        write(waiting.bucket, waiting.found, waiting.base);
+                        waiting.held = false;
+                    }
 
                     const int started = b;
                     for (; b < buckets; ++b) {
@@ -449,24 +489,29 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         if (to - from < span && b > started) {
                             break; // the read stopped inside it; the next one covers it whole
                         }
-                        const Extremes found = extremesOf(window.values.data(), from, to);
+                        Extremes found = extremesOf(window.values.data(), from, to);
                         if (!found.found()) {
                             continue; // the whole bucket stays NaN, which is what it is
                         }
+                        // The window's own extent, before the seam reaches past it.
                         note(found.lowest);
                         note(found.highest);
-                        const auto out = static_cast<std::size_t>(r) * grid.columns + 2 * b;
-                        grid.values[out] = found.first();
-                        grid.values[out + 1] = found.second();
-                        if (!grid.positions.empty()) {
-                            const double base = static_cast<double>(firstColumn + wanted);
-                            grid.positions[out] = base + static_cast<double>(found.firstAt());
-                            grid.positions[out + 1] = base + static_cast<double>(found.secondAt());
+                        const double base = static_cast<double>(firstColumn + wanted);
+                        if (to < seen) {
+                            joinSeam(found, window.values[to - 1], window.values[to], to);
                         }
+                        else if (to - from == span && b + 1 < buckets) {
+                            waiting = Waiting{true, b, found, window.values[to - 1], to, base};
+                            continue;
+                        }
+                        write(b, found, base);
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk
                     }
+                }
+                if (waiting.held) {
+                    write(waiting.bucket, waiting.found, waiting.base);
                 }
             }
         }
@@ -490,12 +535,27 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
         try {
             for (int c = 0; c < grid.columns; ++c) {
                 const auto column = static_cast<int>(firstColumn + qint64{c} * grid.columnStride);
+                // A bucket's pair, at the elements its read counted from `base`.
+                const auto write = [&](int b, const Extremes& found, double base) {
+                    const auto first = static_cast<std::size_t>(2 * b) * grid.columns + c;
+                    const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
+                    grid.values[first] = found.first();
+                    grid.values[second] = found.second();
+                    if (!grid.positions.empty()) {
+                        grid.positions[first] = base + static_cast<double>(found.firstAt());
+                        grid.positions[second] = base + static_cast<double>(found.secondAt());
+                    }
+                };
+                Waiting waiting;
                 int b = 0;
                 while (b < rowBuckets) {
                     const qint64 wanted = qint64{b} * grid.rowStride;
                     const auto row = static_cast<int>(firstRow + wanted);
-                    const auto limit = static_cast<int>(wholeBuckets(
+                    auto limit = static_cast<int>(wholeBuckets(
                         std::min<qint64>(kReadRun, rowExtent - wanted), grid.rowStride));
+                    if (wanted + limit == rowExtent && firstRow + rowExtent < axes.rows()) {
+                        ++limit; // and the element after the window, for its seam
+                    }
                     const int run = axes.rowRunLength(row, std::max(limit, 1));
 
                     std::vector<hsize_t> offset = axes.coordinates(row, column);
@@ -503,6 +563,14 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                     count[lastY] = static_cast<hsize_t>(std::max(run, 1));
                     const h5core::NumericWindow window = source.readNumericWindow(offset, count);
                     const auto seen = static_cast<qsizetype>(window.values.size());
+                    if (waiting.held) {
+                        if (seen > 0) {
+                            joinSeam(waiting.found, waiting.exit, window.values.front(),
+                                     waiting.entryAt);
+                        }
+                        write(waiting.bucket, waiting.found, waiting.base);
+                        waiting.held = false;
+                    }
 
                     const int started = b;
                     for (; b < rowBuckets; ++b) {
@@ -516,25 +584,29 @@ DatasetTableModel::NumericGrid DatasetTableModel::sampleFrom(const h5core::DataS
                         if (to - from < span && b > started) {
                             break; // the read stopped inside it; the next one covers it whole
                         }
-                        const Extremes found = extremesOf(window.values.data(), from, to);
+                        Extremes found = extremesOf(window.values.data(), from, to);
                         if (!found.found()) {
                             continue; // the whole bucket stays NaN, which is what it is
                         }
+                        // The window's own extent, before the seam reaches past it.
                         note(found.lowest);
                         note(found.highest);
-                        const auto first = static_cast<std::size_t>(2 * b) * grid.columns + c;
-                        const auto second = static_cast<std::size_t>(2 * b + 1) * grid.columns + c;
-                        grid.values[first] = found.first();
-                        grid.values[second] = found.second();
-                        if (!grid.positions.empty()) {
-                            const double base = static_cast<double>(firstRow + wanted);
-                            grid.positions[first] = base + static_cast<double>(found.firstAt());
-                            grid.positions[second] = base + static_cast<double>(found.secondAt());
+                        const double base = static_cast<double>(firstRow + wanted);
+                        if (to < seen) {
+                            joinSeam(found, window.values[to - 1], window.values[to], to);
                         }
+                        else if (to - from == span && b + 1 < rowBuckets) {
+                            waiting = Waiting{true, b, found, window.values[to - 1], to, base};
+                            continue;
+                        }
+                        write(b, found, base);
                     }
                     if (b == started) {
                         ++b; // a read that yielded nothing must not stall the walk
                     }
+                }
+                if (waiting.held) {
+                    write(waiting.bucket, waiting.found, waiting.base);
                 }
             }
         }
